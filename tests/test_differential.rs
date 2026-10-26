@@ -1027,7 +1027,7 @@ const CONTRACTS: &str = r#"
   (fn clamp [x:i64 hi:i64] -> i64
     (req (gte hi 0i64))
     (ens (lte res hi))
-    (if (gt x (+ hi 10i64)) (return x) (block))
+    (when (gt x (+ hi 10i64)) (return x))
     (if (gt x hi) hi x))
   (fn clamp_i32 [x:i32 hi:i32] -> i32
     (i32.wrap (call clamp (i64.extend_s x) (i64.extend_s hi))))
@@ -1037,7 +1037,7 @@ const CONTRACTS: &str = r#"
   (fn flag_i32 [k:i32] -> i32 (if (call flag (eq k 1) "s, t" 1.5) 1 0))
   (fn positive [n:i32] -> void
     (ens (gt n 0))
-    (if (lt n -5) (return) (block))
+    (when (lt n -5) (return))
     (set! n (+ n 0)))
   (fn positive_i32 [n:i32] -> i32 (call positive n) 0)
   (fn nested [a:(arr i32) i:i32] -> i32

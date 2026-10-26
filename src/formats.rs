@@ -546,9 +546,9 @@ fn lower_dbg(mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower) -> Expr {
     Expr::Block(vec![Expr::Let { name: v.clone(), ty: t, val: Box::new(value), span }, call("show.eprintln", vec![chain]), var()], span)
 }
 
-/// `(format.expect "label" c)`: when c is false, `(call testing.fail
-/// "label")`; a comparison binds its sides once, `(block (let _x_N:T a) (let
-/// _y_N:T b) (if (OP _x_N _y_N) (block) (call testing.fail_cmp "label" X
+/// `(format.expect "label" c)`: `(when (not c) (call testing.fail
+/// "label"))`; a comparison binds its sides once, `(block (let _x_N:T a) (let
+/// _y_N:T b) (when (not (OP _x_N _y_N)) (call testing.fail_cmp "label" X
 /// Y)))`, X and Y the sides as the formatting forms print them. N counts the
 /// function's expects (aipl_src/fmtlower.aipl lower_expect writes the same).
 fn lower_expect(mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower) -> Expr {
@@ -556,7 +556,13 @@ fn lower_expect(mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower) -> Expr {
     let Expr::Lit(Literal::Str(label), _) = args.remove(0) else { return cond };
     let call = |func: &str, args: Vec<Expr>| Expr::Call { func: func.into(), args, span };
     let label_lit = || Expr::Lit(Literal::Str(label.clone()), span);
-    let fail = |c: Expr, why: Expr| Expr::If { cond: Box::new(c), then_branch: Box::new(Expr::Block(vec![], span)), else_branch: Box::new(why), span };
+    // (when (not c) why), as the parsers read it (an empty block ends the body)
+    let fail = |c: Expr, why: Expr| Expr::If {
+        cond: Box::new(Expr::Op { op: OpCode::Not, args: vec![c], span }),
+        then_branch: Box::new(Expr::Block(vec![why, Expr::Block(vec![], span)], span)),
+        else_branch: Box::new(Expr::Block(vec![], span)),
+        span,
+    };
     let side_type = match &cond {
         Expr::Op { op, args: sides, .. }
             if matches!(op, OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte) && sides.len() == 2 =>

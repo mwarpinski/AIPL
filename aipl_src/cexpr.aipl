@@ -58,23 +58,19 @@
   (fn value [d:(ptr Defs) name:str.Bytes] -> Val (pub)
     (let k:i32 (call (map.get_or str.Bytes i32) (get d Defs.index) name 0))
     (let st:i32 (call (vec.at i32) (get d Defs.state) k))
-    (if (eq st 2) (return (call (vec.at Val) (get d Defs.vals) k)) (block))
+    (when (eq st 2) (return (call (vec.at Val) (get d Defs.vals) k)))
     (let base:str.Bytes (call base_of name))
     (let at:i32 (call (vec.at i32) (get d Defs.ats) k))
-    (if (eq st 1)
-        (block (call fail d at base "': its value depends on itself") (return (make Val K.i32 0i64 0.0)))
-        (block))
+    (when (eq st 1) (call fail d at base "': its value depends on itself") (return (make Val K.i32 0i64 0.0)))
     (call (vec.set i32) (get d Defs.state) k 1)
     (let v:Val (call eval d at at base))
-    (if (get d Defs.failed) (return v) (block))
+    (when (get d Defs.failed) (return v))
     (call (vec.set i32) (get d Defs.state) k 2)
     (let ty:str.Bytes (call (vec.at str.Bytes) (get d Defs.tys) k))
-    (if (not (call str.is ty (call kind_name (get v Val.k))))
-        (block
+    (when (not (call str.is ty (call kind_name (get v Val.k))))
           (call begin d at base)
           (call buf.push_str (get d Defs.err) "' is declared ") (call buf.push_bytes (get d Defs.err) ty)
           (call buf.push_str (get d Defs.err) " but its value is ") (call buf.push_str (get d Defs.err) (call kind_name (get v Val.k))))
-        (block))
     (call (vec.set Val) (get d Defs.vals) k v)
     v)
 
@@ -96,7 +92,7 @@
 
   (fn base_of [name:str.Bytes] -> str.Bytes
     (let dot:i32 -1)
-    (for i 0 (get name str.Bytes.len) (if (eq (call str.byte_at name i) 46) (set! dot i) (block)))
+    (for i 0 (get name str.Bytes.len) (when (eq (call str.byte_at name i) 46) (set! dot i)))
     (call str.slice name (+ dot 1) (- (get name str.Bytes.len) (+ dot 1))))
 
   ;; Starts constant base's message, at offset `at`, unless one is there.
@@ -108,13 +104,13 @@
     (call buf.push_bytes (get d Defs.err) base))
 
   (fn fail [d:(ptr Defs) at:i32 base:str.Bytes rest:str] -> void
-    (if (get d Defs.failed) (return) (block))
+    (when (get d Defs.failed) (return))
     (call begin d at base)
     (call buf.push_str (get d Defs.err) rest))
 
   ;; Fails with "constant 'base': " then the text of b.
   (fn fail_buf [d:(ptr Defs) at:i32 base:str.Bytes b:(ptr buf.Buf)] -> void
-    (if (get d Defs.failed) (return) (block))
+    (when (get d Defs.failed) (return))
     (call begin d at base)
     (call buf.push_str (get d Defs.err) "': ")
     (call buf.push_bytes (get d Defs.err) (call buf.bytes b)))
@@ -138,7 +134,7 @@
 
   ;; Where the value starting at i ends (after its closing bracket).
   (fn value_end [d:(ptr Defs) i:i32] -> i32
-    (if (neq (call byte d i) 40) (return (call atom_end d i)) (block))
+    (when (neq (call byte d i) 40) (return (call atom_end d i)))
     (let depth:i32 0)
     (let j:i32 i)
     (let done:bool false)
@@ -146,13 +142,13 @@
       (let c:i32 (call byte d j))
       (cond ((eq c 40) (set! depth (+ depth 1))) ((eq c 41) (set! depth (- depth 1))) (else (block)))
       (set! j (+ j 1))
-      (if (eq depth 0) (set! done true) (block)))
+      (when (eq depth 0) (set! done true)))
     j)
 
   ;; The value starting at offset i, in constant base's value (at `at`,
   ;; where its errors are reported, as src/consts.rs does).
   (fn eval [d:(ptr Defs) i:i32 at:i32 base:str.Bytes] -> Val
-    (if (eq (call byte d i) 40) (return (call eval_group d i at base)) (block))
+    (when (eq (call byte d i) 40) (return (call eval_group d i at base)))
     (call eval_atom d i at base))
 
   (fn none [] -> Val (make Val K.i32 0i64 0.0))
@@ -205,11 +201,11 @@
     (let args:(ptr (vec.Vec Val)) (call (vec.make Val) (call alloc.default) 2))
     (while (neq (call byte d j) 41)
       (call (vec.push Val) args (call eval d j at base))
-      (if (get d Defs.failed) (return (call none)) (block))
+      (when (get d Defs.failed) (return (call none)))
       (set! j (call skip_space d (call value_end d j))))
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let r:Val (call fold op args b))
-    (if (gt (call buf.len b) 0) (call fail_buf d at base b) (block))
+    (when (gt (call buf.len b) 0) (call fail_buf d at base b))
     r)
 
   (fn is_op [op:str.Bytes] -> bool
@@ -219,34 +215,27 @@
 
   ;; op on args (src/consts.rs fold); a failure's text goes to b.
   (fn fold [op:str.Bytes args:(ptr (vec.Vec Val)) b:(ptr buf.Buf)] -> Val
-    (if (not (call is_op op))
-        (block
+    (when (not (call is_op op))
           (call buf.push_str b "a constant expression takes + - * / % ^ shl shr shru bitand bitor on numbers, and and or not on bools; not (")
           (call buf.push_bytes b op) (call buf.push_str b " ...)")
           (return (call none)))
-        (block))
     (let want:i32 (if (call str.is op "not") 1 2))
     (let n:i32 (call (vec.len Val) args))
-    (if (neq n want)
-        (block
+    (when (neq n want)
           (call buf.push_bytes b op) (call buf.push_str b " takes ") (call buf.push_int b want)
           (call buf.push_str b (if (eq want 1) " operand, got " " operands, got ")) (call buf.push_int b n)
           (return (call none)))
-        (block))
     (let a:Val (call (vec.at Val) args 0))
-    (if (call str.is op "not")
+    (when (call str.is op "not")
         (if (eq (get a Val.k) K.bool)
             (return (make Val K.bool (if (eq (get a Val.i) 1i64) 0i64 1i64) 0.0))
-            (block (call buf.push_str b "not does not apply to ") (call buf.push_str b (call kind_name (get a Val.k))) (return (call none))))
-        (block))
+            (block (call buf.push_str b "not does not apply to ") (call buf.push_str b (call kind_name (get a Val.k))) (return (call none)))))
     (let c:Val (call (vec.at Val) args 1))
     (let k:K (get a Val.k))
-    (if (neq k (get c Val.k))
-        (block
+    (when (neq k (get c Val.k))
           (call buf.push_bytes b op) (call buf.push_str b " needs two operands of one type, got ")
           (call buf.push_str b (call kind_name k)) (call buf.push_str b " and ") (call buf.push_str b (call kind_name (get c Val.k)))
           (return (call none)))
-        (block))
     (cond
       ((eq k K.i32) (call fold_i32 b op (i32.wrap (get a Val.i)) (i32.wrap (get c Val.i))))
       ((eq k K.i64) (call fold_i64 b op (get a Val.i) (get c Val.i)))

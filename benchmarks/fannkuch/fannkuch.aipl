@@ -42,7 +42,7 @@
           (set! hi (- hi 1)))
         (set! flips (+ flips 1))
         (set! k (arr.get i32 perm 0)))
-      (if (gt flips max_flips) (set! max_flips flips) (block))
+      (when (gt flips max_flips) (set! max_flips flips))
       (set! checksum (if (eq (% perm_count 2) 0) (+ checksum flips) (- checksum flips)))
       ;; the next permutation, by rotating prefixes
       (let next:bool false)

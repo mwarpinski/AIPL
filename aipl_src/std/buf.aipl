@@ -49,7 +49,7 @@
   ;; the old storage is freed, so views of it stop the program when read.
   (fn ensure [b:(ptr Buf) extra:i32] -> void
     (let need:i32 (+ (get b Buf.len) extra))
-    (if (lte need (get b Buf.cap)) (return) (block))
+    (when (lte need (get b Buf.cap)) (return))
     (let cap:i32 (* 2 (get b Buf.cap)))
     (while (lt cap need) (set! cap (* cap 2)))
     (let old:(arr u8) (get b Buf.store))
@@ -183,23 +183,23 @@
     (call push_str b "x=")
     (call push_int b -42)
     (call push_byte b 33)
-    (if (call str.bytes_eq (call bytes b) (call str.from_str "x=-42!")) (set! p (+ p 1)) (block))
+    (when (call str.bytes_eq (call bytes b) (call str.from_str "x=-42!")) (set! p (+ p 1)))
     ;; growth: 1000 pushes from a 16-byte start keep every byte
     (call clear b)
     (for i 0 1000 (call push_byte b (+ 97 (% i 26))))
     (let ok:bool (eq (call len b) 1000))
     (for i 0 1000
-      (if (neq (call str.byte_at (call bytes b) i) (+ 97 (% i 26))) (set! ok false) (block)))
-    (if ok (set! p (+ p 1)) (block))
+      (when (neq (call str.byte_at (call bytes b) i) (+ 97 (% i 26))) (set! ok false)))
+    (when ok (set! p (+ p 1)))
     ;; numbers round-trip through text
     (let c:(ptr Buf) (call make (call alloc.default) 0))
     (call push_int c -2147483648)
     (match_result (call str.parse_int (call bytes c))
-      (ok n (if (eq n -2147483648) (set! p (+ p 1)) (block)))
+      (ok n (when (eq n -2147483648) (set! p (+ p 1))))
       (err e (block)))
     ;; to_str copies: pushes and free afterwards leave the str alone
     (let t:str (call to_str c))
     (call push_str c "0")
     (call free c)
-    (if (call str.same t "-2147483648") (set! p (+ p 1)) (block))
+    (when (call str.same t "-2147483648") (set! p (+ p 1)))
     p))

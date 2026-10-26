@@ -68,9 +68,8 @@ an `i64`, `2.0` an `f64`. Nothing converts on its own, so `(+ a b)` with an
   (fn sum_even [n:i32] -> i32
     (let total:i32 0)
     (for i 1 (+ n 1)                     ;; i = 1, 2, ..., n (the end, n + 1, is left out)
-      (if (eq (% i 2) 0)
-          (set! total (+ total i))
-          (block)))
+      (when (eq (% i 2) 0)
+          (set! total (+ total i))))
     total)
 
   (fn sign [x:i32] -> i32
@@ -86,7 +85,7 @@ an `i64`, `2.0` an `f64`. Nothing converts on its own, so `(+ a b)` with an
 
 It prints `evens up to 10 add to 30; the sign of -5 is -1`.
 
-`if` always has both branches; `(block)` is an empty one. `for` counts
+`if` always has two real branches (an empty `(block)` branch is an error), and `when` is the `if` with one: its body is statements, and it has no value. `for` counts
 from its start up to its end, the end left out; `while` repeats
 while a condition holds (and is the loop for any other step). `cond` picks the first clause whose test is true,
 and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,

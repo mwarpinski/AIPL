@@ -24,6 +24,10 @@
 //! (e.g. `prog: wasm trap: integer divide by zero`), and exits with 134, the
 //! same line a native executable prints. `AIPL_BACKTRACE=1` prints
 //! wasmtime's full report instead.
+//!
+//! `AIPL_PROFILE=perfmap` has wasmtime write /tmp/perf-PID.map, which
+//! `perf record` / `perf report` read to name each AIPL function
+//! (docs/BENCHMARKS.md, "Profiling").
 
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -504,6 +508,9 @@ fn run(p: Program) -> i32 {
     // every frame, so a trap's call chain counts all of them, as native
     // executables do (wasmtime keeps 20 by default)
     config.wasm_backtrace_max_frames(std::num::NonZeroUsize::new(1 << 24));
+    if std::env::var_os("AIPL_PROFILE").is_some_and(|v| v == "perfmap") {
+        config.profiler(wasmtime::ProfilingStrategy::PerfMap);
+    }
     let engine = match Engine::new(&config) {
         Ok(e) => e,
         Err(e) => return fail(e.to_string()),

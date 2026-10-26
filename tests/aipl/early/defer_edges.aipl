@@ -16,7 +16,7 @@
     (make (option.Option i32) some (* v 10)))
   (fn middle [n:i32] -> void
     (defer (println "  middle's first defer"))
-    (if (eq n 0) (return) (block))
+    (when (eq n 0) (return))
     (defer (println "  middle's second defer"))
     (println "  middle body {n}"))
   (fn main [] -> i32

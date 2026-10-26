@@ -1,7 +1,9 @@
 //! Three forms written for the reader, rewritten as the resolver reads a
 //! module (AIPL_SPEC.md 4.M), so nothing after it sees them:
 //!
-//! - `(when c body...)` is `(if c (block body...) (block))`;
+//! - `when` is not rewritten (it was until CANONICAL_PLAN.md step 4): the
+//!   parsers read `(when c body...)` as `(if c (block body...) (block))`,
+//!   and only its shape is checked here, as for `for`;
 //! - `(for i start end body...)` is `(counted_loop i start (- end 1) 1 body...)`:
 //!   i from start up to, but not including, end (the internal form, which
 //!   counts to its end inclusive and has a step, is not for programs: `loop`
@@ -69,11 +71,6 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
     let at = sx.position();
     let items = sx.items().to_vec();
     match sx.head() {
-        Some("when") => {
-            let mut block = vec![symbol_at("block", at)];
-            block.extend(items[2..].iter().cloned());
-            *sx = list_at(vec![symbol_at("if", at), items[1].clone(), list_at(block, at), list_at(vec![symbol_at("block", at)], at)], at);
-        }
         Some("for") => {
             let end = list_at(vec![symbol_at("-", at), items[3].clone(), int_at(1, at)], at);
             let mut out = vec![symbol_at("counted_loop", at), items[1].clone(), items[2].clone(), end, int_at(1, at)];

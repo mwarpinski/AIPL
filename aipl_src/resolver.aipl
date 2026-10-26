@@ -84,7 +84,7 @@
   (fn last_index [t:str.Bytes c:i32] -> i32
     (let found:i32 -1)
     (for i 0 (get t str.Bytes.len)
-      (if (eq (call str.byte_at t i) c) (set! found i) (block)))
+      (when (eq (call str.byte_at t i) c) (set! found i)))
     found)
 
   (fn eq_lit [t:str.Bytes lit:str] -> bool
@@ -104,7 +104,7 @@
   ;; (resolver.rs reads tests only then).
   (fn load [path:str.Bytes o:(ptr origins.Origins) tests:bool] -> (ptr Src)
     (let text:str.Bytes (call io.read_path path))
-    (if (lt (get text str.Bytes.len) 0) (return (ptr.null Src)) (block))
+    (when (lt (get text str.Bytes.len) 0) (return (ptr.null Src)))
     (let src:(ptr Src) (new Src (call alloc.forever)))
     ;; not in the origins until it has read cleanly
     (put src Src.file -1)
@@ -112,22 +112,18 @@
     (put src Src.text text)
     (put src Src.path path)
     (put src Src.error (ptr.null buf.Buf))
-    (if (not (call str.valid_utf8 text))
-        (block
+    (when (not (call str.valid_utf8 text))
           (put src Src.error (call path_message path))
           (call buf.push_str (get src Src.error) "Cannot read: stream did not contain valid UTF-8")
           (return src))
-        (block))
     (let n:i32 (get text str.Bytes.len))
     (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (call str.addr text) n) 1))))
     (let count:i32 (call compiler.tokenize (call str.addr text) n tok))
     (let problem:(ptr buf.Buf) (call structure_error (call str.addr text) tok count tests))
-    (if (neq problem (ptr.null buf.Buf))
-        (block
+    (when (neq problem (ptr.null buf.Buf))
           (put src Src.error (call path_message path))
           (call buf.push_bytes (get src Src.error) (call buf.bytes problem))
           (return src))
-        (block))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (put src Src.root (call compiler.parse_ast tok count ast))
     (put src Src.origins o)
@@ -136,9 +132,8 @@
 
   ;; Names a loaded file in compiled code's line table (origins.File.name).
   (fn name_file [src:(ptr Src) name:str.Bytes] -> void
-    (if (and (neq src (ptr.null Src)) (and (gte (get src Src.file) 0) (neq (get src Src.origins) (ptr.null origins.Origins))))
-        (put (call origins.file_at (get src Src.origins) (get src Src.file)) origins.File.name name)
-        (block)))
+    (when (and (neq src (ptr.null Src)) (and (gte (get src Src.file) 0) (neq (get src Src.origins) (ptr.null origins.Origins))))
+        (put (call origins.file_at (get src Src.origins) (get src Src.file)) origins.File.name name)))
 
   (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
     (get g compiler.Node.first))
@@ -146,7 +141,7 @@
   (fn nth [g:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
     (let c:(ptr compiler.Node) (call first_child g))
     (for k 1 (+ i 1)
-      (if (eq c (ptr.null compiler.Node)) (return c) (block))
+      (when (eq c (ptr.null compiler.Node)) (return c))
       (set! c (get c compiler.Node.next)))
     c)
 
@@ -159,7 +154,7 @@
 
   ;; The head symbol of a (...) group, or "" when it has none.
   (fn head [src:(ptr Src) g:(ptr compiler.Node)] -> str.Bytes
-    (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.from_str "")) (block))
+    (when (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.from_str "")))
     (let h:(ptr compiler.Node) (call first_child g))
     (if (call is_symbol h) (call text src h) (call str.from_str "")))
 
@@ -167,25 +162,21 @@
   ;; Roles: 0 none, 1 function name, 2 struct name, 3 field reference S.f.
 
   (fn rename [m:(ptr Mod) t:str.Bytes role:i32] -> str.Bytes
-    (unsafe (if (eq role 0) (return (call rename_decl m t)) (block))
+    (unsafe (when (eq role 0) (return (call rename_decl m t)))
     (let len:i32 (get t str.Bytes.len))
-    (if (eq role 3)
-        (block
+    (when (eq role 3)
           ;; S.f: rename the struct part, up to the last '.'
           (let dot:i32 (call last_index t 46))
-          (if (lt dot 0) (return t) (block))
+          (when (lt dot 0) (return t))
           (return (call concat (call rename m (call slice t 0 dot) 2) (call slice t dot (- len dot)))))
-        (block))
     (let dot:i32 (call str.find_byte t 46))
-    (if (gte dot 0)
-        (block
+    (when (gte dot 0)
           ;; alias.rest -> canonical.rest; any other qualified name is left alone
           (let alias:str.Bytes (call slice t 0 dot))
           (if (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) alias)
               (return (call concat (call (map.get_or str.Bytes str.Bytes) (get m Mod.aliases) alias (call str.bytes 0 -1))
                                    (call slice t dot (- len dot))))
               (return t)))
-        (block))
     (let own:(ptr (map.Map str.Bytes i32)) (if (eq role 1) (get m Mod.fns) (get m Mod.structs)))
     ;; a struct-name position may also hold an enum (a template's type argument)
     (if (and (get m Mod.imported) (or (call (map.has str.Bytes i32) own t)
@@ -199,11 +190,10 @@
   (fn rename_decl [m:(ptr Mod) t:str.Bytes] -> str.Bytes
     (unsafe (let len:i32 (get t str.Bytes.len))
     (let dot:i32 (call str.find_byte t 46))
-    (if (and (gte dot 0) (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) (call slice t 0 dot)))
+    (when (and (gte dot 0) (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) (call slice t 0 dot)))
         (return (call concat (call (map.get_or str.Bytes str.Bytes) (get m Mod.aliases) (call slice t 0 dot) (call str.bytes 0 -1))
-                             (call slice t dot (- len dot))))
-        (block))
-    (if (not (get m Mod.imported)) (return t) (block))
+                             (call slice t dot (- len dot)))))
+    (when (not (get m Mod.imported)) (return t))
     (let last:i32 (call last_index t 46))
     (if (or (call (map.has str.Bytes i32) (get m Mod.decls) t)
             (and (gte last 0) (call (map.has str.Bytes i32) (get m Mod.decls) (call slice t 0 last))))
@@ -238,7 +228,7 @@
   (fn emit [m:(ptr Mod) n:(ptr compiler.Node) role:i32 out:(ptr buf.Buf)] -> void
     (let k:compiler.Kind (get n compiler.Node.kind))
     (let src:(ptr Src) (get m Mod.src))
-    (if (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (call note m n out) (block))
+    (when (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (call note m n out))
     (cond
       ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call emit_group m n role out))
       ((eq k compiler.Kind.symbol)
@@ -265,24 +255,19 @@
   ;; of this module's own, or another module's through an alias or by its
   ;; canonical name (resolver.rs template_ref). len -1 if h is not a template.
   (fn template_ref [m:(ptr Mod) h:str.Bytes] -> str.Bytes
-    (unsafe (if (call (map.has str.Bytes i32) (get m Mod.templates) h)
-        (return (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) h) h))
-        (block))
+    (unsafe (when (call (map.has str.Bytes i32) (get m Mod.templates) h)
+        (return (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) h) h)))
     (let dot:i32 (call str.find_byte h 46))
-    (if (and (gte dot 0) (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) (call slice h 0 dot)))
-        (block
+    (when (and (gte dot 0) (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) (call slice h 0 dot)))
           (let c:str.Bytes (call concat (call (map.get_or str.Bytes str.Bytes) (get m Mod.aliases) (call slice h 0 dot) (call str.bytes 0 -1))
                                               (call slice h dot (- (get h str.Bytes.len) dot))))
-          (if (call (map.has str.Bytes i32) (get m Mod.known) c) (return c) (block)))
-        (block))
-    (if (call (map.has str.Bytes i32) (get m Mod.known) h) (return h) (block))
+          (when (call (map.has str.Bytes i32) (get m Mod.known) c) (return c)))
+    (when (call (map.has str.Bytes i32) (get m Mod.known) h) (return h))
     ;; an interface's function, (Hash.hash K): the interface's name, qualified
     (let last:i32 (call last_index h 46))
-    (if (gte last 0)
-        (block
+    (when (gte last 0)
           (let c:str.Bytes (call template_ref m (call slice h 0 last)))
-          (if (gte (get c str.Bytes.len) 0) (return (call concat c (call slice h last (- (get h str.Bytes.len) last)))) (block)))
-        (block))
+          (when (gte (get c str.Bytes.len) 0) (return (call concat c (call slice h last (- (get h str.Bytes.len) last))))))
     (call str.bytes 0 -1)))
 
   ;; Children separated by spaces, except none around ':' (x:i32, ok:T). A
@@ -297,7 +282,7 @@
   ;; Notes where group g's closing bracket came from (an error can point at it).
   (fn note_close [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let src:(ptr Src) (get m Mod.src))
-    (if (gte (get g compiler.Node.a) 0) (call origins.note (get src Src.origins) out (get src Src.file) (get g compiler.Node.a)) (block)))
+    (when (gte (get g compiler.Node.a) 0) (call origins.note (get src Src.origins) out (get src Src.file) (get g compiler.Node.a))))
 
   ;; Notes that the next token printed into out comes from offset pos.
   (fn note_at [m:(ptr Mod) pos:i32 out:(ptr buf.Buf)] -> void
@@ -307,7 +292,7 @@
   ;; The index of a formatting form's head among format format_to print
   ;; println eprintln, or -1.
   (fn format_head [m:(ptr Mod) g:(ptr compiler.Node)] -> i32
-    (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return -1) (block))
+    (when (neq (get g compiler.Node.kind) compiler.Kind.paren) (return -1))
     (let h:str.Bytes (call head (get m Mod.src) g))
     (cond
       ((call str.is h "format") 0) ((call str.is h "format_to") 1) ((call str.is h "print") 2)
@@ -339,7 +324,7 @@
     (let lb:str.Bytes (call buf.bytes label))
     (for k 0 (get lb str.Bytes.len)
       (let c:i32 (call str.byte_at lb k))
-      (if (or (eq c 34) (eq c 92)) (call buf.push_byte out 92) (block))
+      (when (or (eq c 34) (eq c 92)) (call buf.push_byte out 92))
       (call buf.push_byte out c))
     (call buf.push_byte out 34)
     (call buf.push_byte out 32)
@@ -369,7 +354,7 @@
     (let lb:str.Bytes (call buf.bytes label))
     (for k 0 (get lb str.Bytes.len)
       (let c:i32 (call str.byte_at lb k))
-      (if (or (eq c 34) (eq c 92)) (call buf.push_byte out 92) (block))
+      (when (or (eq c 34) (eq c 92)) (call buf.push_byte out 92))
       (call buf.push_byte out c))
     (call buf.push_byte out 34)
     (call buf.push_byte out 32)
@@ -377,14 +362,13 @@
     (call note_at m (get g compiler.Node.pos) out)
     (call buf.push_byte out 41))
 
-  ;; 1 (when ...), 2 (for ...), 3 an and/or of three or more, 4 (new ...),
+  ;; (when ...) is not rewritten: the parsers read it (src/sugar.rs). 2 (for ...), 3 an and/or of three or more, 4 (new ...),
   ;; 5 (arr.new ...), else 0 (sugar.rs); their shapes were checked when the
   ;; file was read.
   (fn sugar_kind [m:(ptr Mod) g:(ptr compiler.Node)] -> i32
-    (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return 0) (block))
+    (when (neq (get g compiler.Node.kind) compiler.Kind.paren) (return 0))
     (let h:str.Bytes (call head (get m Mod.src) g))
     (cond
-      ((call str.is h "when") 1)
       ((call str.is h "for") 2)
       ((and (or (call str.is h "and") (call str.is h "or")) (gt (call count_kids g) 3)) 3)
       ((call str.is h "new") 4)
@@ -392,7 +376,7 @@
       (else 0)))
 
   ;; The sugar.rs rewrites, every token they add at the form's place:
-  ;; (when c b...) as (if c (block b...) (block)); (for i s e b...) as
+  ;; (for i s e b...) as
   ;; (counted_loop i s (- e 1) 1 b...); (and a b c ...) as (and a (and b c ...));
   ;; (new S a) as (call (alloc.create S) a), (arr.new T a n) as
   ;; (call (alloc.array T) a n).
@@ -406,7 +390,7 @@
        (call emit m c 2 out)
        ;; a struct type argument lets the template make one, as for any
        ;; template (emit_group)
-       (if (call is_symbol c) (call check_type_arg m (call rename m (call text (get m Mod.src) c) 2) c) (block))
+       (when (call is_symbol c) (call check_type_arg m (call rename m (call text (get m Mod.src) c) 2) c))
        (call note_at m at out) (call buf.push_byte out 41)
        (set! c (get c compiler.Node.next))
        (while (neq c (ptr.null compiler.Node))
@@ -414,16 +398,6 @@
          (call emit m c 0 out)
          (set! c (get c compiler.Node.next)))
        (call note_at m at out) (call buf.push_byte out 41))
-      ((eq kind 1)
-       (call note_at m at out) (call buf.push_str out "(if ")
-       (call emit m c 0 out)
-       (call note_at m at out) (call buf.push_str out " (block")
-       (set! c (get c compiler.Node.next))
-       (while (neq c (ptr.null compiler.Node))
-         (call buf.push_byte out 32)
-         (call emit m c 0 out)
-         (set! c (get c compiler.Node.next)))
-       (call note_at m at out) (call buf.push_str out ") (block))"))
       ((eq kind 2)
        (call note_at m at out) (call buf.push_str out "(counted_loop ")
        (call emit m c 0 out)
@@ -446,12 +420,10 @@
        ;; (op a1 (op a2 ... (op a_{n-1} a_n)...))
        (let k:i32 0)
        (while (neq c (ptr.null compiler.Node))
-         (if (lt k (- n 1))
-             (block
+         (when (lt k (- n 1))
                (call note_at m at out) (call buf.push_byte out 40) (call buf.push_bytes out op) (call buf.push_byte out 32))
-             (block))
          (call emit m c 0 out)
-         (if (lt k (- n 1)) (call buf.push_byte out 32) (block))
+         (when (lt k (- n 1)) (call buf.push_byte out 32))
          (set! k (+ k 1))
          (set! c (get c compiler.Node.next)))
        (call note_at m at out)
@@ -470,14 +442,12 @@
     (let n:i32 (get t str.Bytes.len))
     (let i:i32 from)
     (let c0:i32 (if (lt i n) (call str.byte_at t i) 0))
-    (if (not (or (eq c0 40) (or (eq c0 91) (eq c0 34))))
-        (block
+    (when (not (or (eq c0 40) (or (eq c0 91) (eq c0 34))))
           ;; an atom
           (while (and (lt i n) (not (call delimiter (call str.byte_at t i))))
             (call buf.push_byte out (call str.byte_at t i))
             (set! i (+ i 1)))
           (return))
-        (block))
     (let depth:i32 0)
     (let space:bool false)
     (let start:i32 (call buf.len out))
@@ -490,18 +460,15 @@
          (while (and (lt i n) (neq (call str.byte_at t i) 10)) (set! i (+ i 1)))
          (set! space true))
         (else
-         (if (and space (and (gt (call buf.len out) start) (and (neq last 40) (and (neq last 91) (and (neq c 41) (neq c 93))))))
-             (call buf.push_byte out 32)
-             (block))
+         (when (and space (and (gt (call buf.len out) start) (and (neq last 40) (and (neq last 91) (and (neq c 41) (neq c 93))))))
+             (call buf.push_byte out 32))
          (set! space false)
          (cond
            ((eq c 34)
             (call buf.push_byte out c)
             (set! i (+ i 1))
             (while (and (lt i n) (neq (call str.byte_at t i) 34))
-              (if (and (eq (call str.byte_at t i) 92) (lt (+ i 1) n))
-                  (block (call buf.push_byte out 92) (set! i (+ i 1)))
-                  (block))
+              (when (and (eq (call str.byte_at t i) 92) (lt (+ i 1) n)) (call buf.push_byte out 92) (set! i (+ i 1)))
               (call buf.push_byte out (call str.byte_at t i))
               (set! i (+ i 1)))
             (call buf.push_byte out 34)
@@ -510,23 +477,20 @@
            ((or (eq c 41) (eq c 93)) (call buf.push_byte out c) (set! depth (- depth 1)) (set! i (+ i 1)))
            (else (call buf.push_byte out c) (set! i (+ i 1))))
          (set! last c)
-         (if (eq depth 0) (return) (block))))))
+         (when (eq depth 0) (return))))))
 
   ;; Whether placeholder code holds a (dbg ...): a ( then, after any
   ;; spaces, the word dbg.
   (fn code_has_dbg [code:str.Bytes] -> bool
     (let n:i32 (get code str.Bytes.len))
     (for i 0 n
-      (if (eq (call str.byte_at code i) 40)
-          (block
+      (when (eq (call str.byte_at code i) 40)
             (let j:i32 (+ i 1))
             (while (and (lt j n) (call is_ws (call str.byte_at code j))) (set! j (+ j 1)))
-            (if (and (lte (+ j 3) n)
+            (when (and (lte (+ j 3) n)
                      (and (call str.is (call slice code j 3) "dbg")
                           (or (eq (+ j 3) n) (call delimiter (call str.byte_at code (+ j 3))))))
-                (return true)
-                (block)))
-          (block)))
+                (return true))))
     false)
 
   (fn is_ws [c:i32] -> bool (or (eq c 32) (or (eq c 9) (or (eq c 10) (or (eq c 13) (eq c 12))))))
@@ -547,9 +511,7 @@
     (call buf.push_byte out 40)
     (call note m h out)
     (call buf.push_str out (call form_op op))
-    (if (eq op 1)
-        (block (call buf.push_byte out 32) (call emit m (call nth g 1) 0 out))
-        (block))
+    (when (eq op 1) (call buf.push_byte out 32) (call emit m (call nth g 1) 0 out))
     (let raw:str.Bytes (call text src str_node))
     (let base:i32 (get str_node compiler.Node.a))
     (let ps:(ptr (vec.Vec fmtsplit.Piece)) (get (call fmtsplit.pieces raw) fmtsplit.Split.pieces))
@@ -592,30 +554,28 @@
       (let t:(ptr compiler.Token) (call compiler.token_at ts k))
       (let kd:compiler.Kind (get t compiler.Token.kind))
       ;; a text token's a is an offset in the file
-      (if (or (eq kd compiler.Kind.symbol) (or (eq kd compiler.Kind.int) (or (eq kd compiler.Kind.int64) (or (eq kd compiler.Kind.float) (eq kd compiler.Kind.float32)))))
-          (put t compiler.Token.a (+ (get t compiler.Token.a) a))
-          (block))
+      (when (or (eq kd compiler.Kind.symbol) (or (eq kd compiler.Kind.int) (or (eq kd compiler.Kind.int64) (or (eq kd compiler.Kind.float) (eq kd compiler.Kind.float32)))))
+          (put t compiler.Token.a (+ (get t compiler.Token.a) a)))
       (put t compiler.Token.pos pos))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ tn 2)))))
     (call compiler.parse_ast ts tn ast)))
 
   (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) own_role:i32 out:(ptr buf.Buf)] -> void
-    (if (and (eq (get m Mod.square) 0) (gt (call sugar_kind m g) 0)) (block (call emit_sugar m g (call sugar_kind m g) out) (return)) (block))
-    (if (and (eq (get m Mod.square) 0) (eq (call format_head m g) 5)) (block (call emit_dbg m g out) (return)) (block))
-    (if (and (eq (get m Mod.square) 0) (eq (call format_head m g) 6)) (block (call emit_expect m g out) (return)) (block))
-    (if (and (eq (get m Mod.square) 0) (gte (call format_head m g) 0)) (block (call emit_format m g (call format_head m g) out) (return)) (block))
+    (when (and (eq (get m Mod.square) 0) (gt (call sugar_kind m g) 0)) (call emit_sugar m g (call sugar_kind m g) out) (return))
+    (when (and (eq (get m Mod.square) 0) (eq (call format_head m g) 5)) (call emit_dbg m g out) (return))
+    (when (and (eq (get m Mod.square) 0) (eq (call format_head m g) 6)) (call emit_expect m g out) (return))
+    (when (and (eq (get m Mod.square) 0) (gte (call format_head m g) 0)) (call emit_format m g (call format_head m g) out) (return))
     (unsafe (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
-    (if square (put m Mod.square (+ (get m Mod.square) 1)) (block))
+    (when square (put m Mod.square (+ (get m Mod.square) 1)))
     (call note m g out)
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
     (let tmpl:str.Bytes (call str.bytes 0 -1))
     ;; a template named like the make form (std/vec's make) is named only
     ;; as a function, after call or ref: anywhere else (make ...) is the form
-    (if (and (and (not square) (call is_symbol c))
+    (when (and (and (not square) (call is_symbol c))
              (or (eq own_role 1) (not (call eq_lit (call text (get m Mod.src) c) "make"))))
-        (set! tmpl (call template_ref m (call text (get m Mod.src) c)))
-        (block))
+        (set! tmpl (call template_ref m (call text (get m Mod.src) c))))
     (let i:i32 0)
     (let prev_colon:bool true)
     (let is_match:bool (and (not square) (call eq_lit (call head (get m Mod.src) g) "match")))
@@ -635,7 +595,7 @@
         ;; an item's (pub) is taken out (emit_module checked where it is)
         ((and top (call is_pub_clause m c)) (block))
         (else
-      (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+      (when (not (or prev_colon colon)) (call buf.push_byte out 32))
       (cond
         ;; a struct's field list (a bracket; anything else there is left for the parser to name)
         ((and top (and (eq i 2) (and (call eq_lit gh "struct") (eq (get c compiler.Node.kind) compiler.Kind.bracket)))) (call emit_fields m c out))
@@ -652,7 +612,7 @@
          (call emit m c 2 out)
          ;; a struct type argument lets the template make one (with new); a
          ;; value struct's does not (a value-kind argument)
-         (if (call is_symbol c) (call check_type_arg m (call rename m (call text (get m Mod.src) c) 2) c) (block)))
+         (when (call is_symbol c) (call check_type_arg m (call rename m (call text (get m Mod.src) c) 2) c)))
         (else
          (let role:i32 (call child_role m g i))
          (call emit m c role out)
@@ -665,32 +625,27 @@
                  ;; (get p S.f), (put p S.f v)
                  ((and field_op (eq i 2))
                   (let dot:i32 (call last_index sym 46))
-                  (if (gte dot 0)
-                      (block
+                  (when (gte dot 0)
                         (let sname:str.Bytes (call slice sym 0 dot))
                         (call check_item m sname c)
-                        (call check_field m sname (call slice sym (+ dot 1) (- (get sym str.Bytes.len) (+ dot 1))) put c))
-                      (block)))
+                        (call check_field m sname (call slice sym (+ dot 1) (- (get sym str.Bytes.len) (+ dot 1))) put c)))
                  ((and field_op (and (eq i 3) (call str.present generic_struct)))
                   (call check_field m generic_struct sym put c))
                  ;; a field path's further steps
                  ((and (not square) (call path_step gh i n_items))
                   (let pdot:i32 (call last_index sym 46))
-                  (if (gte pdot 0)
+                  (when (gte pdot 0)
                       (call check_field m (call slice sym 0 pdot) (call slice sym (+ pdot 1) (- (get sym str.Bytes.len) (+ pdot 1)))
-                            (or put (call eq_lit gh "arr.set")) c)
-                      (block)))
+                            (or put (call eq_lit gh "arr.set")) c)))
                  (else (block))))
-             (if (and field_op (eq i 2))
-                 (block
+             (when (and field_op (eq i 2))
                    (let gh2:str.Bytes (call head (get m Mod.src) c))
                    (let gt:str.Bytes (call template_ref m gh2))
-                   (set! generic_struct (if (gte (get gt str.Bytes.len) 0) gt gh2)))
-                 (block)))))
+                   (set! generic_struct (if (gte (get gt str.Bytes.len) 0) gt gh2))))))
       (set! prev_colon colon)))
       (set! i (+ i 1))
       (set! c (get c compiler.Node.next)))
-    (if square (put m Mod.square (- (get m Mod.square) 1)) (block))
+    (when square (put m Mod.square (- (get m Mod.square) 1)))
     (call note_close m g out)
     (call buf.push_byte out (if square 93 41))))
 
@@ -722,7 +677,7 @@
 
   ;; "PATH: L:C: msg" for node n, the first error only.
   (fn vis_fail [m:(ptr Mod) n:(ptr compiler.Node) msg:(ptr buf.Buf)] -> void
-    (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return) (block))
+    (when (neq (get m Mod.err) (ptr.null buf.Buf)) (return))
     (let src:(ptr Src) (get m Mod.src))
     (let lc:(ptr compiler.LineCol) (call compiler.line_col (call str.addr (get src Src.text)) (get n compiler.Node.pos)))
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
@@ -743,7 +698,7 @@
   ;; The module a canonical name belongs to, if it is another module; else len -1.
   (fn foreign [m:(ptr Mod) name:str.Bytes] -> str.Bytes
     (unsafe (let dot:i32 (call str.find_byte name 46))
-    (if (lt dot 0) (return (call str.bytes 0 -1)) (block))
+    (when (lt dot 0) (return (call str.bytes 0 -1)))
     (let first:str.Bytes (call slice name 0 dot))
     (if (and (not (call str.bytes_eq first (get m Mod.name))) (call (map.has str.Bytes str.Bytes) (get m Mod.paths) first))
         first
@@ -752,8 +707,7 @@
   ;; name (canonical) may be used here: it is this module's, or (pub).
   (fn check_item [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> void
     (let fm:str.Bytes (call foreign m name))
-    (if (and (gte (get fm str.Bytes.len) 0) (not (call (map.has str.Bytes i32) (get (get m Mod.vis) Vis.public) name)))
-        (block
+    (when (and (gte (get fm str.Bytes.len) 0) (not (call (map.has str.Bytes i32) (get (get m Mod.vis) Vis.public) name)))
           (let b:(ptr buf.Buf) (call vis_msg "'"))
           (call buf.push_bytes b name)
           (if (call (map.has str.Bytes i32) (get (get m Mod.vis) Vis.all) name)
@@ -766,8 +720,7 @@
                 (call buf.push_bytes b fm)
                 (call buf.push_str b ": ")
                 (call push_item_hint m b fm name)))
-          (call vis_fail m n b))
-        (block)))
+          (call vis_fail m n b)))
 
   ;; What follows "is not an item of module M: " (src/resolver.rs check_item):
   ;; the module's public name nearest to the one written, or where to look.
@@ -801,7 +754,7 @@
   ;; A constant, enum, union, or one of their members: the declaration is
   ;; the first two parts.
   (fn check_decl [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> void
-    (if (lt (get (call foreign m name) str.Bytes.len) 0) (return) (block))
+    (when (lt (get (call foreign m name) str.Bytes.len) 0) (return))
     (let first:i32 (call str.find_byte name 46))
     (let rest:str.Bytes (call slice name (+ first 1) (- (get name str.Bytes.len) (+ first 1))))
     (let second:i32 (call str.find_byte rest 46))
@@ -809,22 +762,20 @@
 
   ;; Made outside its module: every field must be (pub).
   (fn check_type_arg [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> void
-    (if (call (map.has str.Bytes i32) (get (get m Mod.vis) Vis.values) name) (return) (block))
+    (when (call (map.has str.Bytes i32) (get (get m Mod.vis) Vis.values) name) (return))
     (call check_makes m name n))
 
   (fn check_makes [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> void
     (let fm:str.Bytes (call foreign m name))
-    (if (lt (get fm str.Bytes.len) 0) (return) (block))
+    (when (lt (get fm str.Bytes.len) 0) (return))
     (let fields:(ptr (map.Map str.Bytes i32))
          (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get (get m Mod.vis) Vis.fields) name (ptr.null (map.Map str.Bytes i32))))
-    (if (eq fields (ptr.null (map.Map str.Bytes i32))) (return) (block))
+    (when (eq fields (ptr.null (map.Map str.Bytes i32))) (return))
     (let closed:bool false)
     (for i 0 (call (map.capacity str.Bytes i32) fields)
-      (if (and (call (map.slot_used str.Bytes i32) fields i) (neq (call (map.slot_val str.Bytes i32) fields i) 2))
-          (set! closed true)
-          (block)))
-    (if closed
-        (block
+      (when (and (call (map.slot_used str.Bytes i32) fields i) (neq (call (map.slot_val str.Bytes i32) fields i) 2))
+          (set! closed true)))
+    (when closed
           (let b:(ptr buf.Buf) (call vis_msg "'"))
           (call buf.push_bytes b name)
           (call buf.push_str b "' has fields private to module ")
@@ -832,26 +783,23 @@
           (call buf.push_str b ", so only ")
           (call buf.push_bytes b fm)
           (call buf.push_str b " can make one")
-          (call vis_fail m n b))
-        (block)))
+          (call vis_fail m n b)))
 
   ;; Field f of struct s (canonical), read (get) or written (put).
   (fn check_field [m:(ptr Mod) s:str.Bytes f:str.Bytes put:bool n:(ptr compiler.Node)] -> void
     (let fm:str.Bytes (call foreign m s))
-    (if (lt (get fm str.Bytes.len) 0) (return) (block))
+    (when (lt (get fm str.Bytes.len) 0) (return))
     (let fields:(ptr (map.Map str.Bytes i32))
          (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get (get m Mod.vis) Vis.fields) s (ptr.null (map.Map str.Bytes i32))))
     (let level:i32 (if (eq fields (ptr.null (map.Map str.Bytes i32))) 0 (call (map.get_or str.Bytes i32) fields f 0)))
-    (if (or (eq level 0) (and put (eq level 1)))
-        (block
+    (when (or (eq level 0) (and put (eq level 1)))
           (let b:(ptr buf.Buf) (call vis_msg "field '"))
           (call buf.push_bytes b f)
           (call buf.push_str b "' of ")
           (call buf.push_bytes b s)
           (call buf.push_str b (if (eq level 0) " is private to module " " is read-only outside module "))
           (call buf.push_bytes b fm)
-          (call vis_fail m n b))
-        (block)))
+          (call vis_fail m n b)))
 
   ;; A struct's field list with (read x:T) and (pub x:T) made plain x:T.
   (fn emit_fields [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
@@ -865,13 +813,13 @@
             (let p:(ptr compiler.Node) (get (call first_child c) compiler.Node.next))
             (while (neq p (ptr.null compiler.Node))
               (let pc:bool (eq (get p compiler.Node.kind) compiler.Kind.colon))
-              (if (or prev_colon pc) (block) (call buf.push_byte out 32))
+              (when (not (or prev_colon pc)) (call buf.push_byte out 32))
               (call emit m p 0 out)
               (set! prev_colon pc)
               (set! p (get p compiler.Node.next))))
           (block
             (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
-            (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+            (when (not (or prev_colon colon)) (call buf.push_byte out 32))
             (call emit m c 0 out)
             (set! prev_colon colon)))
       (set! c (get c compiler.Node.next)))
@@ -894,27 +842,23 @@
                      ((or (call eq_lit h "struct") (or (call eq_lit h "union") (call eq_lit h "enum"))) 3)
                      ((call eq_lit h "interface") 2)
                      (else -1)))
-    (if (neq (get item compiler.Node.kind) compiler.Kind.paren) (return false) (block))
+    (when (neq (get item compiler.Node.kind) compiler.Kind.paren) (return false))
     ;; an empty item has none (the structure check names it)
-    (if (eq (call first_child item) (ptr.null compiler.Node)) (return false) (block))
+    (when (eq (call first_child item) (ptr.null compiler.Node)) (return false))
     ;; (struct S [fields] (pub) (value))
     (let third:(ptr compiler.Node) (call nth item 3))
-    (if (and (call eq_lit h "struct")
+    (when (and (call eq_lit h "struct")
              (and (neq third (ptr.null compiler.Node))
-                  (and (call is_pub_clause m third) (call is_value_mark m (call nth item 4)))))
-        (block (call vis_fail m third (call vis_msg "(pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)")) (return false))
-        (block))
+                  (and (call is_pub_clause m third) (call is_value_mark m (call nth item 4))))) (call vis_fail m third (call vis_msg "(pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)")) (return false))
     (let at:(ptr compiler.Node) (if (gte place 0) (call nth item place) (ptr.null compiler.Node)))
     (let found:bool (and (neq at (ptr.null compiler.Node)) (call is_pub_clause m at)))
     (let c:(ptr compiler.Node) (get (call first_child item) compiler.Node.next))
     (while (neq c (ptr.null compiler.Node))
-      (if (and (call is_pub_clause m c) (not (and found (eq c at))))
-          (block
+      (when (and (call is_pub_clause m c) (not (and found (eq c at))))
             (call vis_fail m c (call vis_msg (if (call eq_lit h "impl")
                                                  "an implementation takes no (pub): it is as visible as its interface and its type"
                                                  "(pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)")))
             (return false))
-          (block))
       (set! c (get c compiler.Node.next)))
     found)
 
@@ -922,9 +866,8 @@
   (fn field_levels [m:(ptr Mod) item:(ptr compiler.Node)] -> (ptr (map.Map str.Bytes i32))
     (let levels:(ptr (map.Map str.Bytes i32)) (call (map.make str.Bytes i32) (call alloc.default) 8))
     (let list:(ptr compiler.Node) (call nth item 2))
-    (if (or (eq list (ptr.null compiler.Node)) (and (neq (get list compiler.Node.kind) compiler.Kind.paren) (neq (get list compiler.Node.kind) compiler.Kind.bracket)))
-        (return levels)
-        (block))
+    (when (or (eq list (ptr.null compiler.Node)) (and (neq (get list compiler.Node.kind) compiler.Kind.paren) (neq (get list compiler.Node.kind) compiler.Kind.bracket)))
+        (return levels))
     (let src:(ptr Src) (get m Mod.src))
     (let k:i32 0)
     (let c:(ptr compiler.Node) (call first_child list))
@@ -934,17 +877,12 @@
             (let nm:(ptr compiler.Node) (call nth c 1))
             (let ok:bool (and (eq (call count_kids c) 4)
                               (and (call is_symbol nm) (eq (get (call nth c 2) compiler.Node.kind) compiler.Kind.colon))))
-            (if (or (not ok) (neq (% k 3) 0))
-                (block (call vis_fail m c (call vis_msg "a field is written x:T, (read x:T), or (pub x:T)")) (return levels))
-                (block))
+            (when (or (not ok) (neq (% k 3) 0)) (call vis_fail m c (call vis_msg "a field is written x:T, (read x:T), or (pub x:T)")) (return levels))
             (call (map.set str.Bytes i32) levels (call text src nm) (if (call eq_lit (call head src c) "pub") 2 1))
             (set! k (+ k 3)))
           (block
-            (if (and (eq (% k 3) 0) (call is_symbol c))
-                (if (call (map.has str.Bytes i32) levels (call text src c))
-                    (block)
-                    (call (map.set str.Bytes i32) levels (call text src c) 0))
-                (block))
+            (when (and (eq (% k 3) 0) (call is_symbol c))
+                (when (not (call (map.has str.Bytes i32) levels (call text src c))) (call (map.set str.Bytes i32) levels (call text src c) 0)))
             (set! k (+ k 1))))
       (set! c (get c compiler.Node.next)))
     levels)
@@ -966,15 +904,13 @@
     (let it:(ptr compiler.Node) (call first_item src))
     (while (neq it (ptr.null compiler.Node))
       (let h:str.Bytes (call head src it))
-      (if (and (or (call eq_lit h "struct") (or (call eq_lit h "union") (call eq_lit h "enum"))) (gte (get (call item_name m it) str.Bytes.len) 0))
-          (call (map.set str.Bytes i32) own_types (call item_name m it) 1)
-          (block))
+      (when (and (or (call eq_lit h "struct") (or (call eq_lit h "union") (call eq_lit h "enum"))) (gte (get (call item_name m it) str.Bytes.len) 0))
+          (call (map.set str.Bytes i32) own_types (call item_name m it) 1))
       (set! it (get it compiler.Node.next)))
     (set! it (call first_item src))
     (while (neq it (ptr.null compiler.Node))
       (let name:str.Bytes (call item_name m it))
-      (if (and (not (call eq_lit (call head src it) "import")) (and (gte (get name str.Bytes.len) 0) (call (map.has str.Bytes i32) own_pub name)))
-          (block
+      (when (and (not (call eq_lit (call head src it) "import")) (and (gte (get name str.Bytes.len) 0) (call (map.has str.Bytes i32) own_pub name)))
             (let types:(ptr (vec.Vec (ptr compiler.Node))) (call (vec.make (ptr compiler.Node)) (call alloc.default) 8))
             (let h:str.Bytes (call head src it))
             (cond
@@ -994,17 +930,14 @@
               ((call eq_lit h "interface")
                (let f:(ptr compiler.Node) (call nth it 2))
                (while (neq f (ptr.null compiler.Node))
-                 (if (gte (call count_kids f) 5)
-                     (block
+                 (when (gte (call count_kids f) 5)
                        (call third_of_triples (call nth f 2) types)
                        (call (vec.push (ptr compiler.Node)) types (call nth f 4)))
-                     (block))
                  (set! f (get f compiler.Node.next))))
               (else (block)))
             (for k 0 (call (vec.len (ptr compiler.Node)) types)
               (let bad:(ptr compiler.Node) (call private_in m (call (vec.at (ptr compiler.Node)) types k) own_types own_pub))
-              (if (neq bad (ptr.null compiler.Node))
-                  (block
+              (when (neq bad (ptr.null compiler.Node))
                     (let bt:str.Bytes (call text src bad))
                     (let b:(ptr buf.Buf) (call vis_msg "'"))
                     (call buf.push_bytes b name)
@@ -1014,28 +947,26 @@
                     (call buf.push_bytes b bt)
                     (call buf.push_str b "' (pub) too")
                     (call vis_fail m bad b)
-                    (return))
-                  (block))))
-          (block))
+                    (return))))
       (set! it (get it compiler.Node.next))))
 
   ;; The third of each triple of g's children (a parameter's type).
   (fn third_of_triples [g:(ptr compiler.Node) out:(ptr (vec.Vec (ptr compiler.Node)))] -> void
-    (if (eq g (ptr.null compiler.Node)) (return) (block))
+    (when (eq g (ptr.null compiler.Node)) (return))
     (call third_of_triples_from g 0 out))
 
   (fn third_of_triples_from [g:(ptr compiler.Node) skip:i32 out:(ptr (vec.Vec (ptr compiler.Node)))] -> void
     (let c:(ptr compiler.Node) (call first_child g))
-    (for s 1 (+ skip 1) (if (neq c (ptr.null compiler.Node)) (set! c (get c compiler.Node.next)) (block)))
+    (for s 1 (+ skip 1) (when (neq c (ptr.null compiler.Node)) (set! c (get c compiler.Node.next))))
     (let k:i32 0)
     (while (neq c (ptr.null compiler.Node))
-      (if (eq (% k 3) 2) (call (vec.push (ptr compiler.Node)) out c) (block))
+      (when (eq (% k 3) 2) (call (vec.push (ptr compiler.Node)) out c))
       (set! k (+ k 1))
       (set! c (get c compiler.Node.next))))
 
   ;; The types of a struct's readable fields, groups made plain.
   (fn readable_field_types [m:(ptr Mod) list:(ptr compiler.Node) levels:(ptr (map.Map str.Bytes i32)) out:(ptr (vec.Vec (ptr compiler.Node)))] -> void
-    (if (eq list (ptr.null compiler.Node)) (return) (block))
+    (when (eq list (ptr.null compiler.Node)) (return))
     (let src:(ptr Src) (get m Mod.src))
     ;; plain triples: the name, then the type two further on
     (let pending:(ptr compiler.Node) (ptr.null compiler.Node))
@@ -1044,11 +975,11 @@
     (while (neq c (ptr.null compiler.Node))
       (if (call field_group m c)
           (block
-            (if (call readable m levels (call nth c 1)) (call (vec.push (ptr compiler.Node)) out (call nth c 3)) (block))
+            (when (call readable m levels (call nth c 1)) (call (vec.push (ptr compiler.Node)) out (call nth c 3)))
             (set! k (+ k 3)))
           (block
-            (if (eq (% k 3) 0) (set! pending c) (block))
-            (if (and (eq (% k 3) 2) (call readable m levels pending)) (call (vec.push (ptr compiler.Node)) out c) (block))
+            (when (eq (% k 3) 0) (set! pending c))
+            (when (and (eq (% k 3) 2) (call readable m levels pending)) (call (vec.push (ptr compiler.Node)) out c))
             (set! k (+ k 1))))
       (set! c (get c compiler.Node.next))))
 
@@ -1060,16 +991,15 @@
   ;; module's types that is not (pub), or null.
   (fn private_in [m:(ptr Mod) t:(ptr compiler.Node) own_types:(ptr (map.Map str.Bytes i32)) own_pub:(ptr (map.Map str.Bytes i32))] -> (ptr compiler.Node)
     (let k:compiler.Kind (get t compiler.Node.kind))
-    (if (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket))
-        (return (if (call is_bad m t own_types own_pub) t (ptr.null compiler.Node)))
-        (block))
+    (when (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket))
+        (return (if (call is_bad m t own_types own_pub) t (ptr.null compiler.Node))))
     (let c:(ptr compiler.Node) (call first_child t))
-    (if (eq c (ptr.null compiler.Node)) (return c) (block))
-    (if (call is_bad m c own_types own_pub) (return c) (block))
+    (when (eq c (ptr.null compiler.Node)) (return c))
+    (when (call is_bad m c own_types own_pub) (return c))
     (set! c (get c compiler.Node.next))
     (while (neq c (ptr.null compiler.Node))
       (let b:(ptr compiler.Node) (call private_in m c own_types own_pub))
-      (if (neq b (ptr.null compiler.Node)) (return b) (block))
+      (when (neq b (ptr.null compiler.Node)) (return b))
       (set! c (get c compiler.Node.next)))
     (ptr.null compiler.Node))
 
@@ -1087,7 +1017,7 @@
     (let c:(ptr compiler.Node) (call first_child g))
     (let first:bool true)
     (while (neq c (ptr.null compiler.Node))
-      (if first (block) (call buf.push_byte out 32))
+      (when (not first) (call buf.push_byte out 32))
       (set! first false)
       (if (eq (get c compiler.Node.kind) compiler.Kind.paren)
           (block
@@ -1098,7 +1028,7 @@
             (let prev_colon:bool true)
             (while (neq p (ptr.null compiler.Node))
               (let colon:bool (eq (get p compiler.Node.kind) compiler.Kind.colon))
-              (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+              (when (not (or prev_colon colon)) (call buf.push_byte out 32))
               (if (and (eq i 0) (call is_symbol p))
                   (block (call note m p out) (call buf.push_bytes out (call text (get m Mod.src) p)))
                   (call emit m p 0 out))
@@ -1124,13 +1054,11 @@
     (let prev_colon:bool true)
     (while (neq c (ptr.null compiler.Node))
       (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
-      (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+      (when (not (or prev_colon colon)) (call buf.push_byte out 32))
       (cond
         ((and (lt i 2) (call is_symbol c))
          (call note m c out)
-         (if (and (eq i 1) (and qualify (get m Mod.imported)))
-             (block (call buf.push_bytes out (get m Mod.prefix)) (call buf.push_byte out 46))
-             (block))
+         (when (and (eq i 1) (and qualify (get m Mod.imported))) (call buf.push_bytes out (get m Mod.prefix)) (call buf.push_byte out 46))
          (call buf.push_bytes out (call text (get m Mod.src) c)))
         (else (call emit m c 0 out)))
       (set! prev_colon colon)
@@ -1150,7 +1078,7 @@
     (let prev_colon:bool true)
     (while (neq c (ptr.null compiler.Node))
       (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
-      (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+      (when (not (or prev_colon colon)) (call buf.push_byte out 32))
       (if (and (eq i 0) (and (call is_symbol c) (call eq_lit (call text (get m Mod.src) c) "else")))
           (call buf.push_str out "else")
           (call emit m c 0 out))
@@ -1229,7 +1157,7 @@
 
   ;; The index after the form starting at token i (brackets known to balance).
   (fn skip_form [toks:i32 i:i32] -> i32
-    (if (not (call is_opener (call kind_at toks i))) (return (+ i 1)) (block))
+    (when (not (call is_opener (call kind_at toks i))) (return (+ i 1)))
     (let depth:i32 0)
     (let j:i32 i)
     (while true
@@ -1239,7 +1167,7 @@
         ((call is_closer k) (set! depth (- depth 1)))
         (else (block)))
       (set! j (+ j 1))
-      (if (eq depth 0) (break) (block)))
+      (when (eq depth 0) (break)))
     j)
 
   ;; Why the `count` tokens of src are not one well-formed module file, as
@@ -1247,60 +1175,51 @@
   ;; error; the first form's brackets; anything after it; the form being
   ;; (module NAME ...); each import's shape. Null if the file is well formed.
   (fn structure_error [src:i32 toks:i32 count:i32 tests:bool] -> (ptr buf.Buf)
-    (if (and (gt count 0) (eq (call kind_at toks (- count 1)) compiler.Kind.bad))
-        (block
+    (when (and (gt count 0) (eq (call kind_at toks (- count 1)) compiler.Kind.bad))
           (let tb:(ptr buf.Buf) (call at_token src toks (- count 1) ""))
           (call parser.push_token_error tb src (call compiler.token_at toks (- count 1)))
           (return tb))
-        (block))
-    (if (eq count 0)
-        (block (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 32)) (call buf.push_str eb "unexpected end of input") (return eb))
-        (block))
-    (if (call is_closer (call kind_at toks 0)) (return (call at_token src toks 0 "unexpected closing bracket")) (block))
+    (when (eq count 0) (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 32)) (call buf.push_str eb "unexpected end of input") (return eb))
+    (when (call is_closer (call kind_at toks 0)) (return (call at_token src toks 0 "unexpected closing bracket")))
     ;; the first form: a stack of open brackets (their token indices)
     (let stack:(arr i32) (arr.new i32 (call alloc.forever) (+ count 1)))
     (let top:i32 0)
     (let i:i32 0)
     (if (call is_opener (call kind_at toks 0))
         (while true
-          (if (eq i count) (return (call bracket_error src toks count (arr.get i32 stack (- top 1)) "this bracket is never closed")) (block))
+          (when (eq i count) (return (call bracket_error src toks count (arr.get i32 stack (- top 1)) "this bracket is never closed")))
           (let k:compiler.Kind (call kind_at toks i))
           (cond
             ((call is_opener k) (arr.set i32 stack top i) (set! top (+ top 1)))
             ((call is_closer k)
              (let opened:compiler.Kind (call kind_at toks (arr.get i32 stack (- top 1))))
-             (if (neq (eq opened compiler.Kind.lparen) (eq k compiler.Kind.rparen))
-                 (return (call bracket_error src toks count i "mismatched closing bracket"))
-                 (block))
+             (when (neq (eq opened compiler.Kind.lparen) (eq k compiler.Kind.rparen))
+                 (return (call bracket_error src toks count i "mismatched closing bracket")))
              (set! top (- top 1)))
             (else (block)))
           (set! i (+ i 1))
-          (if (eq top 0) (break) (block)))
+          (when (eq top 0) (break)))
         (set! i 1))
-    (if (lt i count) (return (call bracket_error src toks count i "unexpected input after the module's closing ')'")) (block))
+    (when (lt i count) (return (call bracket_error src toks count i "unexpected input after the module's closing ')'")))
     ;; (module NAME item...)
-    (if (or (neq (call kind_at toks 0) compiler.Kind.lparen) (or (lt count 3) (not (call symbol_is src toks 1 "module"))))
-        (return (call at_token src toks 0 "a file must be one (module NAME ...) form"))
-        (block))
-    (if (neq (call kind_at toks 2) compiler.Kind.symbol) (return (call at_token src toks 0 "the module needs a name")) (block))
+    (when (or (neq (call kind_at toks 0) compiler.Kind.lparen) (or (lt count 3) (not (call symbol_is src toks 1 "module"))))
+        (return (call at_token src toks 0 "a file must be one (module NAME ...) form")))
+    (when (neq (call kind_at toks 2) compiler.Kind.symbol) (return (call at_token src toks 0 "the module needs a name")))
     (let j:i32 3)
     (while (lt j (- count 1))
       (let next:i32 (call skip_form toks j))
-      (if (and (eq (call kind_at toks j) compiler.Kind.lparen) (call symbol_is src toks (+ j 1) "import"))
-          (block
+      (when (and (eq (call kind_at toks j) compiler.Kind.lparen) (call symbol_is src toks (+ j 1) "import"))
             ;; (import NAME) or (import NAME as ALIAS): the children after the head
             (let parts:i32 0)
             (let c:i32 (+ j 2))
             (let shape_ok:bool true)
             (while (lt c (- next 1))
               (set! parts (+ parts 1))
-              (if (and (or (eq parts 1) (eq parts 3)) (neq (call kind_at toks c) compiler.Kind.symbol)) (set! shape_ok false) (block))
-              (if (and (eq parts 2) (not (call symbol_is src toks c "as"))) (set! shape_ok false) (block))
+              (when (and (or (eq parts 1) (eq parts 3)) (neq (call kind_at toks c) compiler.Kind.symbol)) (set! shape_ok false))
+              (when (and (eq parts 2) (not (call symbol_is src toks c "as"))) (set! shape_ok false))
               (set! c (call skip_form toks c)))
-            (if (or (not shape_ok) (and (neq parts 1) (neq parts 3)))
-                (return (call at_token src toks j "an import is (import NAME) or (import NAME as ALIAS)"))
-                (block)))
-          (block))
+            (when (or (not shape_ok) (and (neq parts 1) (neq parts 3)))
+                (return (call at_token src toks j "an import is (import NAME) or (import NAME as ALIAS)"))))
       (set! j next))
     (call format_error src toks count tests))
 
@@ -1308,49 +1227,40 @@
   ;; Rust resolver runs as it reads a module): the first error, or null.
   (fn format_error [src:i32 toks:i32 count:i32 tests:bool] -> (ptr buf.Buf)
     (let te:(ptr buf.Buf) (call test_error src toks count))
-    (if (neq te (ptr.null buf.Buf)) (return te) (block))
+    (when (neq te (ptr.null buf.Buf)) (return te))
     ;; a test's body only in a test build (resolver.rs reads it only then)
     (let skip:(arr bool) (call in_tests src toks count tests))
     (let se:(ptr buf.Buf) (call sugar_error src toks count skip))
-    (if (neq se (ptr.null buf.Buf)) (return se) (block))
+    (when (neq se (ptr.null buf.Buf)) (return se))
     ;; inside a [...] list there are no forms (formats.rs split)
     (unsafe (let square:i32 0)
     (for i 0 (- count 1)
-      (if (eq (call kind_at toks i) compiler.Kind.lbracket) (set! square (+ square 1)) (block))
-      (if (eq (call kind_at toks i) compiler.Kind.rbracket) (set! square (- square 1)) (block))
+      (when (eq (call kind_at toks i) compiler.Kind.lbracket) (set! square (+ square 1)))
+      (when (eq (call kind_at toks i) compiler.Kind.rbracket) (set! square (- square 1)))
       (let op:i32 (if (and (and (eq square 0) (not (arr.get bool skip i))) (eq (call kind_at toks i) compiler.Kind.lparen)) (call form_index src toks (+ i 1)) -1))
       ;; (expect c): one condition
-      (if (and (and (eq square 0) (not (arr.get bool skip i))) (and (eq (call kind_at toks i) compiler.Kind.lparen) (call symbol_is src toks (+ i 1) "expect")))
-          (block
+      (when (and (and (eq square 0) (not (arr.get bool skip i))) (and (eq (call kind_at toks i) compiler.Kind.lparen) (call symbol_is src toks (+ i 1) "expect")))
             (let eargs:i32 0)
             (let ec:i32 (+ i 2))
             (while (and (lt ec count) (not (call is_closer (call kind_at toks ec))))
               (set! eargs (+ eargs 1))
               (set! ec (call skip_form toks ec)))
-            (if (neq eargs 1)
-                (block
+            (when (neq eargs 1)
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b "expect takes one condition, e.g. (expect (eq n 3))")
-                  (return b))
-                (block)))
-          (block))
+                  (return b)))
       ;; (dbg e): one expression
-      (if (and (and (eq square 0) (not (arr.get bool skip i))) (and (eq (call kind_at toks i) compiler.Kind.lparen) (call symbol_is src toks (+ i 1) "dbg")))
-          (block
+      (when (and (and (eq square 0) (not (arr.get bool skip i))) (and (eq (call kind_at toks i) compiler.Kind.lparen) (call symbol_is src toks (+ i 1) "dbg")))
             (let dargs:i32 0)
             (let dc:i32 (+ i 2))
             (while (and (lt dc count) (not (call is_closer (call kind_at toks dc))))
               (set! dargs (+ dargs 1))
               (set! dc (call skip_form toks dc)))
-            (if (neq dargs 1)
-                (block
+            (when (neq dargs 1)
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b "dbg takes one expression, e.g. (dbg (call f x))")
-                  (return b))
-                (block)))
-          (block))
-      (if (gte op 0)
-          (block
+                  (return b)))
+      (when (gte op 0)
             (let to:bool (eq op 1))
             (let args:i32 0)
             (let last:i32 -1)
@@ -1359,8 +1269,7 @@
               (set! args (+ args 1))
               (set! last c)
               (set! c (call skip_form toks c)))
-            (if (or (neq args (if to 2 1)) (neq (call kind_at toks last) compiler.Kind.string))
-                (block
+            (when (or (neq args (if to 2 1)) (neq (call kind_at toks last) compiler.Kind.string))
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (if to
                       (call buf.push_str b "format_to takes a buffer and a string literal, e.g. (format_to b \"n = {n}\")")
@@ -1372,33 +1281,25 @@
                         (call buf.push_bytes b hn)
                         (call buf.push_str b " \"n = {n}\")")))
                   (return b))
-                (block))
             (let t:(ptr compiler.Token) (call compiler.token_at toks last))
             (let sp:(ptr fmtsplit.Split) (call fmtsplit.pieces (call str.bytes (+ src (get t compiler.Token.a)) (get t compiler.Token.b))))
-            (if (not (get sp fmtsplit.Split.ok))
-                (block
+            (when (not (get sp fmtsplit.Split.ok))
                   (let b:(ptr buf.Buf) (call at_token src toks last ""))
                   (call buf.push_str b (get sp fmtsplit.Split.err))
                   (return b))
-                (block))
             ;; a dbg is labelled with where it is written, which a
             ;; placeholder's code is not (formats.rs holds_dbg)
             (let raw:str.Bytes (call str.bytes (+ src (get t compiler.Token.a)) (get t compiler.Token.b)))
             (let ps:(ptr (vec.Vec fmtsplit.Piece)) (get sp fmtsplit.Split.pieces))
             (for k 0 (call (vec.len fmtsplit.Piece) ps)
               (let p:fmtsplit.Piece (call (vec.at fmtsplit.Piece) ps k))
-              (if (get p fmtsplit.Piece.value)
-                  (block
+              (when (get p fmtsplit.Piece.value)
                     (let mb:(ptr buf.Buf) (call at_token src toks last ""))
-                    (if (call hole_mismatch (call slice raw (get p fmtsplit.Piece.a) (get p fmtsplit.Piece.n)) mb) (return mb) (block)))
-                  (block))
-              (if (and (get p fmtsplit.Piece.value) (call code_has_dbg (call slice raw (get p fmtsplit.Piece.a) (get p fmtsplit.Piece.n))))
-                  (block
+                    (when (call hole_mismatch (call slice raw (get p fmtsplit.Piece.a) (get p fmtsplit.Piece.n)) mb) (return mb)))
+              (when (and (get p fmtsplit.Piece.value) (call code_has_dbg (call slice raw (get p fmtsplit.Piece.a) (get p fmtsplit.Piece.n))))
                     (let b:(ptr buf.Buf) (call at_token src toks last ""))
                     (call buf.push_str b "a placeholder cannot hold a dbg; bind the value with let and dbg it there")
-                    (return b))
-                  (block))))
-          (block)))
+                    (return b)))))
     (ptr.null buf.Buf)))
 
   ;; Whether a placeholder's code closes a bracket with the other kind ([
@@ -1415,23 +1316,19 @@
     (let col:i32 1)
     (for i 0 n
       (let c:i32 (call str.byte_at code i))
-      (if (or (eq c 40) (eq c 91)) (block (arr.set bool parens top (eq c 40)) (set! top (+ top 1))) (block))
-      (if (and (or (eq c 41) (eq c 93)) (gt top 0))
-          (block
-            (if (neq (arr.get bool parens (- top 1)) (eq c 41))
-                (block
+      (when (or (eq c 40) (eq c 91)) (arr.set bool parens top (eq c 40)) (set! top (+ top 1)))
+      (when (and (or (eq c 41) (eq c 93)) (gt top 0))
+            (when (neq (arr.get bool parens (- top 1)) (eq c 41))
                   (call buf.push_int b line)
                   (call buf.push_byte b 58)
                   (call buf.push_int b col)
                   (call buf.push_str b ": mismatched closing bracket")
                   (return true))
-                (block))
             (set! top (- top 1)))
-          (block))
       ;; the next character's place (a UTF-8 continuation byte is not one)
       (if (eq c 10)
           (block (set! line (+ line 1)) (set! col 1))
-          (if (neq (bitand c 192) 128) (set! col (+ col 1)) (block))))
+          (when (neq (bitand c 192) 128) (set! col (+ col 1)))))
     false)
 
   ;; Which tokens are inside a (test ...) item that is not read: every test
@@ -1439,15 +1336,15 @@
   (fn in_tests [src:i32 toks:i32 count:i32 tests:bool] -> (arr bool)
     (unsafe (let marks:(arr bool) (arr.new bool (call alloc.forever) (+ count 1)))
     (for i 0 (+ count 1) (arr.set bool marks i false))
-    (if tests (return marks) (block))
+    (when tests (return marks))
     (let depth:i32 0)
     (let end:i32 -1)
     (for i 0 count
       (let k:compiler.Kind (call kind_at toks i))
-      (if (and (eq k compiler.Kind.lparen) (and (eq depth 1) (call symbol_is src toks (+ i 1) "test"))) (set! end (call skip_form toks i)) (block))
-      (if (lt i end) (arr.set bool marks i true) (block))
-      (if (eq k compiler.Kind.lparen) (set! depth (+ depth 1)) (block))
-      (if (eq k compiler.Kind.rparen) (set! depth (- depth 1)) (block)))
+      (when (and (eq k compiler.Kind.lparen) (and (eq depth 1) (call symbol_is src toks (+ i 1) "test"))) (set! end (call skip_form toks i)))
+      (when (lt i end) (arr.set bool marks i true))
+      (when (eq k compiler.Kind.lparen) (set! depth (+ depth 1)))
+      (when (eq k compiler.Kind.rparen) (set! depth (- depth 1))))
     marks))
 
   ;; The arguments of the form opening at token i.
@@ -1464,47 +1361,37 @@
   (fn sugar_error [src:i32 toks:i32 count:i32 skip:(arr bool)] -> (ptr buf.Buf)
     (unsafe (let square:i32 0)
     (for i 0 (- count 1)
-      (if (eq (call kind_at toks i) compiler.Kind.lbracket) (set! square (+ square 1)) (block))
-      (if (eq (call kind_at toks i) compiler.Kind.rbracket) (set! square (- square 1)) (block))
-      (if (and (and (eq square 0) (not (arr.get bool skip i))) (eq (call kind_at toks i) compiler.Kind.lparen))
-          (block
-            (if (and (call symbol_is src toks (+ i 1) "when") (lt (call form_args toks count i) 1))
-                (block
+      (when (eq (call kind_at toks i) compiler.Kind.lbracket) (set! square (+ square 1)))
+      (when (eq (call kind_at toks i) compiler.Kind.rbracket) (set! square (- square 1)))
+      (when (and (and (eq square 0) (not (arr.get bool skip i))) (eq (call kind_at toks i) compiler.Kind.lparen))
+            (when (and (call symbol_is src toks (+ i 1) "when") (lt (call form_args toks count i) 1))
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b "when takes a condition and a body: (when c body...)")
                   (return b))
-                (block))
             (when (and (call symbol_is src toks (+ i 1) "for") (gte (call form_args toks count i) 4))
               (let bi:i32 (call skip_form toks (call skip_form toks (call skip_form toks (+ i 2)))))
               (when (eq (call kind_at toks bi) compiler.Kind.int)
                 (let b:(ptr buf.Buf) (call at_token src toks bi ""))
                 (call buf.push_str b "a for has no step: (for i start end body...) counts up by one. A number here would be the first statement of the body, not a step; for another step, use while")
                 (return b)))
-            (if (and (call symbol_is src toks (+ i 1) "for")
+            (when (and (call symbol_is src toks (+ i 1) "for")
                      (or (lt (call form_args toks count i) 3) (neq (call kind_at toks (+ i 2)) compiler.Kind.symbol)))
-                (block
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b "for is (for i start end body...): i from start up to end, end left out")
                   (return b))
-                (block))
             ;; (new S a) and (arr.new T a n) name their allocator
-            (if (and (call symbol_is src toks (+ i 1) "new") (neq (call form_args toks count i) 2))
-                (block
+            (when (and (call symbol_is src toks (+ i 1) "new") (neq (call form_args toks count i) 2))
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b (if (eq (call form_args toks count i) 1)
                                            "new takes the allocator to make it from: (new S a), e.g. (new S (call alloc.default)), or (new S (call alloc.forever)) for memory kept until the program exits"
                                            "new is (new S a): the struct, then the allocator to make it from"))
                   (return b))
-                (block))
-            (if (and (call symbol_is src toks (+ i 1) "arr.new") (neq (call form_args toks count i) 3))
-                (block
+            (when (and (call symbol_is src toks (+ i 1) "arr.new") (neq (call form_args toks count i) 3))
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b (if (eq (call form_args toks count i) 2)
                                            "arr.new takes the allocator to make it from: (arr.new T a n), e.g. (arr.new T (call alloc.default) n), or (arr.new T (call alloc.forever) n) for memory kept until the program exits"
                                            "arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length"))
-                  (return b))
-                (block)))
-          (block)))
+                  (return b))))
     (ptr.null buf.Buf)))
 
   ;; Each (test "name" body...) item's shape, and expect only inside one
@@ -1515,29 +1402,21 @@
     (let test_end:i32 -1)
     (for i 0 count
       (let k:compiler.Kind (call kind_at toks i))
-      (if (eq k compiler.Kind.lbracket) (set! square (+ square 1)) (block))
-      (if (eq k compiler.Kind.rbracket) (set! square (- square 1)) (block))
-      (if (eq k compiler.Kind.lparen)
-          (block
-            (if (and (eq depth 1) (call symbol_is src toks (+ i 1) "test"))
-                (block
-                  (if (neq (call kind_at toks (+ i 2)) compiler.Kind.string)
-                      (block
+      (when (eq k compiler.Kind.lbracket) (set! square (+ square 1)))
+      (when (eq k compiler.Kind.rbracket) (set! square (- square 1)))
+      (when (eq k compiler.Kind.lparen)
+            (when (and (eq depth 1) (call symbol_is src toks (+ i 1) "test"))
+                  (when (neq (call kind_at toks (+ i 2)) compiler.Kind.string)
                         (let b:(ptr buf.Buf) (call at_token src toks i ""))
                         (call buf.push_str b "a test is (test \"name\" body...)")
                         (return b))
-                      (block))
                   (set! test_end (call skip_form toks i)))
-                (block))
-            (if (and (eq square 0) (and (call symbol_is src toks (+ i 1) "expect") (or (lt test_end 0) (gte i test_end))))
-                (block
+            (when (and (eq square 0) (and (call symbol_is src toks (+ i 1) "expect") (or (lt test_end 0) (gte i test_end))))
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b "expect is only for a test's body: (test \"name\" ... (expect c))")
                   (return b))
-                (block))
             (set! depth (+ depth 1)))
-          (block))
-      (if (eq k compiler.Kind.rparen) (set! depth (- depth 1)) (block)))
+      (when (eq k compiler.Kind.rparen) (set! depth (- depth 1))))
     (ptr.null buf.Buf)))
 
   ;; The formatting forms: format format_to print println eprintln as 0-4,
@@ -1573,30 +1452,25 @@
       ;; a template (fn (NAME T...) ...), (union (NAME T...) ...): its name is
       ;; the header's head (resolver.rs item_name, any item); an interface is
       ;; named like one, and (impl (Hash i32) ...) only refers to one
-      (if (and (neq name (ptr.null compiler.Node)) (eq (get name compiler.Node.kind) compiler.Kind.paren))
-          (block
+      (when (and (neq name (ptr.null compiler.Node)) (eq (get name compiler.Node.kind) compiler.Kind.paren))
             (let tname:(ptr compiler.Node) (call first_child name))
-            (if (and (call is_symbol tname) (not (call eq_lit h "impl")))
-                (block
+            (when (and (call is_symbol tname) (not (call eq_lit h "impl")))
                   (call (map.set str.Bytes i32) (get m Mod.templates) (call text src tname) 1)
-                  (set! name tname))
-                (block)))
-          (block))
+                  (set! name tname)))
       (cond
         ((and (call eq_lit h "fn") (call is_symbol name))
          (call (map.set str.Bytes i32) (get m Mod.fns) (call text src name) 1))
         ((and (call eq_lit h "struct") (call is_symbol name))
          (call (map.set str.Bytes i32) (get m Mod.structs) (call text src name) 1)
          ;; a value struct is also named where types and makes go
-         (if (call is_value_struct m item) (call (map.set str.Bytes i32) (get m Mod.decls) (call text src name) 1) (block)))
+         (when (call is_value_struct m item) (call (map.set str.Bytes i32) (get m Mod.decls) (call text src name) 1)))
         ((and (or (call eq_lit h "const") (or (call eq_lit h "enum") (call eq_lit h "union"))) (call is_symbol name))
          (call (map.set str.Bytes i32) (get m Mod.decls) (call text src name) 1))
         ((call eq_lit h "import")
          ;; (import name as alias)
          (let alias:(ptr compiler.Node) (call nth item 3))
-         (if (call is_symbol alias)
-             (call (map.set str.Bytes str.Bytes) (get m Mod.aliases) (call text src alias) (call module_name (call text src name)))
-             (block)))
+         (when (call is_symbol alias)
+             (call (map.set str.Bytes str.Bytes) (get m Mod.aliases) (call text src alias) (call module_name (call text src name)))))
         (else (block)))
       (set! item (get item compiler.Node.next)))
     m)
@@ -1617,35 +1491,26 @@
     (let vis:(ptr Vis) (get st State.vis))
     (let mark:(ptr compiler.Node) (call first_item src))
     (while (neq mark (ptr.null compiler.Node))
-      (if (not (or (call eq_lit (call head src mark) "import") (call eq_lit (call head src mark) "test")))
-          (block
+      (when (not (or (call eq_lit (call head src mark) "import") (call eq_lit (call head src mark) "test")))
             (let public:bool (call take_pub m mark))
-            (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
+            (when (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)))
             (let named:str.Bytes (call item_name m mark))
             (when (gte (get named str.Bytes.len) 0)
               (call (map.set str.Bytes i32) (get vis Vis.all) (call canonical_of m named) 1))
-            (if (call eq_lit (call head src mark) "struct")
-                (block
+            (when (call eq_lit (call head src mark) "struct")
                   (let levels:(ptr (map.Map str.Bytes i32)) (call field_levels m mark))
-                  (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
-                  (if (gte (get named str.Bytes.len) 0)
-                      (block
-                        (if (call is_value_struct m mark)
-                            (call (map.set str.Bytes i32) (get vis Vis.values) (call canonical_of m named) 1)
-                            (block))
+                  (when (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)))
+                  (when (gte (get named str.Bytes.len) 0)
+                        (when (call is_value_struct m mark)
+                            (call (map.set str.Bytes i32) (get vis Vis.values) (call canonical_of m named) 1))
                         (call (map.set str.Bytes (ptr (map.Map str.Bytes i32))) (get vis Vis.fields) (call canonical_of m named) levels)
-                        (call (map.set str.Bytes (ptr (map.Map str.Bytes i32))) own_levels named levels))
-                      (block)))
-                (block))
-            (if (and public (gte (get named str.Bytes.len) 0))
-                (block
+                        (call (map.set str.Bytes (ptr (map.Map str.Bytes i32))) own_levels named levels)))
+            (when (and public (gte (get named str.Bytes.len) 0))
                   (call (map.set str.Bytes i32) (get vis Vis.public) (call canonical_of m named) 1)
-                  (call (map.set str.Bytes i32) own_pub named 1))
-                (block)))
-          (block))
+                  (call (map.set str.Bytes i32) own_pub named 1)))
       (set! mark (get mark compiler.Node.next)))
-    (if (get m Mod.imported) (call check_exposure m own_pub own_levels) (block))
-    (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
+    (when (get m Mod.imported) (call check_exposure m own_pub own_levels))
+    (when (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)))
     (let item:(ptr compiler.Node) (call first_item src))
     (while (neq item (ptr.null compiler.Node))
       (put m Mod.item item)
@@ -1664,19 +1529,17 @@
          (call emit m item 0 (get st State.fns_out))
          (call buf.push_byte (get st State.fns_out) 10))
         (else (block)))
-      (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
+      (when (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)))
       (set! item (get item compiler.Node.next)))
-    (if (and (get st State.tests) (not (get m Mod.imported)))
-        (if (not (call emit_tests st m)) (return false) (block))
-        (block))
+    (when (and (get st State.tests) (not (get m Mod.imported)))
+        (when (not (call emit_tests st m)) (return false)))
     ;; record this module's templates under their canonical names
     (let t:(ptr (map.Map str.Bytes i32)) (get m Mod.templates))
     (for i 0 (call (map.capacity str.Bytes i32) t)
-      (if (call (map.slot_used str.Bytes i32) t i)
+      (when (call (map.slot_used str.Bytes i32) t i)
           (call (map.set str.Bytes i32) (get st State.known)
                 (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) (call (map.slot_key str.Bytes i32) t i)) (call (map.slot_key str.Bytes i32) t i))
-                1)
-          (block)))
+                1)))
     true)
 
   ;; A test build's entry (resolver.rs test_functions): test K as (fn
@@ -1691,10 +1554,9 @@
     (let k:i32 0)
     (let item:(ptr compiler.Node) (call first_item src))
     (while (neq item (ptr.null compiler.Node))
-      (if (call eq_lit (call head src item) "test")
-          (block
+      (when (call eq_lit (call head src item) "test")
             (let at:i32 (get item compiler.Node.pos))
-            (if (lt first 0) (set! first at) (block))
+            (when (lt first 0) (set! first at))
             (put m Mod.item item)
             (call buf.push_str out "  ")
             (call note_at m at out)
@@ -1702,13 +1564,11 @@
             (call buf.push_int out k)
             (call buf.push_str out " [] -> void")
             (let c:(ptr compiler.Node) (call nth item 2))
-            (if (eq c (ptr.null compiler.Node))
-                (block (call buf.push_byte out 32) (call note_at m at out) (call buf.push_str out "(block)"))
-                (block))
+            (when (eq c (ptr.null compiler.Node)) (call buf.push_byte out 32) (call note_at m at out) (call buf.push_str out "(block)"))
             (while (neq c (ptr.null compiler.Node))
               (call buf.push_byte out 32)
               (call emit m c 0 out)
-              (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
+              (when (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)))
               (set! c (get c compiler.Node.next)))
             (call note_at m at out)
             (call buf.push_byte out 41)
@@ -1719,14 +1579,12 @@
             (call buf.push_int arms k)
             (call buf.push_str arms "))")
             (set! k (+ k 1)))
-          (block))
       (set! item (get item compiler.Node.next)))
-    (if (eq k 0) (return true) (block))
+    (when (eq k 0) (return true))
     ;; a module with its own _start cannot have the one a test build makes
     (let f:(ptr compiler.Node) (call first_item src))
     (while (neq f (ptr.null compiler.Node))
-      (if (and (call eq_lit (call head src f) "fn") (call eq_lit (call text src (call nth f 1)) "_start"))
-          (block
+      (when (and (call eq_lit (call head src f) "fn") (call eq_lit (call text src (call nth f 1)) "_start"))
             (let e:(ptr buf.Buf) (get st State.err))
             (call buf.push_bytes e (get src Src.path))
             (call buf.push_str e ": ")
@@ -1736,7 +1594,6 @@
             (call buf.push_int e (get lc compiler.LineCol.col))
             (call buf.push_str e ": a test build makes its own _start: test a module without one")
             (return false))
-          (block))
       (set! f (get f compiler.Node.next)))
     (call buf.push_str out "  ")
     (call note_at m first out)
@@ -1765,14 +1622,14 @@
 
   ;; Adds 'path' to the list of places searched for a module.
   (fn note_tried [tried:(ptr buf.Buf) path:str.Bytes] -> void
-    (if (gt (call buf.len tried) 0) (call buf.push_str tried ", ") (block))
+    (when (gt (call buf.len tried) 0) (call buf.push_str tried ", "))
     (call buf.push_byte tried 39)
     (call buf.push_bytes tried path)
     (call buf.push_byte tried 39))
 
   ;; Reports a loaded file's structure error, if it has one.
   (fn malformed [st:(ptr State) src:(ptr Src)] -> bool
-    (if (eq (get src Src.error) (ptr.null buf.Buf)) (return false) (block))
+    (when (eq (get src Src.error) (ptr.null buf.Buf)) (return false))
     (call buf.push_bytes (get st State.err) (call buf.bytes (get src Src.error)))
     true)
 
@@ -1797,31 +1654,28 @@
       (cond
         ((call eq_lit (call head src item) "import")
          (let mn:str.Bytes (call module_name (call text src (call nth item 1))))
-         (if (call str.is mn "show") (set! has_show true) (block))
-         (if (call str.is mn "testing") (set! has_testing true) (block))
-         (if (call str.is mn "os") (set! has_os true) (block))
-         (if (call str.is mn "alloc") (set! has_alloc true) (block))
-         (if (call resolve_module st dir (call text src (call nth item 1)) (get src Src.path)) (block) (return false)))
+         (when (call str.is mn "show") (set! has_show true))
+         (when (call str.is mn "testing") (set! has_testing true))
+         (when (call str.is mn "os") (set! has_os true))
+         (when (call str.is mn "alloc") (set! has_alloc true))
+         (when (not (call resolve_module st dir (call text src (call nth item 1)) (get src Src.path))) (return false)))
         ;; a test counts only in a test build
         ((call eq_lit (call head src item) "test")
          (set! tests (+ tests 1))
-         (if (and testing (call uses_formats src item)) (set! formats true) (block))
-         (if (and testing (call uses_new src item)) (set! news true) (block)))
+         (when (and testing (call uses_formats src item)) (set! formats true))
+         (when (and testing (call uses_new src item)) (set! news true)))
         (else
-         (if (call uses_formats src item) (set! formats true) (block))
-         (if (call uses_new src item) (set! news true) (block))))
+         (when (call uses_formats src item) (set! formats true))
+         (when (call uses_new src item) (set! news true))))
       (set! item (get item compiler.Node.next)))
     ;; a test build imports std/testing and std/os, after the module's own
-    (if (and testing (gt tests 0))
-        (block
-          (if (not has_testing) (if (call resolve_module st dir (call str.from_str "testing") (get src Src.path)) (block) (return false)) (block))
-          (if (not has_os) (if (call resolve_module st dir (call str.from_str "os") (get src Src.path)) (block) (return false)) (block)))
-        (block))
+    (when (and testing (gt tests 0))
+          (when (not has_testing) (when (not (call resolve_module st dir (call str.from_str "testing") (get src Src.path))) (return false)))
+          (when (not has_os) (when (not (call resolve_module st dir (call str.from_str "os") (get src Src.path))) (return false))))
     ;; new and arr.new call std/alloc (sugar.rs), which a module that uses
     ;; them imports, after its own imports and a test build's
-    (if (and news (and (not has_alloc) (not (call str.is (call text src (call nth (get src Src.root) 1)) "alloc"))))
-        (if (call resolve_module st dir (call str.from_str "alloc") (get src Src.path)) (block) (return false))
-        (block))
+    (when (and news (and (not has_alloc) (not (call str.is (call text src (call nth (get src Src.root) 1)) "alloc"))))
+        (when (not (call resolve_module st dir (call str.from_str "alloc") (get src Src.path))) (return false)))
     ;; the formatting forms become std/show calls (formats.rs): a module
     ;; that uses one imports it, after its own imports
     (if (and formats (not has_show))
@@ -1830,27 +1684,26 @@
 
   ;; Whether node n holds a (new ...) or (arr.new ...) outside a [...] list.
   (fn uses_new [src:(ptr Src) n:(ptr compiler.Node)] -> bool
-    (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
+    (when (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false))
     (let h:str.Bytes (call head src n))
-    (if (or (call str.is h "new") (call str.is h "arr.new")) (return true) (block))
+    (when (or (call str.is h "new") (call str.is h "arr.new")) (return true))
     (let c:(ptr compiler.Node) (call first_child n))
     (while (neq c (ptr.null compiler.Node))
-      (if (call uses_new src c) (return true) (block))
+      (when (call uses_new src c) (return true))
       (set! c (get c compiler.Node.next)))
     false)
 
   ;; Whether node n holds a formatting form.
   (fn uses_formats [src:(ptr Src) n:(ptr compiler.Node)] -> bool
     ;; a [...] list holds no expression (formats.rs uses_formats)
-    (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
+    (when (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false))
     (let h:str.Bytes (call head src n))
-    (if (or (or (call str.is h "format") (or (call str.is h "format_to") (or (call str.is h "dbg") (call str.is h "expect"))))
+    (when (or (or (call str.is h "format") (or (call str.is h "format_to") (or (call str.is h "dbg") (call str.is h "expect"))))
             (or (call str.is h "print") (or (call str.is h "println") (call str.is h "eprintln"))))
-        (return true)
-        (block))
+        (return true))
     (let c:(ptr compiler.Node) (call first_child n))
     (while (neq c (ptr.null compiler.Node))
-      (if (call uses_formats src c) (return true) (block))
+      (when (call uses_formats src c) (return true))
       (set! c (get c compiler.Node.next)))
     false)
 
@@ -1860,8 +1713,7 @@
 ;; Two different files may not share a module name; records name -> path.
   (fn check_name [st:(ptr State) name:str.Bytes path:str.Bytes importer:str.Bytes] -> bool
     (unsafe (let seen:str.Bytes (call (map.get_or str.Bytes str.Bytes) (get st State.paths) name (call str.bytes 0 -1)))
-    (if (and (gte (get seen str.Bytes.len) 0) (not (call str.bytes_eq seen path)))
-        (block
+    (when (and (gte (get seen str.Bytes.len) 0) (not (call str.bytes_eq seen path)))
           (let e:(ptr buf.Buf) (call importer_error st importer))
           (call buf.push_str e "two different modules are named '")
           (call buf.push_bytes e name)
@@ -1870,7 +1722,6 @@
           (call buf.push_str e " and ")
           (call buf.push_bytes e path)
           (return false))
-        (block))
     (call (map.set str.Bytes str.Bytes) (get st State.paths) name path)
     true))
 
@@ -1883,7 +1734,7 @@
   ;; An import path is names separated by '/': relative, no '.' or '..'.
   (fn valid_import_path [p:str.Bytes] -> bool
     (let n:i32 (get p str.Bytes.len))
-    (if (eq n 0) (return false) (block))
+    (when (eq n 0) (return false))
     (let seg_len:i32 0)
     (for i 0 n
       (let c:i32 (call str.byte_at p i))
@@ -1894,53 +1745,43 @@
     (gt seg_len 0))
 
   (fn resolve_module [st:(ptr State) dir:str.Bytes import:str.Bytes importer:str.Bytes] -> bool
-    (unsafe (if (not (call valid_import_path import))
-        (block
+    (unsafe (when (not (call valid_import_path import))
           (let pe:(ptr buf.Buf) (call importer_error st importer))
           (call buf.push_byte pe 39)
           (call buf.push_bytes pe import)
           (call buf.push_str pe "' is not an import path: use names separated by '/', e.g. (import native/wasm_reader)")
           (return false))
-        (block))
     (let name:str.Bytes (call module_name import))
     ;; an import from the same directory resolves to the same file: search once
     (let key:str.Bytes (call concat dir (call concat (call str.from_str "|") import)))
     (let known_path:str.Bytes (call (map.get_or str.Bytes str.Bytes) (get st State.found) key (call str.bytes 0 -1)))
-    (if (and (gte (get known_path str.Bytes.len) 0) (call (map.has str.Bytes i32) (get st State.done) name))
-        (return (call check_name st name known_path importer))
-        (block))
+    (when (and (gte (get known_path str.Bytes.len) 0) (call (map.has str.Bytes i32) (get st State.done) name))
+        (return (call check_name st name known_path importer)))
     ;; search: importer's directory, entry's directory, standard library;
     ;; `tried` lists the candidates for the error (resolver.rs find_module_file)
     (let tried:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let path:str.Bytes (call with_ext dir import))
     (call note_tried tried path)
     (let src:(ptr Src) (call load path (get st State.origins) false))
-    (if (and (eq src (ptr.null Src)) (not (call str.bytes_eq path (call with_ext (get st State.entry_dir) import))))
-        (block
+    (when (and (eq src (ptr.null Src)) (not (call str.bytes_eq path (call with_ext (get st State.entry_dir) import))))
           (set! path (call with_ext (get st State.entry_dir) import))
           (call note_tried tried path)
           (set! src (call load path (get st State.origins) false)))
-        (block))
     ;; then each library directory, in order
     (let dirs:str.Bytes (get st State.lib_dirs))
     (let start:i32 0)
     (for i 0 (+ (get dirs str.Bytes.len) 1)
-      (if (eq src (ptr.null Src)) (block) (break))
+      (when (not (eq src (ptr.null Src))) (break))
       ;; a ':' or the end closes an entry
-      (if (or (eq i (get dirs str.Bytes.len)) (eq (call str.byte_at dirs i) 58))
-          (block
-            (if (gt i start)
-                (block
+      (when (or (eq i (get dirs str.Bytes.len)) (eq (call str.byte_at dirs i) 58))
+            (when (gt i start)
                   (set! path (call with_ext (call as_dir (call slice dirs start (- i start))) import))
                   (call note_tried tried path)
                   (set! src (call load path (get st State.origins) false)))
-                (block))
-            (set! start (+ i 1)))
-          (block)))
+            (set! start (+ i 1))))
     ;; a module's name in compiled code's line table is its import path
     (call name_file src (call concat import (call str.from_str ".aipl")))
-    (if (eq src (ptr.null Src))
-        (block
+    (when (eq src (ptr.null Src))
           (let e:(ptr buf.Buf) (call importer_error st importer))
           (call buf.push_str e "Cannot resolve import '")
           (call buf.push_bytes e import)
@@ -1949,23 +1790,20 @@
           (call buf.push_str e ".aipl' found in ")
           (call buf.push_bytes e (call buf.bytes tried))
           (return false))
-        (block))
-    (if (call malformed st src) (return false) (block))
+    (when (call malformed st src) (return false))
     (call (map.set str.Bytes str.Bytes) (get st State.found) key path)
-    (if (not (call check_name st name path importer)) (return false) (block))
-    (if (call (map.has str.Bytes i32) (get st State.done) name) (return true) (block))
-    (if (call (map.has str.Bytes i32) (get st State.active) name)
-        (block
+    (when (not (call check_name st name path importer)) (return false))
+    (when (call (map.has str.Bytes i32) (get st State.done) name) (return true))
+    (when (call (map.has str.Bytes i32) (get st State.active) name)
           (let e:(ptr buf.Buf) (get st State.err))
           (call buf.push_bytes e path)
           (call buf.push_str e ": Circular import detected: '")
           (call buf.push_bytes e path)
           (call buf.push_str e "' is imported while already being resolved")
           (return false))
-        (block))
     (call (map.set str.Bytes i32) (get st State.active) name 1)
-    (if (call resolve_imports st src (call dirname path)) (block) (return false))
-    (if (not (call emit_module st (call make_mod src name true (get st State.known)))) (return false) (block))
+    (when (not (call resolve_imports st src (call dirname path))) (return false))
+    (when (not (call emit_module st (call make_mod src name true (get st State.known)))) (return false))
     (call (map.remove str.Bytes i32) (get st State.active) name)
     (call (map.set str.Bytes i32) (get st State.done) name 1)
     true))
@@ -2029,11 +1867,11 @@
     (put vis Vis.fields (call (map.make str.Bytes (ptr (map.Map str.Bytes i32))) (call alloc.default) 64))
     (put vis Vis.values (call (map.make str.Bytes i32) (call alloc.default) 16))
     (put st State.vis vis)
-    (if (eq src (ptr.null Src)) (return (call fail st "cannot read entry file: " entry)) (block))
-    (if (call malformed st src) (return false) (block))
-    (if (call resolve_imports st src (call dirname entry)) (block) (return false))
+    (when (eq src (ptr.null Src)) (return (call fail st "cannot read entry file: " entry)))
+    (when (call malformed st src) (return false))
+    (when (not (call resolve_imports st src (call dirname entry))) (return false))
     (let entry_mod:(ptr Mod) (call make_mod src (call str.from_str "") false (get st State.known)))
-    (if (not (call emit_module st entry_mod)) (return false) (block))
+    (when (not (call emit_module st entry_mod)) (return false))
     (call buf.push_str flat "(module ")
     (call buf.push_bytes flat (call text src (call nth (get src Src.root) 1)))
     (call buf.push_byte flat 10)
@@ -2042,8 +1880,7 @@
     (let fns_at:i32 (call buf.len flat))
     (call buf.push_bytes flat (call buf.bytes (get st State.fns_out)))
     (call buf.push_byte flat 41)
-    (if (neq orig (ptr.null origins.Origins))
-        (block
+    (when (neq orig (ptr.null origins.Origins))
           (let parts:(arr (ptr buf.Buf)) (arr.new (ptr buf.Buf) (call alloc.forever) 2))
           (arr.set (ptr buf.Buf) parts 0 (get st State.structs_out))
           (arr.set (ptr buf.Buf) parts 1 (get st State.fns_out))
@@ -2051,7 +1888,6 @@
           (arr.set i32 bases 0 structs_at)
           (arr.set i32 bases 1 fns_at)
           (call origins.join orig parts bases))
-        (block))
     true)
 
   ;; Expands the generic templates of a flat program into concrete items
@@ -2074,16 +1910,15 @@
             (call generics.expand_mapped (call buf.bytes flat) out gen_err gen failure))
         true
         (block
-          (if (and (gte (get failure generics.Failure.at) 0) (neq orig (ptr.null origins.Origins)))
-              (call push_location err orig (get failure generics.Failure.at))
-              (block))
+          (when (and (gte (get failure generics.Failure.at) 0) (neq orig (ptr.null origins.Origins)))
+              (call push_location err orig (get failure generics.Failure.at)))
           (call buf.push_bytes err (call buf.bytes gen_err))
           false)))
 
   ;; "PATH: L:C: " for offset `at` of the flat program, through `orig`.
   (fn push_location [b:(ptr buf.Buf) orig:(ptr origins.Origins) at:i32] -> void
     (let r:(ptr origins.Entry) (call origins.find orig at))
-    (if (or (eq r (ptr.null origins.Entry)) (lt (get r origins.Entry.file) 0)) (return) (block))
+    (when (or (eq r (ptr.null origins.Entry)) (lt (get r origins.Entry.file) 0)) (return))
     (let f:(ptr origins.File) (call origins.file_at orig (get r origins.Entry.file)))
     (let lc:(ptr compiler.LineCol) (call compiler.line_col (call str.addr (get f origins.File.text)) (get r origins.Entry.pos)))
     (call buf.push_bytes b (get f origins.File.path))
@@ -2123,17 +1958,15 @@
     (let fns:i32 0)
     (let marker:str.Bytes (call str.from_str "(fn str.count_lines "))
     (for i 0 (+ (- (get flat str.Bytes.len) (get marker str.Bytes.len)) 1)
-      (if (call str.bytes_eq (call slice flat i (get marker str.Bytes.len)) marker) (set! fns (+ fns 1)) (block)))
-    (if (and ok (eq fns 1)) (set! p (+ p 1)) (block))
+      (when (call str.bytes_eq (call slice flat i (get marker str.Bytes.len)) marker) (set! fns (+ fns 1))))
+    (when (and ok (eq fns 1)) (set! p (+ p 1)))
     ;; the entry keeps bare names and calls through qualified ones
     (let has_main:bool false)
     (let main_marker:str.Bytes (call str.from_str "(fn main [] ->"))
     (for i 0 (+ (- (get flat str.Bytes.len) (get main_marker str.Bytes.len)) 1)
-      (if (call str.bytes_eq (call slice flat i (get main_marker str.Bytes.len)) main_marker) (set! has_main true) (block)))
-    (if has_main (set! p (+ p 1)) (block))
+      (when (call str.bytes_eq (call slice flat i (get main_marker str.Bytes.len)) main_marker) (set! has_main true)))
+    (when has_main (set! p (+ p 1)))
     ;; a missing module is an error, not an empty program
     (let err2:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (if (call resolve (call str.from_str "examples/no_such_file.aipl") (call str.from_str "aipl_src/std/") (call buf.make (call alloc.default) 64) err2)
-        (block)
-        (if (gt (call buf.len err2) 0) (set! p (+ p 1)) (block)))
+    (when (not (call resolve (call str.from_str "examples/no_such_file.aipl") (call str.from_str "aipl_src/std/") (call buf.make (call alloc.default) 64) err2)) (when (gt (call buf.len err2) 0) (set! p (+ p 1))))
     p))

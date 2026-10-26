@@ -22,4 +22,5 @@ grep -E "^test .* \.\.\. FAILED" target/ci_tests.log | head -20 | while read -r 
 step "aipl test suite"; note "$(./target/release/aipl test aipl_src/test_suite.aipl 2>&1 | tail -1)"
 step "fuzz.py"; note "$(python3 tools/fuzz.py --cases 3000 --seed 1 2>&1 | tail -1)"
 step "run_fuzz.py"; note "$(python3 tools/run_fuzz.py --cases 500 --seed 1 2>&1 | tail -1)"
+step "opt_diff.py"; note "$(python3 tools/opt_diff.py 2>&1 | tail -1)"; note "$(python3 tools/opt_diff.py --fuzz 500 --seed 1 2>&1 | tail -1)"
 step "done"

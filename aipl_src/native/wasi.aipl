@@ -100,13 +100,11 @@
     (let in_bounds:i32 (call x64.jcc c (call x64.cc_be)))
     (call emit_region_trap l w addr len 0)
     (call x64.patch_rel32 c in_bounds (call buf.len c))
-    (if (gt align 1)
-        (block
+    (when (gt align 1)
           (call x64.test_ri c 32 addr (- align 1))
           (let aligned:i32 (call x64.jcc c (call x64.cc_e)))
           (call emit_region_trap l w addr len align)
-          (call x64.patch_rel32 c aligned (call buf.len c)))
-        (block)))
+          (call x64.patch_rel32 c aligned (call buf.len c))))
 
   (fn emit_region_trap [l:(ptr lower.L) w:(ptr W) addr:i32 len:i32 kind:i32] -> void
     (req (gte (get w W.region_routine) 0))
@@ -207,12 +205,9 @@
     (call x64.alu_rr c 64 (call x64.op_add) (call rbx) (call rax))
     (call x64.alu_rr c 64 (call x64.op_add) (call r8) (call rax))
     (call x64.alu_rr c 64 (call x64.op_sub) (call r9) (call rax))
-    (if reading
-        ;; a short read ends the call
-        (block
+    (when reading
           (call x64.test_rr c 64 (call r9) (call r9))
           (call (vec.push i32) done (call x64.jcc c (call x64.cc_ne))))
-        (block))
     (call x64.patch_rel32 c (call x64.jmp c) more)
     (call x64.patch_rel32 c iov_done (call buf.len c))
     (call x64.alu_ri c 64 (call x64.op_add) (call r13) 8)
@@ -810,7 +805,7 @@
   (fn emit_preopens [l:(ptr lower.L) w:(ptr W) sandbox:bool] -> void (pub)
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (call emit_preopen l w 3 ".")
-    (if sandbox (block) (call emit_preopen l w 4 "/")))
+    (when (not sandbox) (call emit_preopen l w 4 "/")))
 
   (fn emit_preopen [l:(ptr lower.L) w:(ptr W) fd:i32 path:str] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))

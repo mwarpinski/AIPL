@@ -311,9 +311,10 @@ const EVERY_FORM: &str = r#"(module every
     (inv true)
     (let n:i32 (+ +1 -2))
     (set! n (cond ((lt n 0) 1) ((eq n 0) (block 2)) (else 3)))
-    (if d (block) (block (return 1)))
-    (counted_loop i 0 10 2 (if (eq i 4) (continue) (block)) (if (eq i 8) (break) (block)))
-    (for k 0 3 (if (eq k 1) (continue) (block)))
+    (when (not d) (return 1))
+    (counted_loop i 0 10 2 (when (eq i 4) (continue)) (when (eq i 8) (break)))
+    (for k 0 3 (when (eq k 1) (continue)))
+    (when (gt n 0) (set! n (- n 1)) (set! n (+ n 1)))
     (while false)
     (let r:(result i32 str) (ok:str 5))
     (let r2:(result bool i32) (err:bool 7))
@@ -362,7 +363,7 @@ const EVERY_FORM: &str = r#"(module every
     (let cv:i64 (+ (i64.extend_s 1) (+ (i64.extend_u 1) (+ (i64.trunc_f64_s 1.5) (i64.reinterpret_f64 (f64.sqrt (f64.convert_i64_s 4i64)))))))
     (let rf:f64 (f64.reinterpret_i64 4611686018427387904i64))
     (let wr:i32 (i32.wrap 4294967297i64))
-    (if (eq n 0) (sys.exit 0) (block))
+    (when (eq n 0) (sys.exit 0))
     (call out.println "x")
     0)
   (fn w [x:i32] -> i32 (unsafe) x)
@@ -475,6 +476,13 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn f [] -> i32 (set! 5 1)))",
     "(module m (fn f [] -> i32 (counted_loop 5 0 1 1)))",
     "(module m (fn f [] -> i32 (for 5 0 1)))",
+    "(module m (fn f [] -> i32 (when)))",
+    // one branch is when (CANONICAL_PLAN.md step 4)
+    "(module m (fn f [x:i32] -> i32 (if (gt x 0) (set! x 1) (block)) x))",
+    "(module m (fn f [x:i32] -> i32 (if (gt x 0) (block) (set! x 1)) x))",
+    "(module m (fn f [x:i32] -> i32 (if (gt x 0) (block) (block)) x))",
+    "(module m (fn f [x:i32] -> i32 (let y:i32 (if (gt x 0) (block) 2)) y))",
+    "(module m (fn f [] -> i32 (when true (let x 5)) 0))",
     "(module m (fn f [] -> i32 (loop i 0 3 1)))",
     // a step carried over from loop would be a statement of the body
     "(module m (fn main [] -> i32 (for i 0 3 1 (set! i 0))))",
@@ -820,7 +828,7 @@ const FORMS: &[&str] = &[
     "(thread.join 0)",
     "(atomic.add 2048 1)",
     "(block (sys.random 2048 4) 0)",
-    "(unsafe (if true (mem.store32 2048 1) (block)) 0)",
+    "(unsafe (when true (mem.store32 2048 1)) 0)",
     "M:(module m (fn raw [a:i32] -> i32 (unsafe) (mem.load32 a)) (fn main [] -> i32 (call raw 2048)))",
     "M:(module m (fn raw [a:i32] -> i32 (unsafe) (mem.load32 a)) (fn main [] -> i32 (unsafe (call raw 2048))))",
     "M:(module m (fn raw [a:i32] -> i32 (unsafe) (mem.load32 a)) (fn main [] -> i32 (unsafe) (call raw 2048)))",
@@ -883,8 +891,8 @@ const FORMS: &[&str] = &[
     "(let x:i32 1) (set! x true) x",
     "(if 1 2 3)",
     "(if true 2 3i64)",
-    "(if true (block) 3)",
-    "(if true (let q:i32 1) (block)) q",
+    "(when (not true) 3)",
+    "(when true (let q:i32 1)) q",
     "(if true (let q:i32 1) (let q:i32 2)) 0",
     "(match E.a (E.a (let q:i32 1)) (E.b (let q:i32 2))) 0",
     "(block (let q:i32 1)) q",
@@ -1065,6 +1073,10 @@ const FORMS: &[&str] = &[
     "(let q:(ptr U) (ptr.null U)) 0",
     "(+ result 1)",
     "M:(module m (fn main [] -> i32 (let x:i32 1)))",
+    // a when's body is statements: a value is dropped, and the when has none
+    "(when true (call w 1)) 0",
+    "(when (gt 2 1) 5 (call w 2)) 0",
+    "(let v:i32 (when true 5)) v",
     "M:(module m (fn f [n:i32] -> i32 (let k:i32 1) (req (gt k 0)) n) (fn main [] -> i32 0))",
     "M:(module m (fn f [n:i32] -> i32 (ens (gt result 0)) n) (fn main [] -> i32 0))",
     "M:(module m (fn main [] -> i32 (let i:i32 0) (while (lt i 3) (set! i (+ i 1)))))",

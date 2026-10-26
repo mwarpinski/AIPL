@@ -9,7 +9,9 @@ output as the C reference.
     python3 tools/bench.py --runs 5 --no-python   # best of 5, without Python
 
 Ways: AIPL native (`aipl compile --exe`), AIPL wasm under the launcher
-(`--target wasm`, wasmtime/Cranelift), C (`gcc -O2`), Python 3. Each time is
+(`--target wasm`, wasmtime/Cranelift), each also built without the
+optimizer (`--no-opt`, docs/design/OPT_PLAN.md), C (`gcc -O2`), Python 3.
+`--no-unopt` leaves the `--no-opt` builds out. Each time is
 the best of RUNS runs, wall clock, process start included. Needs a release
 build (`cargo build --release`) and gcc; prints a Markdown table.
 """
@@ -33,19 +35,29 @@ def build(name):
     os.makedirs(OUT, exist_ok=True)
     exe = {}
     for target in ["native", "wasm"]:
-        exe[target] = os.path.join(OUT, f"{name}_{target}")
-        subprocess.run([AIPL, "compile", "--exe", f"--target={target}", os.path.join(src, f"{name}.aipl"), "-o", exe[target]],
-                       check=True, capture_output=True, env=dict(os.environ, AIPL_RUNNER=os.path.join(ROOT, "target", "release", "aipl-run")))
+        for opt in ["", "--no-opt"]:
+            key = target + opt
+            exe[key] = os.path.join(OUT, f"{name}_{target}{opt.replace('-', '_')}")
+            subprocess.run([AIPL, "compile", "--exe", f"--target={target}"] + ([opt] if opt else []) + [os.path.join(src, f"{name}.aipl"), "-o", exe[key]],
+                           check=True, capture_output=True, env=dict(os.environ, AIPL_RUNNER=os.path.join(ROOT, "target", "release", "aipl-run")))
     exe["c"] = os.path.join(OUT, f"{name}_c")
     c = os.path.join(src, f"{name}.c")
     libs = ["-lm"] + (["-lgmp"] if "#include <gmp.h>" in open(c).read() else [])
-    subprocess.run(["gcc", "-O2", "-o", exe["c"], c] + libs, check=True)
-    return {
+    built = subprocess.run(["gcc", "-O2", "-o", exe["c"], c] + libs, capture_output=True)
+    ways = {
         "AIPL native": [exe["native"]],
+        "AIPL native --no-opt": [exe["native--no-opt"]],
         "AIPL wasm (wasmtime)": [exe["wasm"]],
+        "AIPL wasm --no-opt": [exe["wasm--no-opt"]],
         "C (gcc -O2)": [exe["c"]],
         "Python 3": [sys.executable, os.path.join(src, f"{name}.py")],
     }
+    if built.returncode != 0:
+        # pidigits' C needs GMP (libgmp-dev): its row then has no C time,
+        # and no ratios
+        print(f"{name}: no C version: {built.stderr.decode().strip().splitlines()[0]}", file=sys.stderr)
+        del ways["C (gcc -O2)"]
+    return ways
 
 def run(cmd, args, stdin):
     t = time.perf_counter()
@@ -80,6 +92,8 @@ def main():
         cmds = build(name)
         if "--no-python" in sys.argv:
             del cmds["Python 3"]
+        if "--no-unopt" in sys.argv:
+            del cmds["AIPL native --no-opt"], cmds["AIPL wasm --no-opt"]
         stdin = stdin_for(name, quick)
         reference = None
         times = {}
@@ -100,12 +114,12 @@ def main():
         if not quick and os.path.exists(cmd):
             label = (label + " < " if label else "stdin: ") + open(cmd).read().strip()
         rows.append((name, label, times))
-    ways = list(rows[0][2].keys())
+    ways = max((list(r[2].keys()) for r in rows), key=len)
     print("| Benchmark | Input | " + " | ".join(ways) + " |")
     print("|---|---|" + "---|" * len(ways))
     for name, args, times in rows:
-        c = times["C (gcc -O2)"]
-        cells = [f"{times[w]:.3f} s ({times[w] / c:.1f}x)" for w in ways]
+        c = times.get("C (gcc -O2)")
+        cells = [("n/a" if w not in times else f"{times[w]:.3f} s" + (f" ({times[w] / c:.1f}x)" if c else "")) for w in ways]
         print(f"| {name} | {args} | " + " | ".join(cells) + " |")
 
 if __name__ == "__main__":

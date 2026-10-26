@@ -17,7 +17,7 @@
   (fn locate [n:i32] -> (result Vec2 i64)
     (req (gte n 0))
     (ens (gte (match_result res (ok v 1) (err e 0)) 0))
-    (if (gt n 100) (return (err:Vec2 (i64.extend_s n))) (block))
+    (when (gt n 100) (return (err:Vec2 (i64.extend_s n))))
     (ok:i64 (make Vec2 (f64.convert_i64_s (i64.extend_s n)) 0.5)))
 
   ;; a union held by value as a side
@@ -76,7 +76,7 @@
     (while (lte i 21)
       (match_result (call shape_of i)
         (ok s (set! total (+ total (call area s))))                      ;; 0, 3*49=147, 14*2=28
-        (err none (if none (block) (set! total (+ total 1.0)))))        ;; i=21: +1 = 197.5
+        (err none (when (not none) (set! total (+ total 1.0)))))        ;; i=21: +1 = 197.5
       (set! i (+ i 7)))
     (match_result (call wide true) (ok q (set! total (+ total (get q Quad.b)))) (err ns (block)))  ;; +2
     (match_result (call wide false) (ok q (block))
@@ -89,7 +89,7 @@
       (ok r (match_result r (ok w (set! total (+ total (f64.convert_i64_s w)))) (err b (block))))  ;; +14
       (err e (block)))
     (match_result (call nested 0)
-      (ok r (match_result r (ok w (block)) (err b (if b (set! total (+ total 1.0)) (block)))))  ;; +1
+      (ok r (match_result r (ok w (block)) (err b (when b (set! total (+ total 1.0))))))  ;; +1
       (err e (block)))
     (match_result (call nested -3)
       (ok r (block))

@@ -51,14 +51,19 @@ enum Commands {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Compile an AIPL program to a WebAssembly module, or with --exe to a standalone executable
+    /// Compile an AIPL program to a WebAssembly module, or with --exe to a standalone executable;
+    /// through the optimizer unless --no-opt
     Compile {
         file: String,
         #[arg(short, long, default_value = "out.wasm")]
         output: String,
+        /// Build without the optimizer (aipl_src/codegen_opt.aipl, which runs by default):
+        /// the Rust code generator's module, byte for byte the self-hosted toolchain's
+        #[arg(long = "no-opt")]
+        no_opt: bool,
         /// Also compile with the self-hosted toolchain (driver.aipl: resolver, checker, codegen;
         /// compiled to wasm by the Rust toolchain and run under wasmtime)
-    /// and fail unless its bytes equal the Rust compiler's
+        /// and fail unless its bytes equal the Rust compiler's; implies --no-opt
         #[arg(long = "self")]
         self_flag: bool,
         /// Write a standalone executable: native machine code on Linux x86-64, else the
@@ -423,7 +428,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Compile { file, output, self_flag, exe, sandbox, listen, serve, max_memory, target, tests } => {
+        Commands::Compile { file, output, no_opt, self_flag, exe, sandbox, listen, serve, max_memory, target, tests } => {
             // a grant is checked before anything is compiled (aipl.aipl does the same)
             for g in &listen {
                 aipl_core::net::Net::parse_grant(g)?;
@@ -439,8 +444,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
 
-            let rust_bytes = WasmCompiler::compile_limited(&module, max_pages)?;
             if self_flag {
+                let rust_bytes = WasmCompiler::compile_limited(&module, max_pages)?;
                 println!("[AIPL Self-Host] Compiling '{}' via self-hosted codegen.aipl...", file);
                 // Self-hosted end to end, as aiplc: driver.aipl resolves,
                 // checks, and compiles (aipl_src/driver.aipl), in the VM.
@@ -456,8 +461,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!("[AIPL Self-Host] SUCCESS: Self-hosted codegen produced 100% BIT-FOR-BIT IDENTICAL WebAssembly!");
                 fs::write(&output, &self_bytes)?;
+            } else if no_opt {
+                fs::write(&output, WasmCompiler::compile_limited(&module, max_pages)?)?;
             } else {
-                fs::write(&output, &rust_bytes)?;
+                // the optimizer (docs/design/OPT_PLAN.md): driver.aipl's
+                // compile_file_opt under wasmtime, after the checks above, so a
+                // program's errors read as they always have; its failure on a
+                // program those passed is a toolchain bug
+                let bytes = aipl_core::selfhost::compile_optimized(Path::new(&file), max_pages, tests)
+                    .map_err(|e| format!("{e}\n(the optimized build failed on a program that checks: a toolchain bug; --no-opt builds without the optimizer)"))?;
+                fs::write(&output, &bytes)?;
             }
             if exe {
                 // `output` holds the module; replace it with the executable

@@ -24,8 +24,8 @@
     (put p P.x 1.5f32)
     (put p P.y (* (get p P.x) 2.0f32))
     (call show "field " (get p P.y))
-    (if (lt a b) (call io.println "lt ok") (block))
-    (if (eq (+ 0.5f32 0.25f32) 0.75f32) (call io.println "eq ok") (block))
+    (when (lt a b) (call io.println "lt ok"))
+    (when (eq (+ 0.5f32 0.25f32) 0.75f32) (call io.println "eq ok"))
     (cond
       ((eq mode 1) (call io.println_int "nan " (i32.trunc_f32_s (/ 0.0f32 0.0f32))))
       ((eq mode 2) (call io.println_int "big " (i32.trunc_f64_s 2147483648.0)))

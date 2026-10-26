@@ -18,8 +18,10 @@ fn scratch(name: &str) -> PathBuf {
     d
 }
 
+// --no-opt: these compare the launcher with the VM, frame for frame; an
+// optimized build has no frame for an inlined function (OPT_PLAN.md)
 fn compile(src: &Path, out: &Path, extra: &[&str]) {
-    let o = Command::new(AIPL).arg("compile").arg(src).arg("-o").arg(out).args(extra).env("AIPL_RUNNER", RUNNER).output().unwrap();
+    let o = Command::new(AIPL).args(["compile", "--no-opt"]).arg(src).arg("-o").arg(out).args(extra).env("AIPL_RUNNER", RUNNER).output().unwrap();
     assert!(o.status.success(), "compile failed: {}", String::from_utf8_lossy(&o.stderr));
 }
 
@@ -53,7 +55,7 @@ fn the_runner_gives_programs_args_files_stdin_and_exit_codes() {
     (call io.println_int "stdin words: " (call str.count_words (call io.read_stdin)))
     (let f:str.Bytes (call io.read_path (call os.arg 1)))
     (call io.println_int "file bytes: " (get f str.Bytes.len))
-    (if (gt (call os.arg_count) 2) (sys.exit 3) (block))
+    (when (gt (call os.arg_count) 2) (sys.exit 3))
     0))"#,
     )
     .unwrap();

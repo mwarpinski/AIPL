@@ -169,6 +169,15 @@ fn invariants_are_checked_at_entry_and_exit() {
     same_bytes(&program("invariants"));
 }
 
+/// A contract's block may bind: its lets are locals in both code generators
+/// (it verified and ran in the VM, but no compiled build had them).
+#[test]
+fn a_contract_may_bind_a_let() {
+    prints("contract_lets", "half 5\n");
+    fails("contract_lets", "7", "Pre-condition failed in 'halve'", "Pre-condition failed in 'halve': (req (block (let m:i32 (% n 2)) (eq m 0))) with n = 7");
+    same_bytes(&program("contract_lets"));
+}
+
 /// Constants folded from other constants, in any order, with i32 wrapping
 /// and f64 arithmetic.
 #[test]

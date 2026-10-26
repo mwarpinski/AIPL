@@ -1,0 +1,26 @@
+;; The optimizer leaves contracts as written, wherever they stand in a body:
+;; a failed one prints its text (folding once printed (shl i 1) for the
+;; (* i 2) written here), and an inlined call whose argument is not pure
+;; brings a let, which code generation takes from the body only (the
+;; bootstrap found a req after a let, 2026-10-26; docs/design/OPT_PLAN.md
+;; step 4). The second call fails its req, the same way optimized or not
+;; (tools/opt_diff.py compares the message exactly).
+(module contracts
+  (import alloc)
+  (import io)
+  (struct Box [n:i32])
+  (fn size [b:(ptr Box)] -> i32 (get b Box.n))
+  (fn pick [b:(ptr Box)] -> (ptr Box)
+    (call io.println "pick")
+    b)
+  ;; a contract sees the parameters only, but may follow a let
+  (fn doubled_below [b:(ptr Box) i:i32] -> i32
+    (let d:i32 (* i 2))
+    (req (lt (* i 2) (call size (call pick b))))
+    d)
+  (fn main [] -> i32
+    (let b:(ptr Box) (new Box (call alloc.forever)))
+    (put b Box.n 5)
+    (call io.println_int "ok " (call doubled_below b 1))
+    (call io.println_int "not " (call doubled_below b 4))
+    0))

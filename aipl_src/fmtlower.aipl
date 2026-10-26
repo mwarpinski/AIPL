@@ -45,14 +45,14 @@
 
   ;; The index after the element at i.
   (fn elem_end [l:(ptr L) i:i32] -> i32
-    (if (not (call is_open l i)) (return (+ i 1)) (block))
+    (when (not (call is_open l i)) (return (+ i 1)))
     (let depth:i32 0)
     (let k:i32 i)
     (while (lt k (get l L.n))
-      (if (call is_open l k) (set! depth (+ depth 1)) (block))
-      (if (call is_close l k) (set! depth (- depth 1)) (block))
+      (when (call is_open l k) (set! depth (+ depth 1)))
+      (when (call is_close l k) (set! depth (- depth 1)))
       (set! k (+ k 1))
-      (if (eq depth 0) (return k) (block)))
+      (when (eq depth 0) (return k)))
     k)
 
   ;; Copies the input's bytes [from, to) and notes every token starting
@@ -138,7 +138,7 @@
     (let fs:(ptr (vec.Vec (ptr checker.Fmt))) (get l L.fmts))
     (for k 0 (call (vec.len (ptr checker.Fmt)) fs)
       (let f:(ptr checker.Fmt) (call (vec.at (ptr checker.Fmt)) fs k))
-      (if (eq (get f checker.Fmt.at) at) (return f) (block)))
+      (when (eq (get f checker.Fmt.at) at) (return f)))
     (ptr.null checker.Fmt))
 
   (fn put_fn [t:ast.Type] -> str
@@ -176,13 +176,13 @@
     (let close:i32 (- (call elem_end l f) 1))
     (let c:i32 (call body_start l f))
     (while (lt c close)
-      (if (call is_defer l c) (return true) (block))
+      (when (call is_defer l c) (return true))
       (set! c (call elem_end l c)))
     false)
 
   ;; Whether the element at i always leaves (checker.rs diverges).
   (fn diverges [l:(ptr L) i:i32] -> bool
-    (if (neq (call kind l i) compiler.Kind.lparen) (return false) (block))
+    (when (neq (call kind l i) compiler.Kind.lparen) (return false))
     (cond
       ((or (call sym_is l (+ i 1) "return") (or (call sym_is l (+ i 1) "break") (call sym_is l (+ i 1) "continue"))) true)
       ((or (call sym_is l (+ i 1) "block") (call sym_is l (+ i 1) "unsafe"))
@@ -227,7 +227,7 @@
 
   ;; The start of a return whose value follows: plain, or with the defers.
   (fn begin_return [l:(ptr L) at:i32] -> i32
-    (if (not (call wrapping l)) (block (call gen l at "(return ") (return -1)) (block))
+    (when (not (call wrapping l)) (call gen l at "(return ") (return -1))
     (put l L.rets (+ (get l L.rets) 1))
     (call gen l at "(block (let _defer_ret_")
     (call buf.push_int (get l L.out) (get l L.rets))
@@ -237,7 +237,7 @@
     (get l L.rets))
 
   (fn end_return [l:(ptr L) at:i32 n:i32] -> void
-    (if (lt n 0) (block (call buf.push_byte (get l L.out) 41) (return)) (block))
+    (when (lt n 0) (call buf.push_byte (get l L.out) 41) (return))
     (call buf.push_byte (get l L.out) 41)
     (call emit_defers l)
     (call gen l at " (return _defer_ret_")
@@ -256,7 +256,7 @@
     ;; the last statement that is not a defer
     (let last:i32 -1)
     (let c:i32 bs)
-    (while (lt c close) (if (not (call is_defer l c)) (set! last c) (block)) (set! c (call elem_end l c)))
+    (while (lt c close) (when (not (call is_defer l c)) (set! last c)) (set! c (call elem_end l c)))
     (set! c bs)
     (let void_fn:bool (call sym_is l (call ret_elem l) "void"))
     ;; 0: the value is the last statement's; 1: it was kept in _defer_val
@@ -280,8 +280,8 @@
         (else (call buf.push_byte (get l L.out) 32) (call emit_elem l c)))
       (set! c (call elem_end l c)))
     ;; the defers after the value, unless the body always leaves
-    (if (neq kept 2) (call emit_defers l) (block))
-    (if (eq kept 1) (call gen l last_at " _defer_val") (block))
+    (when (neq kept 2) (call emit_defers l))
+    (when (eq kept 1) (call gen l last_at " _defer_val"))
     (call copy l (call pos l close) (+ (call pos l close) 1) close))
 
   ;; ===== Formatting =====
@@ -296,11 +296,9 @@
     (let n:i32 (call (vec.len i32) args))
     ;; a writer's text goes to its buffer, then (call stream.format_end w b)
     (let writer:bool false)
-    (if (eq op 1)
-        (block
+    (when (eq op 1)
           (let tf:(ptr checker.Fmt) (call fmt_at l (call pos l (call (vec.at i32) args 0))))
-          (if (neq tf (ptr.null checker.Fmt)) (set! writer (call checker.is_writer (get tf checker.Fmt.ty))) (block)))
-        (block))
+          (when (neq tf (ptr.null checker.Fmt)) (set! writer (call checker.is_writer (get tf checker.Fmt.ty)))))
     ;; outermost first: the ending, then one call per piece
     (if writer
         (block
@@ -340,10 +338,9 @@
             (let ve:i32 (call elem_end l v))
             (let f:(ptr checker.Fmt) (call fmt_at l (call pos l v)))
             (let enum_name:str.Bytes (match (get f checker.Fmt.ty) (ast.Type.enum_ [e] e) (else (call str.absent))))
-            (if (call str.present enum_name) (call gen l at "(match ") (block))
+            (when (call str.present enum_name) (call gen l at "(match "))
             (call emit_elem l v)
-            (if (call str.present enum_name)
-                (block
+            (when (call str.present enum_name)
                   (let ms:(arr (ptr ast.Member)) (get f checker.Fmt.members))
                   (for k 0 (arr.len ms)
                     (let mn:str.Bytes (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
@@ -355,15 +352,12 @@
                     (call buf.push_bytes (get l L.out) mn)
                     (call buf.push_str (get l L.out) "\")"))
                   (call buf.push_byte (get l L.out) 41))
-                (block))
             ;; the spec word, from the piece's format string (a printer takes none)
-            (if (call fmtdebug.printable (get f checker.Fmt.ty))
-                (block
+            (when (call fmtdebug.printable (get f checker.Fmt.ty))
                   (let st:(ptr compiler.Token) (call tok l ve))
                   (let sp:(ptr fmtsplit.Spec) (unsafe (call fmtsplit.spec (call str.bytes (+ (get l L.src) (get st compiler.Token.a)) (get st compiler.Token.b)))))
                   (call gen l at " ")
-                  (call buf.push_int (get l L.out) (call fmtsplit.word sp)))
-                (block))))
+                  (call buf.push_int (get l L.out) (call fmtsplit.word sp)))))
       (call buf.push_byte (get l L.out) 41))
     (call buf.push_byte (get l L.out) 41))
 
@@ -373,7 +367,7 @@
   (fn tries_in [l:(ptr L) from:i32 to:i32] -> i32
     (let k:i32 0)
     (for i from (- to 1)
-      (if (and (eq (call kind l i) compiler.Kind.lparen) (and (gte (call form l (+ i 1)) 5) (lte (call form l (+ i 1)) 7))) (set! k (+ k 1)) (block)))
+      (when (and (eq (call kind l i) compiler.Kind.lparen) (and (gte (call form l (+ i 1)) 5) (lte (call form l (+ i 1)) 7))) (set! k (+ k 1))))
     k)
 
   ;; The comparison an expect at group g shows both sides of: its Fmt (the
@@ -381,10 +375,10 @@
   ;; it, else null (formats.rs lower_expect).
   (fn expect_sides [l:(ptr L) g:i32] -> (ptr checker.Fmt)
     (let cond:i32 (call elem_end l (+ g 2)))
-    (if (neq (call kind l cond) compiler.Kind.lparen) (return (ptr.null checker.Fmt)) (block))
+    (when (neq (call kind l cond) compiler.Kind.lparen) (return (ptr.null checker.Fmt)))
     (let left:i32 (+ cond 2))
     (let f:(ptr checker.Fmt) (call fmt_at l (call pos l left)))
-    (if (or (eq f (ptr.null checker.Fmt)) (neq (get f checker.Fmt.k) -5)) (return (ptr.null checker.Fmt)) (block))
+    (when (or (eq f (ptr.null checker.Fmt)) (neq (get f checker.Fmt.k) -5)) (return (ptr.null checker.Fmt)))
     (if (call fmtdebug.prints (get f checker.Fmt.ty)) f (ptr.null checker.Fmt)))
 
   ;; The expects showing both sides in tokens [from, to), lowered before
@@ -392,14 +386,13 @@
   (fn expects_in [l:(ptr L) from:i32 to:i32] -> i32
     (let k:i32 0)
     (for i from (- to 1)
-      (if (and (eq (call kind l i) compiler.Kind.lparen) (eq (call form l (+ i 1)) 9))
-          (if (neq (call expect_sides l i) (ptr.null checker.Fmt)) (set! k (+ k 1)) (block))
-          (block)))
+      (when (and (eq (call kind l i) compiler.Kind.lparen) (eq (call form l (+ i 1)) 9))
+          (when (neq (call expect_sides l i) (ptr.null checker.Fmt)) (set! k (+ k 1)))))
     k)
 
-  ;; (format.expect "LABEL" c) as (if c (block) (call testing.fail "LABEL"));
+  ;; (format.expect "LABEL" c) as (when (not c) (call testing.fail "LABEL"));
   ;; a comparison (OP a b) the forms print as (block (let _x_N:T a) (let
-  ;; _y_N:T b) (if (OP _x_N _y_N) (block) (call testing.fail_cmp "LABEL" X
+  ;; _y_N:T b) (when (not (OP _x_N _y_N)) (call testing.fail_cmp "LABEL" X
   ;; Y))), X and Y each side as (call show.done CHAIN) (formats.rs
   ;; lower_expect). N counts the function's expects that show their sides.
   (fn lower_expect [l:(ptr L) g:i32] -> void
@@ -409,15 +402,13 @@
     (let out:(ptr buf.Buf) (get l L.out))
     (let lt:(ptr compiler.Token) (call tok l lab))
     (let f:(ptr checker.Fmt) (call expect_sides l g))
-    (if (eq f (ptr.null checker.Fmt))
-        (block
-          (call gen l at "(if ")
+    (when (eq f (ptr.null checker.Fmt))
+          (call gen l at "(when (not ")
           (call emit_elem l cond)
-          (call gen l at " (block) (call testing.fail \"")
+          (call gen l at ") (call testing.fail \"")
           (call raw l (get lt compiler.Token.a) (+ (get lt compiler.Token.a) (get lt compiler.Token.b)))
           (call buf.push_str out "\"))")
           (return))
-        (block))
     (let n:i32 (+ (+ (get l L.expects) (call expects_in l cond (call elem_end l cond))) 1))
     (let t:ast.Type (get f checker.Fmt.ty))
     (let nb:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
@@ -439,14 +430,14 @@
     (call printer.print_type out t)
     (call buf.push_byte out 32)
     (call emit_elem l b)
-    (call gen l at ") (if (")
+    (call gen l at ") (when (not (")
     (let ot:(ptr compiler.Token) (call tok l opt))
     (call raw l (get ot compiler.Token.a) (+ (get ot compiler.Token.a) (get ot compiler.Token.b)))
     (call buf.push_str out " _x_")
     (call buf.push_bytes out num)
     (call buf.push_str out " _y_")
     (call buf.push_bytes out num)
-    (call buf.push_str out ") (block) (call testing.fail_cmp \"")
+    (call buf.push_str out ")) (call testing.fail_cmp \"")
     (call raw l (get lt compiler.Token.a) (+ (get lt compiler.Token.a) (get lt compiler.Token.b)))
     (call buf.push_str out "\" (call show.done ")
     (call put_value l at f (call str.from_str "_x_") num)
@@ -493,7 +484,7 @@
   (fn dbgs_in [l:(ptr L) from:i32 to:i32] -> i32
     (let k:i32 0)
     (for i from (- to 1)
-      (if (and (eq (call kind l i) compiler.Kind.lparen) (eq (call form l (+ i 1)) 8)) (set! k (+ k 1)) (block)))
+      (when (and (eq (call kind l i) compiler.Kind.lparen) (eq (call form l (+ i 1)) 8)) (set! k (+ k 1))))
     k)
 
   ;; (format.dbg "LABEL" e) as (block (let _dbg_N:T e) (call show.eprintln
@@ -535,7 +526,7 @@
     (let lt:(ptr compiler.Token) (call tok l lab))
     (call raw l (get lt compiler.Token.a) (+ (get lt compiler.Token.a) (get lt compiler.Token.b)))
     (call buf.push_str out " = ")
-    (if (eq how 3) (block (call buf.push_str out "<value> : ") (call fmtdebug.source_type out t)) (block))
+    (when (eq how 3) (call buf.push_str out "<value> : ") (call fmtdebug.source_type out t))
     (call buf.push_str out "\")")
     (cond
       ((eq how 0) (call buf.push_byte out 32) (call buf.push_bytes out var) (call buf.push_str out " 0)"))
@@ -650,16 +641,16 @@
     (let any:bool false)
     (let square:i32 0)
     (for i 0 (- (get l L.n) 1)
-      (if (eq (call kind l i) compiler.Kind.lbracket) (set! square (+ square 1)) (block))
-      (if (eq (call kind l i) compiler.Kind.rbracket) (set! square (- square 1)) (block))
-      (if (and (eq square 0) (call lowers l i)) (set! any true) (block)))
-    (if (not any) (return false) (block))
+      (when (eq (call kind l i) compiler.Kind.lbracket) (set! square (+ square 1)))
+      (when (eq (call kind l i) compiler.Kind.rbracket) (set! square (- square 1)))
+      (when (and (eq square 0) (call lowers l i)) (set! any true)))
+    (when (not any) (return false))
     ;; the printers formatting generates (fmtdebug.aipl), before the
     ;; module's closing paren
     (let printers:(ptr buf.Buf) (ptr.null buf.Buf))
     (for k 0 (call (vec.len (ptr checker.Fmt)) fmts)
       (let f:(ptr checker.Fmt) (call (vec.at (ptr checker.Fmt)) fmts k))
-      (if (eq (get f checker.Fmt.k) -3) (set! printers (get f checker.Fmt.text)) (block)))
+      (when (eq (get f checker.Fmt.k) -3) (set! printers (get f checker.Fmt.text))))
     (if (eq printers (ptr.null buf.Buf))
         (call emit l 0 (get l L.n) 0 len)
         (block
