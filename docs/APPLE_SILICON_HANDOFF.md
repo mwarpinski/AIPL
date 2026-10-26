@@ -1,5 +1,8 @@
 # AIPL on Apple Silicon: instructions for the agent on the Mac
 
+**Round 2 is at the end of this file (section 6, 2026-10-26): start there.**
+Sections 1-5 are round 1, kept for the rules and the background.
+
 Written 2026-10-25 by Claude (Opus 5.5) for Gemini, working on the owner's
 new ARM64 Apple Silicon Mac. It says what AIPL does on that machine today,
 what to build and test there, in what order, where to stop and report, and
@@ -84,6 +87,8 @@ What runs where (*checked*):
 - **Gate, do not delete.** A test that cannot run on a platform gets a
   `#[cfg(...)]` or a runtime check with a comment saying why, and keeps
   running where it can. Never weaken an assertion to make it pass.
+  (Round 2 makes this stricter: a whole test that cannot run is marked
+  ignored, never returns early. See section 6.)
 - **Run the checks before every commit you hand over**, on the Mac and,
   where it applies, in the Linux containers (task 4), and paste the
   summary into your report.
@@ -226,3 +231,127 @@ When you stop (after task 5, or earlier if something blocks you):
   works on the Mac, what you changed (commit by commit), what is broken and
   why, and what you recommend next. Every claim with its evidence.
 - Do not merge into `development` or `main`.
+
+## 6. Round 2 (2026-10-26)
+
+Written by Claude (Opus 5.5) after reading your report, your commits, and
+docs/design/ARM64_PLAN.md. Good work: the triage was careful, every
+failure was traced, and stopping at the protected file was right. What
+follows is what changed since, one correction, and the next tasks.
+
+### 6.1 What changed since round 1
+
+- **features/when is merged** (into `development` and `main`), and so is
+  the optimizer (into `development`). The protected list in section 3 is
+  lifted: **tests/test_serve.rs and the other files there are yours to
+  edit** for the tasks below.
+- **This branch is up to date.** Claude merged `development` into
+  `features/apple-silicon` (commit "Merge development into
+  features/apple-silicon"; it merged cleanly). Pull before you start:
+  `git pull` on `features/apple-silicon`. Do not rebase it.
+- **`aipl compile` now optimizes by default** (docs/design/OPT_PLAN.md;
+  AIPL_SPEC.md 6.7), and `--no-opt` builds as before. Some tests pass
+  `--no-opt` on purpose (they compare with the VM's addresses or call
+  chains); leave those flags as they are.
+- **Compiled toolchain modules are cached** in `~/.cache/aipl` (or
+  `$AIPL_CACHE`; empty turns it off). The first `aipl compile` after a
+  build takes about half a second, the rest about 0.08 s. If something
+  looks stale, `rm -rf ~/.cache/aipl` is always safe.
+- New tests since your run: tests/test_opt.rs, and more in
+  test_language_gaps.rs, test_values.rs, test_memory.rs. They build with
+  plain `--exe` (on the Mac, the launcher bundle), so they should run;
+  check.
+
+### 6.2 One correction: a skipped test must say so
+
+Your gating made 21 tests in tests/test_native.rs (and
+`the_first_native_executable_prints_and_exits_7` in test_native_elf.rs,
+by `#[cfg]`) end early or vanish on the Mac. An early `return` makes cargo
+print `ok` for a test that checked nothing, so "61 of 62 targets pass" read
+as more than it was. Section 3's old wording allowed "a runtime check";
+that was Claude's mistake, and this is the rule now:
+
+- **A whole test that cannot run on this platform is ignored, with the
+  reason**, so `cargo test` lists it as `ignored` and counts it:
+
+  ```rust
+  #[test]
+  #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+             ignore = "runs Linux x86-64 executables (the native backend)")]
+  fn control_flow_programs_match_natively() { ... }
+  ```
+
+  Remove the early `return` blocks you added; use this attribute instead.
+  Do the same for test_native_elf.rs's `#[cfg]` (it should be ignored on
+  the Mac, not compiled away).
+- **A test that covers several backends keeps running**, with only the
+  native part left out (your `targets` lists in test_runner.rs,
+  test_benchmarks.rs, test_std.rs, test_testing.rs, test_eval_expr.rs are
+  right). Give each file one constant rather than repeating the `cfg!`:
+  `const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));`
+  with a comment saying the native backend targets Linux x86-64 only
+  (AIPL_SPEC.md 6.6).
+- **Report the counts as cargo prints them**: passed, failed, ignored, per
+  platform. A gated part of a multi-backend test is listed in the report
+  by name.
+
+### 6.3 The tasks, in order
+
+**Task A: tests/test_serve.rs.** Gate the two tests your report names
+(`a_fresh_server_that_cannot_listen_says_so`,
+`a_fresh_instance_per_request_isolates_a_crash`) as you proposed: the
+`native` host only where `NATIVE` is true, the other hosts everywhere.
+These tests start servers on loopback ports; if one is flaky on the Mac,
+say so with the output (docs/HANDOFF.md, "Open problems", explains the
+port fixes made on Linux).
+
+**Task B: the correction above (6.2)**, across every file you gated.
+
+**Task C: run everything and update the report.** On the Mac and in the
+`linux/arm64` container: `cargo build --release`,
+`cargo clippy --release --all-targets -- -D warnings`,
+`cargo test --release --no-fail-fast` (with the passed / failed / ignored
+counts per target), `./target/release/aipl test aipl_src/test_suite.aipl`,
+`python3 tools/fuzz.py --cases 3000 --seed 1`,
+`python3 tools/run_fuzz.py --cases 500 --seed 1`, and the new
+`python3 tools/opt_diff.py` (optimized builds against `--no-opt` builds of
+every repository program; it should print no DIFFERS line). Put the
+results at the top of docs/APPLE_SILICON_REPORT.md under "Round 2",
+correcting round 1's "61 of 62" with the honest counts. Commit by explicit
+path and push `features/apple-silicon`. **Then stop and hand back**; the
+owner merges.
+
+**Task D (after A-C are pushed): Rosetta and the first load segment, an
+investigation on its own branch.** Your finding that Rosetta 2 refuses
+AIPL's x86-64 executables (first `PT_LOAD` not at file offset 0) is a real
+portability bug for Mac users running `linux/amd64` containers. On a new
+branch `features/elf-offset0` from `features/apple-silicon`:
+
+- Change aipl_src/native/elf.aipl so the first `PT_LOAD` segment starts at
+  file offset 0 (the ELF and program headers inside it), keeping x86-64's
+  4 KiB pages. Nothing else.
+- Show the result runs: under Rosetta in `linux/amd64` (it should now),
+  under QEMU, and in `linux/arm64` with QEMU user mode if you can. Run
+  tests/test_native.rs and tests/test_native_elf.rs in the `linux/amd64`
+  container (slow under emulation is fine; say how long).
+- `sh bootstrap/build.sh` must still reach its fixed point (stage 3
+  identical to stage 2). The seed itself keeps the old layout until a seed
+  refresh, which only the owner approves: do not refresh it.
+- Report on that branch (a section in docs/APPLE_SILICON_REPORT.md) and
+  push it. Do not merge it: Claude reruns the full CI on a native Linux
+  x86-64 machine first, since emulation can hide what real hardware shows.
+
+**Not now: docs/design/ARM64_PLAN.md.** The plan is useful and stays as a
+proposal. The owner's priority is getting the repository ready for
+release, and a second native backend is post-launch work; do not start
+NA2-NA12 until the owner approves the plan. Mac users have the launcher
+bundle, and Linux arm64 users have wasm under aipl-run, in the meantime.
+
+### 6.4 Files to stay out of in round 2
+
+Claude is working on these next (release readiness: finding the standard
+library from an installed or copied `aipl`): src/resolver.rs,
+src/selfhost.rs, src/main.rs, aipl_src/aipl.aipl, aipl_src/driver.aipl,
+aipl_src/doc.aipl, aipl_src/resolver.aipl, install.sh, tools/make_kit.sh.
+If a fix needs one of them, describe it in your report instead.
+
