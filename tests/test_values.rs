@@ -274,8 +274,8 @@ fn contract_messages_show_values_as_aipl() {
       (struct V [a:i32 b:f64] (value))
       (struct W [v:V n:i64] (value))
       (fn f [w:W n:i32] -> i32 (req (gt n 0)) n)
-      (fn g [n:i32] -> V (ens (gt (get res V.a) 0)) (make V [a:n b:0.5]))
-      (fn first [] -> i32 (call f (make W [v:(make V [a:1 b:2.5]) n:7i64]) -3))
+      (fn g [n:i32] -> V (ens (gt (get res V.a) 0)) (make V n 0.5))
+      (fn first [] -> i32 (call f (make W (make V 1 2.5) 7i64) -3))
       (fn second [] -> i32 (get (call g -2) V.a)))";
     let m = Parser::parse(src).unwrap();
     TypeChecker::new().check_module(&m).unwrap();

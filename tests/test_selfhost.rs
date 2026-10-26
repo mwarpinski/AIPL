@@ -41,7 +41,8 @@ fn flat(src: &str) -> String {
         return src.to_string();
     }
     let path = std::env::temp_dir().join(format!("aipl_selfhost_flat_{}.aipl", std::process::id()));
-    let m = Resolver::resolve_source(src, &path).expect("resolve test src");
+    // src may already be a resolved program, printed: resolve_flat reads it too
+    let m = Resolver::resolve_flat(src, &path).expect("resolve test src");
     aipl_core::printer::print_module(&m)
 }
 
@@ -174,7 +175,9 @@ fn vm_self_host_on_this_thread(src: &str, name: &str) -> Result<Vec<u8>, String>
 }
 
 fn run_rust_backend(src_path: &Path) -> Vec<u8> {
-    let module = Resolver::resolve(src_path).expect("resolve test src");
+    // the source may be a resolved program, printed (flat): resolve_flat reads it too
+    let src = std::fs::read_to_string(src_path).expect("read test src");
+    let module = Resolver::resolve_flat(&src, src_path).expect("resolve test src");
     TypeChecker::new().check_module(&module).expect("check test src");
     WasmCompiler::compile(&module).expect("compile wasm")
 }
@@ -195,7 +198,8 @@ fn assert_self_hosted_matches_rust(test_name: &str, src: &str) {
             // a program with imports or a `for` is resolved first: the code generator reads
             // what the resolver prints (counted_loop), not the sugar
             let src = if src.contains("(import ") || src.contains("(for ") {
-                let flat = aipl_core::printer::print_module(&Resolver::resolve(&temp_src).expect("resolve test src"));
+                let text = fs::read_to_string(&temp_src).unwrap();
+                let flat = aipl_core::printer::print_module(&Resolver::resolve_flat(&text, &temp_src).expect("resolve test src"));
                 fs::write(&temp_src, &flat).unwrap();
                 flat
             } else {
