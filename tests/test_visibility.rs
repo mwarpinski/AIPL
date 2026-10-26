@@ -51,7 +51,7 @@ fn what_a_module_gives_is_usable_in_both_backends() {
         (r#"(call lib.shown)"#, 2),
         (r#"(let s:(ptr lib.S) (call lib.make_s)) (get s lib.S.r)"#, 0),
         (r#"(let s:(ptr lib.S) (call lib.make_s)) (put s lib.S.w 1) (get s lib.S.w)"#, 1),
-        (r#"(let o:(ptr lib.Open) (new lib.Open (call alloc.forever))) 0"#, 0),
+        (r#"(let o:(ptr lib.Open) (new lib.Open (call alloc.forever) [a:(zero i32) b:(zero i32)])) (get o lib.Open.a)"#, 0),
         (r#"lib.LIM"#, 3),
         (r#"(enum.ord lib.Color.green)"#, 1),
         (r#"(match (make lib.U.a 4) (lib.U.a [n] n) (lib.U.b 0))"#, 4),
@@ -90,14 +90,14 @@ fn what_a_module_gives_is_usable_in_both_backends() {
 fn what_a_module_keeps_is_an_error_in_both_resolvers() {
     let cases: &[(&str, &str, &str)] = &[
         // a struct type argument lets the template make one (alloc.create)
-        (LIB, r#"(let s:(ptr lib.S) (new lib.S (call alloc.default))) 0"#, r#"1:85: 'lib.S' has fields private to module lib, so only lib can make one"#),
+        (LIB, r#"(let s:(ptr lib.S) (new lib.S (call alloc.default) [r:0 w:0 p:0])) 0"#, r#"1:85: 'lib.S' has fields private to module lib, so only lib can make one"#),
         (LIB, r#"(call lib.hidden)"#, r#"1:67: 'lib.hidden' is private to module lib: mark it (pub) there to use it here"#),
         // CANONICAL_PLAN.md step 2: a name the module does not have
         (LIB, r#"(call lib.shwn)"#, r#"1:67: 'lib.shwn' is not an item of module lib: did you mean lib.shown?"#),
         (LIB, r#"(call lib.zzzzzzzz)"#, r#"1:67: 'lib.zzzzzzzz' is not an item of module lib: aipl doc lib lists what it has"#),
         (LIB, r#"(let s:(ptr lib.S) (call lib.make_s)) (put s lib.S.r 1) 0"#, r#"1:106: field 'r' of lib.S is read-only outside module lib"#),
         (LIB, r#"(let s:(ptr lib.S) (call lib.make_s)) (get s lib.S.p)"#, r#"1:106: field 'p' of lib.S is private to module lib"#),
-        (LIB, r#"(let s:(ptr lib.S) (new lib.S (call alloc.forever))) 0"#, r#"1:85: 'lib.S' has fields private to module lib, so only lib can make one"#),
+        (LIB, r#"(let s:(ptr lib.S) (new lib.S (call alloc.forever) [r:0 w:0 p:0])) 0"#, r#"1:85: 'lib.S' has fields private to module lib, so only lib can make one"#),
         (LIB, r#"(let h:(ptr lib.Hidden) (ptr.null lib.Hidden)) 0"#, r#"1:73: 'lib.Hidden' is private to module lib: mark it (pub) there to use it here"#),
         (LIB, r#"lib.MAX"#, r#"1:61: 'lib.MAX' is private to module lib: mark it (pub) there to use it here"#),
         (LIB, r#"(enum.ord lib.Secret.two)"#, r#"1:71: 'lib.Secret' is private to module lib: mark it (pub) there to use it here"#),
@@ -112,7 +112,7 @@ fn what_a_module_keeps_is_an_error_in_both_resolvers() {
         (r#"(module lib (struct P [x:i32]) (struct Q [(read p:(ptr P))] (pub)))"#, r#"0"#, r#"1:56: 'Q' is (pub) but its signature uses 'P', which is private: mark 'P' (pub) too"#),
         (r#"(module lib (enum E [a b]) (union U [(v e:E)] (pub)))"#, r#"0"#, r#"1:43: 'U' is (pub) but its signature uses 'E', which is private: mark 'E' (pub) too"#),
         // value structs (AIPL_SPEC.md 4.E): make, with, and field paths
-        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(let v:lib.V (make lib.V 1 2 3)) 0"#, r#"'lib.V' has fields private to module lib, so only lib can make one"#),
+        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(let v:lib.V (make lib.V [x:1 y:2 z:3])) 0"#, r#"'lib.V' has fields private to module lib, so only lib can make one"#),
         (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(let v:lib.V (with (call lib.mk) lib.V.y 5)) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
         (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(get (call lib.mk) lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
         (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(get (call lib.mh) lib.H.v lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),

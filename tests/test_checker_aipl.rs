@@ -635,7 +635,7 @@ fn constants_expand_like_rust() {
     ] {
         let path = root().join(rel);
         let flat = aipl_core::selfhost::resolve_with_aipl(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        let theirs = aipl_core::printer::print_module(&Resolver::resolve_source(&flat, &path).unwrap());
+        let theirs = aipl_core::printer::print_module(&Resolver::resolve_flat(&flat, &path).unwrap());
         let ours = front.run("expand_print", &flat).unwrap_or_else(|e| panic!("{rel}: {e}"));
         let ours = aipl_core::printer::print_module(&Parser::parse(&ours).unwrap_or_else(|e| panic!("{rel}: {e}\n{ours}")));
         assert!(ours == theirs, "{rel}: expanded programs differ");
@@ -699,7 +699,8 @@ fn constant_errors_match_word_for_word() {
 fn rust_verdict(flat: &str) -> Result<(), String> {
     // both name the file; check_text is given text, not a file
     let strip = |e: String| e.split('\n').map(|l| l.strip_prefix("m.aipl: ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
-    let m = Resolver::resolve_source(flat, Path::new("m.aipl")).map_err(strip)?;
+    // the cases are resolved programs, as checker.aipl reads them
+    let m = Resolver::resolve_flat(flat, Path::new("m.aipl")).map_err(strip)?;
     TypeChecker::new().check_module(&m).map_err(strip)
 }
 
@@ -1026,11 +1027,11 @@ const FORMS: &[&str] = &[
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr V) (ptr.null V)) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (ptr.null V)) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1)) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 true)) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (put v V.x 3) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (if (eq v v) 1 0)))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (let w:V (with v V.z 3)) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (let w:V (with v V.x true)) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V [x:1 y:true])) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V [x:1 y:2])) (put v V.x 3) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V [x:1 y:2])) (if (eq v v) 1 0)))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V [x:1 y:2])) (let w:V (with v V.z 3)) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V [x:1 y:2])) (let w:V (with v V.x true)) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (let w:V (with p V.x 1)) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (let w:(ptr Q) (with p Q.n 1)) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (get p V.x)))",
@@ -1044,16 +1045,16 @@ const FORMS: &[&str] = &[
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (make m.Q 1 2)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (get p Q.v V.x)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.null V)) (arr.set V a 0 V.y 3) (arr.get V a 0 V.y)))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn f [v:V] -> V (with v V.x (+ (get v V.x) 1))) (fn main [] -> i32 (get (call f (make V 1 2)) V.x)))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn f [v:V] -> V (with v V.x (+ (get v V.x) 1))) (fn main [] -> i32 (get (call f (make V [x:1 y:2])) V.x)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (struct W [a:V b:(ptr Q) c:(arr V) d:(fn [V] -> V)] (value)) (fn main [] -> i32 (sizeof W)))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (match_result (ok:i32 v) (ok a (get a V.x)) (err e e))))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (get v V.x V.y)))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V [x:1 y:2])) (match_result (ok:i32 v) (ok a (get a V.x)) (err e e))))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V [x:1 y:2])) (get v V.x V.y)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (put p Q.v nodot 1) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (put p Q.v (+ 1 2) 1) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (put p Q.v) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.null V)) (arr.set V a 0) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.null V)) (arr.get V a 0 1)))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (with v 3 4)))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V [x:1 y:2])) (with v 3 4)))",
     "M:(module m (struct V [x:i32] (pub2)) (fn main [] -> i32 0))",
     "M:(module m (struct V [x:i32] (value) (other)) (fn main [] -> i32 0))",
     // two parameters of one name (fuzz.py, 2026-10-20: accepted, and the VM

@@ -84,8 +84,8 @@ fn value_struct_rules_have_messages() {
         ("(struct A [b:B] (value)) (struct B [a:A] (value)) (fn main [] -> i32 0)", "value struct 'A' contains itself (through field 'b'): a value has a fixed size; hold it through a pointer"),
         ("(struct Big [a:V b:V c:V d:V e:i32] (value)) (fn main [] -> i32 0)", "value struct 'Big' holds 9 scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer"),
         ("(fn main [] -> i32 (let p:(ptr V) (ptr.null V)) 0)", "'V' is a value struct, which has no address: write V, not (ptr V)"),
-        ("(fn main [] -> i32 (let v:V (new V (call alloc.forever))) 0)", "alloc.create<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address"),
-        ("(fn main [] -> i32 (let v:V (make V 1)) 0)", "make V takes 2 field value(s) (x y), got 1"),
+        ("(fn main [] -> i32 (let v:V (new V (call alloc.forever) [x:1 y:2])) 0)", "alloc.create<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address"),
+        ("(fn main [] -> i32 (let v:V (make V 1)) 0)", "a value struct's fields are given by name, each once and in order: (make V [x:v y:v])"),
         ("(fn main [] -> i32 (let v:V (make V [x:1 y:true])) 0)", "make V: field 'y' is i32, got bool"),
         ("(fn main [] -> i32 (let v:V (make V [x:1 y:2])) (put v V.x 3) 0)", "a value struct's fields do not change: (with v V.x x) is a copy with one changed"),
         ("(fn main [] -> i32 (let v:V (make V [x:1 y:2])) (if (eq v v) 1 0))", "eq on value struct 'V': value structs do not compare; implement cmp.Eq for it (section 4.H) and call (cmp.Eq.same V)"),
@@ -110,9 +110,9 @@ fn value_struct_rules_have_messages() {
     }
     // and what is allowed
     for body in [
-        "(fn main [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (get p P.v V.x))",
+        "(fn main [] -> i32 (let p:(ptr P) (new P (call alloc.forever) [v:(zero V) n:(zero i32)])) (get p P.v V.x))",
         "(fn main [] -> i32 (let a:(arr V) (arr.new V (call alloc.forever) 2)) (arr.set V a 0 V.y 3) (arr.get V a 0 V.y))",
-        "(fn f [v:V] -> V (with v V.x (+ (get v V.x) 1))) (fn main [] -> i32 (get (call f (make V 1 2)) V.x))",
+        "(fn f [v:V] -> V (with v V.x (+ (get v V.x) 1))) (fn main [] -> i32 (get (call f (make V [x:1 y:2])) V.x))",
         "(struct W [a:V b:(ptr P) c:(arr V) d:(fn [V] -> V)] (value)) (fn main [] -> i32 (sizeof W))",
     ] {
         let src = format!("{}{})", header, body);
@@ -150,7 +150,7 @@ fn value_structs_across_modules() {
         check_files("vis_ok", &[("main.aipl", &main(ok)), ("geo.aipl", geo)]).unwrap_or_else(|e| panic!("{ok}: {e}"));
     }
     for (bad, want) in [
-        ("(let t:geo.Sealed (make geo.Sealed 1 2))", "'geo.Sealed' has fields private to module geo, so only geo can make one"),
+        ("(let t:geo.Sealed (make geo.Sealed [a:1 b:2]))", "'geo.Sealed' has fields private to module geo, so only geo can make one"),
         ("(let t:geo.Sealed (with s geo.Sealed.a 1))", "field 'a' of geo.Sealed is read-only outside module geo"),
         ("(let b:i32 (get s geo.Sealed.b))", "field 'b' of geo.Sealed is private to module geo"),
         ("(let b:i32 (get h geo.Holder.s geo.Sealed.b))", "field 'b' of geo.Sealed is private to module geo"),
@@ -179,7 +179,7 @@ fn value_structs_as_type_arguments() {
     assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(3 + 16));
     let bad = "(module m (import alloc)
       (struct V [x:i32] (value))
-      (fn main [] -> i32 (let p:(ptr V) (new V (call alloc.default))) 0))";
+      (fn main [] -> i32 (let p:(ptr V) (new V (call alloc.default) [x:1])) 0))";
     let err = check_files("kinds_bad", &[("m.aipl", bad)]).unwrap_err();
     assert!(err.ends_with("alloc.create<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address"), "{err}");
     // (pub) after (value), not before
@@ -196,13 +196,13 @@ fn the_aipl_resolver_agrees_on_value_structs() {
     let entry = root().join("tests/aipl/values.aipl");
     let rust = print_module(&Resolver::resolve(&entry).unwrap());
     let flat = aipl_core::selfhost::resolve_with_aipl(&entry).unwrap_or_else(|e| panic!("aipl resolve: {e}"));
-    let m = Resolver::resolve_source(&flat, &entry).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
+    let m = Resolver::resolve_flat(&flat, &entry).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat output does not check: {e}"));
     assert_eq!(print_module(&m), rust);
     // the kinds of type arguments, and malformed forms, in both resolvers
     for (src, want) in [
         (
-            "(module m (import alloc) (struct V [x:i32] (value)) (fn (mk T) [] -> (ptr T) (where (struct T)) (new T (call alloc.forever))) (fn main [] -> i32 (let p:(ptr V) (call (mk V))) 0))",
+            "(module m (import alloc) (struct V [x:i32] (value)) (fn (mk T) [] -> (ptr T) (where (struct T)) (call (alloc.create T) (call alloc.forever))) (fn main [] -> i32 (let p:(ptr V) (call (mk V))) 0))",
             "mk<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address",
         ),
         (
@@ -274,8 +274,8 @@ fn contract_messages_show_values_as_aipl() {
       (struct V [a:i32 b:f64] (value))
       (struct W [v:V n:i64] (value))
       (fn f [w:W n:i32] -> i32 (req (gt n 0)) n)
-      (fn g [n:i32] -> V (ens (gt (get res V.a) 0)) (make V n 0.5))
-      (fn first [] -> i32 (call f (make W (make V 1 2.5) 7i64) -3))
+      (fn g [n:i32] -> V (ens (gt (get res V.a) 0)) (make V [a:n b:0.5]))
+      (fn first [] -> i32 (call f (make W [v:(make V [a:1 b:2.5]) n:7i64]) -3))
       (fn second [] -> i32 (get (call g -2) V.a)))";
     let m = Parser::parse(src).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
@@ -363,7 +363,7 @@ fn a_template_named_make_leaves_the_make_form_alone() {
     let m = Resolver::resolve(&entry).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     let flat = aipl_core::selfhost::resolve_with_aipl(&entry).unwrap_or_else(|e| panic!("aipl resolve: {e}"));
-    let again = Resolver::resolve_source(&flat, &entry).unwrap();
+    let again = Resolver::resolve_flat(&flat, &entry).unwrap();
     assert_eq!(print_module(&again), print_module(&m));
     let mut vm = VM::new();
     vm.load_module(m.clone());
@@ -413,7 +413,7 @@ fn a_result_over_eight_slots_is_refused_by_both_toolchains() {
     let defs = "  (struct Q [a:f64 b:f64 c:f64 d:f64] (value))\n  (struct I [a:i32 b:i32 c:i32 d:i32] (value))\n";
     for (name, body, want) in [
         ("written", "  (fn f [r:(result Q I)] -> i32 0)\n  (fn main [] -> i32 0))\n", "(result Q I) needs 9 slots"),
-        ("made", "  (fn main [] -> i32 (match_result (err:Q (make I 1 2 3 4)) (ok q 1) (err e 0))))\n", "4:36: (result Q I) needs 9 slots"),
+        ("made", "  (fn main [] -> i32 (match_result (err:Q (make I [a:1 b:2 c:3 d:4])) (ok q 1) (err e 0))))\n", "4:36: (result Q I) needs 9 slots"),
     ] {
         let dir = scratch(&format!("wide_result_{name}"));
         let file = dir.join("m.aipl");

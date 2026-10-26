@@ -506,6 +506,32 @@
   ;; resolver.rs makes it and checked as its walk checks it, (block (let
   ;; _new_L_C:(ptr S) (call (alloc.create S) a)) (put _new_L_C S.f v) ...
   ;; _new_L_C) or (make V v ...).
+  ;; (make V v ...) of a value struct, its fields by position: refused as
+  ;; written in source (resolver.rs positional_make); emit_named writes this
+  ;; form, after.
+  (fn positional_make [m:(ptr Mod) g:(ptr compiler.Node)] -> void
+    (let src:(ptr Src) (get m Mod.src))
+    (let s:(ptr compiler.Node) (get (call first_child g) compiler.Node.next))
+    (let canonical:str.Bytes
+      (cond
+        ((call is_symbol s) (call rename m (call text src s) 2))
+        ((and (eq (get s compiler.Node.kind) compiler.Kind.paren) (call is_symbol (call first_child s)))
+         (call template_ref m (call text src (call first_child s))))
+        (else (call str.absent))))
+    (when (or (lt (get canonical str.Bytes.len) 0) (not (call (map.has str.Bytes i32) (get (get m Mod.vis) Vis.values) canonical)))
+          (return))
+    (let b:(ptr buf.Buf) (call vis_msg "a value struct's fields are given by name, each once and in order: (make "))
+    (call buf.push_bytes b canonical)
+    (call buf.push_str b " [")
+    (let order:(ptr (vec.Vec str.Bytes)) (call (map.get_or str.Bytes (ptr (vec.Vec str.Bytes))) (get (get m Mod.vis) Vis.order) canonical (ptr.null (vec.Vec str.Bytes))))
+    (when (neq order (ptr.null (vec.Vec str.Bytes)))
+          (for k 0 (call (vec.len str.Bytes) order)
+            (when (gt k 0) (call buf.push_byte b 32))
+            (call buf.push_bytes b (call (vec.at str.Bytes) order k))
+            (call buf.push_str b ":v")))
+    (call buf.push_str b "])")
+    (call vis_fail m g b))
+
   (fn emit_named [m:(ptr Mod) g:(ptr compiler.Node) is_new:bool out:(ptr buf.Buf)] -> void
     (let src:(ptr Src) (get m Mod.src))
     (let at:i32 (get g compiler.Node.pos))
@@ -766,6 +792,12 @@
                     (and (call eq_lit (call head (get m Mod.src) g) "make")
                          (and (eq (call count_kids g) 3) (call is_bracket (call nth g 2))))))
           (call emit_named m g false out) (return))
+    ;; (call (make T) ...), own_role 1, calls a generic function named make
+    (when (and (eq (get m Mod.square) 0)
+               (and (and (eq (get g compiler.Node.kind) compiler.Kind.paren) (neq own_role 1))
+                    (and (call eq_lit (call head (get m Mod.src) g) "make")
+                         (and (gte (call count_kids g) 2) (not (call is_bracket (call nth g (- (call count_kids g) 1))))))))
+          (call positional_make m g))
     (when (and (eq (get m Mod.square) 0) (eq (call format_head m g) 5)) (call emit_dbg m g out) (return))
     (when (and (eq (get m Mod.square) 0) (eq (call format_head m g) 6)) (call emit_expect m g out) (return))
     (when (and (eq (get m Mod.square) 0) (gte (call format_head m g) 0)) (call emit_format m g (call format_head m g) out) (return))
@@ -1636,17 +1668,17 @@
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b "for is (for i start end body...): i from start up to end, end left out")
                   (return b))
-            ;; (new S a) and (arr.new T a n) name their allocator
-            ;; (new S a [f:v ...]), its fields named, is checked where the
-            ;; struct's fields are known (emit_named)
+            ;; new and arr.new name their allocator; new is only
+            ;; (new S a [f:v ...]), its fields named, which is checked where
+            ;; the struct's fields are known (emit_named): the zeroed
+            ;; (new S a) is gone (LANGUAGE_DECISIONS.md item 4)
             (when (and (call symbol_is src toks (+ i 1) "new")
-                       (and (neq (call form_args toks count i) 2)
-                            (not (and (eq (call form_args toks count i) 3)
-                                      (eq (call kind_at toks (call skip_form toks (call skip_form toks (+ i 2)))) compiler.Kind.lbracket)))))
+                       (not (and (eq (call form_args toks count i) 3)
+                                 (eq (call kind_at toks (call skip_form toks (call skip_form toks (+ i 2)))) compiler.Kind.lbracket))))
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b (if (eq (call form_args toks count i) 1)
-                                           "new takes the allocator to make it from: (new S a), e.g. (new S (call alloc.default)), or (new S (call alloc.forever)) for memory kept until the program exits"
-                                           "new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name"))
+                                           "new takes the allocator to make it from, then each field by name: (new S a [x:v y:v]), e.g. (new S (call alloc.default) [x:1 y:2]), or (call alloc.forever) for memory kept until the program exits"
+                                           "new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name; a field that starts empty is given its zero, (zero T)"))
                   (return b))
             ;; (arr.of T) names no allocator, nor does (arr.of T 1 2 3), whose
             ;; allocator would be a literal (sugar.rs)

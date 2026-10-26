@@ -75,10 +75,13 @@ fn both_toolchains_rewrite_alike_with_the_same_errors() {
         ("(test \"t\" (println \"{\"))", false, ""),
         ("(test \"t\" (println \"{\"))", true, "3:22: unclosed { in a format string (write {{ for a brace)"),
         // new and arr.new name their allocator (sugar.rs), std/alloc imported for them
-        ("(struct P [x:i32]) (fn g [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (get p P.x))", false, ""),
+        ("(struct P [x:i32]) (fn g [] -> i32 (let p:(ptr P) (new P (call alloc.forever) [x:4])) (get p P.x))", false, ""),
+        // the zeroed (new S a) is gone: every field is named, an empty one given its zero
+        ("(struct P [x:i32]) (fn g [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (get p P.x))", false, "3:53: new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name; a field that starts empty is given its zero, (zero T)"),
+        ("(struct V [x:i32 y:i32] (value)) (fn g [] -> V (make V 1 2))", false, "3:50: a value struct's fields are given by name, each once and in order: (make V [x:v y:v])"),
         ("(struct P [x:i32]) (fn g [a:alloc.Allocator] -> i32 (arr.len (arr.new i32 a 4)))", false, ""),
-        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P)))", false, "3:54: new takes the allocator to make it from: (new S a), e.g. (new S (call alloc.default)), or (new S (call alloc.forever)) for memory kept until the program exits"),
-        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P 1 2)))", false, "3:54: new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name"),
+        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P)))", false, "3:54: new takes the allocator to make it from, then each field by name: (new S a [x:v y:v]), e.g. (new S (call alloc.default) [x:1 y:2]), or (call alloc.forever) for memory kept until the program exits"),
+        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P 1 2)))", false, "3:54: new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name; a field that starts empty is given its zero, (zero T)"),
         ("(fn g [] -> void (let xs:(arr i32) (arr.new i32 3)))", false, "3:38: arr.new takes the allocator to make it from: (arr.new T a n), e.g. (arr.new T (call alloc.default) n), or (arr.new T (call alloc.forever) n) for memory kept until the program exits"),
         ("(fn g [] -> void (let xs:(arr i32) (arr.new i32)))", false, "3:38: arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length"),
         // arr.of, the array literal: an allocator, then the values (or none)

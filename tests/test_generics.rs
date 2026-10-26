@@ -54,8 +54,7 @@ fn assert_aipl_resolver_agrees(entry: &Path) {
     // resolved again, not just parsed: the flat program keeps its constants
     // (std/gen's, through std/alloc), which resolving expands
     let flat_file = entry.with_file_name("flat.aipl");
-    std::fs::write(&flat_file, &flat).unwrap();
-    let m = Resolver::resolve(&flat_file).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
+    let m = Resolver::resolve_flat(&flat, &flat_file).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat output does not check: {e}\n{flat}"));
     // positions are in the flat text there: compare without them
     let same = |w: &[u8]| aipl_core::compiler::wasm::without_lines(w);
@@ -170,7 +169,7 @@ fn a_modules_own_struct_as_a_type_argument_is_qualified() {
                 "(module lib (import alloc)
                    (struct Item [x:i32 y:i64])
                    (struct (Wrap T) [inner:(ptr T)] (where (struct T)))
-                   (fn (make T) [] -> (ptr T) (where (struct T)) (new T (call alloc.forever)))
+                   (fn (make T) [] -> (ptr T) (where (struct T)) (call (alloc.create T) (call alloc.forever)))
                    (fn use_own [] -> i32 (pub) (let it:(ptr Item) (call (make Item))) (put it Item.x 40) (+ (get it Item.x) (sizeof Item)))
                    (fn nested [] -> i32 (pub)
                      (let w:(ptr (Wrap Item)) (call (make (Wrap Item))))

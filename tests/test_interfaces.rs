@@ -49,7 +49,7 @@ fn run_both(entry: &Path, f: &str) -> i32 {
 fn assert_aipl_resolver_agrees(entry: &Path) {
     let flat = aipl_core::selfhost::resolve_with_aipl(entry).unwrap_or_else(|e| panic!("aipl resolve: {e}"));
     // the flat program can hold constants (std/gen's), which need the resolver
-    let m = Resolver::resolve_source(&flat, entry).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
+    let m = Resolver::resolve_flat(&flat, entry).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat output does not check: {e}\n{flat}"));
     let same = |w: &[u8]| aipl_core::compiler::wasm::without_lines(w);
     let rust = WasmCompiler::compile(&Resolver::resolve(entry).unwrap()).unwrap();
@@ -245,9 +245,9 @@ fn templates_are_checked_once_in_both_toolchains() {
         (r#"(module m (fn (f T) [x:T] -> i32 (where (struct T)) 0) (fn main [] -> i32 0))"#, "1:11: 'T' is a struct, which is only used through a pointer: write (ptr T) (parameter 'x' of 'f<T>')"),
         (r#"(module m (import vec) (fn (g T) [v:(ptr (vec.Vec T)) x:T] -> i32 (call (vec.index_of T) v x)) (fn main [] -> i32 0))"#, "1:73: vec.index_of<T> needs (cmp.Eq T): add (where (cmp.Eq T)) to g"),
         (r#"(module m (import cmp) (fn (g T) [a:T] -> bool (call (cmp.Eq.same T) a a)) (fn main [] -> i32 0))"#, "1:54: no implementation of (cmp.Eq T): add (where (cmp.Eq T)) to g"),
-        (r#"(module m (import alloc) (fn (g T) [] -> (ptr T) (new T (call alloc.default))) (fn main [] -> i32 0))"#, "1:50: alloc.create<T>: T must be a struct, so g needs (where (struct T))"),
+        (r#"(module m (import alloc) (fn (g T) [] -> (ptr T) (call (alloc.create T) (call alloc.default))) (fn main [] -> i32 0))"#, "1:56: alloc.create<T>: T must be a struct, so g needs (where (struct T))"),
         (r#"(module m (import vec) (struct Point [x:i32]) (fn main [] -> i32 (sizeof (vec.Vec Point))))"#, "1:74: vec.Vec<Point>: T is a value type, and Point is a struct, used only through a pointer: write (ptr Point)"),
-        (r#"(module m (import alloc) (fn main [] -> i32 (sizeof (ptr.null i32)) (i32.wrap 0i64) (let p:(ptr i32) (new i32 (call alloc.default))) 0))"#, "1:102: alloc.create<i32>: T must be a struct (where (struct T)), and i32 is not one"),
+        (r#"(module m (import alloc) (fn main [] -> i32 (sizeof (ptr.null i32)) (i32.wrap 0i64) (let p:(ptr i32) (call (alloc.create i32) (call alloc.default))) 0))"#, "1:108: alloc.create<i32>: T must be a struct (where (struct T)), and i32 is not one"),
         (r#"(module m (import option) (fn main [] -> i32 (let o:(option.Option void) (make (option.Option void) none)) 0))"#, "1:53: option.Option<void>: T is a value type, and void cannot be stored"),
         (r#"(module m (fn (f T) [] -> (ptr T) (ptr.null T)) (fn main [] -> i32 0))"#, "1:11: T is a type parameter that is not a struct: to use it as one, add (where (struct T)) (return type of 'f<T>')"),
         (r#"(module m (fn (f T) [a:T] -> i32 (req 5) 0) (fn main [] -> i32 0))"#, "1:39: Contract expression in 'f<T>' must evaluate to bool, got i32"),
@@ -315,14 +315,14 @@ fn plain_type_arguments_are_checked_in_both_toolchains() {
     // plain ones: 7 each (a result is never a type argument; enums are
     // plain too, but this helper's flat output keeps their names)
     let src = format!(
-        "{header} (fn (wrap T) [x:T] -> i32 (where (plain T)) (call (need T) x)) (fn main [] -> i32 (+ (call (need i32) 1) (+ (call (need str) \"s\") (+ (call (need Ok2) (make Ok2 1 2.0)) (+ (call (need V) (make V.b)) (+ (call (need (fn [i32] -> i32)) (ref main2)) (call (wrap i64) 5i64))))))) (fn main2 [x:i32] -> i32 x))"
+        "{header} (fn (wrap T) [x:T] -> i32 (where (plain T)) (call (need T) x)) (fn main [] -> i32 (+ (call (need i32) 1) (+ (call (need str) \"s\") (+ (call (need Ok2) (make Ok2 [x:1 y:2.0])) (+ (call (need V) (make V.b)) (+ (call (need (fn [i32] -> i32)) (ref main2)) (call (wrap i64) 5i64))))))) (fn main2 [x:i32] -> i32 x))"
     );
     let entry = write_program("plain_yes", &[("main.aipl", &src)]);
     assert_eq!(run_both(&entry, "main"), 42);
     assert_aipl_resolver_agrees(&entry);
     // and generic ones whose fields, with the arguments put in, are plain
     let src = format!(
-        "{header} (fn main [] -> i32 (+ (call (need (Pair i32 f64)) (make (Pair i32 f64) 1 2.0)) (+ (call (need (Wrap f64)) (make (Wrap f64) (make (Pair f64 i32) 1.0 2))) (call (need (Opt (Pair i32 i32))) (make (Opt (Pair i32 i32)) none))))))"
+        "{header} (fn main [] -> i32 (+ (call (need (Pair i32 f64)) (make (Pair i32 f64) [a:1 b:2.0])) (+ (call (need (Wrap f64)) (make (Wrap f64) [p:(make (Pair f64 i32) [a:1.0 b:2])])) (call (need (Opt (Pair i32 i32))) (make (Opt (Pair i32 i32)) none))))))"
     );
     let entry = write_program("plain_generic_yes", &[("main.aipl", &src)]);
     assert_eq!(run_both(&entry, "main"), 21);
@@ -354,7 +354,7 @@ fn templates_within_their_clauses_check_and_run() {
   (fn (size T) [t:(Tree T)] -> i32
     (match t ((Tree T) leaf 0) ((Tree T) node [n] (+ 1 (+ (call (size T) (get n (Node T) l)) (call (size T) (get n (Node T) r)))))))
   (struct Cell [n:i32])
-  (fn (fresh S) [] -> (ptr S) (where (struct S)) (new S (call alloc.default)))
+  (fn (fresh S) [] -> (ptr S) (where (struct S)) (call (alloc.create S) (call alloc.default)))
   (fn (never_used T) [x:T] -> T x)
   (fn main [] -> i32
     (let t:(Tree str) (make (Tree str) leaf))

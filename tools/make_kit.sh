@@ -99,7 +99,7 @@ cat > "$T/work/prog.aipl" <<'EOF'
   (test "sums" (expect (eq (call total (call (vec.make i32) (call alloc.default) 4)) 0)))
   (fn main [] -> i32
     (let a:alloc.Allocator (call alloc.default))
-    (let r:(ptr Row) (new Row a))
+    (let r:(ptr Row) (new Row a [n:0]))
     (let xs:(ptr (vec.Vec i32)) (call (vec.make i32) a 4))
     (call (vec.push i32) xs 40)
     (call (vec.push i32) xs 2)

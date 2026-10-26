@@ -167,7 +167,7 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 
 ### Memory that is never freed, and `(no_leak)`
 
-What `alloc.forever` hands out, `mem.alloc`, and the `str` values made at run time (`format`, `str.concat`, `buf.to_str`) are never freed: right for a program that runs and exits, fatal for one that runs for days. A function with the clause `(no_leak)` promises to make no such memory, and the checker holds it to that: it may not call `alloc.forever` (so `(new S (call alloc.forever))` is refused, and `(new S a)` with an allocator it is handed is not), use `mem.alloc` or `format`, call through a function reference whose type does not promise `(no_leak)` (section 4.G), or call a function that may do any of these, directly or through what it calls. The error names the first site that breaks the promise and the chain down to the allocation:
+What `alloc.forever` hands out, `mem.alloc`, and the `str` values made at run time (`format`, `str.concat`, `buf.to_str`) are never freed: right for a program that runs and exits, fatal for one that runs for days. A function with the clause `(no_leak)` promises to make no such memory, and the checker holds it to that: it may not call `alloc.forever` (so `(new S (call alloc.forever) [...])` is refused, and `(new S a [...])` with an allocator it is handed is not), use `mem.alloc` or `format`, call through a function reference whose type does not promise `(no_leak)` (section 4.G), or call a function that may do any of these, directly or through what it calls. The error names the first site that breaks the promise and the chain down to the allocation:
 
 ```
 13:5: uses_concat is marked (no_leak) but calls str.concat, which may make memory that is never freed (str.concat calls str.room; str.room uses mem.alloc)
@@ -313,8 +313,7 @@ Struct definitions are module-level. Layout rules, identical in the checker, VM,
 
 | Form | Type | Semantics |
 |---|---|---|
-| `(new S a [x:v y:v ...])` | `(ptr S)` | an `S` from the allocator `a` with its fields given by name, each once and in declaration order (`new gives the fields [x]; S's fields, each once and in order, are [x y]`): the resolver writes `(new S a)` and then a `put` of each field, the values in the order written. A struct's fields are given by name, a variant's payload by position (`make` of a union, section 4.J). |
-| `(new S a)` | `(ptr S)` | a zeroed `S` from the allocator `a` (an `alloc.Allocator`): `(call (alloc.create S) a)`, which the resolver writes for it, importing std/alloc. `(new S (call alloc.default))` from the shared heap, `(new S (call alloc.forever))` for memory kept until the program exits, `(new S arena)` freed with the arena. The block is 8 + `(sizeof S)` bytes, the generation word (a fresh one), 4 unused bytes, then the struct. `(new S)` is an error: `new takes the allocator to make it from: (new S a), ...` |
+| `(new S a [x:v y:v ...])` | `(ptr S)` | an `S` from the allocator `a` (an `alloc.Allocator`), its fields given by name, each once and in declaration order (`new gives the fields [x]; S's fields, each once and in order, are [x y]`): the resolver writes `(call (alloc.create S) a)`, importing std/alloc, then a `put` of each field, the values in the order written. `(new S (call alloc.default) [...])` from the shared heap, `(call alloc.forever)` for memory kept until the program exits, an arena's allocator freed with the arena. The block is 8 + `(sizeof S)` bytes, the generation word (a fresh one), 4 unused bytes, then the struct. A field that starts empty is given its zero, `(zero T)` (below). There is no zeroed `(new S a)`: `new is (new S a [x:v y:v]): ... a field that starts empty is given its zero, (zero T)`; `(new S)` is `new takes the allocator to make it from, then each field by name: ...`. A template, which cannot name the fields of a `T` of `(where (struct T))`, makes one zeroed with the function `new` stands for, `(call (alloc.create T) a)`. A struct's fields are given by name, a variant's payload by position (`make` of a union, section 4.J) |
 | `(get p S.f)` | type of `f` | `p` must be a `(ptr S)`; load at `p + offset(f)` with the instruction for `f`'s type |
 | `(put p S.f v)` | `void` | `p` must be a `(ptr S)`; store at `p + offset(f)`; `v` must have `f`'s type |
 | `(sizeof S)` | `i32` | compile-time constant: a struct's size, or for any type that can be stored in memory its width (`(sizeof i64)` 8, `(sizeof (ptr S))` 8), so generic code can size a `T`; `void`, a result, and an unknown struct are checker errors |
@@ -347,9 +346,7 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
   (fn main [] -> i32
     (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
     (for i 0 3
-      (let p:(ptr Point) (new Point (call alloc.forever)))
-      (put p Point.x i)
-      (put p Point.y (* i 10))
+      (let p:(ptr Point) (new Point (call alloc.forever) [x:i y:(* i 10)]))
       (arr.set (ptr Point) ps i p))
     (let sum:i32 0)
     (for i 0 (arr.len ps)
@@ -370,11 +367,13 @@ A struct declared with `(value)` after its fields is a **value struct**: a value
   (struct Particle [pos:Vec2 vel:Vec2 alive:bool] (value))
 
   (fn add [a:Vec2 b:Vec2] -> Vec2
-    (make Vec2 (+ (get a Vec2.x) (get b Vec2.x)) (+ (get a Vec2.y) (get b Vec2.y))))
+    (make Vec2 [x:(+ (get a Vec2.x) (get b Vec2.x)) y:(+ (get a Vec2.y) (get b Vec2.y))]))
 
   (fn main [] -> i32
     (let ps:(arr Particle) (arr.new Particle (call alloc.forever) 2))       ;; two particles inline: 80 bytes
-    (arr.set Particle ps 0 (make Particle (make Vec2 1.0 2.0) (make Vec2 0.5 0.5) true))
+    (arr.set Particle ps 0 (make Particle [pos:(make Vec2 [x:1.0 y:2.0])
+                                           vel:(make Vec2 [x:0.5 y:0.5])
+                                           alive:true]))
     (arr.set Particle ps 1 Particle.vel Vec2.y 3.0)     ;; one field, written in place
     (let p:Particle (arr.get Particle ps 0))
     (let moved:Particle (with p Particle.pos (call add (get p Particle.pos) (get p Particle.vel))))
@@ -385,8 +384,7 @@ A struct declared with `(value)` after its fields is a **value struct**: a value
 
 | Form | Type | Semantics |
 |---|---|---|
-| `(make V [x:v y:v ...])` | `V` | a value with every field given by name, each once and in declaration order (`make gives the fields [y x]; V's fields, each once and in order, are [x y]`) |
-| `(make V a b ...)` | `V` | the same with the fields by position (`make V takes 2 field value(s) (x y), got 1`) |
+| `(make V [x:v y:v ...])` | `V` | a value with every field given by name, each once and in declaration order (`make gives the fields [y x]; V's fields, each once and in order, are [x y]`); by position it is an error, `a value struct's fields are given by name, each once and in order: (make V [x:v y:v])` |
 | `(get v V.f)` | type of `f` | field `f` of the value `v` |
 | `(get e V.f W.g ...)` | type of the last field | a path: field `g` of the value struct held in field `f`, and so on; `e` may be a value or a `(ptr S)` whose field `S.f` holds one |
 | `(with v V.f x)` | `V` | a copy of `v` with field `f` set to `x` (`with V.x: expected i32, got bool`) |
@@ -397,7 +395,7 @@ The rules, each checked with the message shown:
 
 - At least one field (`value struct 'E' has no fields`), and fields that are numbers, `bool`, enums, `(ptr S)`, `(arr T)`, function references, or other value structs: not `str`, unions, results, or `void` (`Field 's' of value struct 'S': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not str`).
 - Not containing itself, directly or through other value structs (`value struct 'R' contains itself (through field 'r'): a value has a fixed size; hold it through a pointer`), and at most 8 scalars once the value structs in it are counted (`value struct 'Big' holds 9 scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer`).
-- No address: `(ptr V)`, `(new V a)`, `ptr.null`, and `ptr.cast` are errors (`'V' is a value struct, which has no address: write V, not (ptr V)`), and a field of one cannot be `put` (`a value struct's fields do not change: (with v V.x x) is a copy with one changed`). A field path writes into a value only where it sits in changeable memory: a pointer struct's field or an array element.
+- No address: `(ptr V)`, `(new V a [...])`, `ptr.null`, and `ptr.cast` are errors (`'V' is a value struct, which has no address: write V, not (ptr V)`), and a field of one cannot be `put` (`a value struct's fields do not change: (with v V.x x) is a copy with one changed`). A field path writes into a value only where it sits in changeable memory: a pointer struct's field or an array element.
 - No `eq`: values do not compare (`eq on value struct 'V': value structs do not compare; implement cmp.Eq for it (section 4.H) and call (cmp.Eq.same V)`).
 
 In memory a value struct is laid out inline like any struct (above): its fields in order, each aligned to its own alignment, the whole rounded up to the largest, so `(sizeof Vec2)` is 16 and `(sizeof Particle)` 40 (`alive` at 32, then padding to 8). As a field, element, union field, or result payload it takes that size and alignment. `(make V ...)` and `(with ...)` allocate nothing.
@@ -523,9 +521,7 @@ A generic struct or function takes type parameters in its header, and every use 
 (struct (Box T) [value:T next:(ptr (Box T))])
 
 (fn (make T) [v:T] -> (ptr (Box T))
-  (let b:(ptr (Box T)) (new (Box T) (call alloc.forever)))
-  (put b (Box T) value v)
-  b)
+  (new (Box T) (call alloc.forever) [value:v next:(zero (ptr (Box T)))]))
 
 (fn main [] -> i32
   (let b:(ptr (Box i64)) (call (make i64) 5i64))
@@ -570,9 +566,7 @@ An interface names functions a type can have; an implementation provides them fo
       (and (eq (get a Point.x) (get b Point.x)) (eq (get a Point.y) (get b Point.y)))))
 
   (fn point [x:i32 y:i32] -> (ptr Point)
-    (let p:(ptr Point) (new Point (call alloc.forever)))
-    (put p Point.x x)
-    (put p Point.y y)
+    (let p:(ptr Point) (new Point (call alloc.forever) [x:x y:y]))
     p)
 
   ;; the largest element, for any T with an order
@@ -600,7 +594,7 @@ An interface names functions a type can have; an implementation provides them fo
 | `(impl (Name t) (fn f [params] -> type body...)...)` | the interface's functions for type `t`: exactly its functions, each with the interface's parameter names and types (with `t` for the parameter) |
 | `(call (Name.f t) args...)`, `(ref (Name.f t))` | calling, or referring to, `t`'s implementation of `f`; from another module `(cmp.Hash.hash i32)`, through an alias `(c.Hash.hash i32)` |
 | `(where (Name T))` | in a generic function, struct, or union, right after its signature (a function's return type, a struct's fields, a union's variants): every use needs an implementation of `Name` for its `T`, and the template may call `Name`'s functions for `T` |
-| `(where (struct T))` | `T` is a struct, used as `(ptr T)`, `(new T a)`; without it a type parameter is a value |
+| `(where (struct T))` | `T` is a struct, used as `(ptr T)`, `(call (alloc.create T) a)`; without it a type parameter is a value |
 
 Rules (both expanders, with the same messages):
 
@@ -617,7 +611,7 @@ Inside a template, a type parameter is sealed: it supports only what every type 
 | Kind | Arguments | A sealed parameter supports |
 |---|---|---|
 | value (default) | anything that can be stored: numbers, `bool`, `str`, pointers, arrays, function references, enums, unions | `let`, parameters, results, struct and variant fields, `(arr T)`, `(sizeof T)`, `arr.cast` |
-| struct (`(where (struct T))`) | a struct, generic ones included | `(ptr T)`, `(new T a)`, `(sizeof T)`, `(ptr.null T)`, `ptr.cast` |
+| struct (`(where (struct T))`) | a struct, generic ones included | `(ptr T)`, `(call (alloc.create T) a)`, `(sizeof T)`, `(ptr.null T)`, `ptr.cast` |
 | plain (`(where (plain T))`) | a value holding no pointer or array at any depth, so threads may share copies of it: numbers, `bool`, `str`, enums, function references, and value structs and unions whose fields are plain, generic ones included (`(Pair i32 f64)` is plain, `(Pair (ptr Box) i32)` is not) | what a value parameter supports; `std/par` asks it of its types |
 
 Anything else on a parameter is an error that names the clause to add: `eq on T: a type parameter has no equality of its own; add (where (cmp.Eq T)) and call (cmp.Eq.same T)`, likewise for order (`cmp.Ord`), arithmetic, `match`, `enum.ord`, and using a value parameter as a struct (`T is a type parameter that is not a struct: to use it as one, add (where (struct T))`). Calling a template that asks for more than the caller's clauses give is caught the same way: `vec.index_of<T> needs (cmp.Eq T): add (where (cmp.Eq T)) to g`.
@@ -684,8 +678,7 @@ A union is a type whose value is exactly one of several variants, each carrying 
       (Shape.dot 0)))
 
   (fn cons [a:alloc.Allocator s:Shape rest:List] -> List
-    (let r:(ptr Rest) (new Rest a))
-    (put r Rest.l rest)
+    (let r:(ptr Rest) (new Rest a [l:rest]))
     (make List.cons s r))
 
   (fn total [l:List] -> i32
@@ -745,10 +738,7 @@ A union may take type parameters, like a struct (section 4.H). Every use writes 
   (struct (Node T) [left:(Tree T) value:T right:(Tree T)])
 
   (fn (node T) [a:alloc.Allocator l:(Tree T) v:T r:(Tree T)] -> (Tree T)
-    (let n:(ptr (Node T)) (new (Node T) a))
-    (put n (Node T) left l)
-    (put n (Node T) value v)
-    (put n (Node T) right r)
+    (let n:(ptr (Node T)) (new (Node T) a [left:l value:v right:r]))
     (make (Tree T) node n))
 
   (fn (count T) [t:(Tree T)] -> i32
@@ -792,8 +782,7 @@ Each instance is an ordinary union named like a struct instance (`Tree<f64>`, `o
     (let n:i32 3)
     (let mean:f64 2.71828)
     (println "{name} ran {n} tests, mean {mean:.2}")         ;; Ada ran 3 tests, mean 2.72
-    (let p:(ptr Point) (new Point (call alloc.forever)))
-    (put p Point.x 1.5)
+    (let p:(ptr Point) (new Point (call alloc.forever) [x:1.5 y:(zero f64)]))
     (let s:str (format "{n:>5}|{(get p Point.x)}|{{}}"))      ;; "    3|1.5|{}"
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
     (for i 1 3 (format_to b "row {i}: {(call score i):03};"))
@@ -1120,7 +1109,7 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 | `(enum.ord e)` / `(enum.cast Name n)` | `i32` / `Name` | `e` must be an enum, `n` an `i32` |
 | `(make Name.v x ...)` | the union `Name` | one value per field of `v`, each of the field's type |
 | `(match v arm ... [(else ...)])` | the type of the arms' last expressions, which must agree (or `void`) | `v` a union or enum; every member matched, or an `else` arm (section 4.J) |
-| `(new S a [x:v ...])`, `(new S a)` / `(arr.new T a n)` | `(ptr S)` / `(arr T)` | `a` an `alloc.Allocator`; each `v` of its field's type |
+| `(new S a [x:v ...])` / `(arr.new T a n)` | `(ptr S)` / `(arr T)` | `a` an `alloc.Allocator`; each `v` of its field's type |
 | `(sizeof S)` or `(sizeof T)`, `(arr.len a)`, `(ptr.addr p)`, `(arr.addr a)` | `i32` | |
 | `(get p S.f)` / `(arr.get T a i)` | the field's type / `T` | `p` must be `(ptr S)`, `a` must be `(arr T)`, `i` must be `i32` |
 | `(put p S.f v)` / `(arr.set T a i v)` | `void` | as above; `v` must match the field / `T` |
@@ -1650,7 +1639,7 @@ Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md`, `README.md`, and thi
 - Resolution is implemented twice: `src/resolver.rs` (used by every `aipl` command) and `aipl_src/resolver.aipl` (used by `aipl compile --self` and by the self-hosted toolchain compiled to wasm). The AIPL resolver produces flat source text: every struct, then every function, imported modules first in resolution order, comments dropped. The host passes the standard library directory; the resolver reads `AIPL_PATH` itself with `std/os`. `tests/test_resolver_aipl.rs` requires both to produce the same compiled bytes for every program with imports in the repository, plus aliases, diamonds, cycles, and missing modules (`PATH: Circular import detected: ...`, `Cannot resolve import 'NAME': no 'NAME.aipl' found in ...` listing the places searched).
 - Import depth is flattened to one level: a function from a module imported by an import is still `directimport.fn`, not `a.b.fn`. Diamond imports produce one copy. Cycles are an error naming the file.
 - The entry module's own functions keep bare names. In a compiled `.wasm`, exports are `main` and `util.double`.
-- Structs follow the same rule: `(struct Node ...)` in `util` is `util.Node` everywhere outside `util` (`(ptr util.Node)`, `(new util.Node a)`, `(get p util.Node.val)`), aliases included, so two imports may each define `Node`. An importer's bare `Node` never reaches into an import.
+- Structs follow the same rule: `(struct Node ...)` in `util` is `util.Node` everywhere outside `util` (`(ptr util.Node)`, `(new util.Node a [...])`, `(get p util.Node.val)`), aliases included, so two imports may each define `Node`. An importer's bare `Node` never reaches into an import.
 - `(ref f)` is rewritten like `(call f ...)`, so a function reference inside an imported module points at the qualified function, including the worker of a `thread.spawn`.
 - Constants and enums follow the struct rule: `util.LIMIT`, `util.Color`, `util.Color.red` outside `util` (and `u.Color.red` through an alias). The head of a form is never renamed, so `(import util as mem)` leaves the op `(mem.alloc n)` alone.
 
@@ -1664,9 +1653,7 @@ Everything a module defines is private to it unless marked `(pub)`: another modu
   ;; others can read n, write nothing, and make a Counter only through start
   (struct Counter [(read n:i32) step:i32] (pub))
   (fn start [step:i32] -> (ptr Counter) (pub)
-    (let c:(ptr Counter) (new Counter (call alloc.forever)))
-    (put c Counter.step step)
-    c)
+    (new Counter (call alloc.forever) [n:0 step:step]))
   (fn tick [c:(ptr Counter)] -> void (pub)
     (put c Counter.n (+ (get c Counter.n) (get c Counter.step))))
   (fn helper [] -> i32 0))     ;; private: (call counter.helper) elsewhere is an error
@@ -1682,7 +1669,7 @@ Everything a module defines is private to it unless marked `(pub)`: another modu
 Rules (both resolvers, with the same messages):
 
 - **Using a private item** is an error where it is used: `'util.helper' is private to module util: mark it (pub) there to use it here`. Fields: `field 'step' of counter.Counter is private to module counter`, `field 'n' of counter.Counter is read-only outside module counter`.
-- **Making a struct** outside its module, with `(new S a)` or by passing `S` itself as a type argument (which lets a template such as `alloc.create` make one), needs every field `(pub)`: `'counter.Counter' has fields private to module counter, so only counter can make one`. Code that may fill a struct only through its module's functions cannot get one any other way. A value struct (section 4.E) is the same with `(make V ...)`, and `with` counts as writing the field it changes; but it may be a type argument whatever its fields, since a template cannot make one.
+- **Making a struct** outside its module, with `(new S a [...])` or by passing `S` itself as a type argument (which lets a template such as `alloc.create` make one), needs every field `(pub)`: `'counter.Counter' has fields private to module counter, so only counter can make one`. Code that may fill a struct only through its module's functions cannot get one any other way. A value struct (section 4.E) is the same with `(make V ...)`, and `with` counts as writing the field it changes; but it may be a type argument whatever its fields, since a template cannot make one.
 - **A (pub) item shows no private type** of its module in what it gives others (a function's parameters and result, a struct's readable fields, a union's variants, an interface's signatures): `'start' is (pub) but its signature uses 'Counter', which is private: mark 'Counter' (pub) too`.
 - **Implementations** take no `(pub)`: an implementation is as visible as its interface and its type (section 4.H).
 - The entry module's marks change nothing (nothing imports it), and a module parsed on its own (`Parser::parse`) ignores them. The resolver checks visibility and leaves the marks out of the flat program, so the checker and the code generators never see them.
@@ -1919,8 +1906,8 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(fn (i32) -> i32)` or `(fn [i32] i32)` | the function type is `(fn [i32] -> i32)`: brackets around the parameters, then `->` |
 | `(call_ref f x)` or `(call f x)` where `f` is a reference | `(call_ref (fn [i32] -> i32) f x)`: the signature is part of the call |
 | `(thread.spawn name len arg)` with a name in memory | `(thread.spawn (ref worker) arg)`, `worker` of type `(fn [i32] -> i32)` |
-| `(let p:i32 (new Point a))`, or an `i32` parameter that holds a pointer | use `(ptr Point)`; arrays are `(arr T)`. `new` and `arr.new` never return `i32` |
-| `(new Point)` or `(arr.new i32 n)` | name the allocator: `(new Point a)` with the `alloc.Allocator` the function was handed, `(new Point (call alloc.default))`, or `(new Point (call alloc.forever))` for memory kept until exit; `(arr.new i32 a n)` |
+| `(let p:i32 (new Point a [...]))`, or an `i32` parameter that holds a pointer | use `(ptr Point)`; arrays are `(arr T)`. `new` and `arr.new` never return `i32` |
+| `(new Point)` or `(arr.new i32 n)` | name the allocator: `(new Point a [x:1 y:2])` with the `alloc.Allocator` the function was handed, `(call alloc.default)`, or `(call alloc.forever)` for memory kept until exit; `(arr.new i32 a n)` |
 | `(ptr i32)` for a sequence of numbers | `(arr i32)`, made by `(arr.new i32 n)` |
 | `(eq p 0)` to test for null | `(eq p (ptr.null Point))` |
 | `(+ p 4)` or `(mem.load32 p)` on a pointer | read fields with `get`; for raw memory, `(ptr.addr p)` first |

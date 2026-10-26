@@ -25,7 +25,7 @@ fn rust_bytes(path: &Path) -> Vec<u8> {
 /// because constants and enum members are expanded there, after generics;
 /// with no imports left, nothing else changes.
 fn parse_flat(flat: &str, path: &Path) -> Result<aipl_core::ast::Module, String> {
-    Resolver::resolve_source(flat, path)
+    Resolver::resolve_flat(flat, path)
 }
 
 fn assert_resolves_like_rust(rel: &str) {

@@ -64,7 +64,10 @@ class Source:
         # and parentheses of its own (blanked, so offsets stay)
         read = self.text
         if path.endswith('.md'):
-            read = re.sub(r'(?s)(```(?:lisp|aipl)?\n.*?```)|[^\n]', lambda m: m.group(1) or ' ', self.text)
+            # every fence pairs with the next, whatever its language
+            read = re.sub(r'(?s)(```([^\n]*)\n.*?```)|[^\n]',
+                          lambda m: m.group(1) if m.group(1) and m.group(2).strip() in ('', 'lisp', 'aipl') else
+                          re.sub(r'[^\n]', ' ', m.group(0)), self.text)
         self.toks = list(tokens(read, self.rust))
         self.progs = []
 

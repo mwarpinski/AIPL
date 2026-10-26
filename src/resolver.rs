@@ -130,6 +130,23 @@ impl Resolver {
             .map_err(|_| "the resolver thread panicked".to_string())?
     }
 
+    /// `resolve_source` for a resolver's own output (the flat program
+    /// aipl_src/resolver.aipl writes, which the tests compare by resolving
+    /// it again): it holds the positional `(make V v ...)` the resolver
+    /// writes for a value struct's named make, which source may not.
+    pub fn resolve_flat(flat: &str, entry_path: &Path) -> Result<Module, String> {
+        let (src, path) = (flat.to_string(), entry_path.to_path_buf());
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                READING_FLAT.with(|f| f.set(true));
+                Self::resolve_on_this_thread(&src, &path)
+            })
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the resolver thread panicked".to_string())?
+    }
+
     /// A test build of the file at `entry_path` (AIPL_SPEC.md 4.L): its
     /// tests are the functions `__test_0`, `__test_1`, ..., and its `_start`
     /// runs the one its first argument names and exits with that test's
@@ -700,6 +717,12 @@ fn at_sx(file: &Path, sx: &Sx, msg: &str) -> String {
     format!("{}: {}:{}: {}", file.display(), l, c, msg)
 }
 
+thread_local! {
+    /// Set on the thread of Resolver::resolve_flat, which reads a resolver's
+    /// output: forms only the resolvers write are accepted there.
+    static READING_FLAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The renaming rules (resolver.aipl `rename` and `child_role`). Roles: 0
 /// none, 1 function name, 2 struct name, 3 field reference `S.f`.
 /// Constants and enums are renamed wherever their names appear (a constant
@@ -955,9 +978,34 @@ impl Names<'_> {
         Some(list_at(out))
     }
 
+    /// `(make V v ...)` of a value struct, its fields by position: refused
+    /// as written in source (LANGUAGE_DECISIONS.md item 4); named_fields
+    /// writes this form, after (aipl_src/resolver.aipl positional_make).
+    fn positional_make(&self, sx: &Sx) {
+        if READING_FLAT.with(|f| f.get()) {
+            return;
+        }
+        let items = sx.items();
+        if sx.head() != Some("make") || items.len() < 2 || matches!(items.last(), Some(Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. })) {
+            return;
+        }
+        let s = &items[1];
+        let canonical = match (s.symbol(), s.head()) {
+            (Some(n), _) => Some(self.rename(n, 2)),
+            (None, Some(h)) => self.template_ref(h),
+            _ => None,
+        };
+        let Some(c) = canonical.filter(|c| self.vis.values.contains(c)) else { return };
+        let fields: Vec<String> = self.vis.order.get(&c).map(|o| o.iter().map(|f| format!("{f}:v")).collect()).unwrap_or_default();
+        self.fail(sx.position(), format!("a value struct's fields are given by name, each once and in order: (make {} [{}])", c, fields.join(" ")));
+    }
+
     fn walk(&self, sx: &mut Sx, role: u8) {
-        if let Some(r) = self.named_fields(sx) {
-            *sx = r;
+        match self.named_fields(sx) {
+            Some(r) => *sx = r,
+            // (call (make T) ...) calls a generic function named make (std/vec's)
+            None if role != 1 => self.positional_make(sx),
+            None => {}
         }
         let at = sx.position();
         match sx {

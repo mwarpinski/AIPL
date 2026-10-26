@@ -119,8 +119,8 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
 
 It prints `total: 33`: the points are (0, 0), (1, 10), and (2, 20).
 
-`(new Point a)` makes a struct from the allocator `a` and gives a `(ptr
-Point)`; every allocation names where its memory comes from, and
+`(new Point a [x:x y:y])` makes a struct from the allocator `a`, every
+field named, and gives a `(ptr Point)`; every allocation names where its memory comes from, and
 `(call alloc.forever)` is memory kept until the program exits (a function
 that allocates usually takes the allocator as a parameter, so its caller
 decides). A pointer to one

@@ -25,7 +25,7 @@ model has to remember that the compiler could check.
 | 1 | Every module a file uses, it imports | Yes, barely (1 file) | Small | **Decided yes, done 2026-10-26** |
 | 2 | A missing value is an Option, not a fake piece of text | Yes (~30 call sites) | Medium | **Decided yes, done 2026-10-26** |
 | 3 | An array literal, `(arr.of T a x y z)` | No (new form) | Small | **Decided yes, done 2026-10-26** |
-| 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Decided yes: fields by name, zeros written with `(zero T)`**; in progress |
+| 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Decided yes: fields by name, zeros written with `(zero T)`; done 2026-10-26** |
 | 5 | A name's scope is its block or match arm | No (it allows more) | Medium | **Yes** (moderate) |
 | 6 | One way to print: the format forms | Yes (~105 call sites) | Medium, by a tool | **Yes** (moderate) |
 | 7 | An address-sized integer type | No, if not done | None now | **No: say why in the FAQ** (strong) |
@@ -286,12 +286,17 @@ its dry run read first (done: 483 sites, nine by hand where a union field
 was set later, the union having no zero); (e) the old forms removed, with
 messages that show the new ones.
 
-For (e): `(new S a)` is refused by the sugar pass alone. A value struct's
-positional `make` is also the form after resolution (the named one is
-rewritten to it), so it is refused only in source, at the names stage;
-the bare parsers and checkers keep reading it. tests/test_checker_aipl.rs
-hands the same flat text to the Rust resolver and to checker.aipl, so its
-nine value-struct cases need the Rust side to read flat text too.
+(e) is done: `(new S a)` is refused by the sugar pass of both resolvers
+(`new is (new S a [x:v y:v]): ... a field that starts empty is given its
+zero, (zero T)`). A value struct's positional `make` is also the form
+after resolution (the named one is rewritten to it), so it is refused only
+as written, at the names stage (`a value struct's fields are given by
+name, each once and in order: (make V [x:v y:v])`), and the bare parsers
+and checkers keep reading it; `Resolver::resolve_flat` reads a resolver's
+own output, for the tests that resolve it again. A template cannot name
+the fields of a `T` of `(where (struct T))`: it makes one zeroed with the
+function `new` stands for, `(call (alloc.create T) a)`, as std's
+allocators always could.
 
 ## 5. A name's scope is its block or match arm
 
