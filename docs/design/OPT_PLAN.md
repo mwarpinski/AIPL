@@ -1,8 +1,9 @@
 # The optimizer: faster programs by default
 
 **Status: approved 2026-10-25: the optimizer on by default for compiled
-output, once step 1 is done. Steps 1 and 2 done 2026-10-25: `aipl
-compile` optimizes by default; step 3 next.** The owner's aim: faster programs first, a
+output, once step 1 is done. Steps 1-3 done 2026-10-25, step 4's
+knucleotide 2026-10-26, its nbody and pidigits deferred: `aipl compile`
+optimizes by default.** The owner's aim: faster programs first, a
 faster compiler second.
 
 ## What exists
@@ -191,15 +192,76 @@ parity that optimized output no longer has.
 
 ### 3. Document and measure
 
-The spec (6.x: what `aipl compile` does), the guide's one line on
+**Done 2026-10-25:** the spec and guide in step 2; docs/BENCHMARKS.md
+re-measured both ways (tools/bench.py builds each AIPL version with and
+without `--no-opt`; best of five on a quiet i9-12900H): optimized over
+unoptimized, spectralnorm 0.64 natively and 0.57 under wasmtime,
+knucleotide 0.85 and 0.86, mandelbrot 0.89 and 0.90, the rest within 5%,
+nothing slower. docs/NOTES_REVIEW.md's codegen_opt rows have verdicts: the
+speed claim true (spectralnorm more so), the missing output check fixed,
+literal truncation wrong (tests/aipl/opt/literals.aipl, in CI through
+opt_diff), the compile-error count still unchecked (no history before git).
+
+What was planned: the spec (6.x: what `aipl compile` does), the guide's one line on
 compiling, docs/BENCHMARKS.md re-measured both ways, and docs/notes'
 claims about codegen_opt given verdicts in docs/NOTES_REVIEW.md.
 
 ### 4. The next speed: the biggest gaps to C
 
-From docs/BENCHMARKS.md (before the optimizer): knucleotide 17x C
-(hashing byte strings and a check per byte), pidigits 10x (bigint without
-a 64x64 to 128-bit multiply), spectralnorm 4x (now about 2.6x), nbody 3x
-natively (more values live than registers). Each gets profiled, and a
-plan names what to change (std, the optimizer, or the native backend),
-measured before and after.
+From docs/BENCHMARKS.md, optimized, 2026-10-25 (i9-12900H): knucleotide
+8.9x C natively and 7.5x under wasmtime (hashing byte strings and a check
+per byte; 17x on the earlier machine, before the optimizer), nbody 3.3x
+natively against 1.7x under wasmtime (more values live than registers),
+binarytrees and fannkuch 2.0x natively, spectralnorm 1.7x, and pidigits
+(no C here: 10.4x on the earlier machine; bigint without a 64x64 to
+128-bit multiply). Each gets profiled, and a plan names what to change
+(std, the optimizer, or the native backend), measured before and after.
+
+**knucleotide, done 2026-10-26.** Profiled (`AIPL_PROFILE=perfmap`, new in
+aipl-run; docs/BENCHMARKS.md, "Profiling"): the program itself was under 4%;
+std/map was the rest, comparing keys 37%, probing 20%, hashing 14%. Probe
+lengths were fine (1.4 to 1.7 keys compared a lookup, simulated on the
+real k-mers; a stronger hash changed nothing), so the cost was two lookups
+per count (`get_or`, then `set`) and a comparison wrapper the inliner left.
+Changes, all general:
+- std/map `(map.add K) [m k d] -> i32`: a count in one lookup (`claim`,
+  shared with `set`). knucleotide 0.391 s to 0.258 natively (0.66), 0.332
+  to 0.225 under wasmtime (0.68): 8.9x C to 5.8x, and now faster than
+  Python (0.295).
+- The inliner binds an argument that is not an atom (or a pure one used
+  once) to a fresh `let`, in the call's order; every argument but a
+  literal, once any is bound, so a variable is read where the call read it.
+  The fresh names' prefix is found in no symbol of the program. This
+  inlined `cmp.Hash<str.Bytes>.same`; no benchmark moved by more than
+  noise.
+- Two bugs found on the way, both fixed: the optimizer folded contracts,
+  so a failed one printed rewritten text (`(shl i 1)` for `(* i 2)`), and
+  an inlined call in a contract brought a `let` that code generation
+  cannot see (contracts are now never rewritten;
+  tests/aipl/opt/contracts.aipl). And one in the language, open: a `let`
+  inside a contract verifies but does not compile (docs/HANDOFF.md, Open
+  problems).
+- Left: storing each slot's hash would skip most comparisons (about 6% of
+  knucleotide) but changes the order a map iterates in, which the
+  self-hosted compiler's output may depend on; not now.
+
+pidigits now has a C time on this machine: 7.9x natively, 4.7x under
+wasmtime.
+
+**Deferred (owner, 2026-10-26: correct, only slower than they could be;
+release work comes first):**
+- nbody natively (3.3x C, 1.7x under wasmtime): its `advance` has about 37
+  float locals, and native code keeps the 8 most used in registers for
+  the whole function, where Cranelift allocates by liveness. The fix is a
+  liveness-based register allocator in aipl_src/native/lower.aipl, its own
+  plan; it would likely help binarytrees and fannkuch natively too (2.0x
+  C, 1.6x under wasmtime).
+- pidigits (7.9x C natively, 4.7x under wasmtime): 98% in std/bigint's
+  inner loops (`mul_small`, `magnitude_sub_mul`, `magnitude_add_mul`,
+  `assign`), 32-bit limbs each in an i64. Packing the limbs in 32 bits
+  would halve the memory traffic (std only); 64-bit limbs need a 64x64 to
+  128-bit multiply, which neither AIPL nor core wasm has (wasm's "wide
+  arithmetic" proposal would add it): a language decision.
+
+The optimizer itself is done: on by default, checked, and compared with
+unoptimized builds in CI.

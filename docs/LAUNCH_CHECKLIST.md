@@ -145,9 +145,10 @@ more than usual.
   (2026-10-19, all eight notes). Its open items still to do: `str.Bytes` as a
   value struct (before L7); `io.read_file`, `os.arg`, `os.env` returning
   len -1 instead of an Option (after the seed refresh); match binders
-  scoped to their arm; "Unknown op/keyword: =" suggesting `eq`;
-  codegen_opt type-checking its output; the double parse in the
-  self-hosted compiler (a large refactor, for after launch).
+  scoped to their arm; "Unknown op/keyword: =" suggesting `eq`; the
+  double parse in the self-hosted compiler (a large refactor, for after
+  launch). (codegen_opt type-checking its output: done 2026-10-25,
+  docs/design/OPT_PLAN.md step 1.)
 - [x] **`Cargo.toml`** (fixed 2026-10-06): `authors = ["AI Swarm Team <ai@antigravity.internal>"]`
   must go (use your name); the comment "Only the aipl-run launcher uses
   wasmtime; the compiler does not" is false (the CLI runs the native
@@ -379,14 +380,15 @@ FAQ or ROADMAP.md.
   build of that source. Best done once the language settles before
   launch, so it happens once.
 - [ ] **codegen_opt.aipl's own friction** (noted 2026-10-18, from
-  docs/notes/painpoints.md items 1 and 6, for its integration behind
-  `--opt`): matching tree shapes like `(/ (* e (+ e 1)) 2)` takes chains
-  of `onode_count`/`onode_nth`/`is_form`/`node_eq`; a matcher over ONode
-  taking a pattern with placeholders would replace them, as a library in
-  that file, not a language change. Item 6's truncation of large
-  literals when printing is in its own printer (the language already
-  refuses an unsuffixed literal past 32 bits, AIPL_SPEC.md section 2):
-  check it there.
+  docs/notes/painpoints.md items 1 and 6; the optimizer is on by default
+  since 2026-10-25): matching tree shapes like `(/ (* e (+ e 1)) 2)`
+  takes chains of `onode_count`/`onode_nth`/`is_form`/`node_eq`; a
+  matcher over ONode taking a pattern with placeholders would replace
+  them, as a library in that file, not a language change. Item 6's
+  truncation of large literals: checked 2026-10-25, none (both types'
+  extremes, folded and not, print alike optimized, unoptimized, and in
+  the VM; tests/aipl/opt/literals.aipl, compared in CI by
+  tools/opt_diff.py).
 
 ## 7. Documentation: delete, merge, keep
 

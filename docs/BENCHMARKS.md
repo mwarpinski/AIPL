@@ -3,7 +3,9 @@
 Programs in `benchmarks/<name>/`, each written four ways with the same
 algorithm: AIPL (`<name>.aipl`), C (`<name>.c`), and Python (`<name>.py`);
 AIPL is built natively (`aipl compile --exe`, Linux x86-64) and as wasm
-under the launcher (`--target wasm`, wasmtime's Cranelift). They serve two
+under the launcher (`--target wasm`, wasmtime's Cranelift), each with the
+optimizer (the default since 2026-10-25, docs/design/OPT_PLAN.md) and
+without it (`--no-opt`). They serve two
 purposes: measuring speed, and finding what the language is missing (each
 program's gaps are listed below, with what was added for it).
 
@@ -12,14 +14,45 @@ program's gaps are listed below, with what was added for it).
     python3 tools/bench.py spigot     # one
 
 `tools/bench.py` builds every version, checks they all print the same
-output, and reports the best of three wall-clock runs (process start
-included) with each time relative to C. `tests/test_benchmarks.rs` runs each
+output, and reports the best of three wall-clock runs (`--runs N` for
+more; process start included) with each time relative to C (`--no-unopt`
+leaves out the `--no-opt` builds). `tests/test_benchmarks.rs` runs each
 AIPL program, wasm and native, at its small test size against
 `expected.txt` (produced by the C version), so the benchmarks are also
 correctness tests. AIPL programs time their own work with `std/time` and
 print it on stderr.
 
 ## Results
+
+Intel Core i9-12900H, Linux 7.0, gcc 13.3 -O2, Python 3.12, release build,
+2026-10-25, the optimizer on by default; best of five, on a quiet machine.
+Another machine than the tables below, so compare ratios, not times.
+
+| Benchmark | Input | AIPL native | AIPL native --no-opt | AIPL wasm (wasmtime) | AIPL wasm --no-opt | C (gcc -O2) | Python 3 |
+|---|---|---|---|---|---|---|---|
+| binarytrees | 16 | 0.258 s (2.0x) | 0.254 s (2.0x) | 0.216 s (1.7x) | 0.222 s (1.7x) | 0.127 s (1.0x) | 0.786 s (6.2x) |
+| fannkuch | 10 | 0.283 s (2.0x) | 0.281 s (2.0x) | 0.231 s (1.6x) | 0.239 s (1.7x) | 0.141 s (1.0x) | 3.248 s (23.0x) |
+| knucleotide | stdin: fasta.py 150000 | 0.391 s (8.9x) | 0.459 s (10.4x) | 0.332 s (7.5x) | 0.386 s (8.8x) | 0.044 s (1.0x) | 0.295 s (6.7x) |
+| mandelbrot | 1000 | 0.056 s (1.2x) | 0.063 s (1.4x) | 0.070 s (1.6x) | 0.078 s (1.7x) | 0.045 s (1.0x) | 1.224 s (26.9x) |
+| nbody | 1000000 | 0.115 s (3.3x) | 0.115 s (3.3x) | 0.059 s (1.7x) | 0.061 s (1.8x) | 0.035 s (1.0x) | 2.568 s (74.2x) |
+| pidigits | 10000 | 3.233 s | 3.227 s | 1.923 s | 1.932 s | n/a | 2.016 s |
+| spectralnorm | 1000 | 0.058 s (1.7x) | 0.090 s (2.7x) | 0.051 s (1.5x) | 0.089 s (2.7x) | 0.033 s (1.0x) | 3.593 s (107.4x) |
+| spigot | 10000 | 2.020 s (1.4x) | 2.013 s (1.4x) | 2.031 s (1.4x) | 2.035 s (1.4x) | 1.408 s (1.0x) | 30.027 s (21.3x) |
+
+pidigits has no C time here: its C uses GMP, whose headers (libgmp-dev)
+this machine lacks; on the machine below it was 10.4x C natively and 5.1x
+under wasmtime.
+
+**The optimizer**, optimized time over `--no-opt` time (below 1.0 is
+faster): spectralnorm 0.64 natively and 0.57 under wasmtime (its `a(i, j)`
+inlined into the hot loops), knucleotide 0.85 and 0.86 (per-byte calls
+inlined), mandelbrot 0.89 and 0.90, nbody 1.00 and 0.97; binarytrees,
+fannkuch, pidigits, and spigot 0.97 to 1.02, within this machine's 5% from
+run to run. Nothing is slower. The biggest gaps to C left are
+knucleotide (8.9x natively), nbody natively (3.3x; 1.7x under wasmtime),
+and pidigits: OPT_PLAN.md step 4.
+
+### Before the optimizer
 
 AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 2026-10-16, after generation checks (docs/design/GENERATIONS_PLAN.md:
@@ -93,6 +126,20 @@ checks for a null pointer. Measured before and after (best of 3 to 5 runs):
 binarytrees native +5%, wasm +7%; nbody native +6%, wasm +22% (its inner
 loop is struct-field reads and writes); spectralnorm +2% and +3%; fannkuch
 +8% and +6%. Every table since includes them.
+
+## Profiling
+
+`perf` names each AIPL function of a wasm build run under aipl-run with
+`AIPL_PROFILE=perfmap` (wasmtime writes /tmp/perf-PID.map):
+
+    aipl compile prog.aipl -o prog.wasm
+    AIPL_PROFILE=perfmap perf record -e cycles:u target/release/aipl-run prog.wasm < input
+    perf report --no-children --sort dso,sym     # the [JIT] rows are the program
+
+(`perf` needs `kernel.perf_event_paranoid` at 2 or below; Ubuntu ships 4:
+`sudo sysctl kernel.perf_event_paranoid=1` until the next boot.) Native
+executables carry no symbol table, so profile the wasm build.
+`AIPL_OPT_DUMP=FILE aipl compile ...` shows what the optimizer made.
 
 ## Notes per benchmark
 

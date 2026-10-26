@@ -148,6 +148,19 @@ impl WasmCompiler {
             let source = module.sources.get(&format!("fn {}", f.name));
             let mut extra_lets = Vec::new();
             collect_lets(&f.body, &mut extra_lets, &unions);
+            // a contract's lets too, after the body's, in source order
+            // (codegen.aipl collect_contract_lets): a contract is an
+            // expression, and a block in it may bind. Only its lets: its
+            // binders (a match_result on res) are typed by what they match,
+            // which for res is not known here, and need no local unless used
+            for c in &f.contracts {
+                let (Contract::Requires(e) | Contract::Ensures(e) | Contract::Invariant(e)) = c;
+                walk_expr(e, &mut |x| {
+                    if let Expr::Let { name, ty, .. } = x {
+                        extra_lets.push((name.clone(), ty.clone()));
+                    }
+                });
+            }
 
             let mut local_map: HashMap<String, u32> = HashMap::new();
             let mut current_idx = 0;

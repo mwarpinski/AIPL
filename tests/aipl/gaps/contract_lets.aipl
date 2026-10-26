@@ -1,0 +1,15 @@
+;; A contract is an expression, so a block in it may bind: both code
+;; generators take a contract's lets as locals, after the body's
+;; (tests/test_language_gaps.rs; the optimizer found that they did not,
+;; 2026-10-26). An odd argument fails the req.
+(module contract_lets
+  (import io)
+  (import os)
+  (fn halve [n:i32] -> i32
+    (req (block (let m:i32 (% n 2)) (eq m 0)))
+    (ens (block (let twice:i32 (* res 2)) (eq twice n)))
+    (let h:i32 (/ n 2))
+    h)
+  (fn main [] -> i32
+    (call io.println_int "half " (call halve (call os.arg_int 1 10)))
+    0))
