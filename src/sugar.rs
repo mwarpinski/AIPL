@@ -62,7 +62,10 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
             return Err(err(sx, ARR_OF_NEEDS_ALLOCATOR))
         }
         Some("new") if n == 2 => return Err(err(sx, NEW_NEEDS_ALLOCATOR)),
-        Some("new") if n != 3 => return Err(err(sx, "new is (new S a): the struct, then the allocator to make it from")),
+        // (new S a [f:v ...]), its fields named, is checked and rewritten
+        // where the struct's fields are known (resolver.rs named_fields)
+        Some("new") if n == 4 && matches!(&sx.items()[3], Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. }) => {}
+        Some("new") if n != 3 => return Err(err(sx, "new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name")),
         Some("arr.new") if n == 3 => return Err(err(sx, ARR_NEW_NEEDS_ALLOCATOR)),
         Some("arr.new") if n != 4 => return Err(err(sx, "arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length")),
         Some("when") if n < 2 => return Err(err(sx, "when takes a condition and a body: (when c body...)")),
@@ -88,6 +91,7 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
             out.extend(items[4..].iter().cloned());
             *sx = list_at(out, at);
         }
+        Some("new") if items.len() == 4 => *used = true,
         Some(form @ ("new" | "arr.new")) => {
             let prefix = alloc.as_ref().unwrap_or_else(|_| unreachable!());
             let f = if form == "new" { "create" } else { "array" };
