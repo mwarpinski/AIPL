@@ -45,7 +45,7 @@ fn lines_through_a_stream_match_rusts_lines_everywhere() {
         total += line.len();
     }
     want.push_str(&format!("{} lines, {} bytes\n", input.lines().count(), total));
-    want.push_str("counted 5000\ncannot open no_such_dir/missing.txt to read\n");
+    want.push_str("counted 5000\nno_such_dir/missing.txt: no such file or directory\n");
 
     let src = root().join("tests/aipl/stream/lines.aipl");
     let dir = scratch("lines");

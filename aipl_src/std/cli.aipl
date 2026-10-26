@@ -15,6 +15,7 @@
 ;; any that follow.
 (module cli
   (import str)
+  (import option)
   (import buf)
   (import vec)
   (import alloc)
@@ -233,7 +234,7 @@
   ;; parse_list over the program's own arguments.
   (fn parse [p:(ptr Parser)] -> (result (ptr Args) str) (pub)
     (let argv:(ptr (vec.Vec str)) (call (vec.make str) (get p Parser.a) 8))
-    (for k 1 (call os.arg_count) (call (vec.push str) argv (call str.from_bytes (call os.arg k))))
+    (for k 1 (call os.arg_count) (call (vec.push str) argv (call str.from_bytes (call (option.unwrap_or str.Bytes) (call os.arg k) (call str.from_str "")))))
     (call parse_list p argv))
 
   ;; parse, printing the usage and exiting 0 for --help, or the error and

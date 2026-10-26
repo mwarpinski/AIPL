@@ -144,7 +144,8 @@ more than usual.
   it), or by design (and why), all in one document: docs/NOTES_REVIEW.md
   (2026-10-19, all eight notes). Its open items still to do: `str.Bytes` as a
   value struct (before L7); `io.read_file`, `os.arg`, `os.env` returning
-  len -1 instead of an Option (after the seed refresh); match binders
+  len -1 instead of an Option (done 2026-10-26: Options and io.Error
+  results, docs/design/LANGUAGE_DECISIONS.md item 2); match binders
   scoped to their arm; "Unknown op/keyword: =" suggesting `eq`; the
   double parse in the self-hosted compiler (a large refactor, for after
   launch). (codegen_opt type-checking its output: done 2026-10-25,

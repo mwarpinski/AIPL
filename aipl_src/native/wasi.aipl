@@ -220,6 +220,13 @@
     (call x64.store c 32 (call x64.mem_index (call r15) (call r8) 1 0) (call rbx))
     (call emit_return_errno c 0)
     (call patch_all c errs)
+    ;; reading a directory: wasmtime's directory handles cannot be read, so
+    ;; it gives EBADF where Linux gives EISDIR (src/vm.rs FsRead alike)
+    (when reading
+          (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -21)
+          (let not_dir:i32 (call x64.jcc c (call x64.cc_ne)))
+          (call emit_return_errno c 8)
+          (call x64.patch_rel32 c not_dir (call buf.len c)))
     (call emit_errno_return l w)
     (call patch_all c badf)
     (call emit_return_errno c 8))

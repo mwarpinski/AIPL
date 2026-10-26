@@ -8,6 +8,7 @@
 ;; counts the body's bytes; anything else is 404.
 (module serve_demo
   (import alloc)
+  (import option)
   (import buf)
   (import str)
   (import os)
@@ -56,7 +57,7 @@
   (fn heap_top [] -> i32 (no_leak) (unsafe (mem.load32 0)))
 
   (fn main [] -> (result i32 str)
-    (match_result (call net.listen (call alloc.default) (call os.arg 1))
+    (match_result (call net.listen (call alloc.default) (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
       (ok l
         (let k:(ptr Counter) (new Counter (call alloc.default)))
         (let o:serve.Options (call serve.requests (call serve.options) (call os.arg_int 2 1)))

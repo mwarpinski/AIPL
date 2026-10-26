@@ -9,6 +9,7 @@
 ;; use them.
 (module os
   (import alloc)
+  (import option)
   (import str)
 
   ;; A fetched table: count entries, entry i's address at argv + 4i.
@@ -51,13 +52,15 @@
   (fn arg_count [] -> i32 (pub) (no_leak)
     (get (call table false) Table.count))
 
-  ;; Argument i (0 is the program), or len -1 when there is no argument i.
-  (fn arg [i:i32] -> str.Bytes (pub) (no_leak)
-    (unsafe (let t:(ptr Table) (call table false))
-    (if (and (gte i 0) (lt i (get t Table.count))) (call entry t i) (call str.bytes 0 -1))))
+  ;; Argument i (0 is the program), or none when there is no argument i.
+  (fn arg [i:i32] -> (option.Option str.Bytes) (pub) (no_leak)
+    (let t:(ptr Table) (call table false))
+    (if (and (gte i 0) (lt i (get t Table.count)))
+        (make (option.Option str.Bytes) some (call entry t i))
+        (make (option.Option str.Bytes) none)))
 
-  ;; The value of environment variable `name`, or len -1 when it is not set.
-  (fn env [name:str] -> str.Bytes (pub) (no_leak)
+  ;; The value of environment variable `name`, or none when it is not set.
+  (fn env [name:str] -> (option.Option str.Bytes) (pub) (no_leak)
     (unsafe (let key:str.Bytes (call str.from_str name))
     (let klen:i32 (get key str.Bytes.len))
     (let t:(ptr Table) (call table true))
@@ -66,14 +69,14 @@
       (when (and (gt (get e str.Bytes.len) klen)
                (and (eq (call str.byte_at e klen) 61)
                     (call str.bytes_eq (call str.bytes (call str.addr e) klen) key)))
-          (return (call str.bytes (+ (call str.addr e) (+ klen 1)) (- (get e str.Bytes.len) (+ klen 1))))))
-    (call str.bytes 0 -1)))
+          (return (make (option.Option str.Bytes) some (call str.bytes (+ (call str.addr e) (+ klen 1)) (- (get e str.Bytes.len) (+ klen 1)))))))
+    (make (option.Option str.Bytes) none)))
 
   ;; Argument i as a decimal i32, or `default` if there is no argument i or
   ;; it is not a number: (call os.arg_int 1 1000).
   (fn arg_int [i:i32 default:i32] -> i32 (pub) (no_leak)
-    (when (gte i (call arg_count)) (return default))
-    (call str.parse_int_or (call arg i) default))
+    (when (or (lt i 0) (gte i (call arg_count))) (return default))
+    (call str.parse_int_or (call entry (call table false) i) default))
 
   ;; A random i32 from the operating system's generator (sys.random).
   (fn random_i32 [] -> i32 (pub)
@@ -89,7 +92,7 @@
   ;; 0, the program's name, which is not a number).
   (fn run_os_tests [] -> i32 (pub)
     (let p:i32 0)
-    (when (eq (get (call env "AIPL_OS_TEST_SURELY_UNSET") str.Bytes.len) -1) (set! p (+ p 1)))
-    (when (eq (get (call arg (call arg_count)) str.Bytes.len) -1) (set! p (+ p 1)))
+    (when (call (option.is_none str.Bytes) (call env "AIPL_OS_TEST_SURELY_UNSET")) (set! p (+ p 1)))
+    (when (call (option.is_none str.Bytes) (call arg (call arg_count))) (set! p (+ p 1)))
     (when (and (eq (call arg_int (call arg_count) 5) 5) (eq (call arg_int 0 6) 6)) (set! p (+ p 1)))
     p))

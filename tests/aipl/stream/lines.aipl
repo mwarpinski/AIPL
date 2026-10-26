@@ -3,12 +3,13 @@
 ;; it in the VM, under aipl-run, and natively on the same input.
 (module lines
   (import stream)
+  (import io)
   (import alloc)
   (import str)
 
   ;; The lines in the file at path, or why it cannot be read.
   (fn count_lines [a:alloc.Allocator path:str] -> (result i32 str)
-    (let r:(ptr stream.Reader) (try (call stream.open a path)))
+    (let r:(ptr stream.Reader) (match_result (call stream.open a path) (ok opened opened) (err why (return (err:i32 (format "{path}: {(call io.message why)}"))))))
     (defer (call stream.close_reader r))
     (let n:i32 0)
     (while (call stream.next_line r) (set! n (+ n 1)))
@@ -35,7 +36,7 @@
         (block
           (for i 1 5001 (format_to f "row {i},{(* i i)}\n"))
           (let _ok:bool (call stream.close_writer f))))
-      (err e (format_to w "{e}\n")))
+      (err cannot (format_to w "{(call io.message cannot)}\n")))
     (match_result (call count_lines a "_lines_test.tmp")
       (ok k (format_to w "counted {k}\n"))
       (err e (format_to w "{e}\n")))

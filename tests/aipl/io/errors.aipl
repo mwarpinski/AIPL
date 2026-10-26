@@ -1,0 +1,38 @@
+;; Each kind of io.Error, from a read or a write that fails, and the words
+;; io.message gives it (LANGUAGE_DECISIONS.md item 2): tests/test_io.rs
+;; runs it in a directory holding adir/, afile, and locked.txt (no access),
+;; and every backend prints the same.
+(module errors
+  (import io)
+  (import str)
+
+  (fn read_kind [path:str] -> str
+    (match_result (call io.read_file path) (ok b "read") (err e (call io.message e))))
+
+  (fn write_kind [path:str] -> str
+    (match_result (call io.write_file path (call str.from_str "x")) (ok n "written") (err e (call io.message e))))
+
+  (fn main [] -> i32
+    (let missing:str (call read_kind "no_such_file.txt"))
+    (let dir:str (call read_kind "adir"))
+    (let deep:str (call read_kind "no_dir/x.txt"))
+    (let file_as_dir:str (call read_kind "afile/x.txt"))
+    (let locked:str (call read_kind "locked.txt"))
+    (let fine:str (call read_kind "afile"))
+    (let w_deep:str (call write_kind "no_dir/out.txt"))
+    (let w_dir:str (call write_kind "adir"))
+    (println "missing: {missing}")
+    (println "directory: {dir}")
+    (println "missing directory: {deep}")
+    (println "file as directory: {file_as_dir}")
+    (println "locked: {locked}")
+    (println "a file: {fine}")
+    (println "write into a missing directory: {w_deep}")
+    (println "write a directory: {w_dir}")
+    ;; a program branches on the kind, not on the words
+    (let created:bool
+      (match_result (call io.read_file "no_such_file.txt")
+        (ok b false)
+        (err e (eq e io.Error.not_found))))
+    (println "branch on not_found: {created}")
+    0))

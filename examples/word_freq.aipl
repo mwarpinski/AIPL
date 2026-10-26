@@ -7,6 +7,7 @@
 ;;   cd examples && ../target/debug/aipl eval word_freq.aipl -- input.txt
 (module word_freq
   (import alloc)
+  (import option)
   (import io)
   (import str)
   (import os)
@@ -82,10 +83,10 @@
     (call buf.print out))
 
   (fn main [] -> (result i32 str)
-    (let path:str.Bytes (if (gt (call os.arg_count) 1) (call os.arg 1) (call str.from_str "input.txt")))
-    (let text:str.Bytes (call io.read_path path))
-    (when (lt (get text str.Bytes.len) 0)
-      (return (err:i32 "word_freq: cannot read the input file")))
+    (let path:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "input.txt")))
+    (let text:str.Bytes (match_result (call io.read_path path)
+                          (ok t t)
+                          (err e (return (err:i32 (format "word_freq: {path}: {(call io.message e)}"))))))
     (call lowercase text)
     (call print_top (call ranked (call count_words text)) 5)
     (ok:str 0)))

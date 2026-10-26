@@ -8,6 +8,7 @@
 ;; fails is main's err: why, on standard error, and status 1.
 (module echo
   (import alloc)
+  (import option)
   (import arena)
   (import str)
   (import stream)
@@ -33,7 +34,7 @@
     n)
 
   (fn main [] -> (result i32 str)
-    (match_result (call net.listen (call alloc.default) (call os.arg 1))
+    (match_result (call net.listen (call alloc.default) (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
       (ok l
         (let ar:(ptr arena.Arena) (call arena.make 65536))
         (let a:alloc.Allocator (call alloc.of_arena ar))

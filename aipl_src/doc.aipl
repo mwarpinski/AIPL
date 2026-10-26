@@ -414,8 +414,7 @@
 
   ;; The module at path, or null if it cannot be read.
   (fn load [path:str.Bytes] -> (ptr Mod)
-    (let src:str.Bytes (call io.read_path path))
-    (when (lt (get src str.Bytes.len) 0) (return (ptr.null Mod)))
+    (let src:str.Bytes (match_result (call io.read_path path) (ok text text) (err e (return (ptr.null Mod)))))
     (call scan path src))
 
   ;; The module a name means: a path ending in .aipl, else NAME.aipl here,
@@ -578,7 +577,7 @@
     (let check:bool false)
     (let args:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 8))
     (for i first (call os.arg_count)
-      (let x:str.Bytes (call os.arg i))
+      (let x:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str "")))
       (cond
         ((call str.is x "--private") (set! private true))
         ((call str.is x "--find") (set! find true))

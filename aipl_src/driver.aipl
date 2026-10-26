@@ -10,6 +10,7 @@
 ;; host_alloc (tests/test_resolver_aipl.rs does both).
 (module driver
   (import alloc)
+  (import option)
   (import resolver)
   (import front)
   (import checker)
@@ -123,8 +124,8 @@
           (let opt_orig:(ptr origins.Origins) (call origins.make))
           (let opt_src:str.Bytes (call codegen_opt.optimize_mapped stage (call str.absent) (ptr.null codegen_opt.Stats) low opt_orig -1))
           ;; AIPL_OPT_DUMP=FILE: the optimizer's output, for reading what it did
-          (let dump:str.Bytes (call os.env "AIPL_OPT_DUMP"))
-          (when (gt (get dump str.Bytes.len) 0) (let _w:i32 (call io.write_path dump opt_src)))
+          (let dump:str.Bytes (call (option.unwrap_or str.Bytes) (call os.env "AIPL_OPT_DUMP") (call str.from_str "")))
+          (when (gt (get dump str.Bytes.len) 0) (let _w:bool (match_result (call io.write_path dump opt_src) (ok n true) (err e false))))
           (let op:(ptr checker.Problem) (call front.check (call str.addr opt_src) (get opt_src str.Bytes.len)))
           (when (neq op (ptr.null checker.Problem))
                 (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
@@ -206,15 +207,15 @@
   (fn main [] -> i32
     (unsafe (when (neq (call os.arg_count) 3) (call io.eprintln "usage: driver ENTRY.aipl OUT.wasm") (return 2))
     (let std_dir:str.Bytes (call stdpath.find))
-    (let entry:str.Bytes (call os.arg 1))
-    (let out:str.Bytes (call os.arg 2))
+    (let entry:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (let out:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 2) (call str.from_str "")))
     (let res:(ptr Out) (call compile_file (call str.addr entry) (get entry str.Bytes.len)
                                           (call str.addr std_dir) (get std_dir str.Bytes.len)))
     (let status:i32 (get res Out.status))
     (cond
       ((eq status 0)
        (let wasm:str.Bytes (call str.bytes (get res Out.addr) (get res Out.len)))
-       (if (eq (call io.write_path out wasm) (get res Out.len))
+       (if (match_result (call io.write_path out wasm) (ok n (eq n (get res Out.len))) (err e false))
            (block
              (call io.println_int "compiled, bytes: " (get res Out.len))
              0)

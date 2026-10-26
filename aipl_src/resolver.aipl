@@ -15,6 +15,7 @@
 ;; colon-separated AIPL_PATH environment variable (read with std/os).
 (module resolver
   (import alloc)
+  (import option)
   (import compiler)
   (import str)
   (import io)
@@ -105,8 +106,7 @@
   ;; tests: the file is a test build's entry, whose tests' bodies are read
   ;; (resolver.rs reads tests only then).
   (fn load [path:str.Bytes o:(ptr origins.Origins) tests:bool] -> (ptr Src)
-    (let text:str.Bytes (call io.read_path path))
-    (when (lt (get text str.Bytes.len) 0) (return (ptr.null Src)))
+    (let text:str.Bytes (match_result (call io.read_path path) (ok t t) (err e (return (ptr.null Src)))))
     (let src:(ptr Src) (new Src (call alloc.forever)))
     ;; not in the origins until it has read cleanly
     (put src Src.file -1)
@@ -1826,7 +1826,7 @@
 
   ;; The library directories to search, colon-separated: std_dir, then AIPL_PATH.
   (fn library_dirs [std_dir:str.Bytes] -> str.Bytes
-    (let path:str.Bytes (call os.env "AIPL_PATH"))
+    (let path:str.Bytes (call (option.unwrap_or str.Bytes) (call os.env "AIPL_PATH") (call str.from_str "")))
     (if (gt (get path str.Bytes.len) 0)
         (call concat (call concat std_dir (call str.from_str ":")) path)
         std_dir))

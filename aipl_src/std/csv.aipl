@@ -20,6 +20,7 @@
 ;; texts (tests/aipl/csv, tools/csv_vectors.py).
 (module csv
   (import str)
+  (import io)
   (import buf)
   (import vec)
   (import alloc)
@@ -64,11 +65,11 @@
     cr)
 
   ;; Opens a file of comma-separated rows; close closes it.
-  (fn open [a:alloc.Allocator path:str] -> (result (ptr Reader) str) (pub)
+  (fn open [a:alloc.Allocator path:str] -> (result (ptr Reader) io.Error) (pub)
     (let r:(ptr stream.Reader) (try (call stream.open a path)))
     (let cr:(ptr Reader) (call reader a r))
     (put cr Reader.owns true)
-    (ok:str cr))
+    (ok:io.Error cr))
 
   ;; Reads the text of b.
   (fn of_bytes [a:alloc.Allocator b:str.Bytes] -> (ptr Reader) (pub)

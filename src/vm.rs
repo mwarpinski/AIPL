@@ -1848,7 +1848,7 @@ impl VM {
                 let path_bytes = self.read_bytes(path_ptr, path_len);
                 let path_str = match std::str::from_utf8(&path_bytes) {
                     Ok(s) => s,
-                    Err(_) => return Ok(Value::Int(-1)),
+                    Err(_) => return Ok(Value::Int(WASI_EILSEQ)),
                 };
                 let opened = if flags == 0 {
                     File::open(path_str)
@@ -1862,7 +1862,7 @@ impl VM {
                         self.fd_table.insert(fd, file);
                         Ok(Value::Int(fd as i64))
                     }
-                    Err(_) => Ok(Value::Int(-1)),
+                    Err(e) => Ok(Value::Int(wasi_errno(&e))),
                 }
             }
             OpCode::FsRead => {
@@ -1896,7 +1896,7 @@ impl VM {
                             self.write_bytes(buf_ptr, &buf[..n]);
                             Ok(Value::Int(n as i64))
                         }
-                        Err(_) => Ok(Value::Int(-1)),
+                        Err(e) => Ok(Value::Int(wasi_errno(&e))),
                     };
                 }
                 let buf_ptr = match self.eval_expr(&args[1], scope)? {
@@ -1909,7 +1909,7 @@ impl VM {
                 };
                 let file = match self.fd_table.get_mut(&fd) {
                     Some(f) => f,
-                    None => return Ok(Value::Int(-1)),
+                    None => return Ok(Value::Int(WASI_EBADF)),
                 };
                 let mut buf = vec![0u8; max_len];
                 match file.read(&mut buf) {
@@ -1917,7 +1917,10 @@ impl VM {
                         self.write_bytes(buf_ptr, &buf[..n]);
                         Ok(Value::Int(n as i64))
                     }
-                    Err(_) => Ok(Value::Int(-1)),
+                    // a directory: wasmtime's directory handles cannot be
+                    // read (EBADF), where the OS says EISDIR
+                    Err(e) if e.raw_os_error() == Some(21) => Ok(Value::Int(WASI_EBADF)),
+                    Err(e) => Ok(Value::Int(wasi_errno(&e))),
                 }
             }
             OpCode::FsWrite => {
@@ -1938,15 +1941,15 @@ impl VM {
                 // code can print formatted bytes without a string value.
                 if fd == 1 || fd == 2 {
                     let written = if fd == 1 { std::io::stdout().write(&data) } else { std::io::stderr().write(&data) };
-                    return Ok(Value::Int(written.map(|n| n as i64).unwrap_or(-1)));
+                    return Ok(Value::Int(written.map(|n| n as i64).unwrap_or_else(|e| wasi_errno(&e))));
                 }
                 let file = match self.fd_table.get_mut(&fd) {
                     Some(f) => f,
-                    None => return Ok(Value::Int(-1)),
+                    None => return Ok(Value::Int(WASI_EBADF)),
                 };
                 match file.write(&data) {
                     Ok(n) => Ok(Value::Int(n as i64)),
-                    Err(_) => Ok(Value::Int(-1)),
+                    Err(e) => Ok(Value::Int(wasi_errno(&e))),
                 }
             }
             OpCode::FsClose => {
@@ -1957,7 +1960,7 @@ impl VM {
                 if self.fd_table.remove(&fd).is_some() || self.dirs.remove(&fd).is_some() {
                     Ok(Value::Int(0))
                 } else {
-                    Ok(Value::Int(-1))
+                    Ok(Value::Int(WASI_EBADF))
                 }
             }
             OpCode::NetListen => {
@@ -2007,8 +2010,11 @@ impl VM {
             OpCode::FsOpendir => {
                 let (ptr, len) = (self.int_operand(&args[0], scope, "fs.opendir")?, self.int_operand(&args[1], scope, "fs.opendir")?);
                 let path = self.read_bytes(ptr as u32 as usize, len as u32 as usize);
-                let Ok(path) = std::str::from_utf8(&path) else { return Ok(Value::Int(-1)) };
-                let Ok(rd) = std::fs::read_dir(path) else { return Ok(Value::Int(-1)) };
+                let Ok(path) = std::str::from_utf8(&path) else { return Ok(Value::Int(WASI_EILSEQ)) };
+                let rd = match std::fs::read_dir(path) {
+                    Ok(rd) => rd,
+                    Err(e) => return Ok(Value::Int(wasi_errno(&e))),
+                };
                 let mut entries = vec![(b".".to_vec(), WASI_DIRECTORY), (b"..".to_vec(), WASI_DIRECTORY)];
                 for e in rd.flatten() {
                     let kind = e.file_type().map(|t| wasi_filetype(&t)).unwrap_or(0);
@@ -2030,7 +2036,7 @@ impl VM {
                     Value::Int64(c) | Value::Int(c) => c as u64 as usize,
                     other => return Err(format!("fs.readdir requires an i64 cookie, got {:?}", other)),
                 };
-                let Some(entries) = self.dirs.get(&fd) else { return Ok(Value::Int(-1)) };
+                let Some(entries) = self.dirs.get(&fd) else { return Ok(Value::Int(WASI_EBADF)) };
                 let mut out = Vec::new();
                 for (k, (name, kind)) in entries.iter().enumerate().skip(cookie) {
                     out.extend_from_slice(&((k + 1) as u64).to_le_bytes());
@@ -2052,8 +2058,11 @@ impl VM {
                 let (ptr, len) = (self.int_operand(&args[0], scope, "fs.stat")?, self.int_operand(&args[1], scope, "fs.stat")?);
                 let out = self.int_operand(&args[2], scope, "fs.stat")? as u32 as usize;
                 let path = self.read_bytes(ptr as u32 as usize, len as u32 as usize);
-                let Ok(path) = std::str::from_utf8(&path) else { return Ok(Value::Int(-1)) };
-                let Ok(md) = std::fs::metadata(path) else { return Ok(Value::Int(-1)) };
+                let Ok(path) = std::str::from_utf8(&path) else { return Ok(Value::Int(WASI_EILSEQ)) };
+                let md = match std::fs::metadata(path) {
+                    Ok(md) => md,
+                    Err(e) => return Ok(Value::Int(wasi_errno(&e))),
+                };
                 let ns = |t: std::io::Result<std::time::SystemTime>| {
                     t.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64)
                 };
@@ -2097,11 +2106,11 @@ impl VM {
                 let path_bytes = self.read_bytes(path_ptr, path_len);
                 let path_str = match std::str::from_utf8(&path_bytes) {
                     Ok(s) => s,
-                    Err(_) => return Ok(Value::Int(-1)),
+                    Err(_) => return Ok(Value::Int(WASI_EILSEQ)),
                 };
                 match std::fs::remove_file(path_str) {
                     Ok(_) => Ok(Value::Int(0)),
-                    Err(_) => Ok(Value::Int(-1)),
+                    Err(e) => Ok(Value::Int(wasi_errno(&e))),
                 }
             }
             // Real OS thread spawn: the worker is a function reference (its
@@ -2511,3 +2520,43 @@ fn wasi_filetype(t: &std::fs::FileType) -> u8 {
         0
     }
 }
+
+/// A failed fs.* operation's result, as wasmtime and native executables
+/// give it: minus the WASI errno for the OS error, through the table
+/// aipl_src/native/wasi.aipl uses (anything unlisted is EIO, 29).
+fn wasi_errno(e: &std::io::Error) -> i64 {
+    let wasi = match e.raw_os_error() {
+        Some(0) => 0,
+        Some(1) => 63,
+        Some(2) => 44,
+        Some(4) => 27,
+        Some(5) => 29,
+        Some(9) => 8,
+        Some(11) => 6,
+        Some(12) => 48,
+        Some(13) => 2,
+        Some(14) => 21,
+        Some(16) => 10,
+        Some(17) => 20,
+        Some(18) => 75,
+        Some(20) => 54,
+        Some(21) => 31,
+        Some(22) => 28,
+        Some(24) => 33,
+        Some(27) => 22,
+        Some(28) => 51,
+        Some(29) => 70,
+        Some(30) => 69,
+        Some(32) => 64,
+        Some(36) => 37,
+        Some(39) => 55,
+        Some(40) => 32,
+        _ => 29,
+    };
+    -wasi
+}
+
+/// WASI's EBADF (no such open file) and EILSEQ (a path that is not UTF-8),
+/// negated as wasi_errno's are.
+const WASI_EBADF: i64 = -8;
+const WASI_EILSEQ: i64 = -25;

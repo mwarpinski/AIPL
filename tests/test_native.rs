@@ -499,17 +499,17 @@ fn wasi_programs_match_natively() {
         ),
         (
             "stdin_words",
-            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"words: \" (call str.count_words (call io.read_stdin))) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"words: \" (call str.count_words (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str \"\"))))) 0))".into(),
             Io { stdin: b"one two\nthree four five\n".to_vec(), ..Io::default() },
         ),
         (
             "stdin_large",
-            "(module m (import io) (import str) (fn main [] -> i32 (let b:str.Bytes (call io.read_stdin)) (call io.println_int \"bytes: \" (get b str.Bytes.len)) (call io.println_int \"words: \" (call str.count_words b)) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (let b:str.Bytes (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str \"\")))) (call io.println_int \"bytes: \" (get b str.Bytes.len)) (call io.println_int \"words: \" (call str.count_words b)) 0))".into(),
             Io { stdin: big_input.clone(), ..Io::default() },
         ),
         (
             "stdin_empty",
-            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"bytes: \" (get (call io.read_stdin) str.Bytes.len)) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"bytes: \" (match_result (call io.read_stdin) (ok in (get in str.Bytes.len)) (err e -1))) 0))".into(),
             Io::default(),
         ),
         (
@@ -628,8 +628,8 @@ fn file_programs_match_natively() {
     let abs_boxed = format!("{}/abs.txt", run_dir(abs_boxed_name));
     let write_read = |path: &str| {
         probe(&format!(
-            "(call io.println_int \"wrote: \" (call io.write_path (call str.from_str \"{path}\") (call str.from_str \"absolute ok\")))
-             (call io.println_int \"read: \" (get (call io.read_path (call str.from_str \"{path}\")) str.Bytes.len))"
+            "(call io.println_int \"wrote: \" (match_result (call io.write_path (call str.from_str \"{path}\") (call str.from_str \"absolute ok\")) (ok n n) (err e -1)))
+             (call io.println_int \"read: \" (match_result (call io.read_path (call str.from_str \"{path}\")) (ok b (get b str.Bytes.len)) (err e -1)))"
         ))
     };
     let big: Vec<u8> = (0..30000).map(|i| format!("w{} ", i % 977)).collect::<String>().into_bytes();
@@ -643,9 +643,9 @@ fn file_programs_match_natively() {
         (
             "write_then_read",
             probe(
-                "(call io.println_int \"wrote: \" (call io.write_file \"out.txt\" (call str.from_str \"line one\\nline two\\n\")))
-                 (call io.println_int \"lines: \" (call str.count_lines (call io.read_file \"out.txt\")))
-                 (call io.println_int \"again: \" (call io.write_file \"out.txt\" (call str.from_str \"short\")))",
+                "(call io.println_int \"wrote: \" (match_result (call io.write_file \"out.txt\" (call str.from_str \"line one\\nline two\\n\")) (ok n n) (err e -1)))
+                 (call io.println_int \"lines: \" (match_result (call io.read_file \"out.txt\") (ok b (call str.count_lines b)) (err e -1)))
+                 (call io.println_int \"again: \" (match_result (call io.write_file \"out.txt\" (call str.from_str \"short\")) (ok n n) (err e -1)))",
             ),
             Io::default(),
         ),

@@ -49,12 +49,12 @@ fn the_runner_gives_programs_args_files_stdin_and_exit_codes() {
     std::fs::write(
         dir.join("prog.aipl"),
         r#"(module prog
-  (import io) (import str) (import os)
+  (import io) (import str) (import os) (import option)
   (fn main [] -> i32
     (call io.println_int "argc: " (call os.arg_count))
-    (call io.println_int "stdin words: " (call str.count_words (call io.read_stdin)))
-    (let f:str.Bytes (call io.read_path (call os.arg 1)))
-    (call io.println_int "file bytes: " (get f str.Bytes.len))
+    (call io.println_int "stdin words: " (call str.count_words (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str "")))))
+    (let path:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (call io.println_int "file bytes: " (match_result (call io.read_path path) (ok f (get f str.Bytes.len)) (err e -1)))
     (when (gt (call os.arg_count) 2) (sys.exit 3))
     0))"#,
     )

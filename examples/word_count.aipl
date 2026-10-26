@@ -7,13 +7,14 @@
 ;;   cd examples && wasmtime run --dir=. --invoke main ../wc.wasm
 (module word_count
   (import io)
+  (import option)
   (import str)
   (import os)
   (fn main [] -> (result i32 str)
-    (let path:str.Bytes (if (gt (call os.arg_count) 1) (call os.arg 1) (call str.from_str "input.txt")))
-    (let b:str.Bytes (call io.read_path path))
-    (when (lt (get b str.Bytes.len) 0)
-        (return (err:i32 "word_count: cannot read the input file")))
+    (let path:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "input.txt")))
+    (let b:str.Bytes (match_result (call io.read_path path)
+                       (ok text text)
+                       (err e (return (err:i32 (format "word_count: {path}: {(call io.message e)}"))))))
     (call io.println_int "lines: " (call str.count_lines b))
     (call io.println_int "words: " (call str.count_words b))
     (call io.println_int "bytes: " (get b str.Bytes.len))

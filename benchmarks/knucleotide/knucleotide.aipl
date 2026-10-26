@@ -97,7 +97,8 @@
 
   (fn main [] -> i32
     (let started:i64 (call time.now))
-    (let seq:str.Bytes (call sequence_three (call io.read_stdin)))
+    (let input:str.Bytes (match_result (call io.read_stdin) (ok t t) (err e (eprintln "knucleotide: standard input: {(call io.message e)}") (return 1))))
+    (let seq:str.Bytes (call sequence_three input))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
     (call frequencies out seq 1)
     (call frequencies out seq 2)
