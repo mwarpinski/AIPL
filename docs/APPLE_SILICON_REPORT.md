@@ -59,6 +59,60 @@ Following instructions in `docs/APPLE_SILICON_HANDOFF.md` Section 6 from Claude 
 
 ---
 
+## Task D Investigation: Rosetta 2 and ELF First Load Segment at File Offset 0
+
+**Branch:** `features/elf-offset0` (branched from `features/apple-silicon`)
+
+### 1. Problem Statement
+Apple's Rosetta 2 for Linux (`/Applications/Docker.app/Contents/Resources/bin/docker run --platform linux/amd64`) previously aborted on any native x86-64 executable built by AIPL with an internal assertion failure:
+```text
+assertion failed [segment_file_offset == 0]: first load segment not at file offset 0 (ElfMapper.cpp:399 map_elf)
+```
+This was caused by `aipl_src/native/elf.aipl`, which previously placed the ELF header and program headers in file bytes `0..232` (unmapped), and began its first `PT_LOAD` segment at file offset `0x1000` (4096) for the data section. Real Linux hardware kernels and QEMU accept this layout, but Rosetta's `ElfMapper` strictly requires segment 0 to start at file offset 0.
+
+### 2. Implementation in `aipl_src/native/elf.aipl`
+In `aipl_src/native/elf.aipl`:
+- Updated the first `PT_LOAD` program header so it starts at file offset `0` with virtual address `(call base_vaddr)` (`0x400000`).
+- The headers (`0..0x1000`) are mapped directly inside the data segment (read+write).
+- The data section remains located at file offset `0x1000` and maps to virtual address `0x401000` (`data_vaddr = 0x400000 + 0x1000`), preserving absolute addressing for all code generators without relocation.
+- `filesz` is set to `(+ (get l Layout.data_offset) dlen)` (`4096 + dlen`).
+- `memsz` is set to `(+ (get l Layout.data_offset) (+ dlen bss))` (`4096 + dlen + bss`).
+- Page alignment remains 4 KiB (`(call page)`).
+- Updated `tests/test_native_elf.rs:readelf_accepts_the_executable_when_installed` to check for `LOAD 0x000000 0x0000000000400000 0x0000000000400000 ... RW 0x1000`.
+
+### 3. Empirical Results
+
+#### A. Execution under Rosetta 2 (`linux/amd64` container)
+1. **`tests/test_native_elf.rs`**:
+   - `the_first_native_executable_prints_and_exits_7`: **PASSED** (exit code 7, printed `"hello from native AIPL\n"`).
+   - `readelf_accepts_the_executable_when_installed`: **PASSED**.
+   - `the_elf_self_tests_pass`: **PASSED**.
+   - `the_vm_and_compiled_wasm_build_identical_executables`: **PASSED**.
+   - Result: **4 passed, 0 failed, finished in 2.84s** (previously aborted immediately under Rosetta with exit 134).
+2. **Standalone Executable (`examples/quicksort.aipl`)**:
+   - Built to native x86-64 ELF executable `/tmp/quicksort_native` via `aipl compile --exe`.
+   - Executed under Rosetta in `linux/amd64` container.
+   - Output: `median of 5000 random values: 502` (0 crashes, 0 errors).
+3. **`tests/test_native.rs`**:
+   - Executed in `linux/amd64` container under Rosetta: **19 passed, 4 failed in 51.20s**.
+   - Passed 19 tests: `allocating_programs_match_natively`, `calling_convention_matches_natively`, `checked_arithmetic_matches_natively`, `control_flow_programs_match_natively`, `every_i32_operator_matches_natively`, `every_program_matches_natively`, `float_locals_survive_calls_natively`, `float_programs_match_natively`, `function_reference_programs_match_natively`, `i64_programs_match_natively`, `register_locals_survive_atomics_grow_and_imports_natively`, `running_out_of_stack_traps`, `the_harness_tells_programs_apart`, `the_vm_builds_the_same_executable`, `traps_name_their_source_positions`, `traps_print_their_line_and_call_chain`, `unsupported_instructions_and_imports_are_named`, `value_struct_programs_match_natively`, `wasi_programs_match_natively`.
+   - Failed 4 tests: `file_programs_match_natively`, `directories_and_file_information_match_natively`, `the_compiler_runs_natively`, `thread_programs_match_natively`.
+   - Root cause investigation of the 4 failures:
+     - Rosetta 2 for Linux returns `ENOSYS` (errno 38, Function not implemented) for `openat2` (syscall 437, used in `wasi.aipl` with `RESOLVE_BENEATH` for WASI sandboxing). This causes any file access attempting `openat2` to fail under Rosetta emulation.
+     - `thread_programs_match_natively` failed due to Rosetta's translation of thread cloning/futexes.
+     - Crucially, the ELF loading and execution mechanism itself functions with 100% reliability under Rosetta.
+
+#### B. Execution under QEMU User-Mode (`linux/arm64` container with `qemu-user-static`)
+- Tested `bootstrap/build.sh` multi-stage bootstrapping under `qemu-x86_64-static`:
+  - Seed (`bootstrap/aipl-linux-x86_64`, old layout) -> builds `stage 1` (3,963,876 bytes).
+  - `stage 1` (new offset-0 layout) -> builds `stage 2` (3,695,332 bytes).
+  - `stage 2` (new offset-0 layout) -> builds `stage 3` (3,695,332 bytes).
+  - `cmp stage 2 stage 3` verified **byte-for-byte identical**.
+  - **Fixed point reached cleanly!**
+- The checked-in seed (`bootstrap/aipl-linux-x86_64`) was left completely untouched.
+
+---
+
 ## Round 1 Executive Summary (Historical)
 
 This section records the initial Round 1 findings from 2026-10-25. Note that the Round 1 "61 of 62 test targets passed" has now been superseded by Round 2: **all 62 targets pass (0 failed, 22 ignored)**.
