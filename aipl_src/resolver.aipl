@@ -390,7 +390,8 @@
   ;; The sugar.rs rewrites, every token they add at the form's place:
   ;; (for i s e b...) as
   ;; (counted_loop i s (- e 1) 1 b...); (and a b c ...) as (and a (and b c ...));
-  ;; (new S a) as (call (alloc.create S) a), (arr.new T a n) as
+  ;; (new S a [f:v ...]) as (block (let _new_L_C:(ptr S) (call (alloc.create S)
+  ;; a)) (put _new_L_C S.f v) ... _new_L_C) (emit_named); (arr.new T a n) as
   ;; (call (alloc.array T) a n); (arr.of T a x ...) as (block (let
   ;; _arr_of_L_C:(arr T) (call (alloc.array T) a n)) (arr.set T _arr_of_L_C
   ;; 0 x) ... _arr_of_L_C).
