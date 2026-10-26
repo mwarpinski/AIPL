@@ -1,10 +1,10 @@
-;; Optimizing compiler pipeline for the self-hosted AIPL toolchain.
-;;
-;; Sits between the front end (resolver.aipl, generics.aipl, front.aipl,
-;; fmtlower.aipl, consts.aipl) and the WebAssembly / native x86-64 backends
-;; (codegen.aipl, native/native.aipl). Operates on an explicit mutable
-;; S-expression IR (ONode) and runs four whole-module and per-function
-;; optimization passes before lowering to WebAssembly:
+;; The optimizer `aipl compile` runs by default (docs/design/OPT_PLAN.md;
+;; `--no-opt` leaves it out): a source-to-source pass over the checked,
+;; lowered program, between the front end and codegen.aipl. driver.aipl's
+;; compile_file_opt calls optimize_mapped and type-checks what it makes.
+;; Operates on an explicit mutable S-expression IR (ONode) and runs four
+;; whole-module and per-function optimization passes; its tests are a group
+;; of aipl_src/test_suite.aipl:
 ;;
 ;;   Pass 1 — Expression Simplification, Known-Bits Parity & Strength Reduction:
 ;;     * Constant folding for i32, i64, bool, and string lengths (str.len "...")
@@ -59,19 +59,11 @@
   (import compiler)
   (import consts)
   (import origins)
-  (import resolver)
-  (import front)
-  (import checker)
-  (import fmtlower)
   (import codegen)
-  (import native/native)
   (import str)
   (import buf)
   (import vec)
   (import map)
-  (import os)
-  (import io)
-  (import fmt)
 
   ;; ===== Public Types =====
 
@@ -83,13 +75,6 @@
     (read fns_eliminated:i32)
     (read fns_kept:i32)
   ] (pub))
-
-  ;; Mirrors driver.Out so compile_file is a drop-in replacement.
-  ;; status 0: wasm module at (addr, len)
-  ;; status 1: import resolution failed; message at (addr, len)
-  ;; status 2: codegen failed; len is the compile error code (AIPL_SPEC.md 6.4)
-  ;; status 3: type-check failed; diagnostic at (addr, len)
-  (struct Out [(read status:i32) (read addr:i32) (read len:i32)] (pub))
 
   (fn make_stats [] -> (ptr Stats) (pub)
     (let s:(ptr Stats) (new Stats (call alloc.forever)))
@@ -806,6 +791,29 @@
           (put cnode ONode.next body)
           (put g ONode.first nh)
           (return g))
+    ;; (when c body...): the body is statements, a value dropped (the parsers
+    ;; end it with an empty block); a constant c keeps the body as a block that
+    ;; ends with that empty block, or nothing
+    (when (call str.is ht "when")
+          (let raw_c:(ptr ONode) (call onode_nth n 1))
+          (let bhead:(ptr ONode) (get raw_c ONode.next))
+          (let cnode:(ptr ONode) (call opt_expr raw_c stats))
+          (let body:(ptr ONode) (call opt_stmt_list bhead stats))
+          (when (call is_bool_node cnode)
+                (call bump_folded stats)
+                (when (eq (get cnode ONode.ival) 0) (return (call make_empty_block pos)))
+                (let blk:(ptr ONode) (call make_empty_block pos))
+                (let last:(ptr ONode) (get blk ONode.first))
+                (put last ONode.next body)
+                (while (neq (get last ONode.next) (ptr.null ONode)) (set! last (get last ONode.next)))
+                (put last ONode.next (call make_empty_block pos))
+                (return blk))
+          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+          (let nh:(ptr ONode) (call make_sym "when" pos))
+          (put nh ONode.next cnode)
+          (put cnode ONode.next body)
+          (put g ONode.first nh)
+          (return g))
     (when (call str.is ht "counted_loop")
           (let raw_var:(ptr ONode) (call onode_nth n 1))
           (let raw_s:(ptr ONode) (get raw_var ONode.next))
@@ -864,6 +872,17 @@
           (when (call is_bool_node a)
                 (call bump_folded stats)
                 (return (if (neq (get a ONode.ival) 0) b c3)))
+          ;; a branch folded to an empty block (a (when false ...) or (while false
+          ;; ...) in it): an if has two real branches, so this is a when; the
+          ;; empty branch is void, so the other was too
+          (let b_empty:bool (and (call is_form b "block") (eq (call onode_count b) 1)))
+          (let c_empty:bool (and (call is_form c3 "block") (eq (call onode_count c3) 1)))
+          (when (or b_empty c_empty)
+                (call bump_folded stats)
+                (cond
+                  ((and b_empty c_empty) (return (if (call is_pure a) b (call make_op1 "when" a pos))))
+                  (c_empty (return (call make_op2 "when" a b pos)))
+                  (else (return (call make_op2 "when" (call make_op1 "not" a pos) c3 pos)))))
           (when (call is_form a "not")
                 (call bump_folded stats)
                 (return (call make_if (call onode_nth a 1) c3 b pos)))
@@ -1309,9 +1328,8 @@
     ;; Inspect clauses and body statements after return type
     (let cur:(ptr ONode) (get ret_node ONode.next))
     (let is_unsafe:bool false)
-    (while (and (neq cur (ptr.null ONode))
-                (and (call is_form cur "unsafe") (eq (call onode_count cur) 1)))
-      (set! is_unsafe true)
+    (while (and (neq cur (ptr.null ONode)) (call is_flag_clause cur))
+      (when (call is_form cur "unsafe") (set! is_unsafe true))
       (set! cur (get cur ONode.next)))
     ;; Do not inline functions with runtime contracts (req, ens, inv)
     (let scan:(ptr ONode) cur)
@@ -1486,6 +1504,18 @@
     (put g ONode.first first_c)
     g)
 
+  ;; Gives every node of the tree n the position pos. An inlined body takes its
+  ;; call's position: an inlined function has no frame of its own, so a trap
+  ;; in it is reported at the call, in the caller's frame, never at the
+  ;; callee's line under the caller's name.
+  (fn restamp [n:(ptr ONode) pos:i32] -> void
+    (when (eq n (ptr.null ONode)) (return))
+    (put n ONode.pos pos)
+    (let c:(ptr ONode) (get n ONode.first))
+    (while (neq c (ptr.null ONode))
+      (call restamp c pos)
+      (set! c (get c ONode.next))))
+
   ;; Recursively inlines eligible `(call callee ...)` sites in `n`.
   (fn inline_in_node [n:(ptr ONode) defs:(ptr (map.Map str.Bytes (ptr InlineDef))) self_name:str.Bytes stats:(ptr Stats)] -> (ptr ONode)
     (when (eq n (ptr.null ONode)) (return (ptr.null ONode)))
@@ -1532,6 +1562,7 @@
     (if (eq (get def InlineDef.stmt_count) 1)
         (block
           (let inlined:(ptr ONode) (call subst_with_map (get def InlineDef.body_first) env))
+          (call restamp inlined pos)
           (if (and (get def InlineDef.is_unsafe) (not (call is_form inlined "unsafe")))
               (call opt_expr (call make_op1 "unsafe" inlined pos) stats)
               (call opt_expr inlined stats)))
@@ -1542,7 +1573,9 @@
           (let b_last:(ptr ONode) bh)
           (let st:(ptr ONode) (get def InlineDef.body_first))
           (while (neq st (ptr.null ONode))
-            (let sub_st:(ptr ONode) (call opt_expr (call subst_with_map st env) stats))
+            (let raw_st:(ptr ONode) (call subst_with_map st env))
+            (call restamp raw_st pos)
+            (let sub_st:(ptr ONode) (call opt_expr raw_st stats))
             (put b_last ONode.next sub_st)
             (set! b_last sub_st)
             (set! st (get st ONode.next)))
@@ -1693,14 +1726,14 @@
       (call scan_fn_locals bscan mutated decls)
       (set! bscan (get bscan ONode.next)))
 
-    ;; Advance past leading (req ...), (ens ...), (inv ...), (unsafe) clauses
+    ;; Advance past leading (req ...), (ens ...), (inv ...), (unsafe), (no_leak) clauses
     (let prev:(ptr ONode) ret_node)
     (let cur:(ptr ONode) (get ret_node ONode.next))
     (while (and (neq cur (ptr.null ONode))
                 (or (call is_form cur "req")
                     (or (call is_form cur "ens")
                         (or (call is_form cur "inv")
-                            (and (call is_form cur "unsafe") (eq (call onode_count cur) 1))))))
+                            (call is_flag_clause cur)))))
       (let nxt:(ptr ONode) (get cur ONode.next))
       (put cur ONode.next (ptr.null ONode))
       (let oc:(ptr ONode) (call opt_expr cur stats))
@@ -1733,13 +1766,22 @@
   ;; Optimizes flat AIPL source `src` while mapping token origins through
   ;; `in_low` into `out_orig` (when non-null) and recording optimization counts
   ;; in `stats` (when non-null).
+  ;; A function's clause that is a single word after its return type,
+  ;; (unsafe) or (no_leak): not a statement of its body (the inliner once
+  ;; copied (no_leak) into callers as an expression; the type check of the
+  ;; optimizer's output found it, OPT_PLAN.md step 1).
+  (fn is_flag_clause [n:(ptr ONode)] -> bool
+    (and (eq (call onode_count n) 1) (or (call is_form n "unsafe") (call is_form n "no_leak"))))
+
   (fn optimize_mapped [src:str.Bytes root_override:str.Bytes stats:(ptr Stats) in_low:(ptr origins.Origins) out_orig:(ptr origins.Origins) orig_file:i32] -> str.Bytes (pub)
-    ;; Step 0: Erase const and enum declarations to literals and i32 first
+    ;; Step 0: constants to their literals; enums stay, so what this makes is
+    ;; still a program the checker reads (compile_file type-checks it; the code
+    ;; generator erases the enums)
     (let plain:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get src str.Bytes.len) 64)))
     (let cerr:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let const_orig:(ptr origins.Origins)
       (if (neq out_orig (ptr.null origins.Origins)) (call origins.make) (ptr.null origins.Origins)))
-    (when (not (call consts.expand src plain cerr const_orig))
+    (when (not (call consts.expand_constants src plain cerr const_orig))
         (return src))
     (let pbytes:str.Bytes (call buf.bytes plain))
     (let src_ptr:i32 (call str.addr pbytes))
@@ -1918,96 +1960,6 @@
             opt_orig
             32768)))
 
-  ;; Drop-in optimizing replacement for driver.compile_file: resolves imports,
-  ;; expands generics, type-checks, lowers format strings, runs the 4-pass
-  ;; codegen_opt optimizer, and compiles to WebAssembly.
-  (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (unsafe
-      (let res:(ptr Out) (new Out (call alloc.forever)))
-      (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-      (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
-      (let orig:(ptr origins.Origins) (call origins.make))
-      (let gen:(ptr origins.Origins) (call origins.make))
-      (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-      (when (not (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig)) (call put_text res 1 err) (return res))
-      (let arch:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-      (let agen:(ptr origins.Origins) (call origins.make))
-      (when (not (call resolver.archetypes_of pre arch err orig agen)) (call put_text res 1 err) (return res))
-      (when (gt (call buf.len arch) 0)
-            (let at:str.Bytes (call buf.bytes arch))
-            (let ap:(ptr checker.Problem) (call front.check (call str.addr at) (get at str.Bytes.len)))
-            (when (neq ap (ptr.null checker.Problem)) (call put_text res 3 (call locate orig agen ap (call str.bytes path_addr path_len))) (return res)))
-      (when (not (call resolver.expand_generics pre out err orig gen)) (call put_text res 1 err) (return res))
-      (let flat:str.Bytes (call buf.bytes out))
-      (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
-      (let problem:(ptr checker.Problem) (call front.check_formats (call str.addr flat) (get flat str.Bytes.len) fmts))
-      (when (neq problem (ptr.null checker.Problem)) (call put_text res 3 (call locate orig gen problem (call str.bytes path_addr path_len))) (return res))
-      (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
-      (let low:(ptr origins.Origins) (call origins.make))
-      (let stage_src:str.Bytes
-        (if (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low)
-            (call buf.bytes lowered)
-            flat))
-      (let opt_orig:(ptr origins.Origins) (call origins.make))
-      (let opt_src:str.Bytes
-        (call optimize_mapped stage_src (call str.absent) (ptr.null Stats) low opt_orig -1))
-      (let n:i32 (call codegen.compile_lowered
-                       (call str.addr opt_src)
-                       (get opt_src str.Bytes.len)
-                       gen
-                       orig
-                       opt_orig
-                       32768))
-      (if (gt n 0)
-          (block
-            (put res Out.status 0)
-            (put res Out.addr (mem.load32 60))
-            (put res Out.len n))
-          (block
-            (put res Out.status 2)
-            (put res Out.addr 0)
-            (put res Out.len (mem.load32 4))))
-      res))
-
-  (fn put_text [res:(ptr Out) status:i32 b:(ptr buf.Buf)] -> void
-    (let t:str.Bytes (call buf.bytes b))
-    (put res Out.status status)
-    (put res Out.addr (call str.addr t))
-    (put res Out.len (get t str.Bytes.len)))
-
-  (fn locate [orig:(ptr origins.Origins) gen:(ptr origins.Origins) first:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
-    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
-    (let pr:(ptr checker.Problem) first)
-    (while (neq pr (ptr.null checker.Problem))
-      (when (neq pr first) (call buf.push_byte b 10))
-      (call buf.push_bytes b (call buf.bytes (call locate_one orig gen pr entry)))
-      (set! pr (get pr checker.Problem.next)))
-    b)
-
-  (fn locate_one [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
-    (let at:i32 (get pr checker.Problem.at))
-    (let g:(ptr origins.Entry) (call origins.find gen at))
-    (when (neq g (ptr.null origins.Entry)) (set! at (get g origins.Entry.pos)))
-    (let r:(ptr origins.Entry) (call origins.find orig at))
-    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
-    (let path:str.Bytes entry)
-    (let line:i32 1)
-    (let col:i32 1)
-    (when (and (neq r (ptr.null origins.Entry)) (gte (get r origins.Entry.file) 0))
-          (let f:(ptr origins.File) (call origins.file_at orig (get r origins.Entry.file)))
-          (set! path (get f origins.File.path))
-          (let lc:(ptr compiler.LineCol) (call compiler.line_col (call str.addr (get f origins.File.text)) (get r origins.Entry.pos)))
-          (set! line (get lc compiler.LineCol.line))
-          (set! col (get lc compiler.LineCol.col)))
-    (call buf.push_bytes b path)
-    (call buf.push_str b ": ")
-    (call buf.push_int b line)
-    (call buf.push_byte b 58)
-    (call buf.push_int b col)
-    (call buf.push_str b ": ")
-    (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
-    b)
-
   ;; ===== Self-Tests =====
 
   (fn opt_eq [src:str want:str] -> bool
@@ -2073,7 +2025,41 @@
           1
           0)))
 
-  ;; Group runner returning pass count (5), matching test_suite.aipl convention.
+  ;; Test 6: a constant when: false is nothing; true keeps the body as a block
+  ;; ending with the empty block that drops its value; any other stays a when;
+  ;; an if whose branch folds to an empty block becomes a when
+  (fn test_when_folding [] -> i32
+    (let s:(ptr Stats) (call make_stats))
+    (let src:str "(module m (fn main [x:i32] -> i32 (when false (return 1)) (when (not false) (let y:i32 (+ x 1)) (return y)) (when (gt x 0) (return 2)) 0))")
+    (let want:str "(module m\n  (fn main [x:i32] -> i32 (block (let y:i32 (+ x 1)) (return y) (block)) (when (gt x 0) (return 2)) 0)\n)")
+    (let got:str.Bytes (call optimize_with_stats (call str.from_str src) s))
+    (let s2:(ptr Stats) (call make_stats))
+    (let src2:str "(module m (fn main [x:i32] -> i32 (if (gt x 0) (block (return 1)) (block (when false (return 2)))) (if (gt x 1) (while false (return 3)) (return 4)) 0))")
+    (let want2:str "(module m\n  (fn main [x:i32] -> i32 (when (gt x 0) (return 1)) (when (not (gt x 1)) (return 4)) 0)\n)")
+    (let got2:str.Bytes (call optimize_with_stats (call str.from_str src2) s2))
+    (if (and (call str.bytes_eq got (call str.from_str want)) (call str.bytes_eq got2 (call str.from_str want2))) 1 0))
+
+  ;; Test 7: what it must not do: drop a call or a read (only pure operands
+  ;; fold away), inline an argument that is not an atom where it would be
+  ;; evaluated twice, or where it could trap and might not be evaluated, or
+  ;; fuse shifts past 31 (counts are masked)
+  (fn test_refusals [] -> i32
+    (let s:(ptr Stats) (call make_stats))
+    (let fns:str "(struct S [x:i32]) (fn g [] -> i32 (sys.print \"g\") 7) (fn twice [x:i32] -> i32 (+ x x)) (fn pick [c:bool x:i32] -> i32 (if c x 0))")
+    (let body:str "(* (call g) 0) (% (get p S.x) 1) (and (gt (call g) 0) false) (call twice (call g)) (call twice (+ a 1)) (call pick (gt a 0) (/ a b)) (shl (shl a 16) 16)")
+    (let src:(ptr buf.Buf) (call buf.make (call alloc.default) 512))
+    (call buf.push_str src "(module m ")
+    (call buf.push_str src fns)
+    (call buf.push_str src " (fn main [a:i32 b:i32 p:(ptr S)] -> i32 ")
+    (call buf.push_str src body)
+    (call buf.push_str src " (shl (shl a 3) 4)))")
+    (let want:(ptr buf.Buf) (call buf.make (call alloc.default) 512))
+    (call buf.push_str want "(module m\n  (struct S [x:i32])\n  (fn g [] -> i32 (sys.print \"g\") 7)\n  (fn twice [x:i32] -> i32 (+ x x))\n  (fn pick [c:bool x:i32] -> i32 (if c x 0))\n  (fn main [a:i32 b:i32 p:(ptr S)] -> i32 ")
+    (call buf.push_str want body)
+    (call buf.push_str want " (shl a 7))\n)")
+    (if (call str.bytes_eq (call optimize_with_stats (call buf.bytes src) s) (call buf.bytes want)) 1 0))
+
+  ;; Group runner returning pass count (7), matching test_suite.aipl convention.
   (fn run_codegen_opt_tests [] -> i32 (pub)
     (let p:i32 0)
     (when (eq (call test_const_folding) 1) (set! p (+ p 1)))
@@ -2081,112 +2067,6 @@
     (when (eq (call test_inlining_and_dce) 1) (set! p (+ p 1)))
     (when (eq (call test_local_prop_and_branches) 1) (set! p (+ p 1)))
     (when (eq (call test_wasm_compilation_shrink) 1) (set! p (+ p 1)))
-    p)
-
-  ;; Entrypoints for `aipl test aipl_src/codegen_opt.aipl` (0 = 0 failures).
-  (fn run_tests [] -> i32 (pub)
-    (- 5 (call run_codegen_opt_tests)))
-
-  (fn run_all [] -> i32 (pub)
-    (- 5 (call run_codegen_opt_tests)))
-
-  ;; ===== CLI Entrypoint (`codegen_opt compile [--exe [--sandbox]] FILE.aipl -o OUT`) =====
-
-  (fn usage [] -> i32
-    (call io.eprintln "usage: codegen_opt compile [--exe [--sandbox]] FILE.aipl -o OUT")
-    2)
-
-  (fn fail_bytes [prefix:str b:str.Bytes] -> i32
-    (call io.write_str 2 "Error: ")
-    (call io.write_str 2 prefix)
-    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len)))
-    (call io.eprintln "")
-    1)
-
-  (fn write_int [fd:i32 n:i32] -> void
-    (unsafe
-      (let digits:i32 (mem.alloc 11))
-      (fs.write fd digits (call fmt.int_to_bytes n digits))))
-
-  (fn main [] -> i32
-    (let n:i32 (call os.arg_count))
-    (when (lt n 2) (return (call usage)))
-    (let cmd:str.Bytes (call os.arg 1))
-    (when (call str.is cmd "--test")
-        (return (call run_tests)))
-    (when (not (or (call str.is cmd "compile") (call str.is cmd "emit-opt"))) (return (call usage)))
-    (let emit_only:bool (call str.is cmd "emit-opt"))
-    (let exe:bool false)
-    (let sandbox:bool false)
-    (let in_i:i32 -1)
-    (let out_i:i32 -1)
-    (let i:i32 2)
-    (while (lt i n)
-      (let a:str.Bytes (call os.arg i))
-      (cond
-        ((call str.is a "--exe") (set! exe true))
-        ((call str.is a "--sandbox") (set! sandbox true))
-        ((call str.is a "-o")
-         (when (gte (+ i 1) n) (return (call usage)))
-         (set! out_i (+ i 1))
-         (set! i (+ i 1)))
-        ((lt in_i 0) (set! in_i i))
-        (else (return (call usage))))
-      (set! i (+ i 1)))
-    (when (or (lt in_i 0) (lt out_i 0)) (return (call usage)))
-    (when (and sandbox (not exe)) (return (call usage)))
-    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
-    (when (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")))
-    (let entry:str.Bytes (call os.arg in_i))
-    (let out:str.Bytes (call os.arg out_i))
-    (when emit_only
-          (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-          (let flat_b:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-          (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
-          (let orig:(ptr origins.Origins) (call origins.make))
-          (let gen:(ptr origins.Origins) (call origins.make))
-          (when (not (call resolver.flatten_mapped entry std_dir pre err orig))
-              (return (call fail_bytes "" (call buf.bytes err))))
-          (when (not (call resolver.expand_generics pre flat_b err orig gen))
-              (return (call fail_bytes "" (call buf.bytes err))))
-          (let flat:str.Bytes (call buf.bytes flat_b))
-          (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
-          (let _pr:(ptr checker.Problem) (call front.check_formats (call str.addr flat) (get flat str.Bytes.len) fmts))
-          (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
-          (let low:(ptr origins.Origins) (call origins.make))
-          (let stage_src:str.Bytes
-            (if (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low)
-                (call buf.bytes lowered)
-                flat))
-          (let opt_src:str.Bytes (call optimize stage_src))
-          (if (neq (call io.write_path out opt_src) (get opt_src str.Bytes.len))
-              (return (call fail_bytes "cannot write " out))
-              (return 0)))
-    (let res:(ptr Out) (call compile_file (call str.addr entry) (get entry str.Bytes.len)
-                                          (call str.addr std_dir) (get std_dir str.Bytes.len)))
-    (let status:i32 (get res Out.status))
-    (when (or (eq status 1) (eq status 3))
-        (return (call fail_bytes "" (unsafe (call str.bytes (get res Out.addr) (get res Out.len))))))
-    (when (eq status 2)
-          (call io.write_str 2 "Error: compile error ")
-          (call write_int 2 (get res Out.len))
-          (call io.eprintln " (AIPL_SPEC.md 6.4)")
-          (return 1))
-    (let bytes:str.Bytes (unsafe (call str.bytes (get res Out.addr) (get res Out.len))))
-    (when exe
-          (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call str.from_str "") (call str.from_str "")))
-          (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
-          (set! bytes (get o native.Output.exe)))
-    (when (neq (call io.write_path out bytes) (get bytes str.Bytes.len))
-        (return (call fail_bytes "cannot write " out)))
-    (call io.write_str 1 "[AIPL Optimizing Compiler] Successfully compiled '")
-    (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
-    (call io.write_str 1 "' -> '")
-    (unsafe (fs.write 1 (call str.addr out) (get out str.Bytes.len)))
-    (call io.write_str 1 "' (")
-    (call write_int 1 (get bytes str.Bytes.len))
-    (call io.println " bytes)")
-    0)
-
-  (fn _start [] -> void
-    (sys.exit (call main))))
+    (when (eq (call test_when_folding) 1) (set! p (+ p 1)))
+    (when (eq (call test_refusals) 1) (set! p (+ p 1)))
+    p))

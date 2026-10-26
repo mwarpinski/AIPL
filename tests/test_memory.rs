@@ -118,7 +118,7 @@ fn max_memory_stops_every_backend_at_the_same_place() {
     let src = root().join("tests/aipl/memory/hog.aipl");
     let (wasm, exe, bundle) = (dir.join("p.wasm"), dir.join("p"), dir.join("p_bundle"));
     for (out, extra) in [(&wasm, vec![]), (&exe, vec!["--exe"]), (&bundle, vec!["--exe", "--target", "wasm"])] {
-        let o = Command::new(AIPL).arg("compile").args(&extra).args(["--max-memory", "4M"]).arg(&src).arg("-o").arg(out).output().unwrap();
+        let o = Command::new(AIPL).args(["compile", "--no-opt"]).args(&extra).args(["--max-memory", "4M"]).arg(&src).arg("-o").arg(out).output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     }
     let printed = |o: &Output| -> String { String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect() };

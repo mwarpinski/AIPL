@@ -172,7 +172,7 @@ Prints `1234 parses to 1234; 12x to -1`.
         (err:i32 "could not write note.txt")
         (block (println "wrote {n} bytes to note.txt") (ok:str 0)))))
 ```
-Prints `wrote 15 bytes to note.txt`. If the file cannot be written, `main`'s `err` puts its message on standard error and the program exits with status 1. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && aipl run io.wasm`, or `aipl compile --exe io_demo.aipl -o io_demo && ./io_demo`.
+Prints `wrote 15 bytes to note.txt`. If the file cannot be written, `main`'s `err` puts its message on standard error and the program exits with status 1. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && aipl run io.wasm`, or `aipl compile --exe io_demo.aipl -o io_demo && ./io_demo`. `aipl compile` optimizes by default: the program behaves the same, but a trap inside a small function it inlined is reported at the call, in the caller's frame, and printed addresses differ from `aipl eval`'s; `aipl compile --no-opt` builds without the optimizer.
 
 ### 6. The standard library
 ```lisp

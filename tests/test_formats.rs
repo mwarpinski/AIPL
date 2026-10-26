@@ -33,8 +33,10 @@ fn run_all(src: &Path, name: &str) -> [Output; 3] {
     let dir = scratch(name);
     let wasm = dir.join("p.wasm");
     let exe = dir.join("p");
-    assert!(Command::new(AIPL).arg("compile").arg(src).arg("-o").arg(&wasm).status().unwrap().success());
-    assert!(Command::new(AIPL).args(["compile", "--exe"]).arg(src).arg("-o").arg(&exe).status().unwrap().success());
+    // --no-opt: the addresses printed are the VM's only unoptimized (the
+    // optimizer shrinks the data, which moves the heap)
+    assert!(Command::new(AIPL).args(["compile", "--no-opt"]).arg(src).arg("-o").arg(&wasm).status().unwrap().success());
+    assert!(Command::new(AIPL).args(["compile", "--no-opt", "--exe"]).arg(src).arg("-o").arg(&exe).status().unwrap().success());
     let out = [
         Command::new(AIPL).arg("eval").arg(src).output().unwrap(),
         Command::new(RUNNER).arg(&wasm).output().unwrap(),

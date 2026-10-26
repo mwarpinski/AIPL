@@ -1,0 +1,13 @@
+;; A trap inside a function the optimizer inlines (tools/opt_diff.py,
+;; docs/design/OPT_PLAN.md step 1). Unoptimized, the chain is `at at`
+;; (line 9) then `at main` (line 13); optimized, `at` has no frame, and the
+;; trap is reported at the call, `at main` (line 13): never at `at`'s line
+;; under `main`'s name.
+(module inline_trap
+  (import alloc)
+  (fn at [a:(arr i32) i:i32] -> i32
+    (arr.get i32 a i))
+  (fn main [] -> i32
+    (let xs:(arr i32) (arr.new i32 (call alloc.default) 3))
+    (let k:i32 (+ (arr.len xs) 9))
+    (call at xs k)))

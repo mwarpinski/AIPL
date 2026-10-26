@@ -2,8 +2,9 @@
 # platform): clippy with warnings as errors, the Rust test suite, the
 # AIPL-native suite, 3,000 mutated programs through both toolchains
 # (tools/fuzz.py), and 500 generated programs run in the VM, as wasm, and
-# natively (tools/run_fuzz.py); the fuzzers with fixed seeds. See DEVELOPING.md, "How to
-# verify everything".
+# natively (tools/run_fuzz.py), and the repository's programs and 500
+# generated ones optimized against unoptimized (tools/opt_diff.py); the
+# fuzzers with fixed seeds. See DEVELOPING.md, "How to verify everything".
 name: CI
 
 on:
@@ -33,6 +34,10 @@ jobs:
         run: python3 tools/fuzz.py --cases 3000 --seed 1
       - name: Generated programs, VM against compiled code
         run: python3 tools/run_fuzz.py --cases 500 --seed 1
+      - name: The optimizer, optimized programs against unoptimized ones
+        run: |
+          python3 tools/opt_diff.py
+          python3 tools/opt_diff.py --fuzz 500 --seed 1
 
   install:
     # install.sh, as a user runs it: shellcheck, then a full install of

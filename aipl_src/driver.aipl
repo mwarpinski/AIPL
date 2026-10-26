@@ -23,6 +23,7 @@
   (import fmt)
   (import vec)
   (import fmtlower)
+  (import codegen_opt)
 
   ;; status 0: the wasm module is at (addr, len)
   ;; status 1: import resolution failed; the message is at (addr, len)
@@ -35,21 +36,31 @@
   ;; Compiles the program whose entry file is (path_addr, path_len), searching
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len false 32768))
+    (call compile_as path_addr path_len dirs_addr dirs_len false 32768 false))
 
   ;; compile_file with memory's maximum lowered to max_pages (--max-memory).
   (fn compile_file_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages))
+    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages false))
+
+  ;; compile_file_limited through the optimizer (codegen_opt.aipl), as `aipl
+  ;; compile` builds by default (docs/design/OPT_PLAN.md); what the optimizer
+  ;; makes must type-check, or the result is status 3 naming --no-opt.
+  (fn compile_file_opt [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages true))
 
   ;; compile_file for the file's test build (resolver.rs resolve_tests): its
   ;; (test ...) items as functions, and a _start running the one its first
   ;; argument names.
   (fn compile_tests [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len true 32768))
+    (call compile_as path_addr path_len dirs_addr dirs_len true 32768 false))
 
   ;; compile_tests with memory's maximum lowered to max_pages.
   (fn compile_tests_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages))
+    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages false))
+
+  ;; compile_tests_limited through the optimizer, as compile_file_opt.
+  (fn compile_tests_opt [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages true))
 
   ;; `--max-memory SIZE` as wasm pages, or -1 (src/compiler/mod.rs
   ;; memory_pages): bytes, or K, M, or G of them (binary), a whole number of
@@ -75,7 +86,7 @@
     (let pages:i64 (shru bytes 16i64))
     (if (or (lt pages 16i64) (gt pages 32768i64)) -1 (i32.wrap pages)))
 
-  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool max_pages:i32] -> (ptr Out)
+  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool max_pages:i32 opt:bool] -> (ptr Out)
     (unsafe (let res:(ptr Out) (new Out (call alloc.forever)))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
@@ -102,11 +113,33 @@
     ;; the formatting forms become std/show calls (fmtlower.aipl)
     (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
     (let low:(ptr origins.Origins) (call origins.make))
-    (let n:i32 (if (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low)
+    (let is_lowered:bool (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low))
+    (when opt
+          ;; the optimizer (codegen_opt.aipl) rewrites the checked program; what
+          ;; it makes must still type-check, so a rewrite that breaks typing is
+          ;; a compile error naming it, never wrong code
+          (let stage:str.Bytes (if is_lowered (call buf.bytes lowered) flat))
+          (let opt_orig:(ptr origins.Origins) (call origins.make))
+          (let opt_src:str.Bytes (call codegen_opt.optimize_mapped stage (call str.absent) (ptr.null codegen_opt.Stats) low opt_orig -1))
+          (let op:(ptr checker.Problem) (call front.check (call str.addr opt_src) (get opt_src str.Bytes.len)))
+          (when (neq op (ptr.null checker.Problem))
+                (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+                (call buf.push_str eb "the optimizer made a program that does not type-check (a bug in aipl_src/codegen_opt.aipl; compile with --no-opt): ")
+                (call buf.push_bytes eb (call buf.bytes (call front.render (call str.addr opt_src) op)))
+                (call put_text res 3 eb)
+                (return res))
+          (return (call put_module res (call codegen.compile_lowered (call str.addr opt_src) (get opt_src str.Bytes.len) gen orig opt_orig max_pages))))
+    (let n:i32 (if is_lowered
                    (block
                      (let lt:str.Bytes (call buf.bytes lowered))
                      (call codegen.compile_lowered (call str.addr lt) (get lt str.Bytes.len) gen orig low max_pages))
                    (call codegen.compile_mapped (call str.addr flat) (get flat str.Bytes.len) gen orig max_pages)))
+    (call put_module res n)))
+
+  ;; res holding codegen's result: n bytes of module, or (n <= 0) the
+  ;; compile error code codegen left in cell 4.
+  (fn put_module [res:(ptr Out) n:i32] -> (ptr Out)
+    (unsafe
     (if (gt n 0)
         (block
           (put res Out.status 0)
