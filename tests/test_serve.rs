@@ -300,7 +300,7 @@ fn a_view_kept_past_its_request_stops_the_program() {
         let o = finish(server);
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(!o.status.success() && err.contains("Use after free"), "{backend}: {err}");
-        assert!(err.contains("serve_keep.aipl:19:41"), "{backend}: the trap names the handler's read: {err}");
+        assert!(err.contains("serve_keep.aipl:20:41"), "{backend}: the trap names the handler's read: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

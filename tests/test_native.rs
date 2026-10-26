@@ -514,16 +514,18 @@ fn wasi_programs_match_natively() {
         ),
         (
             "command_line_and_environment",
-            "(module m (import io) (import os) (import str)
+            "(module m (import io) (import os) (import str) (import option)
+               (fn len_of [o:(option.Option str.Bytes)] -> i32 (match o ((option.Option str.Bytes) some [b] (get b str.Bytes.len)) ((option.Option str.Bytes) none -1)))
+               (fn text_of [o:(option.Option str.Bytes)] -> str.Bytes (call (option.unwrap_or str.Bytes) o (call str.from_str \"\")))
                (fn main [] -> i32
                  (call io.println_int \"argc: \" (call os.arg_count))
-                 (for i 0 (call os.arg_count) (call io.println_int \"len: \" (get (call os.arg i) str.Bytes.len)))
-                 (call io.println_int \"byte: \" (call str.byte_at (call os.arg 2) 1))
-                 (call io.println_int \"missing: \" (get (call os.arg 9) str.Bytes.len))
-                 (call io.println_int \"probe: \" (match_result (call str.parse_int (call os.env \"AIPL_PROBE\")) (ok v v) (err e -1000)))
-                 (call io.println_int \"prefix: \" (get (call os.env \"AIPL_PRO\") str.Bytes.len))
-                 (call io.println_int \"empty: \" (get (call os.env \"AIPL_EMPTY\") str.Bytes.len))
-                 (call io.println_int \"unset: \" (get (call os.env \"AIPL_UNSET\") str.Bytes.len))
+                 (for i 0 (call os.arg_count) (call io.println_int \"len: \" (call len_of (call os.arg i))))
+                 (call io.println_int \"byte: \" (call str.byte_at (call text_of (call os.arg 2)) 1))
+                 (call io.println_int \"missing: \" (call len_of (call os.arg 9)))
+                 (call io.println_int \"probe: \" (match_result (call str.parse_int (call text_of (call os.env \"AIPL_PROBE\"))) (ok v v) (err e -1000)))
+                 (call io.println_int \"prefix: \" (call len_of (call os.env \"AIPL_PRO\")))
+                 (call io.println_int \"empty: \" (call len_of (call os.env \"AIPL_EMPTY\")))
+                 (call io.println_int \"unset: \" (call len_of (call os.env \"AIPL_UNSET\")))
                  0))".into(),
             Io {
                 args: vec!["hello".into(), "a b".into(), "".into(), "three".into()],
@@ -533,7 +535,7 @@ fn wasi_programs_match_natively() {
         ),
         (
             "no_environment",
-            "(module m (import io) (import os) (import str) (fn main [] -> i32 (call io.println_int \"home: \" (get (call os.env \"HOME\") str.Bytes.len)) 0))".into(),
+            "(module m (import io) (import os) (import str) (import option) (fn main [] -> i32 (call io.println_int \"home: \" (match (call os.env \"HOME\") ((option.Option str.Bytes) some [h] (get h str.Bytes.len)) ((option.Option str.Bytes) none -1))) 0))".into(),
             Io { env: env(&[]), ..Io::default() },
         ),
         (
@@ -758,8 +760,10 @@ fn file_programs_match_natively() {
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 5, "{text}");
-        assert!(lines[..4].iter().all(|l| l.ends_with(": -1")), "an escape was allowed:\n{text}");
-        assert_eq!(lines[4].ends_with(": -1"), sandbox, "absolute path, sandbox {sandbox}:\n{text}");
+        // refused as wasmtime refuses it: EPERM (AIPL_SPEC.md 4.C)
+        assert!(lines[..4].iter().all(|l| l.ends_with(": -63")), "an escape was allowed:\n{text}");
+        let refused = |l: &str| l.rsplit(": ").next().and_then(|n| n.parse::<i32>().ok()).is_some_and(|n| n < 0);
+        assert_eq!(refused(lines[4]), sandbox, "absolute path, sandbox {sandbox}:\n{text}");
         assert!(!root.join("escaped.txt").exists());
         let _ = std::fs::remove_dir_all(&root);
     }

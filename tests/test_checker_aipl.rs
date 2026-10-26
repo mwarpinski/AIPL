@@ -395,7 +395,11 @@ fn parsers_agree_on_original_sources() {
         assert_eq!(ours, theirs, "{name}");
         compared += 1;
     }
-    assert!(compared >= 15, "{compared}");
+    // every repository file the bare parser reads (one with a formatting
+    // form or an import's sugar needs the resolver first): 14 since
+    // examples/word_count.aipl and word_freq.aipl report a failed read with
+    // format (2026-10-26)
+    assert!(compared >= 14, "{compared}");
 }
 
 /// CK4: malformed programs reaching each of src/parser.rs's errors (and the
@@ -621,7 +625,9 @@ fn constants_expand_like_rust() {
     for rel in [
         "tests/aipl/consts_enums.aipl",
         "tests/aipl/sum_types.aipl",
-        "examples/word_count.aipl",
+        // an example with imports and no formatting forms (which the Rust
+        // resolver splits and expand.aipl leaves for fmtlower.aipl)
+        "examples/spectralnorm_par.aipl",
         "aipl_src/consts.aipl",
         "aipl_src/codegen.aipl",
         "aipl_src/native/x64.aipl",

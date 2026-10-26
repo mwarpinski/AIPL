@@ -2538,7 +2538,8 @@ fn wasi_errno(e: &std::io::Error) -> i64 {
         Some(14) => 21,
         Some(16) => 10,
         Some(17) => 20,
-        Some(18) => 75,
+        // a path leaving its directory: wasmtime says EPERM (wasi.aipl)
+        Some(18) => 63,
         Some(20) => 54,
         Some(21) => 31,
         Some(22) => 28,
