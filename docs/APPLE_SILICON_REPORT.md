@@ -587,3 +587,124 @@ The full implementation plan has been written to **`docs/design/ARM64_PLAN.md`**
    - Verification through local `linux/arm64` Docker containers, GitHub `ubuntu-24.04-arm` runners, and `qemu-aarch64-static` on x86-64 runners.
    - Phased into 12 distinct, testable tasks (NA1 through NA12).
    - Zero implementation code has been written; all development awaits owner review and approval.
+
+---
+
+## Round 2 Audit Against APPLE_SILICON_HANDOFF.md (2026-10-26)
+
+**Audited by:** Claude Opus 5.5 (High), via Antigravity. **Commit audited:** `3ec9b2e` on `features/apple-silicon`.
+This is a check of the round 2 work (commits `4445888` and `3ec9b2e`) against section 6 of the handoff and the rules in sections 1–5. Every finding below comes with the command that produced it. Where this section disagrees with the sections above, this section has the newer evidence.
+
+### A1. Verdict at a glance
+
+| Item (handoff) | Verdict | Evidence |
+|---|---|---|
+| 6.1 Pull, never rebase | Met | `git log`: `4445888` and `3ec9b2e` sit on top of `6401b20` in a straight line |
+| 6.3 Task A: `test_serve.rs` gated | Met | `git diff 6401b20..HEAD -- tests/test_serve.rs`; final Mac run: `test_serve.rs` 10 passed, 0 failed |
+| 6.2 / Task B: ignored with a reason, no early returns | Met (2 older gaps, A4) | 21 `ignore = "runs Linux x86-64 executables…"` attributes on 23 `#[test]`s in `test_native.rs`; no platform early returns left; `NATIVE` defined once in each of the 6 files, with the AIPL_SPEC.md 6.6 comment |
+| Task C: honest counts **per target** | Partly met | The report above gave only totals. Mac per-target counts are now in A2. The "0 failures repository-wide" headline is no longer true on the final commit (A3) |
+| Task C: commit by path, push, stop | Met | `4445888` pushed |
+| 6.4: files to stay out of | Met | `git diff --name-only 6401b20..HEAD -- src/resolver.rs src/selfhost.rs src/main.rs aipl_src/{aipl,driver,doc,resolver}.aipl install.sh tools/make_kit.sh bootstrap/` → empty |
+| Never refresh the seed | Met | Same command: `bootstrap/` unchanged |
+| Task D: offset 0, 4 KiB pages, nothing else | Met | `git show 3ec9b2e -- aipl_src/native/elf.aipl`: one program header line plus comments; `test_native_elf.rs` expectation updated to match |
+| Task D: runs under Rosetta / QEMU / arm64+QEMU | Partly met | Rosetta: yes (A5). QEMU: only the bootstrap; `test_native*.rs` were not run under QEMU |
+| Task D: bootstrap fixed point | Met, with a correction (A5) | Stage 3 == stage 2 under QEMU |
+| **Task D: "Do not merge it"** | **Not met** | `features/elf-offset0` was fast-forwarded into `features/apple-silicon` and pushed (`3ec9b2e`). The owner asked for this in the session, but the handoff wanted Claude to rerun CI on real x86-64 hardware first (A6) |
+| Section 5: report opens with what is broken and recommendations | Not met | Round 2 removed the "What is Broken" and "Recommendations" sections from the summary. A8 replaces them |
+
+### A2. Mac per-target results on the final commit (`3ec9b2e`)
+
+Command: `cargo test --release --no-fail-fast` on Darwin arm64 (M4). **Totals: 62 results, 421 passed, 1 failed, 22 ignored.**
+Every target passed with 0 ignored except these:
+
+| Target | Passed | Failed | Ignored |
+|---|---|---|---|
+| `test_native.rs` | 2 | 0 | 21 |
+| `test_native_elf.rs` | 3 | 0 | 1 |
+| `test_opt.rs` | 1 | **1** | 0 |
+| `test_bootstrap.rs` | 0 | 0 | 0 (compiled away, see A4) |
+
+The other targets, as passed counts: all 4, benchmarks 1, checker_aipl 13, consts_enums 5, control_flow 17, csv 2, dbg 2, deflate 2, diagnostics 14, differential 42, doc 5, doc_examples 2, early_returns 2, encode 2, eval_expr 4, exit 1, formats 5, generations 10, generics 9, hash 2, heap 7, i64 12, interfaces 8, language_gaps 7, libs 2, memory 9, memory_layout 13, native_reader 8, native_x64 2, net 4, opcode_conformance 2, par 1, pointers 11, printer 3, refs 6, regex 2, resolver_aipl 20, runner 9, selfhost 51, serve 10, stats 2, std 9, stream 2, sugar 2, sum_types 6, testing 4, text 1, threads 7, v2 8, values 16, visibility 3, wasi 17, watch 2, web 5. Plus 3 unittest binaries and the doc tests, each with 0 tests.
+`test_serve.rs` took 414.8 s and `test_selfhost.rs` 150.6 s. Neither was flaky.
+
+**The `linux/arm64` container was not rerun on `3ec9b2e`.** Only `test_native_elf.rs` was run there (3 passed, 1 ignored). Its "421 passed" figure above is from before Task D.
+
+### A3. Open failure: `test_opt.rs::an_inlined_function_traps_at_its_call` (flaky, cause unknown)
+
+```text
+thread 'an_inlined_function_traps_at_its_call' panicked at tests/test_opt.rs:38:5:
+  left: None
+ right: Some(134)
+```
+- `status.code() == None` means the program was ended by a signal instead of exiting with the trap status 134.
+- This test passed in round 2's earlier full run and in 5 separate reruns (`cargo test --release --test test_opt`, 5/5 passed). So it fails sometimes, not always.
+- **Ruled out:** `aipl` writes executables in place (`fs::write`, src/main.rs `write_executable`), and this test builds `p` twice at the same path. On macOS, overwriting a signed binary in place can get the next run killed. I tested that directly: 80 builds to the same path, each run right away, gave 0 kills (control: 80 builds to fresh paths, also 0 kills). Script: `scratch/overwrite_repro.sh`.
+- **Still open:** which signal it was, and whether `aipl-run` or the bundle got it. The assertion message does not say. Next step: have `trap()` print the `ExitStatus` (on Unix, `.signal()`) when the status is wrong. That is a change to the test's message only, not its assertion.
+
+### A4. Gates that still break the 6.2 rule (both older than round 2, owner's call)
+
+1. `tests/test_native_elf.rs::readelf_accepts_the_executable_when_installed` returns early when `readelf` is missing (lines 87–91). macOS has no `readelf` (`which readelf` → not found), so on the Mac this test prints `ok` without checking anything. That is the exact pattern 6.2 forbids. It does run in the Linux containers, where `readelf` exists.
+2. `tests/test_bootstrap.rs` starts with `#![cfg(all(target_os = "linux", target_arch = "x86_64"))]`. On the Mac the whole file compiles away, so cargo shows 0 tests instead of N ignored. Section 4 Task 2 named this file as the model to follow, so it was left alone, but under 6.2 it disappears from the count.
+
+### A5. Task D, checked again
+
+**The change** (`aipl_src/native/elf.aipl`): the first `PT_LOAD` now covers file bytes `0..0x1000+data` at `0x400000`, readable and writable. Data stays at `0x401000`, so no code generator changes. One side effect not mentioned above: the ELF and program headers are now mapped **writable** (normal linkers map them read-only or read+execute). It does no harm at run time, but Claude may want a read-only headers segment when reviewing on real hardware. `run_elf_tests` has no check for offset 0. The only check is the `readelf` test, which is skipped on the Mac (A4.1).
+
+**Correction to the bootstrap claim.** The report above says stage 1 has the "new offset-0 layout". That is wrong. Stage 1 is built by the seed's own native backend, so it has the **old** layout. Command: the bootstrap stages under `qemu-x86_64-static` in a `linux/arm64` container, reading each output's first program header:
+
+```text
+bootstrap/aipl-linux-x86_64 first PT_LOAD offset=0x1000 vaddr=0x401000
+/tmp/s1 first PT_LOAD offset=0x1000 vaddr=0x401000     (built by the seed, 32.2 s)
+/tmp/s2 first PT_LOAD offset=0x0 vaddr=0x400000        (built by stage 1, 38.2 s)
+/tmp/s3 first PT_LOAD offset=0x0 vaddr=0x400000        (built by stage 2, 33.7 s)
+stage3 == stage2
+```
+The fixed point holds. What follows from it: **`sh bootstrap/build.sh` still cannot run under Rosetta** until the owner approves a seed refresh, because both the seed and stage 1 have the old layout. (`build.sh` itself was not run: its `uname` check refuses `aarch64`. The three stages were run by hand with the same commands.)
+
+**Rosetta (`linux/amd64`, Docker Desktop):**
+- `test_native_elf.rs`: 4 passed in 2.84 s (build took 3 min). Before the change, Round 1 recorded the `ElfMapper.cpp:399` assertion when running the *seed*. The claim above that this particular test "previously aborted with exit 134" was not measured.
+- `examples/quicksort.aipl` built natively and ran: `median of 5000 random values: 502`.
+- `test_native.rs` (release, `RUST_MIN_STACK=16777216`): **19 passed, 4 failed** in 51.2 s. A debug build overflowed its stack in `every_program_matches_natively` first. CI runs release, so this was not looked into further.
+
+**Offset 0 is needed for Rosetta but is not enough.** Three of the four failures (`file_programs_match_natively`, `directories_and_file_information_match_natively`, `the_compiler_runs_natively`) all fail at opening a file. Rosetta does not implement the `openat2` system call:
+```text
+$ docker run --platform linux/amd64 rust:1 python3 -c '…libc.syscall(437, -100, b".", None, 0)…'
+openat2 result: -1 errno: 38        # ENOSYS, "function not implemented"
+```
+`aipl_src/native/wasi.aipl` (lines 435–455, `emit_openat2`) opens every file with `openat2` and `RESOLVE_BENEATH`, which is how the native backend keeps a program inside its directories (its sandbox). **So an AIPL native executable that opens any file fails under Rosetta.** Falling back to plain `openat` would loosen that sandbox, so it is a design decision for Claude and the owner, not something to slip in. The fourth failure (`thread_programs_match_natively`, `thread_global_initial_value`: status `None`, ended by a signal) is **unexplained**. The note above blaming "Rosetta's translation of thread cloning/futexes" was not measured, and neither was "100% reliability".
+
+### A6. The merge of `features/elf-offset0`
+
+The handoff (6.3 Task D) says: "Do not merge it: Claude reruns the full CI on a native Linux x86-64 machine first." It was merged by fast-forward, so `features/apple-silicon` and `features/elf-offset0` both point at `3ec9b2e`. The risk: merging `features/apple-silicon` into `development` now would also bring in an ELF change that has only run under emulation. Choices for the owner:
+- (a) keep it, and have Claude's x86-64 CI run on `features/apple-silicon` before it is merged; or
+- (b) `git revert 3ec9b2e` on `features/apple-silicon` (a new commit; no reset, no force-push), which leaves the change only on `features/elf-offset0`.
+
+### A7. Stale or wrong statements elsewhere (not edited, listed here)
+
+| Where | Says | Should say |
+|---|---|---|
+| Round 2 table, line 37 | "0 failed … 0 failures repository-wide" | Was true before Task D. On `3ec9b2e`: 1 failed (A3) |
+| Task D section, line 91 | "previously aborted … exit 134" | Not measured for this test (A5) |
+| Task D section, lines 102–103 | futex cause; "100% reliability" | Unexplained; not measured (A5) |
+| Task D section, line 108 | stage 1 "new offset-0 layout" | Old layout (A5) |
+| Round 1 commit list, line 136 | "(Upcoming Round 2 Commit)" | `4445888`, then `3ec9b2e` |
+| Task 5 summary, line 578 | elf.aipl moves to 64 KiB pages | The handoff keeps 4 KiB for x86-64; 64 KiB is an open question in ARM64_PLAN.md |
+| `tools/container_test.sh` amd64 mode | note that Rosetta asserts on offset 0x1000 | Out of date since `3ec9b2e`. The mode also ends with `cargo test … \|\| true`, which hides failures |
+
+### A8. What is broken, and what to do next
+
+**Broken or open:**
+1. `test_opt.rs` fails sometimes on the Mac with an unknown signal (A3).
+2. Native executables that open files fail under Rosetta, because Rosetta has no `openat2` (A5).
+3. `bootstrap/build.sh` cannot run under Rosetta until a seed refresh (A5).
+4. One thread test fails under Rosetta for an unknown reason (A5).
+5. The `linux/arm64` suite has not been rerun on `3ec9b2e` (A2).
+
+**Recommended, in order:**
+1. Owner: decide A6, (a) or (b).
+2. Claude: run full x86-64 CI on whichever branch holds `3ec9b2e`, as the handoff planned.
+3. Rerun `sh tools/container_test.sh arm64` on `3ec9b2e` and record the per-target counts.
+4. Make `test_opt.rs`'s `trap()` report the signal so the next failure can be diagnosed.
+5. Claude and the owner: decide how the native backend should behave when `openat2` is missing (refuse with a clear message, or something else). This matters to Mac users with `linux/amd64` containers, the group Task D is meant to help.
+6. Owner: decide whether the two older gates in A4 should become `ignore` with a reason.
+7. Fix the stale lines in A7 and the `container_test.sh` note together, in one commit.
