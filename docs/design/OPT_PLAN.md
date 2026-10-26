@@ -1,8 +1,8 @@
 # The optimizer: faster programs by default
 
 **Status: approved 2026-10-25: the optimizer on by default for compiled
-output, once step 1 is done. Steps 1 and 2 done 2026-10-25: `aipl
-compile` optimizes by default; step 3 next.** The owner's aim: faster programs first, a
+output, once step 1 is done. Steps 1-3 done 2026-10-25: `aipl
+compile` optimizes by default; step 4 next.** The owner's aim: faster programs first, a
 faster compiler second.
 
 ## What exists
@@ -191,15 +191,27 @@ parity that optimized output no longer has.
 
 ### 3. Document and measure
 
-The spec (6.x: what `aipl compile` does), the guide's one line on
+**Done 2026-10-25:** the spec and guide in step 2; docs/BENCHMARKS.md
+re-measured both ways (tools/bench.py builds each AIPL version with and
+without `--no-opt`; best of five on a quiet i9-12900H): optimized over
+unoptimized, spectralnorm 0.64 natively and 0.57 under wasmtime,
+knucleotide 0.85 and 0.86, mandelbrot 0.89 and 0.90, the rest within 5%,
+nothing slower. docs/NOTES_REVIEW.md's codegen_opt rows have verdicts: the
+speed claim true (spectralnorm more so), the missing output check fixed,
+literal truncation wrong (tests/aipl/opt/literals.aipl, in CI through
+opt_diff), the compile-error count still unchecked (no history before git).
+
+What was planned: the spec (6.x: what `aipl compile` does), the guide's one line on
 compiling, docs/BENCHMARKS.md re-measured both ways, and docs/notes'
 claims about codegen_opt given verdicts in docs/NOTES_REVIEW.md.
 
 ### 4. The next speed: the biggest gaps to C
 
-From docs/BENCHMARKS.md (before the optimizer): knucleotide 17x C
-(hashing byte strings and a check per byte), pidigits 10x (bigint without
-a 64x64 to 128-bit multiply), spectralnorm 4x (now about 2.6x), nbody 3x
-natively (more values live than registers). Each gets profiled, and a
-plan names what to change (std, the optimizer, or the native backend),
-measured before and after.
+From docs/BENCHMARKS.md, optimized, 2026-10-25 (i9-12900H): knucleotide
+8.9x C natively and 7.5x under wasmtime (hashing byte strings and a check
+per byte; 17x on the earlier machine, before the optimizer), nbody 3.3x
+natively against 1.7x under wasmtime (more values live than registers),
+binarytrees and fannkuch 2.0x natively, spectralnorm 1.7x, and pidigits
+(no C here: 10.4x on the earlier machine; bigint without a 64x64 to
+128-bit multiply). Each gets profiled, and a plan names what to change
+(std, the optimizer, or the native backend), measured before and after.
