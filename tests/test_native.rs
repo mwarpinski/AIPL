@@ -386,6 +386,10 @@ fn call_exports(wasm: &[u8], calls: &[(&str, &[i32])]) -> Vec<wasmtime::Val> {
 /// examples/math_core.aipl (the functions that allocate since NE9).
 #[test]
 fn control_flow_programs_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let flow_file = include_str!("test_control_flow.rs");
     assert_functions_match(
         "flow",
@@ -438,6 +442,10 @@ fn control_flow_programs_match_natively() {
 /// cases, and the quicksort and accounts examples.
 #[test]
 fn allocating_programs_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     assert_functions_match(
         "atomics",
         &program_from(include_str!("test_threads.rs"), "const ATOMICS"),
@@ -479,6 +487,10 @@ fn allocating_programs_match_natively() {
 /// whole output is compared; the environment is fixed for both runs.
 #[test]
 fn wasi_programs_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let env = |vars: &[(&str, &str)]| Some(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
     let big_input: Vec<u8> = (0..20000).map(|i| format!("word{i} ")).collect::<String>().into_bytes();
     let cases: Vec<(&str, String, Io)> = vec![
@@ -603,6 +615,10 @@ fn wasi_programs_match_natively() {
 /// directory is compared, so an escape would show.
 #[test]
 fn file_programs_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let input = include_bytes!("../examples/input.txt").to_vec();
     let file = |name: &str, bytes: &[u8]| (name.to_string(), bytes.to_vec());
     let with_input = |args: &[&str], sandbox: bool| Io {
@@ -770,6 +786,10 @@ fn file_programs_match_natively() {
 /// tests' results; aipl-run must give them too).
 #[test]
 fn thread_programs_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let threads = program_from(include_str!("test_threads.rs"), "const THREADS");
     for round in 0..20 {
         assert_functions_give(
@@ -1000,6 +1020,10 @@ fn spawn_reads_global() -> Vec<u8> {
 /// NE14: function references (the table and call_indirect).
 #[test]
 fn function_reference_programs_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     assert_functions_match(
         "refs",
         &program_from(include_str!("test_refs.rs"), "const REFS_PROGRAM"),
@@ -1110,6 +1134,10 @@ fn table_module(index: i32, call_type: u32, elem_offset: i32) -> Vec<u8> {
 /// -0.0 included).
 #[test]
 fn float_programs_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     assert_functions_match(
         "f64_cases",
         "(module m (import alloc)
@@ -1373,6 +1401,10 @@ fn check_result_f32(want: f32) -> Vec<wasm_encoder::Instruction<'static>> {
 /// NE12: i64. The cases of tests/test_i64.rs, function by function.
 #[test]
 fn i64_programs_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     assert_functions_match(
         "i64_cases",
         "(module m
@@ -1929,6 +1961,10 @@ fn assert_wasm_native_matches_with(name: &str, wasm: &[u8], io: &Io) {
 
 #[test]
 fn every_program_matches_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     for (name, src) in PROGRAMS {
         assert_native_matches(name, src);
     }
@@ -1939,6 +1975,10 @@ fn every_program_matches_natively() {
 
 #[test]
 fn every_i32_operator_matches_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let dir = scratch("i32_expected");
     for (name, wasm) in i32_operator_programs() {
         // the expected values are right: aipl-run sees no difference
@@ -1953,6 +1993,10 @@ fn every_i32_operator_matches_natively() {
 /// exit 0, and a deliberately different program must be told apart.
 #[test]
 fn the_harness_tells_programs_apart() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let dir = scratch("apart");
     let statuses: Vec<Option<i32>> =
         PROGRAMS.iter().map(|(_, src)| run_native(&dir, &to_native(&to_wasm(src)).unwrap()).status.code()).collect();
@@ -1988,6 +2032,10 @@ fn the_harness_tells_programs_apart() {
 /// and exit with 134. The exit-status error is not a trap: one line.
 #[test]
 fn traps_print_their_line_and_call_chain() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let dir = scratch("traps");
     let prog = dir.join("prog").display().to_string();
     for (name, reason) in [
@@ -2053,6 +2101,10 @@ fn without_positions(s: &str) -> String {
 /// call (docs/design/LINES_PLAN.md). The columns were checked by hand.
 #[test]
 fn traps_name_their_source_positions() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let dir = scratch("positions");
     for (name, chain) in [
         ("trap_div_by_zero", "  at main (prog.aipl:1:54)\n"),
@@ -2103,6 +2155,10 @@ fn traps_name_their_source_positions() {
 /// with SIGSEGV and no message.
 #[test]
 fn running_out_of_stack_traps() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let dir = scratch("stack");
     let prog = dir.join("prog").display().to_string();
     let down = "(fn down [n:i32] -> i32 (if (eq n 0) 0 (+ 1 (call down (- n 1)))))";
@@ -2187,6 +2243,10 @@ fn unsupported_instructions_and_imports_are_named() {
 /// wasmtime.
 #[test]
 fn value_struct_programs_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     for (name, path) in [("values", "tests/aipl/values.aipl"), ("values_flow", "tests/aipl/values_flow.aipl"), ("unions_by_value", "tests/aipl/unions_by_value.aipl"), ("results_by_value", "tests/aipl/results_by_value.aipl")] {
         let m = aipl_core::resolver::Resolver::resolve(&root().join(path)).unwrap();
         assert_functions_match(name, &aipl_core::printer::print_module(&m), &[], &[("main", &[])]);
@@ -2217,6 +2277,10 @@ fn the_vm_builds_the_same_executable() {
 /// second build), and building it natively twice must give the same file.
 #[test]
 fn the_compiler_runs_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let driver = WasmCompiler::compile(&Resolver::resolve(&root().join("aipl_src/driver.aipl")).unwrap()).unwrap();
     let aiplc = to_native(&driver).unwrap();
     assert_eq!(aiplc, to_native(&driver).unwrap(), "two native builds of the compiler differ");
@@ -2272,6 +2336,10 @@ fn the_compiler_runs_natively() {
 /// overflow traps with "integer overflow" (exit 134) in both.
 #[test]
 fn checked_arithmetic_matches_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let dir = scratch("checked");
     let prog = dir.join("prog").display().to_string();
     let ops = [
@@ -2315,6 +2383,10 @@ fn checked_arithmetic_matches_natively() {
 /// (wasmtime), the native executable, and the VM print the same.
 #[test]
 fn directories_and_file_information_match_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let src = r#"(module m
   (import fs)
   (import io)
@@ -2371,6 +2443,10 @@ fn directories_and_file_information_match_natively() {
 /// (and recursion), and float values on the stack across calls.
 #[test]
 fn float_locals_survive_calls_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let src = "(module m (import io)
       (fn inner [x:f64 n:i32] -> f64
         (let a:f64 x) (let b:f64 1.5) (let c:f64 0.25)
@@ -2400,6 +2476,10 @@ fn float_locals_survive_calls_natively() {
 /// function and in its callers.
 #[test]
 fn register_locals_survive_atomics_grow_and_imports_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let src = "(module m (import io)
       (fn busy [w:i32] -> i32 (unsafe)
         (let a:i32 1) (let b:i32 2) (let c:i32 3) (let d:i32 4) (let e:i32 5) (let f:i32 6) (let g:i32 7)
@@ -2428,6 +2508,10 @@ fn register_locals_survive_atomics_grow_and_imports_natively() {
 /// order, wanted in another); recursion.
 #[test]
 fn calling_convention_matches_natively() {
+    // The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
     let src = "(module m (import io)
       (fn zero [] -> i32 7)
       (fn one [a:i32] -> i32 (* a 3))

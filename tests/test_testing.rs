@@ -34,7 +34,13 @@ fn stdout(o: &Output) -> String {
 #[test]
 fn each_test_runs_alone_and_reports_alike_in_every_backend() {
     let want = std::fs::read_to_string(root().join("tests/aipl/testing/rows.expected")).unwrap();
-    for backend in [None, Some("--vm"), Some("--native"), Some("--all-backends")] {
+    // The native backend targets Linux x86-64 only.
+    let backends: &[Option<&str>] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        &[None, Some("--vm"), Some("--native"), Some("--all-backends")]
+    } else {
+        &[None, Some("--vm")]
+    };
+    for backend in backends {
         let mut args = vec!["test"];
         args.extend(backend);
         args.push(ROWS);

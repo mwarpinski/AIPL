@@ -38,6 +38,7 @@ fn program(name: &str, lib: &str, body: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("aipl_visibility_{}_{}", std::process::id(), name));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap_or(dir);
     std::fs::write(dir.join("lib.aipl"), lib).unwrap();
     std::fs::write(dir.join("main.aipl"), format!("(module main (import lib) (import alloc) (fn main [] -> i32 {body}))")).unwrap();
     dir.join("main.aipl")

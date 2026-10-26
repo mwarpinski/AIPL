@@ -171,7 +171,13 @@ fn threads_run_under_the_runner() {
 /// x86-64) and the launcher bundle (`--target wasm`).
 #[test]
 fn standalone_executables() {
-    for target in ["native", "wasm"] {
+    // The native backend targets Linux x86-64 only.
+    let targets: &[&str] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        &["native", "wasm"]
+    } else {
+        &["wasm"]
+    };
+    for target in targets {
         standalone_executables_for(target);
     }
     // the default: native code on Linux x86-64, the launcher bundle elsewhere
@@ -186,7 +192,17 @@ fn standalone_executables() {
 /// inside), or the launcher with a module appended.
 fn assert_kind(path: &Path, target: &str) {
     let bytes = std::fs::read(path).unwrap();
-    assert!(bytes.starts_with(b"\x7fELF"), "{}: not an executable", path.display());
+    if cfg!(target_os = "macos") {
+        assert!(
+            bytes.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+                || bytes.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
+                || bytes.starts_with(&[0xca, 0xfe, 0xba, 0xbe]),
+            "{}: not a Mach-O executable",
+            path.display()
+        );
+    } else {
+        assert!(bytes.starts_with(b"\x7fELF"), "{}: not an executable", path.display());
+    }
     match target {
         "native" => {
             assert!(!bytes.ends_with(b"AIPLEXE2"), "{}: a launcher bundle, not native code", path.display());

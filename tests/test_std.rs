@@ -361,10 +361,15 @@ fn bigint_matches_python_integers() {
     let dir = scratch("bigint_ops");
     let wasm_path = dir.join("bigint_ops.wasm");
     std::fs::write(&wasm_path, &wasm).unwrap();
-    let exe = dir.join("bigint_ops");
-    std::fs::write(&exe, aipl_core::native::executable(&wasm, false).unwrap()).unwrap();
-    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-    for (way, cmd) in [("wasm", vec![env!("CARGO_BIN_EXE_aipl-run").into(), wasm_path.clone()]), ("native", vec![exe.clone()])] {
+    let mut ways = vec![("wasm", vec![PathBuf::from(env!("CARGO_BIN_EXE_aipl-run")), wasm_path.clone()])];
+    // The native backend targets Linux x86-64 only.
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        let exe = dir.join("bigint_ops");
+        std::fs::write(&exe, aipl_core::native::executable(&wasm, false).unwrap()).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ways.push(("native", vec![exe.clone()]));
+    }
+    for (way, cmd) in ways {
         let mut child = loop {
             match std::process::Command::new(&cmd[0]).args(&cmd[1..]).stdout(std::process::Stdio::piped()).spawn() {
                 Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => std::thread::sleep(std::time::Duration::from_millis(10)),
