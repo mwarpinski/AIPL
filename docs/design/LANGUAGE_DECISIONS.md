@@ -281,8 +281,17 @@ would be whichever variant happens to be declared first.
 
 Order: (a) the named forms in both toolchains, keeping the old (done);
 (b) `(zero T)` (done); (c) the seed refreshed (owner approved,
-2026-10-26); (d) the repository rewritten by a tool, its dry run read
-first; (e) the old forms removed, with messages that show the new ones.
+2026-10-26, done); (d) the repository rewritten by tools/named_fields.py,
+its dry run read first (done: 483 sites, nine by hand where a union field
+was set later, the union having no zero); (e) the old forms removed, with
+messages that show the new ones.
+
+For (e): `(new S a)` is refused by the sugar pass alone. A value struct's
+positional `make` is also the form after resolution (the named one is
+rewritten to it), so it is refused only in source, at the names stage;
+the bare parsers and checkers keep reading it. tests/test_checker_aipl.rs
+hands the same flat text to the Rust resolver and to checker.aipl, so its
+nine value-struct cases need the Rust side to read flat text too.
 
 ## 5. A name's scope is its block or match arm
 
