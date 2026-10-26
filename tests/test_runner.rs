@@ -7,6 +7,9 @@ use std::process::{Command, Output, Stdio};
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const RUNNER: &str = env!("CARGO_BIN_EXE_aipl-run");
 
+/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
@@ -173,8 +176,7 @@ fn threads_run_under_the_runner() {
 /// x86-64) and the launcher bundle (`--target wasm`).
 #[test]
 fn standalone_executables() {
-    // The native backend targets Linux x86-64 only.
-    let targets: &[&str] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    let targets: &[&str] = if NATIVE {
         &["native", "wasm"]
     } else {
         &["wasm"]
@@ -186,7 +188,7 @@ fn standalone_executables() {
     let dir = scratch("exe_default");
     let wc = dir.join("word_count");
     compile(&root().join("examples/word_count.aipl"), &wc, &["--exe"]);
-    assert_kind(&wc, if cfg!(all(target_os = "linux", target_arch = "x86_64")) { "native" } else { "wasm" });
+    assert_kind(&wc, if NATIVE { "native" } else { "wasm" });
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -284,7 +286,7 @@ fn target_needs_exe_and_a_known_name() {
 fn value_structs_build_for_both_targets() {
     let dir = scratch("exe_values");
     let src = root().join("tests/aipl/values_flow.aipl");
-    let targets: &[&str] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) { &["wasm", "native"] } else { &["wasm"] };
+    let targets: &[&str] = if NATIVE { &["wasm", "native"] } else { &["wasm"] };
     for target in targets {
         let exe = dir.join(format!("flow_{target}"));
         compile(&src, &exe, &["--exe", &format!("--target={target}")]);

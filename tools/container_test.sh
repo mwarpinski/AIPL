@@ -25,17 +25,29 @@ fi
 
 case "$MODE" in
     arm64)
-        echo "== Running test suite in linux/arm64 container (native speed)..."
+        echo "== Running verification in linux/arm64 container (native speed)..."
         "$DOCKER" run --rm --platform linux/arm64 \
             -v "$ROOT":/repo:ro \
             rust:1 bash -c '
                 set -eu
+                rustup component add clippy
                 cp -r /repo /build && cd /build
                 echo "Container OS / Arch:" && uname -a
                 echo "Rust version:" && rustc --version
-                echo "Building:" && cargo build --release -q
+                echo "Building release:"
+                cargo build --release
+                echo "Running clippy:"
+                cargo clippy --release --all-targets -- -D warnings
                 echo "Running test suite:"
                 cargo test --release --no-fail-fast
+                echo "Running AIPL test suite:"
+                ./target/release/aipl test aipl_src/test_suite.aipl
+                echo "Running fuzz.py (3000 cases):"
+                python3 tools/fuzz.py --cases 3000 --seed 1
+                echo "Running run_fuzz.py (500 cases):"
+                python3 tools/run_fuzz.py --cases 500 --seed 1
+                echo "Running opt_diff.py:"
+                python3 tools/opt_diff.py
             '
         ;;
     amd64)

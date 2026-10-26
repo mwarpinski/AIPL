@@ -1,56 +1,86 @@
 # AIPL on Apple Silicon: Porting and Verification Report
 
-**Date:** 2026-10-25  
+**Date:** 2026-10-26 (Round 2 update; Round 1: 2026-10-25)  
 **Platform:** macOS 27.0.1 (Darwin 27.0.0 arm64, Apple M4)  
 **Branch:** `features/apple-silicon`  
 **Agent:** Gemini 3.8 Flash (High)
 
 ---
 
-## Executive Summary
+## Round 2 Verification (2026-10-26)
 
-This report documents the verification, gating, testing, container validation, and architectural plan for running and supporting AIPL on Apple Silicon (ARM64 macOS) and ARM64/x86-64 Linux containers.
+Following instructions in `docs/APPLE_SILICON_HANDOFF.md` Section 6 from Claude and the owner, all protected file restrictions were lifted, `features/when` and the optimizer were merged into `features/apple-silicon`, honest test suite gating was implemented, and the complete verification suite was executed on both native macOS Apple Silicon and the `linux/arm64` container.
 
-### What Works on the Mac
+### 1. Honest Test Suite Gating & Correction (Tasks A & B)
+1. **`tests/test_serve.rs` Gated**:
+   - `a_fresh_instance_per_request_isolates_a_crash`: `native` host is tested only where `NATIVE` is true; `aipl serve --fresh` and `bundle` run on all platforms.
+   - `a_fresh_server_that_cannot_listen_says_so`: `native` target is compiled and tested only where `NATIVE` is true; `bundle` and `serve` run everywhere. The port-in-use error message dynamically formats `TcpListener::bind(&at).unwrap_err()` instead of hardcoding `(os error 98)`, accommodating Darwin's `(os error 48)`.
+   - Result: All 10 tests in `tests/test_serve.rs` pass cleanly on both macOS and `linux/arm64`!
+2. **Honest `cfg_attr` Attributes (Section 6.2)**:
+   - Removed all silent early `return` statements across all 21 test functions in `tests/test_native.rs`.
+   - Marked all 21 native tests in `tests/test_native.rs` with:
+     ```rust
+     #[test]
+     #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+                ignore = "runs Linux x86-64 executables (the native backend)")]
+     ```
+   - Updated `tests/test_native_elf.rs:the_first_native_executable_prints_and_exits_7` to use the same `cfg_attr(..., ignore = ...)`.
+   - Defined `const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));` in `test_benchmarks.rs`, `test_eval_expr.rs`, `test_runner.rs`, `test_std.rs`, `test_testing.rs`, and `test_serve.rs`.
+   - In multi-backend tests, non-native backends (Wasm, VM, Launcher Bundle) continue running, and only the native branch is skipped on non-x86_64 Linux platforms.
+
+### 2. Full Verification Suite Results (Task C)
+
+| Check | macOS Apple Silicon (Darwin arm64, Apple M4) | Linux Container (`linux/arm64`, Docker Desktop) | Notes |
+|---|---|---|---|
+| `cargo build --release` | **Passed** (0.14s) | **Passed** | Clean release build |
+| `cargo clippy --release --all-targets -- -D warnings` | **Passed** (0 warnings) | **Passed** (0 warnings) | Clippy clean |
+| `cargo test --release --no-fail-fast` | **62 targets, 422 passed, 0 failed, 22 ignored** | **62 targets, 421 passed, 0 failed, 22 ignored** | **0 failures repository-wide!** |
+| `./target/release/aipl test aipl_src/test_suite.aipl` | **37 groups passed** | **37 groups passed** | All language & stdlib groups passed |
+| `python3 tools/fuzz.py --cases 3000 --seed 1` | **3,000 cases: 0 failing** | **3,000 cases: 0 failing** | Differential toolchain fuzzer |
+| `python3 tools/run_fuzz.py --cases 500 --seed 1` | **500 cases: 0 failing** | **500 cases: 0 failing** | VM vs compiled fuzzer |
+| `python3 tools/opt_diff.py` | **81 programs: same 68, same failure 12, skip 1** | **81 programs: same 68, same failure 12, skip 1** | 0 DIFFERS lines |
+
+*(Note on test count difference: macOS has 422 passed vs 421 on Linux because `tests/test_runner.rs:macos_launcher_bundle_executes_and_preserves_behavior` is `#[cfg(target_os = "macos")]`).*
+
+### 3. Gated Tests & Multi-Backend Status Breakdown
+- **Whole Tests Ignored (22 total)**:
+  - `tests/test_native.rs` (21 tests): `allocating_programs_match_natively`, `calling_convention_matches_natively`, `checked_arithmetic_matches_natively`, `control_flow_programs_match_natively`, `directories_and_file_information_match_natively`, `every_i32_operator_matches_natively`, `every_program_matches_natively`, `file_programs_match_natively`, `float_locals_survive_calls_natively`, `float_programs_match_natively`, `function_reference_programs_match_natively`, `i64_programs_match_natively`, `register_locals_survive_atomics_grow_and_imports_natively`, `running_out_of_stack_traps`, `the_compiler_runs_natively`, `the_harness_tells_programs_apart`, `thread_programs_match_natively`, `traps_name_their_source_positions`, `traps_print_their_line_and_call_chain`, `value_struct_programs_match_natively`, `wasi_programs_match_natively`.
+  - `tests/test_native_elf.rs` (1 test): `the_first_native_executable_prints_and_exits_7`.
+- **Multi-Backend Tests (Gated portion skipped, remaining backends passed)**:
+  - `tests/test_benchmarks.rs:every_benchmark_prints_its_expected_output` (runs `wasm`, skips `native`)
+  - `tests/test_eval_expr.rs:values_print_with_their_types_in_every_backend` (runs `""`, `--wasm`, skips `--native`)
+  - `tests/test_eval_expr.rs:errors_are_at_the_expressions_own_lines_and_columns` (runs `""`, `--wasm`, skips `--native`)
+  - `tests/test_runner.rs:standalone_executables` (runs `wasm`, skips `native`)
+  - `tests/test_runner.rs:value_structs_build_for_both_targets` (runs `wasm`, skips `native`)
+  - `tests/test_serve.rs:a_fresh_instance_per_request_isolates_a_crash` (runs `aipl serve --fresh`, `bundle`, skips `native`)
+  - `tests/test_serve.rs:a_fresh_server_that_cannot_listen_says_so` (runs `bundle`, `serve`, skips `native`)
+  - `tests/test_std.rs:std_bigint_computes_forty_thousand_digits_and_hashes_them` (runs `wasm`, skips `native`)
+  - `tests/test_testing.rs:each_test_runs_alone_and_reports_alike_in_every_backend` (runs `None`, `--vm`, skips `--native`, `--all-backends`)
+
+---
+
+## Round 1 Executive Summary (Historical)
+
+This section records the initial Round 1 findings from 2026-10-25. Note that the Round 1 "61 of 62 test targets passed" has now been superseded by Round 2: **all 62 targets pass (0 failed, 22 ignored)**.
+
+### What Works on the Mac (Round 1 Findings)
 - **Build & Core Toolchain**: `cargo build --release` compiles cleanly in 14 seconds. The AIPL CLI, bytecode VM (`aipl eval`), type verifier (`aipl verify`), documentation generator (`aipl doc`), and wasm executor (`aipl run`) all function with 100% parity to Linux.
 - **Standalone Executables (Launcher Bundle)**: On macOS Darwin, `aipl compile --exe` produces a 14.2 MB Mach-O executable bundling `aipl-run` and compiled wasm bytecode. Because AMFI verifies ad-hoc code directory signatures at page-fault time and reads the appended program as data, the bundle is **not killed** by the macOS kernel ("Killed: 9"). It executes immediately at Cranelift JIT speed and supports both CLI programs and long-running `--listen` and `--serve` network workers.
-- **Test Suite**: 61 out of 62 test targets pass cleanly on macOS (the single failure is `tests/test_serve.rs`, which is protected from editing on this branch).
 - **Clippy**: `cargo clippy --release --all-targets -- -D warnings` passes with 0 warnings.
-- **Fuzzers**: Both `python3 tools/fuzz.py --cases 3000 --seed 1` (3,000 cases) and `python3 tools/run_fuzz.py --cases 500 --seed 1` (500 cases) pass with 0 failures.
 - **Docker Desktop Linux Containers**:
-  - `linux/arm64` runs at 100% native Apple Silicon hardware speed. 61 of 62 test targets pass (identical to macOS). `aipl compile --exe` creates native Linux aarch64 ELF executables that execute cleanly.
+  - `linux/arm64` runs at 100% native Apple Silicon hardware speed. `aipl compile --exe` creates native Linux aarch64 ELF executables that execute cleanly.
   - `linux/amd64` under QEMU user-mode emulation successfully compiles and executes the bootstrap seed (`bootstrap/aipl-linux-x86_64`) and produces a working stage-1 compiler.
 
 ### What Was Changed on `features/apple-silicon` (Commit by Commit)
 1. **`9a27dbe`**: *Gate native Linux x86-64 test executions and resolve macOS tempdir symlinks*
-   - Gated 32 tests across 7 test files (`test_native.rs`, `test_benchmarks.rs`, `test_eval_expr.rs`, `test_native_elf.rs`, `test_runner.rs`, `test_std.rs`, `test_testing.rs`) that attempted to execute Linux x86-64 ELF binaries on macOS.
-   - Canonicalized temporary test directory paths in `tests/test_visibility.rs` to resolve macOS `/var` -> `/private/var` symlink discrepancies.
-   - Extended `tests/test_runner.rs:assert_kind` to recognize Mach-O 64-bit arm64 magic headers (`0xcf 0xfa 0xed 0xfe`) on macOS.
+   - Initial gating of native tests and temp dir canonicalization. (Replaced in Round 2 with honest `cfg_attr` ignore attributes).
 2. **`78a7fcc`**: *Add macOS standalone launcher bundle test in tests/test_runner.rs*
-   - Added `macos_launcher_bundle_executes_and_preserves_behavior` to `tests/test_runner.rs` to ensure `--exe` standalone bundles remain functional on Darwin.
+   - Added `macos_launcher_bundle_executes_and_preserves_behavior` to `tests/test_runner.rs`.
 3. **`a5572c8`**: *Update docs/APPLE_SILICON_REPORT.md with Task 1, 2, and 3 findings*
-   - Documented environment specifications, manual toolchain checks, test suite failure triage, and codesign analysis.
 4. **`75c0b90`**: *Add tools/container_test.sh helper for container verification*
-   - Added automated script for reproducing `linux/arm64`, `linux/amd64` (Rosetta), and `qemu` container checks.
-5. *(Current Commit)*: *Add Task 4/5 report sections and propose docs/design/ARM64_PLAN.md*
-   - Documented container results, Rosetta 2 `ElfMapper` limitation, and completed Task 5 design plan for native ARM64.
-
-### What is Broken and Why
-1. **`tests/test_serve.rs` (2 tests fail on macOS and `linux/arm64`)**:
-   - `a_fresh_server_that_cannot_listen_says_so` and `a_fresh_instance_per_request_isolates_a_crash` fail with exit 126 (`cannot execute binary file`) because they invoke `aipl compile --exe --target native`.
-   - **Why it was not fixed on this branch**: `tests/test_serve.rs` is on the protected file list (being modified by Claude on `features/when`). Per handoff instructions Section 3, this file was left untouched.
-   - **Resolution for Claude / Owner**: Add `if !cfg!(all(target_os = "linux", target_arch = "x86_64")) { return; }` to those two tests in `tests/test_serve.rs`.
-2. **Rosetta 2 for Linux Limitation with the Native Seed**:
-   - Running `./bootstrap/aipl-linux-x86_64` under Docker Desktop's Rosetta 2 for Linux panics with: `assertion failed [segment_file_offset == 0]: first load segment not at file offset 0 (ElfMapper.cpp:399 map_elf)`.
-   - **Cause**: Apple's Rosetta 2 translation layer requires the first `PT_LOAD` segment to start at file offset 0. `aipl_src/native/elf.aipl` starts its first load segment at `0x1000`. Real Linux kernels and QEMU accept this, but Rosetta crashes.
-   - **Resolution**: Under QEMU user-mode (`qemu-x86_64-static`), the seed runs 100% reliably. Furthermore, the ARM64 design plan updates the ELF writer to start segment 0 at file offset 0.
-
-### Recommendations
-1. **Merge Test Gating**: Cherry-pick or merge commits `9a27dbe` and `78a7fcc` from `features/apple-silicon` into `development` to ensure macOS and non-x86 platforms have a clean CI signal.
-2. **Apply 2-Line Gate on `features/when`**: Update `tests/test_serve.rs` to gate the two native server tests.
-3. **Approve `docs/design/ARM64_PLAN.md`**: Proceed with steps NA1–NA12 to implement the Linux AArch64 native ELF backend.
-4. **Retain Launcher Bundle for macOS**: Keep the launcher bundle as the standalone executable mechanism on Darwin; do not invest in a complex Mach-O dynamic linker/emitter at this time.
-5. **Adjust ELF Writer Segment Offsets**: Update `aipl_src/native/elf.aipl` so the first `PT_LOAD` segment starts at file offset 0 with 64 KiB alignment for universal Linux and Rosetta 2 compatibility.
+5. **`3d6fdb1`**: *Add Task 4/5 report documentation and propose docs/design/ARM64_PLAN.md*
+6. *(Upcoming Round 2 Commit)*: *Implement honest test gating across all targets and complete Round 2 verification*
+   - Gate `tests/test_serve.rs`, replace early returns with `cfg_attr(..., ignore = ...)`, update `container_test.sh`, and record Round 2 results.
 
 ---
 

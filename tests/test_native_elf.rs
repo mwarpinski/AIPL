@@ -55,9 +55,9 @@ fn write_executable(name: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
-// The native backend emits Linux x86-64 ELF executables; cannot execute on other platforms.
 #[test]
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn the_first_native_executable_prints_and_exits_7() {
     let exe = hello_from_vm();
     let path = write_executable("hello", &exe);

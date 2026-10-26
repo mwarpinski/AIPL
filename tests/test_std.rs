@@ -15,6 +15,9 @@ use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
+/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
 /// The VM resolves paths against the process cwd; serialise VM runs that chdir.
 static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -362,8 +365,7 @@ fn bigint_matches_python_integers() {
     let wasm_path = dir.join("bigint_ops.wasm");
     std::fs::write(&wasm_path, &wasm).unwrap();
     let mut ways = vec![("wasm", vec![PathBuf::from(env!("CARGO_BIN_EXE_aipl-run")), wasm_path.clone()])];
-    // The native backend targets Linux x86-64 only.
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    if NATIVE {
         let exe = dir.join("bigint_ops");
         std::fs::write(&exe, aipl_core::native::executable(&wasm, false).unwrap()).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
