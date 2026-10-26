@@ -10,8 +10,8 @@
 A `new` that a `let` or `set!` binds takes in the `put`s right after it,
 while each sets the next field in declaration order, its value does not
 read the new struct, and nothing but white space comes between them: the
-values are then evaluated in the order they were, before the struct is
-made instead of after, which nothing could tell apart. Every field no
+named form makes the struct, then stores the values in the order written,
+so everything happens in the order it did. Every field no
 `put` sets is given its zero, `(zero T)`, the type as the struct's module
 writes it, qualified for the file that makes it. A union's `make` is left
 alone.
@@ -237,9 +237,10 @@ def struct_of(src, prog, index, a, b):
     return d, None, dict(zip(d.params, args))
 
 
-def named_list(pairs, col):
+def named_list(pairs, col, rust):
+    """[x:v ...], one field a line past WIDTH, never inside a Rust string."""
     one = '[' + ' '.join(f"{n}:{v}" for n, v in pairs) + ']'
-    if col + len(one) <= WIDTH or '\n' in one:
+    if rust or col + len(one) <= WIDTH or '\n' in one:
         return one
     pad = '\n' + ' ' * (col + 1)
     return '[' + pad.join(f"{n}:{v}" for n, v in pairs) + ']'
@@ -286,7 +287,7 @@ def rewrite(src, index, report):
                 continue
             start = src.toks[ch[2][0]][1]
             end = src.toks[ch[-1][1] - 1][2]
-            edits.append((start, end, named_list([(f[0], v) for f, v in zip(d.fields, vals)], column(src.text, start))))
+            edits.append((start, end, named_list([(f[0], v) for f, v in zip(d.fields, vals)], column(src.text, start), src.rust)))
     return edits
 
 
@@ -344,7 +345,7 @@ def fold_new(src, index, prog, k, var, after, edits, report):
             return
         pairs.append((n, f"(zero {q})"))
     end = src.toks[ch[2][1] - 1][2]
-    edits.append((end, end, ' ' + named_list(pairs, column(src.text, end) + 1)))
+    edits.append((end, end, ' ' + named_list(pairs, column(src.text, end) + 1, src.rust)))
     edits.extend((a, b, '') for a, b in removes)
 
 
