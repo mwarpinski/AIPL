@@ -848,25 +848,39 @@
     (while (neq bchild (ptr.null compiler.Node))
       (if (call is_contract_head cg bchild) 0 (call collect_locals_walk cg bchild))
       (set! bchild (call node_next bchild)))
-    ;; a contract's lets too, after the body's (wasm.rs): a contract is an
-    ;; expression, and a block in it may bind
+    ;; a contract's lets too, after the body's, in source order (wasm.rs
+    ;; walk_expr): a contract is an expression, and a block in it may bind
     (set! bchild (call nth_child fndef_group 5))
     (while (neq bchild (ptr.null compiler.Node))
-      (if (neq (call contract_kind cg bchild) Kw.none) (call collect_locals_walk cg bchild) 0)
+      (if (neq (call contract_kind cg bchild) Kw.none) (call collect_contract_lets cg bchild) 0)
       (set! bchild (call node_next bchild)))
     (set! bchild (call nth_child fndef_group 5))
     (while (neq bchild (ptr.null compiler.Node))
       (when (not (call is_contract_head cg bchild)) (call binder_types cg bchild))
-      (set! bchild (call node_next bchild)))
-    (set! bchild (call nth_child fndef_group 5))
-    (while (neq bchild (ptr.null compiler.Node))
-      (when (neq (call contract_kind cg bchild) Kw.none) (call binder_types cg bchild))
       (set! bchild (call node_next bchild)))
     ;; a function with ens keeps its result in res (wasm.rs), unless a let named it
     (if (and (call has_ens cg fndef_group) (neq (get entry FnInfo.ret) Ty.void))
         (call add_local_if_new cg (- (str.ptr "res") (get cg Cg.src)) 3 (get entry FnInfo.ret) (get entry FnInfo.ret_vs))
         0)
     (get cg Cg.nlocals))
+
+  ;; The lets in node, a contract, in source order (wasm.rs walk_expr): only
+  ;; its lets, since its binders (a match_result on res) are typed by what
+  ;; they match, not known here, and need no local unless used.
+  (fn collect_contract_lets [cg:(ptr Cg) node:(ptr compiler.Node)] -> i32
+    (if (neq (call node_kind node) compiler.Kind.paren)
+        0
+        (block
+          (when (eq (call group_head_keyword cg node) Kw.let)
+                (let name_node:(ptr compiler.Node) (call nth_child node 1))
+                (let type_node:(ptr compiler.Node) (call nth_child node 3))
+                (call add_local_if_new cg (call node_a name_node) (call node_b name_node) (call type_node_id cg type_node) (call type_node_struct cg type_node))
+                (call note_type_node cg name_node type_node))
+          (let c:(ptr compiler.Node) (call first_child node))
+          (while (neq c (ptr.null compiler.Node))
+            (call collect_contract_lets cg c)
+            (set! c (call node_next c)))
+          0)))
 
   ;; The contract kind of a body item: Kw.req, Kw.ens, Kw.inv, or Kw.none.
   (fn contract_kind [cg:(ptr Cg) item:(ptr compiler.Node)] -> Kw
