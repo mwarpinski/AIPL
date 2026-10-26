@@ -1,7 +1,8 @@
 # The optimizer: faster programs by default
 
-**Status: proposed 2026-10-25, for the owner.** The owner's aim: faster
-programs first, a faster compiler second.
+**Status: approved 2026-10-25: the optimizer on by default for compiled
+output, once step 1 is done.** The owner's aim: faster programs first, a
+faster compiler second.
 
 ## What exists
 
@@ -90,7 +91,12 @@ rule for unoptimized output (every existing parity test passes `--no-opt`);
 optimized output has one implementation, as the native backend does. The
 alternative is a flag, `--opt`, off by default: no change to what users get
 unless they ask, but programs are slower unless a model remembers it.
-Recommended: on by default.
+Recommended: on by default. **Decided (owner, 2026-10-25): on by
+default**, with step 1 first, `--no-opt` documented, and any error the
+optimizer itself raises naming `--no-opt`. Since a user's own tests run
+unoptimized in the VM, the behaviour comparison (optimized against
+unoptimized) is a permanent CI test, in place of the two-toolchain byte
+parity that optimized output no longer has.
 
 ### 3. Document and measure
 

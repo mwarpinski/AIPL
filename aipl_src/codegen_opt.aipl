@@ -806,6 +806,29 @@
           (put cnode ONode.next body)
           (put g ONode.first nh)
           (return g))
+    ;; (when c body...): the body is statements, a value dropped (the parsers
+    ;; end it with an empty block); a constant c keeps the body as a block that
+    ;; ends with that empty block, or nothing
+    (when (call str.is ht "when")
+          (let raw_c:(ptr ONode) (call onode_nth n 1))
+          (let bhead:(ptr ONode) (get raw_c ONode.next))
+          (let cnode:(ptr ONode) (call opt_expr raw_c stats))
+          (let body:(ptr ONode) (call opt_stmt_list bhead stats))
+          (when (call is_bool_node cnode)
+                (call bump_folded stats)
+                (when (eq (get cnode ONode.ival) 0) (return (call make_empty_block pos)))
+                (let blk:(ptr ONode) (call make_empty_block pos))
+                (let last:(ptr ONode) (get blk ONode.first))
+                (put last ONode.next body)
+                (while (neq (get last ONode.next) (ptr.null ONode)) (set! last (get last ONode.next)))
+                (put last ONode.next (call make_empty_block pos))
+                (return blk))
+          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+          (let nh:(ptr ONode) (call make_sym "when" pos))
+          (put nh ONode.next cnode)
+          (put cnode ONode.next body)
+          (put g ONode.first nh)
+          (return g))
     (when (call str.is ht "counted_loop")
           (let raw_var:(ptr ONode) (call onode_nth n 1))
           (let raw_s:(ptr ONode) (get raw_var ONode.next))
@@ -864,6 +887,17 @@
           (when (call is_bool_node a)
                 (call bump_folded stats)
                 (return (if (neq (get a ONode.ival) 0) b c3)))
+          ;; a branch folded to an empty block (a (when false ...) or (while false
+          ;; ...) in it): an if has two real branches, so this is a when; the
+          ;; empty branch is void, so the other was too
+          (let b_empty:bool (and (call is_form b "block") (eq (call onode_count b) 1)))
+          (let c_empty:bool (and (call is_form c3 "block") (eq (call onode_count c3) 1)))
+          (when (or b_empty c_empty)
+                (call bump_folded stats)
+                (cond
+                  ((and b_empty c_empty) (return (if (call is_pure a) b (call make_op1 "when" a pos))))
+                  (c_empty (return (call make_op2 "when" a b pos)))
+                  (else (return (call make_op2 "when" (call make_op1 "not" a pos) c3 pos)))))
           (when (call is_form a "not")
                 (call bump_folded stats)
                 (return (call make_if (call onode_nth a 1) c3 b pos)))
@@ -1309,9 +1343,8 @@
     ;; Inspect clauses and body statements after return type
     (let cur:(ptr ONode) (get ret_node ONode.next))
     (let is_unsafe:bool false)
-    (while (and (neq cur (ptr.null ONode))
-                (and (call is_form cur "unsafe") (eq (call onode_count cur) 1)))
-      (set! is_unsafe true)
+    (while (and (neq cur (ptr.null ONode)) (call is_flag_clause cur))
+      (when (call is_form cur "unsafe") (set! is_unsafe true))
       (set! cur (get cur ONode.next)))
     ;; Do not inline functions with runtime contracts (req, ens, inv)
     (let scan:(ptr ONode) cur)
@@ -1693,14 +1726,14 @@
       (call scan_fn_locals bscan mutated decls)
       (set! bscan (get bscan ONode.next)))
 
-    ;; Advance past leading (req ...), (ens ...), (inv ...), (unsafe) clauses
+    ;; Advance past leading (req ...), (ens ...), (inv ...), (unsafe), (no_leak) clauses
     (let prev:(ptr ONode) ret_node)
     (let cur:(ptr ONode) (get ret_node ONode.next))
     (while (and (neq cur (ptr.null ONode))
                 (or (call is_form cur "req")
                     (or (call is_form cur "ens")
                         (or (call is_form cur "inv")
-                            (and (call is_form cur "unsafe") (eq (call onode_count cur) 1))))))
+                            (call is_flag_clause cur)))))
       (let nxt:(ptr ONode) (get cur ONode.next))
       (put cur ONode.next (ptr.null ONode))
       (let oc:(ptr ONode) (call opt_expr cur stats))
@@ -1733,13 +1766,22 @@
   ;; Optimizes flat AIPL source `src` while mapping token origins through
   ;; `in_low` into `out_orig` (when non-null) and recording optimization counts
   ;; in `stats` (when non-null).
+  ;; A function's clause that is a single word after its return type,
+  ;; (unsafe) or (no_leak): not a statement of its body (the inliner once
+  ;; copied (no_leak) into callers as an expression; the type check of the
+  ;; optimizer's output found it, OPT_PLAN.md step 1).
+  (fn is_flag_clause [n:(ptr ONode)] -> bool
+    (and (eq (call onode_count n) 1) (or (call is_form n "unsafe") (call is_form n "no_leak"))))
+
   (fn optimize_mapped [src:str.Bytes root_override:str.Bytes stats:(ptr Stats) in_low:(ptr origins.Origins) out_orig:(ptr origins.Origins) orig_file:i32] -> str.Bytes (pub)
-    ;; Step 0: Erase const and enum declarations to literals and i32 first
+    ;; Step 0: constants to their literals; enums stay, so what this makes is
+    ;; still a program the checker reads (compile_file type-checks it; the code
+    ;; generator erases the enums)
     (let plain:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get src str.Bytes.len) 64)))
     (let cerr:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let const_orig:(ptr origins.Origins)
       (if (neq out_orig (ptr.null origins.Origins)) (call origins.make) (ptr.null origins.Origins)))
-    (when (not (call consts.expand src plain cerr const_orig))
+    (when (not (call consts.expand_constants src plain cerr const_orig))
         (return src))
     (let pbytes:str.Bytes (call buf.bytes plain))
     (let src_ptr:i32 (call str.addr pbytes))
@@ -1951,6 +1993,16 @@
       (let opt_orig:(ptr origins.Origins) (call origins.make))
       (let opt_src:str.Bytes
         (call optimize_mapped stage_src (call str.absent) (ptr.null Stats) low opt_orig -1))
+      ;; what the optimizer made must still type-check (OPT_PLAN.md step 1): a
+      ;; rewrite that breaks typing is a compile error naming the optimizer, never
+      ;; wrong code
+      (let op:(ptr checker.Problem) (call front.check (call str.addr opt_src) (get opt_src str.Bytes.len)))
+      (when (neq op (ptr.null checker.Problem))
+            (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+            (call buf.push_str eb "the optimizer made a program that does not type-check (a bug in aipl_src/codegen_opt.aipl; compile with --no-opt): ")
+            (call buf.push_bytes eb (call buf.bytes (call front.render (call str.addr opt_src) op)))
+            (call put_text res 3 eb)
+            (return res))
       (let n:i32 (call codegen.compile_lowered
                        (call str.addr opt_src)
                        (get opt_src str.Bytes.len)
@@ -2073,7 +2125,21 @@
           1
           0)))
 
-  ;; Group runner returning pass count (5), matching test_suite.aipl convention.
+  ;; Test 6: a constant when: false is nothing; true keeps the body as a block
+  ;; ending with the empty block that drops its value; any other stays a when;
+  ;; an if whose branch folds to an empty block becomes a when
+  (fn test_when_folding [] -> i32
+    (let s:(ptr Stats) (call make_stats))
+    (let src:str "(module m (fn main [x:i32] -> i32 (when false (return 1)) (when (not false) (let y:i32 (+ x 1)) (return y)) (when (gt x 0) (return 2)) 0))")
+    (let want:str "(module m\n  (fn main [x:i32] -> i32 (block (let y:i32 (+ x 1)) (return y) (block)) (when (gt x 0) (return 2)) 0)\n)")
+    (let got:str.Bytes (call optimize_with_stats (call str.from_str src) s))
+    (let s2:(ptr Stats) (call make_stats))
+    (let src2:str "(module m (fn main [x:i32] -> i32 (if (gt x 0) (block (return 1)) (block (when false (return 2)))) (if (gt x 1) (while false (return 3)) (return 4)) 0))")
+    (let want2:str "(module m\n  (fn main [x:i32] -> i32 (when (gt x 0) (return 1)) (when (not (gt x 1)) (return 4)) 0)\n)")
+    (let got2:str.Bytes (call optimize_with_stats (call str.from_str src2) s2))
+    (if (and (call str.bytes_eq got (call str.from_str want)) (call str.bytes_eq got2 (call str.from_str want2))) 1 0))
+
+  ;; Group runner returning pass count (6), matching test_suite.aipl convention.
   (fn run_codegen_opt_tests [] -> i32 (pub)
     (let p:i32 0)
     (when (eq (call test_const_folding) 1) (set! p (+ p 1)))
@@ -2081,14 +2147,15 @@
     (when (eq (call test_inlining_and_dce) 1) (set! p (+ p 1)))
     (when (eq (call test_local_prop_and_branches) 1) (set! p (+ p 1)))
     (when (eq (call test_wasm_compilation_shrink) 1) (set! p (+ p 1)))
+    (when (eq (call test_when_folding) 1) (set! p (+ p 1)))
     p)
 
   ;; Entrypoints for `aipl test aipl_src/codegen_opt.aipl` (0 = 0 failures).
   (fn run_tests [] -> i32 (pub)
-    (- 5 (call run_codegen_opt_tests)))
+    (- 6 (call run_codegen_opt_tests)))
 
   (fn run_all [] -> i32 (pub)
-    (- 5 (call run_codegen_opt_tests)))
+    (- 6 (call run_codegen_opt_tests)))
 
   ;; ===== CLI Entrypoint (`codegen_opt compile [--exe [--sandbox]] FILE.aipl -o OUT`) =====
 

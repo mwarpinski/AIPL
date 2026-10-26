@@ -25,7 +25,9 @@
               err:(ptr buf.Buf) failed:bool
              origins:(ptr origins.Origins)
              ;; constants whose value is a name or an expression (cexpr.aipl)
-             defs:(ptr cexpr.Defs)])
+             defs:(ptr cexpr.Defs)
+             ;; constants only: enums left as they are (expand_constants)
+             keep_enums:bool])
 
   ;; ===== Trees =====
 
@@ -152,7 +154,7 @@
   ;; any other (arm_head), so an enum arm (Color.red ...) prints as (0 ...).
   (fn print_group [st:(ptr St) g:(ptr compiler.Node) out:(ptr buf.Buf) arm_head:bool] -> void
     (let h:str.Bytes (call head st g))
-    (when (gte (get h str.Bytes.len) 0)
+    (when (and (gte (get h str.Bytes.len) 0) (not (get st St.keep_enums)))
           (when (call lit h "enum.cast") (call print st (call nth g 2) out) (return))
           (when (call lit h "enum.ord") (call print st (call nth g 1) out) (return)))
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
@@ -186,6 +188,15 @@
   ;; program with neither is copied unchanged.
   ;; o (null for none) records where each printed token came from in src.
   (fn expand [src:str.Bytes out:(ptr buf.Buf) err:(ptr buf.Buf) o:(ptr origins.Origins)] -> bool (pub)
+    (call expand_with src out err o false))
+
+  ;; expand, with the constants inlined and the enums left as they are, so
+  ;; the result is still a program the checker reads (codegen_opt.aipl, which
+  ;; type-checks what it makes; the code generator erases the enums after).
+  (fn expand_constants [src:str.Bytes out:(ptr buf.Buf) err:(ptr buf.Buf) o:(ptr origins.Origins)] -> bool (pub)
+    (call expand_with src out err o true))
+
+  (fn expand_with [src:str.Bytes out:(ptr buf.Buf) err:(ptr buf.Buf) o:(ptr origins.Origins) keep_enums:bool] -> bool
     (let n:i32 (get src str.Bytes.len))
     (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (call str.addr src) n) 1))))
     (let count:i32 (call compiler.tokenize (call str.addr src) n tok))
@@ -199,13 +210,14 @@
     (put st St.origins o)
     (put st St.failed false)
     (put st St.defs (call cexpr.make src))
+    (put st St.keep_enums keep_enums)
     (let item:(ptr compiler.Node) (call nth root 2))
     (let found:bool false)
     (while (neq item (ptr.null compiler.Node))
       (let h:str.Bytes (call head st item))
       (cond
         ((call lit h "const") (call collect_const st item) (set! found true))
-        ((call lit h "enum") (call collect_enum st item) (set! found true))
+        ((and (call lit h "enum") (not keep_enums)) (call collect_enum st item) (set! found true))
         (else (block)))
       (set! item (get item compiler.Node.next)))
     (when (not found) (call buf.push_bytes out src) (return true))
@@ -215,7 +227,7 @@
     (set! item (call nth root 2))
     (while (neq item (ptr.null compiler.Node))
       (let h:str.Bytes (call head st item))
-      (when (not (or (call lit h "const") (call lit h "enum")))
+      (when (not (or (call lit h "const") (and (call lit h "enum") (not keep_enums))))
             (call buf.push_str out "  ")
             (call print_group st item out false)
             (call buf.push_byte out 10))
