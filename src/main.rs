@@ -547,7 +547,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             aipl_core::watch::run(Path::new(&file), test, &args, &me, max_runs)?;
         }
         Commands::Doc { args } => {
-            std::process::exit(aipl_core::tools::run("aipl_src/doc.aipl", "aipl doc", &args)?);
+            std::process::exit(aipl_core::tools::run("doc.aipl", "aipl doc", &args)?);
         }
         Commands::Verify { file } => {
             let module = Resolver::resolve(Path::new(&file))?;

@@ -202,7 +202,7 @@ fn module_form(src: &str) -> Option<(String, usize)> {
 /// The standard modules the expressions name, as `str` in `(call str.find
 /// ...)`, in the order named.
 fn named_modules(exprs: &str) -> Vec<String> {
-    let std = Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/std");
+    let std = crate::library::std_dir();
     let b = exprs.as_bytes();
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;

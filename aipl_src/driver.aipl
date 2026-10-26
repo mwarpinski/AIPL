@@ -4,8 +4,8 @@
 ;; command that compiles AIPL with no Rust involved:
 ;;   aipl compile aipl_src/driver.aipl -o aiplc.wasm
 ;;   wasmtime run --dir . --env AIPL_PATH aiplc.wasm examples/word_count.aipl wc.wasm
-;; The standard library is found at $AIPL_STD, else aipl_src/std/ (relative to
-;; the working directory). In the VM: aipl eval aipl_src/driver.aipl -- IN OUT.
+;; The standard library is found as stdpath.aipl says ($AIPL_STD, else beside
+;; the executable, else aipl_src/std/ below the working directory). In the VM: aipl eval aipl_src/driver.aipl -- IN OUT.
 ;; A host can also call compile_file directly with paths in memory taken from
 ;; host_alloc (tests/test_resolver_aipl.rs does both).
 (module driver
@@ -24,6 +24,7 @@
   (import vec)
   (import fmtlower)
   (import codegen_opt)
+  (import stdpath)
 
   ;; status 0: the wasm module is at (addr, len)
   ;; status 1: import resolution failed; the message is at (addr, len)
@@ -204,8 +205,7 @@
   ;; compile, or write error (reported on stderr), 2 on bad usage.
   (fn main [] -> i32
     (unsafe (when (neq (call os.arg_count) 3) (call io.eprintln "usage: driver ENTRY.aipl OUT.wasm") (return 2))
-    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
-    (when (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")))
+    (let std_dir:str.Bytes (call stdpath.find))
     (let entry:str.Bytes (call os.arg 1))
     (let out:str.Bytes (call os.arg 2))
     (let res:(ptr Out) (call compile_file (call str.addr entry) (get entry str.Bytes.len)
