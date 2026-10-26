@@ -86,7 +86,9 @@ fn both_toolchains_rewrite_alike_with_the_same_errors() {
     ];
     for (k, (item, tests, msg)) in cases.iter().enumerate() {
         let file = dir.join(format!("e{k}.aipl"));
-        std::fs::write(&file, format!("(module e\n  (fn main [] -> i32 0)\n  {item})\n")).unwrap();
+        // (import alloc) on the first line: a file names what it imports
+        // (AIPL_SPEC.md 11), and these items' errors are on line 3
+        std::fs::write(&file, format!("(module e (import alloc)\n  (fn main [] -> i32 0)\n  {item})\n")).unwrap();
         let mut args = vec!["compile"];
         if *tests {
             args.push("--tests");

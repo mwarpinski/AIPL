@@ -357,7 +357,8 @@ FAQ or ROADMAP.md.
   (`'str.Bytes' is in module str, which this file does not import: add
   (import str)`); what the compiler writes for `new`, the formatting
   forms, and a test build is exempt. One repository file needed a line
-  (tests/aipl/memory/request_paths.aipl). AIPL_SPEC.md 11,
+  (tests/aipl/memory/request_paths.aipl), as did two programs inside Rust
+  tests, tools/run_fuzz.py's generated ones, and the kit's test program. AIPL_SPEC.md 11,
   tests/test_visibility.rs.
 - [ ] **Making a heap struct in one form** (noted 2026-10-18, from
   docs/notes/painpoints.md item 4; a language change, for approval).

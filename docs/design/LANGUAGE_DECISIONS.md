@@ -84,7 +84,10 @@ and aipl_src/resolver.aipl) refuse a module's name the file does not
 import, with one message; the compiler's own writing (`alloc.create`
 and `alloc.array` for `new` and `arr.new`, a test build's `_start`) is
 exempt, and the formatting forms' std/show calls are written after the
-check in both toolchains. One file needed its line. AIPL_SPEC.md 11
+check in both toolchains. One repository file needed its line, and so
+did programs the scan of .aipl files did not see: two written inside
+Rust tests (tests/test_selfhost.rs, tests/test_sugar.rs), tools/run_fuzz.py's
+generated programs (alloc), and tools/make_kit.sh's test program. AIPL_SPEC.md 11
 and 13, the guide's rule 1, tests/test_visibility.rs (three cases, both
 resolvers message for message).
 
