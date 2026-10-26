@@ -12,8 +12,8 @@
 ;;   --private                 private items too
 ;;
 ;; Built into the self-hosted aipl (aipl.aipl calls command) and run by the
-;; Rust CLI's aipl doc (src/tools.rs). The standard library is at $AIPL_STD,
-;; else aipl_src/std/. Written with only what the stage-0 seed compiles
+;; Rust CLI's aipl doc (src/tools.rs), which sets $AIPL_STD. The standard
+;; library is found as stdpath.aipl says. Written with only what the stage-0 seed compiles
 ;; (bootstrap/README.md), since the self-hosted aipl includes it.
 (module doc
   (import str)
@@ -24,6 +24,7 @@
   (import os)
   (import fs)
   (import option)
+  (import stdpath)
 
   ;; One item of a module: its kind (fn, struct, union, enum, const,
   ;; interface), its name as written ("split", or "(unwrap_or T)" for a
@@ -584,8 +585,7 @@
         ((call str.is x "--check") (set! check true))
         ((or (call str.is x "--help") (call str.is x "-h")) (return (call usage)))
         (else (call (vec.push str.Bytes) args x))))
-    (let std:str.Bytes (call os.env "AIPL_STD"))
-    (when (lt (get std str.Bytes.len) 0) (set! std (call str.from_str "aipl_src/std/")))
+    (let std:str.Bytes (call stdpath.find))
     (let out:(ptr buf.Buf) (call buf.make a 4096))
     (let n:i32 (call (vec.len str.Bytes) args))
     (let status:i32 0)

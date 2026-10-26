@@ -1,7 +1,9 @@
 // Records the commit the toolchain is built from as AIPL_COMMIT, so
 // `aipl --version` reads `aipl 0.1.0 (5e29a53)` and a copy of the docs
-// stamped with the same line shows when it is stale; and a hash of src/ as
-// AIPL_SRC_HASH, part of the key of src/selfhost.rs's module cache.
+// stamped with the same line shows when it is stale; a hash of src/ as
+// AIPL_SRC_HASH, part of the key of src/selfhost.rs's module cache; and
+// aipl_src/ built into the binary (OUT_DIR/library.rs, src/library.rs), so
+// a copied or installed aipl needs nothing beside it.
 use std::process::Command;
 
 fn git(args: &[&str]) -> Option<String> {
@@ -46,6 +48,26 @@ fn main() {
     }
     println!("cargo:rustc-env=AIPL_SRC_HASH={:016x}", h.finish());
     println!("cargo:rerun-if-changed=src");
+
+    // aipl_src/'s .aipl files, by path below it, and a hash of them all
+    let root = std::fs::canonicalize("aipl_src").expect("aipl_src");
+    let mut lib = Vec::new();
+    files(&root, &mut lib);
+    lib.retain(|p| p.extension().is_some_and(|x| x == "aipl"));
+    lib.sort();
+    let mut lh = std::collections::hash_map::DefaultHasher::new();
+    let mut table = String::from("/// aipl_src/'s files, by path below it (build.rs).\npub static FILES: &[(&str, &[u8])] = &[\n");
+    for f in &lib {
+        let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        rel.hash(&mut lh);
+        std::fs::read(f).unwrap().hash(&mut lh);
+        table.push_str(&format!("    ({rel:?}, include_bytes!({:?})),\n", f.to_string_lossy()));
+    }
+    table.push_str("];\n");
+    table.push_str(&format!("/// A hash of FILES, naming the copy written to the cache.\npub const HASH: &str = \"{:016x}\";\n", lh.finish()));
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("library.rs");
+    std::fs::write(out, table).unwrap();
+    println!("cargo:rerun-if-changed=aipl_src");
     // A new commit moves the branch's ref (or HEAD itself, on a checkout).
     if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
         println!("cargo:rerun-if-changed={head}");

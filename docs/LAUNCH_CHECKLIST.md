@@ -215,21 +215,20 @@ more than usual.
   `cargo install --git`: its binaries point at a cargo checkout that cargo
   deletes after about a month unused. Later, optionally: prebuilt `aipl`
   and `aipl-run` on a GitHub release, so Rust is not needed.
-- [ ] **A binary that works wherever it is** (noted 2026-10-18, from
-  docs/notes/freedom.md). install.sh works only because it builds in
-  place: the Rust CLI finds the standard library at the checkout it was
-  built from (`env!("CARGO_MANIFEST_DIR")` in `src/resolver.rs`
-  `find_module_file`) and ignores `AIPL_STD`, so a copied or prebuilt
-  `aipl` cannot import `str`. The self-hosted `aipl` (`aipl.aipl`,
-  `driver.aipl`, `doc.aipl`) falls back to `./aipl_src/std/`, so it works
-  only from the repository root, and install.sh does not install it. To
-  do, in both toolchains: look in `$AIPL_STD`, then beside the executable
-  (`<bin>/../share/aipl/std`, as Go and rustup do), then the build-time
-  path; install.sh copies the library there; a test copies both binaries
-  out of the repository and compiles a program importing std. Then
-  prebuilt release binaries are possible. Later: the self-hosted binary
-  could embed the library (460 KB) and become one file; it still needs
-  `chmod +x` (WASI cannot set file modes) and has no `verify` or `test`.
+- [x] **A binary that works wherever it is** (done 2026-10-26; noted
+  2026-10-18, from docs/notes/freedom.md). The Rust `aipl` carries its
+  library (aipl_src/: the standard library and the toolchain's sources,
+  built in by build.rs) and, outside its own checkout's target/, writes it
+  once to its cache and reads it from there (src/library.rs); `$AIPL_STD`
+  now replaces std for programs in the Rust command too. The self-hosted
+  `aipl` looks in `$AIPL_STD`, then `share/aipl/std/` beside its folder,
+  then `./aipl_src/std/` (aipl_src/stdpath.aipl). tests/test_portable.rs
+  copies `aipl` out of the repository and runs every command; the kit
+  (tools/make_kit.sh) is the real binaries, tested with the build's source
+  hidden. Prebuilt release binaries are now possible. Later: the
+  self-hosted binary could embed the library too and become one file; it
+  still needs `chmod +x` (WASI cannot set file modes) and has no `verify`
+  or `test`.
 - [x] **CI** (added 2026-10-06, `.github/workflows/ci.yml`; check its first run on GitHub). A GitHub Actions workflow running `cargo build`, `cargo test`,
   and `aipl test aipl_src/test_suite.aipl` on Linux, with the badge in the
   README. The native tests need Linux x86-64, which GitHub's runners are.

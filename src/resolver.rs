@@ -1007,7 +1007,8 @@ impl Names<'_> {
 
 /// Search order for `(import name)` (AIPL_SPEC.md section 11): the
 /// importing file's directory, the entry file's directory, the standard
-/// library (`aipl_src/std/` in this repository), then each directory of
+/// library (`$AIPL_STD`, else the library's std/: src/library.rs; the
+/// toolchain's own modules always the library's), then each directory of
 /// the colon-separated `AIPL_PATH` environment variable. First match wins.
 fn find_module_file(name: &str, importer_path: &Path, entry_path: &Path) -> Result<PathBuf, String> {
     let filename = format!("{}.aipl", name);
@@ -1020,7 +1021,8 @@ fn find_module_file(name: &str, importer_path: &Path, entry_path: &Path) -> Resu
             }
         }
     }
-    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/std").join(&filename));
+    let std = if crate::library::contains(entry_path) { crate::library::dir().join("std") } else { crate::library::std_dir() };
+    candidates.push(std.join(&filename));
     if let Ok(path) = std::env::var("AIPL_PATH") {
         for dir in path.split(':').filter(|d| !d.is_empty()) {
             candidates.push(PathBuf::from(dir).join(&filename));

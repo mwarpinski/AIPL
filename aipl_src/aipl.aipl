@@ -11,13 +11,15 @@
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
-;; The standard library is found at $AIPL_STD, else aipl_src/std/ (relative
-;; to the working directory). Exit status 0 on success, 1 on a resolve,
+;; The standard library is found at $AIPL_STD, else share/aipl/std/ beside
+;; the executable's folder, else aipl_src/std/ below the working directory
+;; (stdpath.aipl). Exit status 0 on success, 1 on a resolve,
 ;; type, compile, or write error (reported on stderr as "Error: ..."), 2 on
 ;; bad usage. WASI cannot set the execute bit, so a written executable
 ;; still needs `chmod +x`.
 (module aipl
   (import driver)
+  (import stdpath)
   (import native/native)
   (import os)
   (import io)
@@ -118,8 +120,7 @@
       (set! i (+ i 1)))
     (when (or (lt in_i 0) (lt out_i 0)) (return (call usage)))
     (when (and (or sandbox (or (gt (call buf.len listen) 0) (gt (call buf.len serve) 0))) (not exe)) (return (call usage)))
-    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
-    (when (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")))
+    (let std_dir:str.Bytes (call stdpath.find))
     (let entry:str.Bytes (call os.arg in_i))
     (let out:str.Bytes (call os.arg out_i))
     (let ea:i32 (call str.addr entry))

@@ -14,10 +14,11 @@ use wasmtime::{Engine, Linker, Module as WasmModule, Store, TypedFunc};
 use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
-/// The standard library directory, as `Resolver` uses it. The AIPL resolver
-/// reads AIPL_PATH itself (the VM sees the process environment).
+/// The standard library directory for programs, as `Resolver` uses it
+/// (src/library.rs). The AIPL resolver reads AIPL_PATH itself (the VM sees
+/// the process environment).
 pub fn std_dir() -> String {
-    format!("{}/aipl_src/std/", env!("CARGO_MANIFEST_DIR"))
+    format!("{}/", crate::library::std_dir().display())
 }
 
 /// One of the toolchain's modules (`aipl_src/NAME.aipl`) compiled to wasm
@@ -45,7 +46,7 @@ pub(crate) fn toolchain(name: &'static str, cell: &'static OnceLock<Result<(Engi
                 return Ok((engine, m));
             }
         }
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("aipl_src/{name}.aipl"));
+        let path = crate::library::dir().join(format!("{name}.aipl"));
         let module = Resolver::resolve(&path).map_err(|e| format!("resolve {name}.aipl: {e}"))?;
         TypeChecker::new().check_module(&module).map_err(|e| format!("check {name}.aipl: {e}"))?;
         let wasm = WasmCompiler::compile(&module).map_err(|e| format!("compile {name}.aipl: {e}"))?;
@@ -62,7 +63,7 @@ pub(crate) fn toolchain(name: &'static str, cell: &'static OnceLock<Result<(Engi
 
 /// The module cache's directory: $AIPL_CACHE (empty turns the cache off),
 /// else $XDG_CACHE_HOME/aipl, else ~/.cache/aipl.
-fn cache_dir() -> Option<PathBuf> {
+pub(crate) fn cache_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("AIPL_CACHE") {
         return if d.is_empty() { None } else { Some(d.into()) };
     }
@@ -73,8 +74,8 @@ fn cache_dir() -> Option<PathBuf> {
 }
 
 /// What a cached module was made from: the Rust sources (the code generator
-/// that compiled it, build.rs) and every file below aipl_src/, read now
-/// (the toolchain reads them at run time, so an edit there is seen).
+/// that compiled it, build.rs) and every file of the library, read now
+/// (src/library.rs: a checkout's aipl_src/ may change between runs).
 fn source_key(name: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     fn files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -88,7 +89,7 @@ fn source_key(name: &str) -> u64 {
         }
     }
     let mut all = Vec::new();
-    files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src"), &mut all);
+    files(crate::library::dir(), &mut all);
     all.sort();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (env!("AIPL_SRC_HASH"), name).hash(&mut h);

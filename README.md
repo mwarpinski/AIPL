@@ -160,8 +160,9 @@ cmp target/aipl1 target/aipl2       # no output: the compiler reproduces itself
 
 The AIPL-built compiler does `compile` only (to `.wasm`, or with `--exe`
 to an executable), and it compiles every program to the same bytes as the
-Rust one. It reads the standard library from `aipl_src/std/` under the
-working directory, or from `$AIPL_STD`. WASI cannot set a file's execute
+Rust one. It reads the standard library from `$AIPL_STD`, else
+`share/aipl/std/` beside its folder (as the kit lays it out), else
+`aipl_src/std/` under the working directory. WASI cannot set a file's execute
 bit, hence the `chmod +x`. `cargo test` checks that the seed's build is
 byte for byte the Rust toolchain's, so the Rust compiler stays as a
 referee ([bootstrap/README.md](bootstrap/README.md) explains why).

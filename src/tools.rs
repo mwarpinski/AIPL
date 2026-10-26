@@ -9,16 +9,14 @@
 use crate::checker::TypeChecker;
 use crate::compiler::wasm::WasmCompiler;
 use crate::resolver::Resolver;
-use std::path::Path;
 use wasmtime::{Engine, Linker, Module, Store};
 use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::{FsPerms, I32Exit, WasiCtxBuilder};
 
-/// Runs the tool at `source` (relative to the repository) with `args`
-/// (argument 0 is `name`); its exit status.
+/// Runs the tool at `source` (relative to the library, src/library.rs) with
+/// `args` (argument 0 is `name`); its exit status.
 pub fn run(source: &str, name: &str, args: &[String]) -> Result<i32, String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let module = Resolver::resolve(&root.join(source)).map_err(|e| format!("{name}: {e}"))?;
+    let module = Resolver::resolve(&crate::library::dir().join(source)).map_err(|e| format!("{name}: {e}"))?;
     TypeChecker::new().check_module(&module).map_err(|e| format!("{name}: {e}"))?;
     let wasm = WasmCompiler::compile(&module).map_err(|e| format!("{name}: {e}"))?;
 
@@ -29,9 +27,7 @@ pub fn run(source: &str, name: &str, args: &[String]) -> Result<i32, String> {
     let argv: Vec<String> = std::iter::once(name.to_string()).chain(args.iter().cloned()).collect();
     let mut b = WasiCtxBuilder::new();
     b.inherit_stdio().inherit_env().args(&argv);
-    if std::env::var_os("AIPL_STD").is_none() {
-        b.env("AIPL_STD", root.join("aipl_src/std").to_string_lossy());
-    }
+    b.env("AIPL_STD", crate::library::std_dir().to_string_lossy());
     b.preopened_dir(".", ".", FsPerms::ReadWrite).map_err(|e| format!("cannot open the working directory: {e}"))?;
     b.preopened_dir("/", "/", FsPerms::ReadOnly).map_err(|e| format!("cannot open /: {e}"))?;
     let mut store = Store::new(&engine, b.build_p1());
