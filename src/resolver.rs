@@ -914,7 +914,7 @@ impl Names<'_> {
         let list = &items[if is_new { 3 } else { 2 }];
         let entries = list.items();
         let colon = |e: &Sx| matches!(e, Sx::Atom(Token { kind: TokenKind::Colon, .. }));
-        if entries.len() % 3 != 0 || entries.chunks(3).any(|c| c[0].symbol().is_none() || !colon(&c[1])) {
+        if !entries.len().is_multiple_of(3) || entries.chunks(3).any(|c| c[0].symbol().is_none() || !colon(&c[1])) {
             self.fail(list.position(), format!("{form}'s fields are given as name:value, each once and in order: ({form} S{} [x:1 y:2])", if is_new { " a" } else { "" }));
             return None;
         }
