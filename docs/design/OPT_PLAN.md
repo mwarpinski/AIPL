@@ -1,8 +1,9 @@
 # The optimizer: faster programs by default
 
 **Status: approved 2026-10-25: the optimizer on by default for compiled
-output, once step 1 is done. Steps 1-3 done 2026-10-25: `aipl
-compile` optimizes by default; step 4 next.** The owner's aim: faster programs first, a
+output, once step 1 is done. Steps 1-3 done 2026-10-25, step 4's
+knucleotide 2026-10-26, its nbody and pidigits deferred: `aipl compile`
+optimizes by default.** The owner's aim: faster programs first, a
 faster compiler second.
 
 ## What exists
@@ -245,5 +246,22 @@ Changes, all general:
   self-hosted compiler's output may depend on; not now.
 
 pidigits now has a C time on this machine: 7.9x natively, 4.7x under
-wasmtime. Next: nbody natively (3.3x, against 1.7x under wasmtime: the
-native backend), then pidigits.
+wasmtime.
+
+**Deferred (owner, 2026-10-26: correct, only slower than they could be;
+release work comes first):**
+- nbody natively (3.3x C, 1.7x under wasmtime): its `advance` has about 37
+  float locals, and native code keeps the 8 most used in registers for
+  the whole function, where Cranelift allocates by liveness. The fix is a
+  liveness-based register allocator in aipl_src/native/lower.aipl, its own
+  plan; it would likely help binarytrees and fannkuch natively too (2.0x
+  C, 1.6x under wasmtime).
+- pidigits (7.9x C natively, 4.7x under wasmtime): 98% in std/bigint's
+  inner loops (`mul_small`, `magnitude_sub_mul`, `magnitude_add_mul`,
+  `assign`), 32-bit limbs each in an i64. Packing the limbs in 32 bits
+  would halve the memory traffic (std only); 64-bit limbs need a 64x64 to
+  128-bit multiply, which neither AIPL nor core wasm has (wasm's "wide
+  arithmetic" proposal would add it): a language decision.
+
+The optimizer itself is done: on by default, checked, and compared with
+unoptimized builds in CI.

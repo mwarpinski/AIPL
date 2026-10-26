@@ -848,9 +848,19 @@
     (while (neq bchild (ptr.null compiler.Node))
       (if (call is_contract_head cg bchild) 0 (call collect_locals_walk cg bchild))
       (set! bchild (call node_next bchild)))
+    ;; a contract's lets too, after the body's (wasm.rs): a contract is an
+    ;; expression, and a block in it may bind
+    (set! bchild (call nth_child fndef_group 5))
+    (while (neq bchild (ptr.null compiler.Node))
+      (if (neq (call contract_kind cg bchild) Kw.none) (call collect_locals_walk cg bchild) 0)
+      (set! bchild (call node_next bchild)))
     (set! bchild (call nth_child fndef_group 5))
     (while (neq bchild (ptr.null compiler.Node))
       (when (not (call is_contract_head cg bchild)) (call binder_types cg bchild))
+      (set! bchild (call node_next bchild)))
+    (set! bchild (call nth_child fndef_group 5))
+    (while (neq bchild (ptr.null compiler.Node))
+      (when (neq (call contract_kind cg bchild) Kw.none) (call binder_types cg bchild))
       (set! bchild (call node_next bchild)))
     ;; a function with ens keeps its result in res (wasm.rs), unless a let named it
     (if (and (call has_ens cg fndef_group) (neq (get entry FnInfo.ret) Ty.void))
