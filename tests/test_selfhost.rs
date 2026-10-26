@@ -345,7 +345,7 @@ fn self_hosted_bytes_match_f64_sqrt() {
 /// 15, which the native backend's translator state passed in NE8).
 #[test]
 fn self_hosted_bytes_match_a_wide_struct() {
-    let ty = |i: usize| if i % 3 == 0 { "i64" } else { "i32" };
+    let ty = |i: usize| if i.is_multiple_of(3) { "i64" } else { "i32" };
     let fields: Vec<String> = (0..40).map(|i| format!("f{i}:{}", ty(i))).collect();
     // every field named, f37 and f38 given, the rest their zeros
     let given: Vec<String> = (0..40)
