@@ -1,10 +1,10 @@
-;; Optimizing compiler pipeline for the self-hosted AIPL toolchain.
-;;
-;; Sits between the front end (resolver.aipl, generics.aipl, front.aipl,
-;; fmtlower.aipl, consts.aipl) and the WebAssembly / native x86-64 backends
-;; (codegen.aipl, native/native.aipl). Operates on an explicit mutable
-;; S-expression IR (ONode) and runs four whole-module and per-function
-;; optimization passes before lowering to WebAssembly:
+;; The optimizer `aipl compile` runs by default (docs/design/OPT_PLAN.md;
+;; `--no-opt` leaves it out): a source-to-source pass over the checked,
+;; lowered program, between the front end and codegen.aipl. driver.aipl's
+;; compile_file_opt calls optimize_mapped and type-checks what it makes.
+;; Operates on an explicit mutable S-expression IR (ONode) and runs four
+;; whole-module and per-function optimization passes; its tests are a group
+;; of aipl_src/test_suite.aipl:
 ;;
 ;;   Pass 1 — Expression Simplification, Known-Bits Parity & Strength Reduction:
 ;;     * Constant folding for i32, i64, bool, and string lengths (str.len "...")
@@ -59,19 +59,11 @@
   (import compiler)
   (import consts)
   (import origins)
-  (import resolver)
-  (import front)
-  (import checker)
-  (import fmtlower)
   (import codegen)
-  (import native/native)
   (import str)
   (import buf)
   (import vec)
   (import map)
-  (import os)
-  (import io)
-  (import fmt)
 
   ;; ===== Public Types =====
 
@@ -83,13 +75,6 @@
     (read fns_eliminated:i32)
     (read fns_kept:i32)
   ] (pub))
-
-  ;; Mirrors driver.Out so compile_file is a drop-in replacement.
-  ;; status 0: wasm module at (addr, len)
-  ;; status 1: import resolution failed; message at (addr, len)
-  ;; status 2: codegen failed; len is the compile error code (AIPL_SPEC.md 6.4)
-  ;; status 3: type-check failed; diagnostic at (addr, len)
-  (struct Out [(read status:i32) (read addr:i32) (read len:i32)] (pub))
 
   (fn make_stats [] -> (ptr Stats) (pub)
     (let s:(ptr Stats) (new Stats (call alloc.forever)))
@@ -1975,106 +1960,6 @@
             opt_orig
             32768)))
 
-  ;; Drop-in optimizing replacement for driver.compile_file: resolves imports,
-  ;; expands generics, type-checks, lowers format strings, runs the 4-pass
-  ;; codegen_opt optimizer, and compiles to WebAssembly.
-  (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (unsafe
-      (let res:(ptr Out) (new Out (call alloc.forever)))
-      (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-      (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
-      (let orig:(ptr origins.Origins) (call origins.make))
-      (let gen:(ptr origins.Origins) (call origins.make))
-      (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-      (when (not (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig)) (call put_text res 1 err) (return res))
-      (let arch:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-      (let agen:(ptr origins.Origins) (call origins.make))
-      (when (not (call resolver.archetypes_of pre arch err orig agen)) (call put_text res 1 err) (return res))
-      (when (gt (call buf.len arch) 0)
-            (let at:str.Bytes (call buf.bytes arch))
-            (let ap:(ptr checker.Problem) (call front.check (call str.addr at) (get at str.Bytes.len)))
-            (when (neq ap (ptr.null checker.Problem)) (call put_text res 3 (call locate orig agen ap (call str.bytes path_addr path_len))) (return res)))
-      (when (not (call resolver.expand_generics pre out err orig gen)) (call put_text res 1 err) (return res))
-      (let flat:str.Bytes (call buf.bytes out))
-      (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
-      (let problem:(ptr checker.Problem) (call front.check_formats (call str.addr flat) (get flat str.Bytes.len) fmts))
-      (when (neq problem (ptr.null checker.Problem)) (call put_text res 3 (call locate orig gen problem (call str.bytes path_addr path_len))) (return res))
-      (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
-      (let low:(ptr origins.Origins) (call origins.make))
-      (let stage_src:str.Bytes
-        (if (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low)
-            (call buf.bytes lowered)
-            flat))
-      (let opt_orig:(ptr origins.Origins) (call origins.make))
-      (let opt_src:str.Bytes
-        (call optimize_mapped stage_src (call str.absent) (ptr.null Stats) low opt_orig -1))
-      ;; what the optimizer made must still type-check (OPT_PLAN.md step 1): a
-      ;; rewrite that breaks typing is a compile error naming the optimizer, never
-      ;; wrong code
-      (let op:(ptr checker.Problem) (call front.check (call str.addr opt_src) (get opt_src str.Bytes.len)))
-      (when (neq op (ptr.null checker.Problem))
-            (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
-            (call buf.push_str eb "the optimizer made a program that does not type-check (a bug in aipl_src/codegen_opt.aipl; compile with --no-opt): ")
-            (call buf.push_bytes eb (call buf.bytes (call front.render (call str.addr opt_src) op)))
-            (call put_text res 3 eb)
-            (return res))
-      (let n:i32 (call codegen.compile_lowered
-                       (call str.addr opt_src)
-                       (get opt_src str.Bytes.len)
-                       gen
-                       orig
-                       opt_orig
-                       32768))
-      (if (gt n 0)
-          (block
-            (put res Out.status 0)
-            (put res Out.addr (mem.load32 60))
-            (put res Out.len n))
-          (block
-            (put res Out.status 2)
-            (put res Out.addr 0)
-            (put res Out.len (mem.load32 4))))
-      res))
-
-  (fn put_text [res:(ptr Out) status:i32 b:(ptr buf.Buf)] -> void
-    (let t:str.Bytes (call buf.bytes b))
-    (put res Out.status status)
-    (put res Out.addr (call str.addr t))
-    (put res Out.len (get t str.Bytes.len)))
-
-  (fn locate [orig:(ptr origins.Origins) gen:(ptr origins.Origins) first:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
-    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
-    (let pr:(ptr checker.Problem) first)
-    (while (neq pr (ptr.null checker.Problem))
-      (when (neq pr first) (call buf.push_byte b 10))
-      (call buf.push_bytes b (call buf.bytes (call locate_one orig gen pr entry)))
-      (set! pr (get pr checker.Problem.next)))
-    b)
-
-  (fn locate_one [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
-    (let at:i32 (get pr checker.Problem.at))
-    (let g:(ptr origins.Entry) (call origins.find gen at))
-    (when (neq g (ptr.null origins.Entry)) (set! at (get g origins.Entry.pos)))
-    (let r:(ptr origins.Entry) (call origins.find orig at))
-    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
-    (let path:str.Bytes entry)
-    (let line:i32 1)
-    (let col:i32 1)
-    (when (and (neq r (ptr.null origins.Entry)) (gte (get r origins.Entry.file) 0))
-          (let f:(ptr origins.File) (call origins.file_at orig (get r origins.Entry.file)))
-          (set! path (get f origins.File.path))
-          (let lc:(ptr compiler.LineCol) (call compiler.line_col (call str.addr (get f origins.File.text)) (get r origins.Entry.pos)))
-          (set! line (get lc compiler.LineCol.line))
-          (set! col (get lc compiler.LineCol.col)))
-    (call buf.push_bytes b path)
-    (call buf.push_str b ": ")
-    (call buf.push_int b line)
-    (call buf.push_byte b 58)
-    (call buf.push_int b col)
-    (call buf.push_str b ": ")
-    (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
-    b)
-
   ;; ===== Self-Tests =====
 
   (fn opt_eq [src:str want:str] -> bool
@@ -2184,112 +2069,4 @@
     (when (eq (call test_wasm_compilation_shrink) 1) (set! p (+ p 1)))
     (when (eq (call test_when_folding) 1) (set! p (+ p 1)))
     (when (eq (call test_refusals) 1) (set! p (+ p 1)))
-    p)
-
-  ;; Entrypoints for `aipl test aipl_src/codegen_opt.aipl` (0 = 0 failures).
-  (fn run_tests [] -> i32 (pub)
-    (- 7 (call run_codegen_opt_tests)))
-
-  (fn run_all [] -> i32 (pub)
-    (- 7 (call run_codegen_opt_tests)))
-
-  ;; ===== CLI Entrypoint (`codegen_opt compile [--exe [--sandbox]] FILE.aipl -o OUT`) =====
-
-  (fn usage [] -> i32
-    (call io.eprintln "usage: codegen_opt compile [--exe [--sandbox]] FILE.aipl -o OUT")
-    2)
-
-  (fn fail_bytes [prefix:str b:str.Bytes] -> i32
-    (call io.write_str 2 "Error: ")
-    (call io.write_str 2 prefix)
-    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len)))
-    (call io.eprintln "")
-    1)
-
-  (fn write_int [fd:i32 n:i32] -> void
-    (unsafe
-      (let digits:i32 (mem.alloc 11))
-      (fs.write fd digits (call fmt.int_to_bytes n digits))))
-
-  (fn main [] -> i32
-    (let n:i32 (call os.arg_count))
-    (when (lt n 2) (return (call usage)))
-    (let cmd:str.Bytes (call os.arg 1))
-    (when (call str.is cmd "--test")
-        (return (call run_tests)))
-    (when (not (or (call str.is cmd "compile") (call str.is cmd "emit-opt"))) (return (call usage)))
-    (let emit_only:bool (call str.is cmd "emit-opt"))
-    (let exe:bool false)
-    (let sandbox:bool false)
-    (let in_i:i32 -1)
-    (let out_i:i32 -1)
-    (let i:i32 2)
-    (while (lt i n)
-      (let a:str.Bytes (call os.arg i))
-      (cond
-        ((call str.is a "--exe") (set! exe true))
-        ((call str.is a "--sandbox") (set! sandbox true))
-        ((call str.is a "-o")
-         (when (gte (+ i 1) n) (return (call usage)))
-         (set! out_i (+ i 1))
-         (set! i (+ i 1)))
-        ((lt in_i 0) (set! in_i i))
-        (else (return (call usage))))
-      (set! i (+ i 1)))
-    (when (or (lt in_i 0) (lt out_i 0)) (return (call usage)))
-    (when (and sandbox (not exe)) (return (call usage)))
-    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
-    (when (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")))
-    (let entry:str.Bytes (call os.arg in_i))
-    (let out:str.Bytes (call os.arg out_i))
-    (when emit_only
-          (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-          (let flat_b:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-          (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
-          (let orig:(ptr origins.Origins) (call origins.make))
-          (let gen:(ptr origins.Origins) (call origins.make))
-          (when (not (call resolver.flatten_mapped entry std_dir pre err orig))
-              (return (call fail_bytes "" (call buf.bytes err))))
-          (when (not (call resolver.expand_generics pre flat_b err orig gen))
-              (return (call fail_bytes "" (call buf.bytes err))))
-          (let flat:str.Bytes (call buf.bytes flat_b))
-          (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
-          (let _pr:(ptr checker.Problem) (call front.check_formats (call str.addr flat) (get flat str.Bytes.len) fmts))
-          (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
-          (let low:(ptr origins.Origins) (call origins.make))
-          (let stage_src:str.Bytes
-            (if (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low)
-                (call buf.bytes lowered)
-                flat))
-          (let opt_src:str.Bytes (call optimize stage_src))
-          (if (neq (call io.write_path out opt_src) (get opt_src str.Bytes.len))
-              (return (call fail_bytes "cannot write " out))
-              (return 0)))
-    (let res:(ptr Out) (call compile_file (call str.addr entry) (get entry str.Bytes.len)
-                                          (call str.addr std_dir) (get std_dir str.Bytes.len)))
-    (let status:i32 (get res Out.status))
-    (when (or (eq status 1) (eq status 3))
-        (return (call fail_bytes "" (unsafe (call str.bytes (get res Out.addr) (get res Out.len))))))
-    (when (eq status 2)
-          (call io.write_str 2 "Error: compile error ")
-          (call write_int 2 (get res Out.len))
-          (call io.eprintln " (AIPL_SPEC.md 6.4)")
-          (return 1))
-    (let bytes:str.Bytes (unsafe (call str.bytes (get res Out.addr) (get res Out.len))))
-    (when exe
-          (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call str.from_str "") (call str.from_str "")))
-          (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
-          (set! bytes (get o native.Output.exe)))
-    (when (neq (call io.write_path out bytes) (get bytes str.Bytes.len))
-        (return (call fail_bytes "cannot write " out)))
-    (call io.write_str 1 "[AIPL Optimizing Compiler] Successfully compiled '")
-    (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
-    (call io.write_str 1 "' -> '")
-    (unsafe (fs.write 1 (call str.addr out) (get out str.Bytes.len)))
-    (call io.write_str 1 "' (")
-    (call write_int 1 (get bytes str.Bytes.len))
-    (call io.println " bytes)")
-    0)
-
-  (fn _start [] -> void
-    (sys.exit (call main))))
+    p))

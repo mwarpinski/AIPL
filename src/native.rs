@@ -5,10 +5,7 @@
 //! until the compiler itself ships as a native executable: NE17 shows it
 //! can).
 
-use crate::checker::TypeChecker;
-use crate::compiler::wasm::WasmCompiler;
-use crate::resolver::Resolver;
-use std::path::Path;
+use std::sync::OnceLock;
 use wasmtime::{Engine, Linker, Module, Store};
 use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::WasiCtxBuilder;
@@ -29,16 +26,19 @@ pub fn executable(wasm: &[u8], sandbox: bool) -> Result<Vec<u8>, String> {
 /// fresh copy of the program per connection (`--serve ADDR:PORT`,
 /// aipl_src/native/fresh.aipl); the native backend reads them with std/ip.
 pub fn executable_with(wasm: &[u8], sandbox: bool, listen: &[String], serve: Option<&str>) -> Result<Vec<u8>, String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/native/native.aipl");
-    let backend = Resolver::resolve(&path).map_err(|e| format!("native backend: {e}"))?;
-    TypeChecker::new().check_module(&backend).map_err(|e| format!("native backend: {e}"))?;
-    let backend = WasmCompiler::compile(&backend).map_err(|e| format!("native backend: {e}"))?;
-    let engine = Engine::default();
-    let module = Module::new(&engine, &backend).map_err(|e| e.to_string())?;
-    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    // the backend compiled once per process and kept between processes, as
+    // the rest of the self-hosted toolchain is (src/selfhost.rs toolchain)
+    static BACKEND: OnceLock<Result<(Engine, Module), String>> = OnceLock::new();
+    let t = crate::selfhost::toolchain("native/native", &BACKEND).map_err(|e| format!("native backend: {e}"))?;
+    let (wasm, listen, serve) = (wasm.to_vec(), listen.to_vec(), serve.map(str::to_string));
+    crate::selfhost::on_big_stack(move || run_backend(t, &wasm, sandbox, &listen, serve.as_deref()))
+}
+
+fn run_backend((engine, module): &(Engine, Module), wasm: &[u8], sandbox: bool, listen: &[String], serve: Option<&str>) -> Result<Vec<u8>, String> {
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).map_err(|e| e.to_string())?;
-    let mut store = Store::new(&engine, WasiCtxBuilder::new().inherit_stderr().build_p1());
-    let inst = linker.instantiate(&mut store, &module).map_err(|e| e.to_string())?;
+    let mut store = Store::new(engine, WasiCtxBuilder::new().inherit_stderr().build_p1());
+    let inst = linker.instantiate(&mut store, module).map_err(|e| e.to_string())?;
     let alloc = inst.get_typed_func::<i32, i32>(&mut store, "host_alloc").map_err(|e| e.to_string())?;
     let compile = inst.get_typed_func::<(i32, i32, i32, i32, i32, i32, i32), i64>(&mut store, "compile_full_at").map_err(|e| e.to_string())?;
     let mem = inst.get_memory(&mut store, "memory").ok_or("native backend: no memory")?;

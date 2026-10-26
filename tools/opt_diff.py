@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Does aipl_src/codegen_opt.aipl change what programs do? For each program
-with a main: compile it as usual (`aipl compile`) and with the optimizer's
-own pipeline (`codegen_opt compile`: resolve, check, lower, optimize, then
-codegen.aipl), run both, and compare standard output and exit status.
-(What the optimizer makes is compared by running what it compiles to.)
+"""Does the optimizer (aipl_src/codegen_opt.aipl) change what programs do?
+For each program with a main: compile it without the optimizer (`aipl
+compile --no-opt`, the Rust code generator) and with it (`aipl compile`,
+the default: driver.aipl's compile_file_opt), run both, and compare
+standard output and exit status.
 For a program that fails, standard error too (one that succeeds may print
 timings there): the message exactly, heap addresses aside, and the call
 chain by chain_ok's rule (an inlined function has no frame).
@@ -12,12 +12,11 @@ chain by chain_ok's rule (an inlined function has no frame).
     python3 tools/opt_diff.py --fuzz 300 [--seed 1]   # tools/run_fuzz.py's programs
 
 Without programs: examples/, benchmarks/ (with a small size argument),
-and tests/aipl/. Writes target/opt/ (the optimizer's wasm, each optimized
-program) and prints one line per program that differs or fails, then a
-summary; the exit status is 1 if any differs or fails to optimize. The
-optimizer's own tests (codegen_opt --test) run first. Build first: cargo
-build --release. CI runs it on the repository's programs and on 500
-generated ones (.github/workflows/ci.yml).
+and tests/aipl/. Writes target/opt/ (each program, both ways) and prints one line per program that differs or fails, then a
+summary; the exit status is 1 if any differs or fails to optimize. Build
+first: cargo build --release. CI runs it on the repository's programs and on
+500 generated ones (.github/workflows/ci.yml); the optimizer's own tests are
+a group of aipl_src/test_suite.aipl.
 """
 import concurrent.futures as cf
 import glob
@@ -31,7 +30,6 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AIPL = os.path.join(ROOT, 'target/release/aipl')
 OUT = os.path.join(ROOT, 'target/opt')
-OPT = os.path.join(OUT, 'codegen_opt.wasm')
 TIMEOUT = 60
 
 
@@ -98,10 +96,10 @@ def check(path):
     args = args_for(path)
     plain = os.path.join(OUT, name + '.wasm')
     opt = os.path.join(OUT, name + '.opt.wasm')
-    c = run([AIPL, 'compile', path, '-o', plain], ROOT)
+    c = run([AIPL, 'compile', '--no-opt', path, '-o', plain], ROOT)
     if c[0] != 0:
         return (rel, 'skip', 'does not compile: ' + (c[2] or c[1]).strip().splitlines()[-1][:120])
-    o = run([AIPL, 'run', OPT, '--', 'compile', path, '-o', opt], ROOT)
+    o = run([AIPL, 'compile', path, '-o', opt], ROOT)
     if o[0] != 0:
         return (rel, 'OPT FAILED', (o[2] or o[1]).strip()[-300:])
     a = run_in_copy(plain, path, args)
@@ -128,13 +126,9 @@ def main():
         jobs = int(args[i + 1])
         del args[i:i + 2]
     os.makedirs(OUT, exist_ok=True)
-    built = run([AIPL, 'compile', os.path.join(ROOT, 'aipl_src/codegen_opt.aipl'), '-o', OPT], ROOT)
-    if built[0] != 0:
-        sys.exit('cannot build the optimizer: ' + built[2])
-    # its own tests (aipl_src/codegen_opt.aipl run_tests: the failures)
-    t = run([AIPL, 'run', OPT, '--', '--test'], ROOT)
-    if t[0] != 0:
-        sys.exit(f"codegen_opt --test: {t[0]} failing" + (': ' + t[2] if t[2] else ''))
+    # one compile first, so the parallel ones find the optimizer in the module
+    # cache (src/selfhost.rs) rather than each compiling it
+    run([AIPL, 'compile', os.path.join(ROOT, 'examples/math_core.aipl'), '-o', os.path.join(OUT, 'warm.wasm')], ROOT)
     if '--fuzz' in args:
         # tools/run_fuzz.py's generated programs, case by case
         i = args.index('--fuzz')

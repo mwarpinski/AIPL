@@ -7,6 +7,7 @@
 ;;   aipl compile FILE.aipl -o OUT.wasm
 ;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... FILE.aipl -o OUT
 ;;   aipl compile [--exe] --max-memory SIZE FILE.aipl -o OUT   (memory's limit, 1M to 2G)
+;;   aipl compile --no-opt ...   (without the optimizer, codegen_opt.aipl; it runs by default)
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
@@ -27,7 +28,7 @@
   (import alloc)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] FILE.aipl -o OUT")
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] [--no-opt] FILE.aipl -o OUT")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -58,6 +59,8 @@
     (let exe:bool false)
     (let tests:bool false)
     (let sandbox:bool false)
+    ;; the optimizer runs unless --no-opt (docs/design/OPT_PLAN.md)
+    (let opt:bool true)
     ;; --listen grants, one ADDR:PORT a line (native.compile_with)
     (let listen:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     ;; --serve: the address the executable serves on, a fresh copy per connection
@@ -72,6 +75,7 @@
       (cond
         ((call str.is a "--exe") (set! exe true))
         ((call str.is a "--tests") (set! tests true))
+        ((call str.is a "--no-opt") (set! opt false))
         ((call str.is a "--sandbox") (set! sandbox true))
         ((call str.is a "--max-memory")
          (when (gte (+ i 1) n) (return (call usage)))
@@ -118,11 +122,15 @@
     (when (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")))
     (let entry:str.Bytes (call os.arg in_i))
     (let out:str.Bytes (call os.arg out_i))
-    (let res:(ptr driver.Out) (if tests
-                                  (call driver.compile_tests_limited (call str.addr entry) (get entry str.Bytes.len)
-                                                                     (call str.addr std_dir) (get std_dir str.Bytes.len) max_pages)
-                                  (call driver.compile_file_limited (call str.addr entry) (get entry str.Bytes.len)
-                                                                    (call str.addr std_dir) (get std_dir str.Bytes.len) max_pages)))
+    (let ea:i32 (call str.addr entry))
+    (let el:i32 (get entry str.Bytes.len))
+    (let da:i32 (call str.addr std_dir))
+    (let dl:i32 (get std_dir str.Bytes.len))
+    (let res:(ptr driver.Out) (cond
+                                ((and tests opt) (call driver.compile_tests_opt ea el da dl max_pages))
+                                (tests (call driver.compile_tests_limited ea el da dl max_pages))
+                                (opt (call driver.compile_file_opt ea el da dl max_pages))
+                                (else (call driver.compile_file_limited ea el da dl max_pages))))
     (let status:i32 (get res driver.Out.status))
     (when (or (eq status 1) (eq status 3))
         (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
