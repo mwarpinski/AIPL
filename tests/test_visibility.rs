@@ -32,7 +32,8 @@ const LIB: &str = r#"(module lib (import alloc)
   (fn (gen T) [x:T] -> T x)
   (fn (pgen T) [x:T] -> T (pub) x)
   (fn make_s [] -> (ptr S) (pub) (new S (call alloc.forever)))
-  (fn pt [] -> Pt (pub) (make Pt 4 5)))"#;
+  (fn pt [] -> Pt (pub) (make Pt 4 5))
+  (struct Vp [(pub x:i32) (pub y:i32)] (value) (pub)))"#;
 
 /// main.aipl (importing lib) with `body` as main's, and lib.aipl.
 fn program(name: &str, lib: &str, body: &str) -> PathBuf {
@@ -59,6 +60,9 @@ fn what_a_module_gives_is_usable_in_both_backends() {
         // a value struct is a type argument even with private fields: a
         // template cannot make one (it is not a struct used through a pointer)
         (r#"(get (call (lib.pgen lib.Pt) (call lib.pt)) lib.Pt.x)"#, 4),
+        // a struct made with its fields named (LANGUAGE_DECISIONS.md item 4)
+        (r#"(let o:(ptr lib.Open) (new lib.Open (call alloc.forever) [a:1 b:2])) (get o lib.Open.b)"#, 2),
+        (r#"(get (make lib.Vp [x:3 y:4]) lib.Vp.y)"#, 4),
     ];
     for (k, (body, want)) in cases.iter().enumerate() {
         let entry = program(&format!("ok_{k}"), LIB, body);
@@ -120,6 +124,13 @@ fn what_a_module_keeps_is_an_error_in_both_resolvers() {
         (r#"(module lib (import str) (fn bytes [] -> str.Bytes (pub) (call str.from_str "ab")))"#, r#"(let b:str.Bytes (call lib.bytes)) 0"#, r#"'str.Bytes' is in module str, which this file does not import: add (import str)"#),
         (r#"(module lib (import str) (fn bytes [] -> str.Bytes (pub) (call str.from_str "ab")))"#, r#"(call str.from_str "x") 0"#, r#"'str.from_str' is in module str, which this file does not import: add (import str)"#),
         (r#"(module lib (import str) (fn bytes [] -> str.Bytes (pub) (call str.from_str "ab")))"#, r#"(get (call lib.bytes) str.Bytes.len)"#, r#"'str.Bytes' is in module str, which this file does not import: add (import str)"#),
+        // fields named: each once, in order, as name:value
+        (LIB, r#"(let o:(ptr lib.Open) (new lib.Open (call alloc.forever) [b:2 a:1])) 0"#, r#"1:83: new gives the fields [b a]; lib.Open's fields, each once and in order, are [a b]"#),
+        (LIB, r#"(let o:(ptr lib.Open) (new lib.Open (call alloc.forever) [a:1])) 0"#, r#"1:83: new gives the fields [a]; lib.Open's fields, each once and in order, are [a b]"#),
+        (LIB, r#"(let o:(ptr lib.Open) (new lib.Open (call alloc.forever) [a:1 b:2 c:3])) 0"#, r#"1:83: new gives the fields [a b c]; lib.Open's fields, each once and in order, are [a b]"#),
+        (LIB, r#"(let o:(ptr lib.Open) (new lib.Open (call alloc.forever) [a 1 b 2])) 0"#, r#"1:118: new's fields are given as name:value, each once and in order: (new S a [x:1 y:2])"#),
+        (LIB, r#"(get (make lib.Vp [y:4 x:3]) lib.Vp.y)"#, r#"1:66: make gives the fields [y x]; lib.Vp's fields, each once and in order, are [x y]"#),
+        (LIB, r#"(let s:(ptr lib.S) (new lib.S (call alloc.forever) [r:1 w:2 p:3])) 0"#, r#"1:85: 'lib.S' has fields private to module lib, so only lib can make one"#),
         (r#"(module lib (struct V [x:i32] (pub) (value)))"#, r#"0"#, r#"1:31: (pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)"#),
     ];
     for (k, (lib, body, want)) in cases.iter().enumerate() {

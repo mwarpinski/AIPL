@@ -29,7 +29,7 @@ fn run(exe: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn the_forms_run_alike_in_every_backend() {
-    let want = "end evaluated\nsum 6\nodd 16\npairs 3\na1 a2 a3 = false\no1 o2 = true\nlib 3\narr.of 5 4 0 8\n";
+    let want = "end evaluated\nsum 6\nodd 16\npairs 3\na1 a2 a3 = false\no1 o2 = true\nlib 3\narr.of 5 4 0 8\nnamed 30 40 6 9\n";
     let dir = scratch("run");
     let (wasm, exe) = (dir.join("p.wasm"), dir.join("p"));
     assert!(run(Path::new(AIPL), &["compile", MAIN, "-o", wasm.to_str().unwrap()]).status.success());
@@ -78,7 +78,7 @@ fn both_toolchains_rewrite_alike_with_the_same_errors() {
         ("(struct P [x:i32]) (fn g [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (get p P.x))", false, ""),
         ("(struct P [x:i32]) (fn g [a:alloc.Allocator] -> i32 (arr.len (arr.new i32 a 4)))", false, ""),
         ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P)))", false, "3:54: new takes the allocator to make it from: (new S a), e.g. (new S (call alloc.default)), or (new S (call alloc.forever)) for memory kept until the program exits"),
-        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P 1 2)))", false, "3:54: new is (new S a): the struct, then the allocator to make it from"),
+        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P 1 2)))", false, "3:54: new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name"),
         ("(fn g [] -> void (let xs:(arr i32) (arr.new i32 3)))", false, "3:38: arr.new takes the allocator to make it from: (arr.new T a n), e.g. (arr.new T (call alloc.default) n), or (arr.new T (call alloc.forever) n) for memory kept until the program exits"),
         ("(fn g [] -> void (let xs:(arr i32) (arr.new i32)))", false, "3:38: arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length"),
         // arr.of, the array literal: an allocator, then the values (or none)

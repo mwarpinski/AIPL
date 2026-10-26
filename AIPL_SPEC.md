@@ -313,6 +313,7 @@ Struct definitions are module-level. Layout rules, identical in the checker, VM,
 
 | Form | Type | Semantics |
 |---|---|---|
+| `(new S a [x:v y:v ...])` | `(ptr S)` | an `S` from the allocator `a` with its fields given by name, each once and in declaration order (`new gives the fields [x]; S's fields, each once and in order, are [x y]`): the resolver writes `(new S a)` and then a `put` of each field, the values in the order written. A struct's fields are given by name, a variant's payload by position (`make` of a union, section 4.J). |
 | `(new S a)` | `(ptr S)` | a zeroed `S` from the allocator `a` (an `alloc.Allocator`): `(call (alloc.create S) a)`, which the resolver writes for it, importing std/alloc. `(new S (call alloc.default))` from the shared heap, `(new S (call alloc.forever))` for memory kept until the program exits, `(new S arena)` freed with the arena. The block is 8 + `(sizeof S)` bytes, the generation word (a fresh one), 4 unused bytes, then the struct. `(new S)` is an error: `new takes the allocator to make it from: (new S a), ...` |
 | `(get p S.f)` | type of `f` | `p` must be a `(ptr S)`; load at `p + offset(f)` with the instruction for `f`'s type |
 | `(put p S.f v)` | `void` | `p` must be a `(ptr S)`; store at `p + offset(f)`; `v` must have `f`'s type |
@@ -383,7 +384,8 @@ A struct declared with `(value)` after its fields is a **value struct**: a value
 
 | Form | Type | Semantics |
 |---|---|---|
-| `(make V a b ...)` | `V` | a value with every field given, in order (`make V takes 2 field value(s) (x y), got 1`) |
+| `(make V [x:v y:v ...])` | `V` | a value with every field given by name, each once and in declaration order (`make gives the fields [y x]; V's fields, each once and in order, are [x y]`) |
+| `(make V a b ...)` | `V` | the same with the fields by position (`make V takes 2 field value(s) (x y), got 1`) |
 | `(get v V.f)` | type of `f` | field `f` of the value `v` |
 | `(get e V.f W.g ...)` | type of the last field | a path: field `g` of the value struct held in field `f`, and so on; `e` may be a value or a `(ptr S)` whose field `S.f` holds one |
 | `(with v V.f x)` | `V` | a copy of `v` with field `f` set to `x` (`with V.x: expected i32, got bool`) |
@@ -1117,7 +1119,7 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 | `(enum.ord e)` / `(enum.cast Name n)` | `i32` / `Name` | `e` must be an enum, `n` an `i32` |
 | `(make Name.v x ...)` | the union `Name` | one value per field of `v`, each of the field's type |
 | `(match v arm ... [(else ...)])` | the type of the arms' last expressions, which must agree (or `void`) | `v` a union or enum; every member matched, or an `else` arm (section 4.J) |
-| `(new S a)` / `(arr.new T a n)` | `(ptr S)` / `(arr T)` | `a` an `alloc.Allocator` |
+| `(new S a [x:v ...])`, `(new S a)` / `(arr.new T a n)` | `(ptr S)` / `(arr T)` | `a` an `alloc.Allocator`; each `v` of its field's type |
 | `(sizeof S)` or `(sizeof T)`, `(arr.len a)`, `(ptr.addr p)`, `(arr.addr a)` | `i32` | |
 | `(get p S.f)` / `(arr.get T a i)` | the field's type / `T` | `p` must be `(ptr S)`, `a` must be `(arr T)`, `i` must be `i32` |
 | `(put p S.f v)` / `(arr.set T a i v)` | `void` | as above; `v` must match the field / `T` |
