@@ -55,7 +55,7 @@
     (let cell:Cell (get n Node.cell))
     (set! total (+ total (f64.convert_i64_s (i64.extend_s (get cell Cell.id)))))  ;; +9
     (set! total (+ total (f64.convert_i64_s (/ (get n Node.cell Cell.wide) 1000000000i64))))  ;; +6
-    (if (eq (get cell Cell.next) n) (set! total (+ total 1.0)) (block))     ;; +1
+    (when (eq (get cell Cell.next) n) (set! total (+ total 1.0)))     ;; +1
     ;; recursion, generics, a vector of values
     (set! total (+ total (call sum3 (call powers 3 a))))         ;; +48
     (let p:(Pair i32) (call (swap i32) (make (Pair i32) 1 2)))
@@ -70,7 +70,7 @@
       (err e (set! total (- total 1000.0))))
     ;; enums and bools in a value
     (let s:Step (make Step Dir.south 3 true))
-    (if (and (get s Step.on) (eq (get s Step.dir) Dir.south)) (set! total (+ total (f64.convert_i64_s (i64.extend_s (get s Step.len))))) (block))  ;; +3
+    (when (and (get s Step.on) (eq (get s Step.dir) Dir.south)) (set! total (+ total (f64.convert_i64_s (i64.extend_s (get s Step.len))))))  ;; +3
     ;; 30 + 20 + 7.5 + 4 + 9 + 6 + 1 + 48 + 20 + 4.5 + 6.25 + 3 + 3 = 162.25
     (i32.wrap (i64.trunc_f64_s (* total 4.0))))                  ;; 649
   ;; prints the checksum the tests compare (they call checksum)

@@ -40,7 +40,7 @@
 
   ;; Notes that the next byte printed into b comes from (file, pos).
   (fn note [o:(ptr Origins) b:(ptr buf.Buf) file:i32 pos:i32] -> void (pub)
-    (if (eq o (ptr.null Origins)) (return) (block))
+    (when (eq o (ptr.null Origins)) (return))
     (let e:(ptr Entry) (new Entry (call alloc.forever)))
     (put e Entry.buffer (ptr.addr b))
     (put e Entry.at (call buf.len b))
@@ -57,12 +57,10 @@
       (let id:i32 (ptr.addr (arr.get (ptr buf.Buf) parts k)))
       (for i 0 (call (vec.len (ptr Entry)) es)
         (let e:(ptr Entry) (call (vec.at (ptr Entry)) es i))
-        (if (eq (get e Entry.buffer) id)
-            (block
+        (when (eq (get e Entry.buffer) id)
               (put e Entry.at (+ (get e Entry.at) (arr.get i32 bases k)))
               (put e Entry.buffer 0)
-              (call (vec.push (ptr Entry)) out e))
-            (block))))
+              (call (vec.push (ptr Entry)) out e))))
     (put o Origins.entries out))
 
   ;; The entry for the last token at or before offset `at`, or null.

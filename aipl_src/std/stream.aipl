@@ -93,7 +93,7 @@
   ;; open for a path held as bytes.
   (fn open_path [a:alloc.Allocator path:str.Bytes] -> (result (ptr Reader) str) (pub)
     (let fd:i32 (unsafe (fs.open (call str.addr path) (get path str.Bytes.len) 0)))
-    (if (lt fd 0) (return (err:(ptr Reader) (format "cannot open {path} to read"))) (block))
+    (when (lt fd 0) (return (err:(ptr Reader) (format "cannot open {path} to read"))))
     (ok:str (call fd_reader a fd true)))
 
   ;; Reads b's bytes where they are, so b must not change or be freed
@@ -149,7 +149,7 @@
 
   ;; Reads more into the window; whether any bytes came.
   (fn fill [r:(ptr Reader)] -> bool
-    (if (get r Reader.at_end) (return false) (block))
+    (when (get r Reader.at_end) (return false))
     (let got:i32 (match (get r Reader.src)
       (Source.fd [fd]
         (block
@@ -166,7 +166,7 @@
     (let sc:(ptr buf.Buf) (get f Fill.scratch))
     (call buf.clear sc)
     (let got:i32 (call_ref (fn [i32 (ptr buf.Buf)] -> i32 (no_leak)) (get f Fill.fill_fn) (get f Fill.cell) sc))
-    (if (lt got 0) (return got) (block))
+    (when (lt got 0) (return got))
     ;; what it appended, whatever it said
     (let n:i32 (call buf.len sc))
     (call make_room r n)
@@ -178,12 +178,12 @@
   ;; The next byte (0 .. 255), or -1 at the end.
   (fn read_byte [r:(ptr Reader)] -> i32 (pub)
     (let c:i32 (call peek_byte r))
-    (if (gte c 0) (put r Reader.start (+ (get r Reader.start) 1)) (block))
+    (when (gte c 0) (put r Reader.start (+ (get r Reader.start) 1)))
     c)
 
   ;; The next byte without taking it, or -1 at the end.
   (fn peek_byte [r:(ptr Reader)] -> i32 (pub)
-    (if (and (eq (get r Reader.start) (get r Reader.end)) (not (call fill r))) (return -1) (block))
+    (when (and (eq (get r Reader.start) (get r Reader.end)) (not (call fill r))) (return -1))
     (call str.byte_at (get r Reader.win) (get r Reader.start)))
 
   ;; Moves to the next line; false at the end. A line ends at "\n" or
@@ -198,25 +198,21 @@
       (let d:i32 (call str.addr (get r Reader.win)))
       (let i:i32 (+ s scanned))
       (while (and (lt i e) (neq (unsafe (mem.load8 (+ d i))) 10)) (set! i (+ i 1)))
-      (if (lt i e)
-          (block
+      (when (lt i e)
             (let stop:i32 (if (and (gt i s) (eq (unsafe (mem.load8 (+ d (- i 1)))) 13)) (- i 1) i))
             (put r Reader.view (call str.slice (get r Reader.win) s (- stop s)))
             (put r Reader.start (+ i 1))
             (return true))
-          (block))
       (set! scanned (- e s))
       ;; fill may move the unread bytes (to the window's start, or to a
       ;; bigger window) even when it finds no more, so read them again
-      (if (not (call fill r))
-          (block
+      (when (not (call fill r))
             (let s2:i32 (get r Reader.start))
             (let e2:i32 (get r Reader.end))
-            (if (eq s2 e2) (return false) (block))
+            (when (eq s2 e2) (return false))
             (put r Reader.view (call str.slice (get r Reader.win) s2 (- e2 s2)))
             (put r Reader.start e2)
-            (return true))
-          (block)))
+            (return true)))
     false)
 
   ;; The line next_line moved to, good until the next read from r.
@@ -233,12 +229,11 @@
   ;; or -1 after a read error.
   (fn read [r:(ptr Reader) into:(ptr buf.Buf) max:i32] -> i32 (pub)
     (req (gt max 0))
-    (if (and (eq (get r Reader.start) (get r Reader.end)) (not (call fill r)))
-        (return (if (get r Reader.failed) -1 0))
-        (block))
+    (when (and (eq (get r Reader.start) (get r Reader.end)) (not (call fill r)))
+        (return (if (get r Reader.failed) -1 0)))
     (let s:i32 (get r Reader.start))
     (let n:i32 (- (get r Reader.end) s))
-    (if (gt n max) (set! n max) (block))
+    (when (gt n max) (set! n max))
     (call buf.push_bytes into (call str.slice (get r Reader.win) s n))
     (put r Reader.start (+ s n))
     n)
@@ -249,7 +244,7 @@
     (let total:i32 0)
     (while true
       (let n:i32 (call read r into 65536))
-      (if (lte n 0) (break) (block))
+      (when (lte n 0) (break))
       (set! total (+ total n)))
     (if (get r Reader.failed) -1 total))
 
@@ -261,7 +256,7 @@
   (fn close_reader [r:(ptr Reader)] -> void (pub)
     (let a:alloc.Allocator (get r Reader.a))
     (match (get r Reader.src)
-      (Source.fd [fd] (if (get r Reader.owns_fd) (let _c:i32 (unsafe (fs.close fd))) (block)))
+      (Source.fd [fd] (when (get r Reader.owns_fd) (let _c:i32 (unsafe (fs.close fd)))))
       (Source.memory (block))
       (Source.custom [f]
         (block
@@ -310,7 +305,7 @@
   ;; create for a path held as bytes.
   (fn create_path [a:alloc.Allocator path:str.Bytes] -> (result (ptr Writer) str) (pub)
     (let fd:i32 (unsafe (fs.open (call str.addr path) (get path str.Bytes.len) 1)))
-    (if (lt fd 0) (return (err:(ptr Writer) (format "cannot open {path} to write"))) (block))
+    (when (lt fd 0) (return (err:(ptr Writer) (format "cannot open {path} to write"))))
     (ok:str (call make_writer a (make Sink.fd fd) true (call buf.make a 8192))))
 
   ;; Appends to b as it is written to; close_writer leaves b.
@@ -338,19 +333,19 @@
 
   ;; Writes the byte c (its low 8 bits).
   (fn write_byte [w:(ptr Writer) c:i32] -> void (pub)
-    (if (get w Writer.failed) (return) (block))
+    (when (get w Writer.failed) (return))
     (call buf.push_byte (get w Writer.out) c)
     (call wrote w))
 
   ;; Writes the bytes of b.
   (fn write_bytes [w:(ptr Writer) b:str.Bytes] -> void (pub)
-    (if (get w Writer.failed) (return) (block))
+    (when (get w Writer.failed) (return))
     (call buf.push_bytes (get w Writer.out) b)
     (call wrote w))
 
   ;; Writes the text s.
   (fn write_str [w:(ptr Writer) s:str] -> void (pub)
-    (if (get w Writer.failed) (return) (block))
+    (when (get w Writer.failed) (return))
     (call buf.push_str (get w Writer.out) s)
     (call wrote w))
 
@@ -361,7 +356,7 @@
 
   ;; Writes out what is held once it reaches 8 KB.
   (fn wrote [w:(ptr Writer)] -> void (pub)
-    (if (gte (call buf.len (get w Writer.out)) 8192) (let _ok:bool (call flush w)) (block)))
+    (when (gte (call buf.len (get w Writer.out)) 8192) (let _ok:bool (call flush w))))
 
   ;; The end of (format_to w "..."): b is w's buffer.
   (fn format_end [w:(ptr Writer) b:(ptr buf.Buf)] -> void (pub)
@@ -370,7 +365,7 @@
   ;; Writes out everything held; false if a write has failed.
   (fn flush [w:(ptr Writer)] -> bool (pub)
     (let out:(ptr buf.Buf) (get w Writer.out))
-    (if (get w Writer.failed) (block (call buf.clear out) (return false)) (block))
+    (when (get w Writer.failed) (call buf.clear out) (return false))
     (let n:i32 (call buf.len out))
     (let base:i32 (get out buf.Buf.data))
     (let ok:bool (match (get w Writer.sink)
@@ -379,7 +374,7 @@
           (let done:i32 0)
           (while (lt done n)
             (let k:i32 (unsafe (fs.write fd (+ base done) (- n done))))
-            (if (lte k 0) (break) (block))
+            (when (lte k 0) (break))
             (set! done (+ done k)))
           (eq done n)))
       (Sink.buffer true)
@@ -389,7 +384,7 @@
     (match (get w Writer.sink)
       (Sink.buffer (block))
       (else (call buf.clear out)))
-    (if (not ok) (put w Writer.failed true) (block))
+    (when (not ok) (put w Writer.failed true))
     ok)
 
   ;; Whether a write to the sink failed.
@@ -404,9 +399,8 @@
     (match (get w Writer.sink)
       (Sink.fd [fd]
         (block
-          (if (get w Writer.owns_fd)
-              (if (lt (unsafe (fs.close fd)) 0) (set! ok false) (block))
-              (block))
+          (when (get w Writer.owns_fd)
+              (when (lt (unsafe (fs.close fd)) 0) (set! ok false)))
           (call buf.free (get w Writer.out))))
       (Sink.buffer (block))
       (Sink.custom [d]
@@ -456,19 +450,19 @@
     (let p:i32 0)
     (let a:alloc.Allocator (call alloc.default))
     ;; lines in memory: \n, \r\n, an empty line, a last line with no \n
-    (if (call str.same (call joined (call of_str a "one\ntwo\r\n\nthree")) "one|two||three") (set! p (+ p 1)) (block))
-    (if (call str.same (call joined (call of_str a "a\n")) "a") (set! p (+ p 1)) (block))
+    (when (call str.same (call joined (call of_str a "one\ntwo\r\n\nthree")) "one|two||three") (set! p (+ p 1)))
+    (when (call str.same (call joined (call of_str a "a\n")) "a") (set! p (+ p 1)))
     ;; a source 3 bytes at a time, lines longer than what it gives
     (let d:(ptr Drip) (new Drip (call alloc.forever)))
     (put d Drip.text (call str.from_str "alpha\nbe\r\ngamma delta\r"))
     (put d Drip.at 0)
-    (if (call str.same (call joined (call (reader_of (ptr Drip)) a d (ref drip))) "alpha|be|gamma delta\r") (set! p (+ p 1)) (block))
+    (when (call str.same (call joined (call (reader_of (ptr Drip)) a d (ref drip))) "alpha|be|gamma delta\r") (set! p (+ p 1)))
     ;; bytes, peeking, and read_all
     (let r:(ptr Reader) (call of_str a "xyz"))
     (let ok:bool (and (eq (call peek_byte r) 120) (eq (call read_byte r) 120)))
     (let rest:(ptr buf.Buf) (call buf.make a 0))
-    (if (and ok (and (eq (call read_all r rest) 2) (and (call str.same (call buf.to_str rest) "yz") (eq (call read_byte r) -1))))
-        (set! p (+ p 1)) (block))
+    (when (and ok (and (eq (call read_all r rest) 2) (and (call str.same (call buf.to_str rest) "yz") (eq (call read_byte r) -1))))
+        (set! p (+ p 1)))
     (call close_reader r)
     ;; a writer into a buffer, formatting into its buffer (as (format_to w
     ;; ...) does in another module, where this module's names are qualified)
@@ -478,20 +472,20 @@
     (format_to (call buffer w) "{(+ 40 2)},{true}")
     (call wrote w)
     (call write_byte w 33)
-    (if (and (call close_writer w) (call str.same (call buf.to_str b) "n=42,true!")) (set! p (+ p 1)) (block))
+    (when (and (call close_writer w) (call str.same (call buf.to_str b) "n=42,true!")) (set! p (+ p 1)))
     ;; a custom sink gets 8 KB at a time, and the rest at close
     (let t:(ptr Tally) (new Tally (call alloc.forever)))
     (put t Tally.bytes 0)
     (put t Tally.calls 0)
     (let tw:(ptr Writer) (call (writer_of (ptr Tally)) a t (ref tally)))
     (for i 1 10001 (call write_byte tw 46))
-    (if (and (call close_writer tw) (and (eq (get t Tally.bytes) 10000) (eq (get t Tally.calls) 2))) (set! p (+ p 1)) (block))
+    (when (and (call close_writer tw) (and (eq (get t Tally.bytes) 10000) (eq (get t Tally.calls) 2))) (set! p (+ p 1)))
     ;; a file written and read back, line by line
     (match_result (call create a "_stream_test.tmp")
       (ok fw
         (block
           (for i 1 3001 (format_to (call buffer fw) "line {i}\n") (call wrote fw))
-          (if (call close_writer fw)
+          (when (call close_writer fw)
               (match_result (call open a "_stream_test.tmp")
                 (ok fr
                   (block
@@ -499,11 +493,10 @@
                     (let last:str.Bytes (call str.from_str ""))
                     (while (call next_line fr)
                       (set! count (+ count 1))
-                      (if (eq count 3000) (set! last (call str.from_str (call str.from_bytes (call line fr)))) (block)))
+                      (when (eq count 3000) (set! last (call str.from_str (call str.from_bytes (call line fr))))))
                     (call close_reader fr)
-                    (if (and (eq count 3000) (call str.bytes_eq last (call str.from_str "line 3000"))) (set! p (+ p 1)) (block))))
-                (err _e (block)))
-              (block))))
+                    (when (and (eq count 3000) (call str.bytes_eq last (call str.from_str "line 3000"))) (set! p (+ p 1)))))
+                (err _e (block))))))
       (err _e (block)))
     (unsafe (fs.delete (str.ptr "_stream_test.tmp") (str.len "_stream_test.tmp")))
     p))

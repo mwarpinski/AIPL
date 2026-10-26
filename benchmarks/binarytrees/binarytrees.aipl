@@ -17,11 +17,9 @@
 
   (fn bottom_up [a:(ptr arena.Arena) depth:i32] -> (ptr Node)
     (let n:(ptr Node) (call (arena.alloc Node) a))
-    (if (gt depth 0)
-        (block
+    (when (gt depth 0)
           (put n Node.left (call bottom_up a (- depth 1)))
           (put n Node.right (call bottom_up a (- depth 1))))
-        (block))
     n)
 
   (fn check [n:(ptr Node)] -> i32

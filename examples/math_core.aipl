@@ -45,10 +45,10 @@
     lo)
 
   (fn is_prime [n:i32] -> bool
-    (if (lt n 2) (return false) (block))
+    (when (lt n 2) (return false))
     (let d:i32 2)
     (while (lte (* d d) n)
-      (if (eq (% n d) 0) (return false) (block))
+      (when (eq (% n d) 0) (return false))
       (set! d (+ d 1)))
     true)
 
@@ -57,7 +57,7 @@
     (req (lte n 100000))
     (let count:i32 0)
     (for i 2 (+ n 1)
-      (if (call is_prime i) (set! count (+ count 1)) (block)))
+      (when (call is_prime i) (set! count (+ count 1))))
     count)
 
   ;; System load policy: blend the current load with the historical peak,

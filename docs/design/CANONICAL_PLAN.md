@@ -24,7 +24,7 @@ decides the larger syntax questions with numbers.
 | 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 (two small items outstanding, in section 1) |
 | 2 | Errors that name the right form, for every guess a model makes | **Done** 2026-10-21 (outstanding items in section 2) |
 | 3 | Retire `loop`: `for` is the only counted loop | **Done** 2026-10-21 (outstanding items in section 3: the internal Loop node is kept) |
-| 4 | `when` is the only `if` with one branch | Not started |
+| 4 | `when` is the only `if` with one branch | **Done** 2026-10-25 on features/when (outstanding items in section 4) |
 | 5 | An array literal, `arr.of` | Not started |
 | 6 | The other duplicates: a sweep of the spec, a proposal for each | Not started |
 | 7 | The A/B harness, then the syntax proposals one at a time | Not started |
@@ -291,6 +291,113 @@ rewritten. `if` always has two real branches; `when` has one.
 Open within the step: the launch checklist's friction of `when` around
 a value (section 2 there) is looked at here, since `when` becomes the
 only form.
+
+**Progress (2026-10-21, branch features/when).** The owner chose the full
+approach (A) over a partial one (B: refuse only `(if c x (block))` with a
+single-form then, leaving `(if c (block a b) (block))` legal as `when`'s
+expansion), because a rule with an exception is an edge case for a model,
+the toolchain's own printed output would keep showing the refused form,
+and the planned corpus must hold no counterexamples. The difficulty, as in
+step 3: the toolchain reads its own output again (the resolver's flat text,
+the printers' text), and the resolver expands `when` into exactly
+`(if c (block body...) (block))`. So `when` becomes a form of its own,
+in five stages, each checked by the full CI before the next:
+
+1. **Done** (commit fe305bd): both bare parsers read `(when c body...)`
+   into the tree the resolver's rewrite makes, every part at the when's
+   position; `when` is in HEAD_NAMES (so `whn` gets a suggestion); a bare
+   `(when)` says `when takes a condition and a body`. Full CI: every test
+   passed except two in tests/test_serve.rs, the intermittent failures
+   being investigated (docs/HANDOFF.md, Open problems), not this change.
+2. **Done** (2026-10-25; full CI before the commit): both printers print `(if c (block b...) (block))` as `(when c b...)`
+   (only when the then is a block and the else an empty one), and the
+   self-hosted code generator learns `when`. What was found reading
+   aipl_src/codegen.aipl: `cond` is the precedent (compiled from its own
+   text to the bytes Rust's desugared tree gives), so each place that
+   handles `cond` needs `when`. `when` is always void, which leaves four:
+   `is_void_node` (about line 1609: true), `node_type` (about 2816: void),
+   `groups_walk` (about 3047: walk the condition, then `groups_body` of
+   the body with into false), and the compile dispatch (about 3420: a new
+   `compile_when` that does what `compile_if` does for a block then and an
+   empty else: the condition, OP_IF with block type 64, `label_push
+   if_else`, `compile_stmt_seq` of the body under `at_push` of the when's
+   position, OP_ELSE, nothing, `label_pop`, OP_END; `seal_node` with
+   valued false emits nothing). `diverges_node` needs nothing (a when never
+   always leaves: its else is empty). codegen_opt.aipl is not wired into
+   any pipeline (`--opt` is not built), so it is left, and listed below.
+   Check: tests/test_selfhost.rs byte parity, whose flat() gives the code
+   generator the Rust printer's text. Built as described: `compile_when`
+   emits what `compile_if` emits for that tree, the position marks
+   included; tests/test_selfhost.rs `self_hosted_bytes_match_when` (when
+   nested, in a loop with break and continue, with a return, with no body,
+   beside a valued if, in a cond) fails if `compile_when` drops its else
+   (tried), and tests/test_printer.rs `when_prints_as_when` checks the
+   printing and that an `if` whose then is not a block keeps its `if`.
+   Outstanding: codegen_opt.aipl does not know `when` (not wired in).
+3. **Done** (2026-10-25; full CI before the commit): the resolver (src/sugar.rs, resolver.aipl emit_sugar kind 1) stops
+   expanding `when`; the parsers read it (stage 1), and its flat output
+   then holds `when`, which stage 2 lets the code generator read.
+4. **Done** (2026-10-25; full CI before the commit): both parsers refuse an `if` whose then or else is an empty `(block)`:
+   `an if has two real branches: for one, write (when c then...)`, and for
+   an empty then `(when (not c) else...)`. Nothing internal writes that
+   form after stages 2 and 3 (checked: no generated text in either
+   toolchain contains an if with an empty block; the only producers were
+   the `when` rewrite and the printers). Decide here the rule for `when`
+   around a value: its body is statements, a value is dropped, its type is
+   void, as for `while` and `for` (today `(when c (call f x))` with f
+   giving an i32 fails with "If branch type mismatch: then is i32, else is
+   void", naming an `if` the program does not have). That needs the
+   checkers and both code generators to drop a then-branch's value when
+   the else is the empty block; or the parsers can append an empty block
+   to a when's body, which needs no change behind them, and the printers
+   leave it out.
+5. **Done** (2026-10-25, commit 2506725; full CI before it): rewrite the repository's uses (counted 2026-10-21 over .aipl and .rs
+   files: 2,367 in 83 files; 1,505 `(if c X (block))` with one form as
+   then, 798 with a `(block ...)` then, 64 `(if c (block) X)`, and one
+   `(if c (block) (block))` to look at by hand), with a tool like
+   tools/retire_loop.py; then the spec, the guide (pitfall row 2), the
+   tour, and the tests that feed the bare parser or the code generator a
+   program. `(if c (block a b) (block))` becomes `(when c a b)` exactly
+   (the same tree); `(if c X (block))` becomes `(when c X)`, whose then is
+   `(block X)`: check the bytes; `(if c (block) X)` becomes
+   `(when (not c) X)`.
+
+Order note: stage 5's rewrite must come before stage 4's refusal, or the
+repository stops building; do 5 then 4.
+
+How stage 4 was built: the value rule is the parsers ending a when's body
+with an empty block (no change to the checkers, the VM, or wasm.rs; the
+printers leave the block out; `compile_when` compiles the body's
+expressions as statements, then that block's position marks), so
+`(when c (call f x))` with an i32 `f` checks and runs (tests/
+test_control_flow.rs `a_whens_body_drops_its_value`), and every existing
+`when`, whose last expression was void, compiles to the same bytes. One
+internal producer of the refused form was found only in this stage:
+`expect`'s lowering, `(if c (block) (call testing.fail ...))`, which
+src/formats.rs builds as a tree and aipl_src/fmtlower.aipl writes as text
+for the parser; both now make `(when (not c) ...)`. The repository's
+first search for producers had looked for the form in one string, and
+fmtlower writes it in pieces. Tests: the refusals (both messages, both
+toolchains) in tests/test_checker_aipl.rs BAD_PARSES; a when with a value
+in FORMS and in tests/test_selfhost.rs `self_hosted_bytes_match_when`.
+
+**Outstanding in step 4:**
+
+- codegen_opt.aipl does not know `when` (it is not wired into any
+  pipeline; when `--opt` is built, it must).
+- `aipl serve --fresh` should exec aipl-run instead of starting it as a
+  child (below).
+- tools/when_rewrite.py rewrote prose inside the guide's fenced
+  system-prompt block (it reads every fenced block as code); rules 6 and 7
+  were fixed by hand. A later rewrite tool should skip fences that are
+  not ```lisp.
+
+Found on the way, not part of the step: `aipl serve --fresh` starts
+`aipl-run --serve-fresh` as a child, so killing `aipl serve` by its
+process id leaves the server running and listening (Ctrl-C reaches both,
+as a process group). It should exec aipl-run instead. Tests that fail
+mid-loop leave such servers behind (two were found still listening, hours
+later, on 2026-10-21).
 
 ## 5. An array literal
 

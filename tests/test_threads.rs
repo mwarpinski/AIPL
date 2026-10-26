@@ -147,7 +147,7 @@ const THREADS: &str = r#"
     (let ok:i32 1)
     (for i 0 500
       (let p:i32 (arr.get i32 blocks i))
-      (if (and (eq (mem.load32 p) tag) (eq (mem.load32 (+ p 4)) i)) (block) (set! ok 0)))
+      (when (not (and (eq (mem.load32 p) tag) (eq (mem.load32 (+ p 4)) i))) (set! ok 0)))
     ok)
   (fn concurrent_alloc [] -> i32 (unsafe)
     (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))

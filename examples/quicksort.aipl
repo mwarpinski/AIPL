@@ -28,7 +28,7 @@
       (while (lt (arr.get i32 a i) pivot) (set! i (+ i 1)))
       (set! j (- j 1))
       (while (gt (arr.get i32 a j) pivot) (set! j (- j 1)))
-      (if (gte i j) (return j) (block))
+      (when (gte i j) (return j))
       (call swap a i j))
     j)
 
@@ -46,7 +46,7 @@
 
   (fn is_sorted [a:(arr i32)] -> bool
     (for i 1 (arr.len a)
-      (if (lt (arr.get i32 a i) (arr.get i32 a (- i 1))) (return false) (block)))
+      (when (lt (arr.get i32 a i) (arr.get i32 a (- i 1))) (return false)))
     true)
 
   ;; n pseudo-random values in 0..999 from a linear congruential generator

@@ -68,7 +68,7 @@
   ;; read_file for a path held as bytes (e.g. one built at run time).
   (fn read_path [path:str.Bytes] -> str.Bytes (pub)
     (unsafe (let fd:i32 (fs.open (call str.addr path) (get path str.Bytes.len) 0))
-    (if (lt fd 0) (return (call str.bytes 0 -1)) (block))
+    (when (lt fd 0) (return (call str.bytes 0 -1)))
     (let b:str.Bytes (call read_fd fd))
     (fs.close fd)
     b))
@@ -119,6 +119,6 @@
     (let wrote:i32 (call write_file "_io_test.tmp" data))
     (let back:str.Bytes (call read_file "_io_test.tmp"))
     (fs.delete (str.ptr "_io_test.tmp") (str.len "_io_test.tmp"))
-    (if (and (eq wrote 14) (call str.bytes_eq back data)) (set! p (+ p 1)) (block))
-    (if (eq (get (call read_file "_io_missing.tmp") str.Bytes.len) -1) (set! p (+ p 1)) (block))
+    (when (and (eq wrote 14) (call str.bytes_eq back data)) (set! p (+ p 1)))
+    (when (eq (get (call read_file "_io_missing.tmp") str.Bytes.len) -1) (set! p (+ p 1)))
     p)))

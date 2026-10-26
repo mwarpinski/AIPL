@@ -16,7 +16,7 @@
   ;; a source of its own: hands out "ab\n" `left` times
   (struct Drip [left:i32])
   (fn drip [d:(ptr Drip) into:(ptr buf.Buf)] -> i32
-    (if (eq (get d Drip.left) 0) (return 0) (block))
+    (when (eq (get d Drip.left) 0) (return 0))
     (put d Drip.left (- (get d Drip.left) 1))
     (call buf.push_str into "ab\n")
     3)

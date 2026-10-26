@@ -24,7 +24,7 @@
             (set! i (+ i 1))
             (let start:i32 i)
             (while (and (lt i n) (not (call delimiter (call str.byte_at t i))))
-              (if (eq (call str.byte_at t i) 46) (set! start (+ i 1)) (block))
+              (when (eq (call str.byte_at t i) 46) (set! start (+ i 1)))
               (set! i (+ i 1)))
             (for k start i (call buf.push_byte out (call str.byte_at t k))))))
     (call buf.bytes out))
@@ -35,9 +35,9 @@
 
   (fn run_names_tests [] -> i32
     (let p:i32 0)
-    (if (call str.bytes_eq (call shown (call str.from_str "vec.Vec<'vec.index_of.T>")) (call str.from_str "vec.Vec<T>")) (set! p (+ p 1)) (block))
-    (if (call str.bytes_eq (call shown (call str.from_str "(arr 'f.K)")) (call str.from_str "(arr K)")) (set! p (+ p 1)) (block))
-    (if (call str.bytes_eq (call shown (call str.from_str "Map<'m.Map.K,i32>")) (call str.from_str "Map<K,i32>")) (set! p (+ p 1)) (block))
-    (if (call is_sealed (call str.from_str "'f.T")) (set! p (+ p 1)) (block))
-    (if (not (call is_sealed (call str.from_str "f.T"))) (set! p (+ p 1)) (block))
+    (when (call str.bytes_eq (call shown (call str.from_str "vec.Vec<'vec.index_of.T>")) (call str.from_str "vec.Vec<T>")) (set! p (+ p 1)))
+    (when (call str.bytes_eq (call shown (call str.from_str "(arr 'f.K)")) (call str.from_str "(arr K)")) (set! p (+ p 1)))
+    (when (call str.bytes_eq (call shown (call str.from_str "Map<'m.Map.K,i32>")) (call str.from_str "Map<K,i32>")) (set! p (+ p 1)))
+    (when (call is_sealed (call str.from_str "'f.T")) (set! p (+ p 1)))
+    (when (not (call is_sealed (call str.from_str "f.T"))) (set! p (+ p 1)))
     p))

@@ -5,7 +5,7 @@
   (fn work [n:i32] -> (result i32 str)
     (println "start {n}")
     (defer (println "first defer {n}"))
-    (if (eq n 0) (return (ok:str -1)) (block))
+    (when (eq n 0) (return (ok:str -1)))
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
     (defer (call buf.free b) (println "freed the buffer"))
     (let v:i32 (try (call d n)))

@@ -51,7 +51,7 @@
       (Value.object [fields]
         (for i 0 (call (vec.len (ptr Field)) fields)
           (let f:(ptr Field) (call (vec.at (ptr Field)) fields i))
-          (if (call str.is (get f Field.key) key) (return (make (option.Option Value) some (get f Field.value))) (block)))
+          (when (call str.is (get f Field.key) key) (return (make (option.Option Value) some (get f Field.value)))))
         (make (option.Option Value) none))
       (else (make (option.Option Value) none))))
 
@@ -77,12 +77,12 @@
           (block
             (let j:i32 (+ i 1))
             (while (and (lt j n) (call path_digit (call str.byte_at b j))) (set! j (+ j 1)))
-            (if (or (eq j (+ i 1)) (or (gte j n) (neq (call str.byte_at b j) 93))) (return false) (block))
+            (when (or (eq j (+ i 1)) (or (gte j n) (neq (call str.byte_at b j) 93))) (return false))
             (set! i (+ j 1)))
           (block
-            (if (not first) (if (neq (call str.byte_at b i) 46) (return false) (set! i (+ i 1))) (block))
+            (when (not first) (if (neq (call str.byte_at b i) 46) (return false) (set! i (+ i 1))))
             (let k:i32 (call key_end b i))
-            (if (eq k i) (return false) (block))
+            (when (eq k i) (return false))
             (set! i k)))
       (set! first false))
     true)
@@ -112,14 +112,14 @@
             (let idx:i32 0)
             (while (neq (call str.byte_at b j) 93)
               ;; an index past what any list holds finds nothing
-              (if (lt idx 100000000) (set! idx (+ (* idx 10) (- (call str.byte_at b j) 48))) (block))
+              (when (lt idx 100000000) (set! idx (+ (* idx 10) (- (call str.byte_at b j) 48))))
               (set! j (+ j 1)))
             (match (call at cur idx)
               ((option.Option Value) some [x] (set! cur x))
               ((option.Option Value) none [] (return (make (option.Option Value) none))))
             (set! i (+ j 1)))
           (block
-            (if (eq (call str.byte_at b i) 46) (set! i (+ i 1)) (block))
+            (when (eq (call str.byte_at b i) 46) (set! i (+ i 1)))
             (let k:i32 (call key_end b i))
             (match (call member cur b i k)
               ((option.Option Value) some [x] (set! cur x))
@@ -134,13 +134,11 @@
         (for f 0 (call (vec.len (ptr Field)) fields)
           (let fd:(ptr Field) (call (vec.at (ptr Field)) fields f))
           (let key:str.Bytes (get fd Field.key))
-          (if (eq (get key str.Bytes.len) (- to from))
-              (block
+          (when (eq (get key str.Bytes.len) (- to from))
                 (let same:bool true)
                 (for c 0 (- to from)
-                  (if (neq (call str.byte_at key c) (call str.byte_at b (+ from c))) (set! same false) (block)))
-                (if same (return (make (option.Option Value) some (get fd Field.value))) (block)))
-              (block)))
+                  (when (neq (call str.byte_at key c) (call str.byte_at b (+ from c))) (set! same false)))
+                (when same (return (make (option.Option Value) some (get fd Field.value))))))
         (make (option.Option Value) none))
       (else (make (option.Option Value) none))))
 
@@ -166,13 +164,11 @@
     (put p P.a a)
     (put p P.depth 0)
     (put p P.err (ptr.null Error))
-    (if (not (call str.valid_utf8 text)) (call fail p 0 "the text is not UTF-8") (block))
+    (when (not (call str.valid_utf8 text)) (call fail p 0 "the text is not UTF-8"))
     (let v:Value (if (eq (get p P.err) (ptr.null Error)) (call value p) (make Value.null)))
-    (if (eq (get p P.err) (ptr.null Error))
-        (block
+    (when (eq (get p P.err) (ptr.null Error))
           (call skip_ws p)
-          (if (lt (get p P.pos) (get text str.Bytes.len)) (call fail p (get p P.pos) "unexpected text after the value") (block)))
-        (block))
+          (when (lt (get p P.pos) (get text str.Bytes.len)) (call fail p (get p P.pos) "unexpected text after the value")))
     (let e:(ptr Error) (get p P.err))
     (call (alloc.destroy P) a p)
     (if (eq e (ptr.null Error)) (ok:(ptr Error) v) (err:Value e)))
@@ -183,7 +179,7 @@
 
   ;; The first error wins.
   (fn fail [p:(ptr P) at:i32 what:str] -> void
-    (if (neq (get p P.err) (ptr.null Error)) (return) (block))
+    (when (neq (get p P.err) (ptr.null Error)) (return))
     (let e:(ptr Error) (new Error (get p P.a)))
     (put e Error.at at)
     (put e Error.what what)
@@ -204,7 +200,7 @@
   (fn is_ws [c:i32] -> bool (or (eq c 32) (or (eq c 9) (or (eq c 10) (eq c 13)))))
 
   (fn value [p:(ptr P)] -> Value
-    (if (gt (get p P.depth) 512) (block (call fail p (get p P.pos) "nested too deeply") (return (make Value.null))) (block))
+    (when (gt (get p P.depth) 512) (call fail p (get p P.pos) "nested too deeply") (return (make Value.null)))
     (call skip_ws p)
     (let c:i32 (call peek p))
     (cond
@@ -225,32 +221,26 @@
     (let start:i32 (get p P.pos))
     (let n:i32 (str.len w))
     (let text:str.Bytes (get p P.text))
-    (if (or (gt (+ start n) (get text str.Bytes.len)) (not (call str.is (call str.slice text start n) w)))
-        (block (call fail p start "expected a value") (return (make Value.null)))
-        (block))
+    (when (or (gt (+ start n) (get text str.Bytes.len)) (not (call str.is (call str.slice text start n) w))) (call fail p start "expected a value") (return (make Value.null)))
     (put p P.pos (+ start n))
     v)
 
   ;; -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?
   (fn number [p:(ptr P)] -> Value
     (let start:i32 (get p P.pos))
-    (if (eq (call peek p) 45) (call next p) (block))
+    (when (eq (call peek p) 45) (call next p))
     (cond
       ((eq (call peek p) 48) (call next p))
       ((call is_digit (call peek p)) (call digits p))
       (else (call fail p (get p P.pos) "a number needs digits")))
-    (if (and (not (call failed p)) (eq (call peek p) 46))
-        (block
+    (when (and (not (call failed p)) (eq (call peek p) 46))
           (call next p)
           (if (call is_digit (call peek p)) (call digits p) (call fail p (get p P.pos) "a number needs digits after its '.'")))
-        (block))
-    (if (and (not (call failed p)) (or (eq (call peek p) 101) (eq (call peek p) 69)))
-        (block
+    (when (and (not (call failed p)) (or (eq (call peek p) 101) (eq (call peek p) 69)))
           (call next p)
-          (if (or (eq (call peek p) 43) (eq (call peek p) 45)) (call next p) (block))
+          (when (or (eq (call peek p) 43) (eq (call peek p) 45)) (call next p))
           (if (call is_digit (call peek p)) (call digits p) (call fail p (get p P.pos) "a number needs digits in its exponent")))
-        (block))
-    (if (call failed p) (return (make Value.null)) (block))
+    (when (call failed p) (return (make Value.null)))
     (let x:f64 (unsafe (call float.from_decimal (+ (call str.addr (get p P.text)) start) (- (get p P.pos) start))))
     (if (call finite x) (make Value.number x) (block (call fail p start "a number too large for an f64") (make Value.null))))
 
@@ -271,7 +261,7 @@
         ((lt c 32) (call fail p (get p P.pos) "a control character in a string must be escaped") (break))
         ((eq c 92) (call escape p out))
         (else (call buf.push_byte out c) (call next p)))
-      (if (call failed p) (break) (block)))
+      (when (call failed p) (break)))
     (call buf.bytes out))
 
   (fn escape [p:(ptr P) out:(ptr buf.Buf)] -> void
@@ -314,7 +304,7 @@
     (for k 0 4
       (let c:i32 (call peek p))
       (let d:i32 (cond ((call is_digit c) (- c 48)) ((and (gte c 97) (lte c 102)) (- c 87)) ((and (gte c 65) (lte c 70)) (- c 55)) (else -1)))
-      (if (lt d 0) (block (call fail p (get p P.pos) "\\u needs four hex digits") (return 0)) (block))
+      (when (lt d 0) (call fail p (get p P.pos) "\\u needs four hex digits") (return 0))
       (set! v (+ (* v 16) d))
       (call next p))
     v)
@@ -344,7 +334,7 @@
         (call next p)
         (while true
           (let v:Value (call value p))
-          (if (call failed p) (break) (block))
+          (when (call failed p) (break))
           (call (vec.push Value) items v)
           (call skip_ws p)
           (let c:i32 (call peek p))
@@ -366,17 +356,17 @@
         (call next p)
         (while true
           (call skip_ws p)
-          (if (neq (call peek p) 34) (block (call fail p (get p P.pos) "expected a string key") (break)) (block))
+          (when (neq (call peek p) 34) (call fail p (get p P.pos) "expected a string key") (break))
           (let key_at:i32 (get p P.pos))
           (let key:str.Bytes (call string p))
-          (if (call failed p) (break) (block))
-          (if (call (map.has str.Bytes i32) seen key) (block (call fail p key_at "a key appears twice in one object") (break)) (block))
+          (when (call failed p) (break))
+          (when (call (map.has str.Bytes i32) seen key) (call fail p key_at "a key appears twice in one object") (break))
           (call (map.set str.Bytes i32) seen key 1)
           (call skip_ws p)
-          (if (neq (call peek p) 58) (block (call fail p (get p P.pos) "expected ':'") (break)) (block))
+          (when (neq (call peek p) 58) (call fail p (get p P.pos) "expected ':'") (break))
           (call next p)
           (let v:Value (call value p))
-          (if (call failed p) (break) (block))
+          (when (call failed p) (break))
           (call (vec.push (ptr Field)) fields (call field a key v))
           (call skip_ws p)
           (let c:i32 (call peek p))
@@ -400,14 +390,14 @@
       (Value.list [items]
         (call buf.push_byte b 91)
         (for i 0 (call (vec.len Value) items)
-          (if (gt i 0) (call buf.push_byte b 44) (block))
+          (when (gt i 0) (call buf.push_byte b 44))
           (call write b (call (vec.at Value) items i)))
         (call buf.push_byte b 93))
       (Value.object [fields]
         (call buf.push_byte b 123)
         (for i 0 (call (vec.len (ptr Field)) fields)
           (let f:(ptr Field) (call (vec.at (ptr Field)) fields i))
-          (if (gt i 0) (call buf.push_byte b 44) (block))
+          (when (gt i 0) (call buf.push_byte b 44))
           (call write_string b (get f Field.key))
           (call buf.push_byte b 58)
           (call write b (get f Field.value)))
@@ -447,9 +437,7 @@
 
   (fn write_positive [b:(ptr buf.Buf) x:f64] -> void
     ;; an integer below 2^53 is its digits
-    (if (and (lt x 9007199254740992.0) (eq x (f64.convert_i64_s (i64.trunc_f64_s x))))
-        (block (call buf.push_i64 b (i64.trunc_f64_s x)) (return))
-        (block))
+    (when (and (lt x 9007199254740992.0) (eq x (f64.convert_i64_s (i64.trunc_f64_s x)))) (call buf.push_i64 b (i64.trunc_f64_s x)) (return))
     (let digits:(ptr buf.Buf) (call buf.make (call alloc.default) 24))
     (let d:Decimal (call shortest x digits))
     (call layout b (get d Decimal.digits) (get d Decimal.n))
@@ -507,7 +495,7 @@
         (arr.set i32 up q d))
       (let next:i32 (if (lt p n_all) (- (call str.byte_at all p) 48) 0))
       (let rest:bool false)
-      (for q (+ p 1) n_all (if (neq (call str.byte_at all q) 48) (set! rest true) (block)))
+      (for q (+ p 1) n_all (when (neq (call str.byte_at all q) 48) (set! rest true)))
       (let up_n:i32 n)
       (let q:i32 (- p 1))
       (while (and (gte q 0) (eq (arr.get i32 up q) 9)) (arr.set i32 up q 0) (set! q (- q 1)))
@@ -521,7 +509,7 @@
         (else (block)))
       (call (alloc.free_array i32) a up)
       (call (alloc.free_array i32) a down)
-      (if (call str.present (get found Decimal.digits)) (break) (block)))
+      (when (call str.present (get found Decimal.digits)) (break)))
     (call buf.free text)
     (call buf.free ds)
     (call bigint.free big)
@@ -564,7 +552,7 @@
        (call buf.push_bytes b digits))
       (else
        (call buf.push_byte b (call str.byte_at digits 0))
-       (if (gt k 1) (block (call buf.push_byte b 46) (call buf.push_bytes b (call str.slice digits 1 (- k 1)))) (block))
+       (when (gt k 1) (call buf.push_byte b 46) (call buf.push_bytes b (call str.slice digits 1 (- k 1))))
        (call buf.push_byte b 101)
        (call buf.push_byte b (if (gte (- n 1) 0) 43 45))
        (call buf.push_int b (if (gte (- n 1) 0) (- n 1) (- 1 n))))))
@@ -593,17 +581,17 @@
   (fn run_json_tests [] -> i32 (pub)
     (let p:i32 0)
     ;; parse and write back, compactly
-    (if (call round_trips "{\"a\":[1,2.5,-300,true,null],\"b\":{\"c\":\"x\\ny\"},\"d\":\"\\u0001\"}") (set! p (+ p 1)) (block))
+    (when (call round_trips "{\"a\":[1,2.5,-300,true,null],\"b\":{\"c\":\"x\\ny\"},\"d\":\"\\u0001\"}") (set! p (+ p 1)))
     ;; lookups, and escapes undone (\u00e9 is two bytes of UTF-8, a surrogate pair four)
     (match_result (call parse (call alloc.default) (call str.from_str " { \"k\" : [ 7 , \"\\u00e9\\ud83d\\ude00\" ] } "))
       (ok v
         (let list:Value (call (option.unwrap_or Value) (call get v "k") (make Value.null)))
         (let s:Value (call (option.unwrap_or Value) (call at list 1) (make Value.null)))
         (let n:i32 (match s (Value.text [t] (get t str.Bytes.len)) (else -1)))
-        (if (and (eq (call count list) 2) (eq n 6)) (set! p (+ p 1)) (block)))
+        (when (and (eq (call count list) 2) (eq n 6)) (set! p (+ p 1))))
       (err e (block)))
     ;; numbers as JavaScript writes them
-    (if (and (call number_is 0.1 "0.1")
+    (when (and (call number_is 0.1 "0.1")
              (and (call number_is 1.0e21 "1e+21")
                   (and (call number_is 1.0e-7 "1e-7")
                        (and (call number_is 0.000001 "0.000001")
@@ -616,22 +604,20 @@
                                                 (and (call number_is 6.156563468186638e113 "6.156563468186638e+113")
                                                      ;; exactly halfway at 17 digits: the even one
                                                      (call number_is 171510802436849.125 "171510802436849.12"))))))))))
-        (set! p (+ p 1))
-        (block))
+        (set! p (+ p 1)))
     ;; strictness: each error where it is found
-    (if (and (call fails_at "[1,]" 3)
+    (when (and (call fails_at "[1,]" 3)
              (and (call fails_at "01" 1)
                   (and (call fails_at "{\"a\":1,\"a\":2}" 7)
                        (and (call fails_at "\"\\ud800\"" 1)
                             (and (call fails_at "1e999" 0)
                                  (call fails_at "[1 2]" 3))))))
-        (set! p (+ p 1))
-        (block))
-    (if (and (call fails_at "" 0) (and (call fails_at "\"tab\there\"" 4) (call fails_at "{\"a\" 1}" 5))) (set! p (+ p 1)) (block))
+        (set! p (+ p 1)))
+    (when (and (call fails_at "" 0) (and (call fails_at "\"tab\there\"" 4) (call fails_at "{\"a\" 1}" 5))) (set! p (+ p 1)))
     ;; deep nesting stops cleanly
     (let deep:(ptr buf.Buf) (call buf.make (call alloc.default) 1200))
     (for i 1 601 (call buf.push_byte deep 91))
-    (if (call fails_at_bytes (call buf.bytes deep) 513) (set! p (+ p 1)) (block))
+    (when (call fails_at_bytes (call buf.bytes deep) 513) (set! p (+ p 1)))
     p)
 
   (fn fails_at_bytes [s:str.Bytes at:i32] -> bool

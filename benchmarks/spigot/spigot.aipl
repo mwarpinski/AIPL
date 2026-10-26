@@ -18,20 +18,16 @@
     (let b:(ptr buf.Buf) (get o Out.b))
     (call buf.push_byte b (+ 48 d))
     (put o Out.count (+ (get o Out.count) 1))
-    (if (eq (% (get o Out.count) 10) 0)
-        (block (call buf.push_str b "\t:") (call buf.push_int b (get o Out.count)) (call buf.push_byte b 10))
-        (block)))
+    (when (eq (% (get o Out.count) 10) 0) (call buf.push_str b "\t:") (call buf.push_int b (get o Out.count)) (call buf.push_byte b 10)))
 
   (fn finish [o:(ptr Out)] -> void
     (let b:(ptr buf.Buf) (get o Out.b))
     (let left:i32 (% (get o Out.count) 10))
-    (if (neq left 0)
-        (block
+    (when (neq left 0)
           (for k left 10 (call buf.push_byte b 32))
           (call buf.push_str b "\t:")
           (call buf.push_int b (get o Out.count))
-          (call buf.push_byte b 10))
-        (block)))
+          (call buf.push_byte b 10)))
 
   (fn main [] -> i32
     (let started:i64 (call time.now))

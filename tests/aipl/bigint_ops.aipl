@@ -35,18 +35,16 @@
   ;; a = |b| * m + part with 0 <= part < |b| (part from a's low limbs, or
   ;; |b| - 1 - that), then a / |b|: m is the quotient, part the remainder
   (fn quotient [r:(ptr Rng) rs:(ptr Regs) a:(ptr bigint.Int) b:(ptr bigint.Int)] -> i32
-    (if (call bigint.is_zero b) (return 0) (block))
+    (when (call bigint.is_zero b) (return 0))
     (let m:i32 (call abs (call mult r)))
     (let den:(ptr bigint.Int) (get rs Regs.den))
     (let part:(ptr bigint.Int) (get rs Regs.part))
     (call bigint.assign den b)
-    (if (lt (call bigint.sign den) 0) (call bigint.negate den) (block))
+    (when (lt (call bigint.sign den) 0) (call bigint.negate den))
     (call bigint.assign part a)
-    (if (lt (call bigint.sign part) 0) (call bigint.negate part) (block))
+    (when (lt (call bigint.sign part) 0) (call bigint.negate part))
     (while (gte (call bigint.limb_count part) (call bigint.limb_count den)) (let _d:i32 (call bigint.div_small part 2147483647)))
-    (if (eq (% (call next r) 2) 0)
-        (block (call bigint.negate part) (call bigint.add part den) (call bigint.sub part (get rs Regs.one)))
-        (block))
+    (when (eq (% (call next r) 2) 0) (call bigint.negate part) (call bigint.add part den) (call bigint.sub part (get rs Regs.one)))
     (call bigint.assign a den)
     (call bigint.mul_small a m)
     (call bigint.add a part)
@@ -81,7 +79,7 @@
         (else (call bigint.mul_small a (call mult r))))
       (while (gt (call bigint.limb_count a) 40) (let _d:i32 (call bigint.div_small a 2147483647)))
       ;; zero would stay zero under multiplication: usually start afresh
-      (if (and (call bigint.is_zero a) (neq (% (call next r) 8) 0)) (call bigint.set_i32 a (call mult r)) (block))
+      (when (and (call bigint.is_zero a) (neq (% (call next r) 8) 0)) (call bigint.set_i32 a (call mult r)))
       (call buf.push_int out op)
       (call buf.push_byte out 32)
       (call bigint.push_decimal out a)

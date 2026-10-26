@@ -121,7 +121,7 @@ more than usual.
 - [x] **Type errors name the file** in the Rust toolchain (2026-10-06), as
   `aiplc` already did. The CLI also prints `Error: MESSAGE` plainly instead
   of in Rust's debug quoting.
-- [ ] **`when` around a value** (noted 2026-10-18, from
+- [x] **`when` around a value** (fixed 2026-10-25, CANONICAL_PLAN.md step 4: `when` is a form of its own, and its body's expressions are statements, a value dropped; tests/test_control_flow.rs `a_whens_body_drops_its_value`) (noted 2026-10-18, from
   docs/notes/painpoints.md item 5). `(when c (call f x))` with `f`
   returning `i32` fails with "If branch type mismatch: then is i32, else
   is void", naming an `if` the program does not have (the `when` rewrite

@@ -113,32 +113,28 @@
     (let p:i32 0)
     ;; layout: 10 bytes of data and 5000 of bss push the code two pages on
     (let l:(ptr Layout) (call layout 10 5000))
-    (if (and (eq (get l Layout.code_offset) 8192) (eq (get l Layout.code_vaddr) (+ (call data_vaddr) 8192)))
-        (set! p (+ p 1))
-        (block))
+    (when (and (eq (get l Layout.code_offset) 8192) (eq (get l Layout.code_vaddr) (+ (call data_vaddr) 8192)))
+        (set! p (+ p 1)))
     ;; a whole page of data moves the code a further page in the file
     (let l2:(ptr Layout) (call layout 4096 0))
-    (if (and (eq (get l2 Layout.code_offset) 8192) (eq (get l2 Layout.code_vaddr) (+ (call data_vaddr) 4096)))
-        (set! p (+ p 1))
-        (block))
+    (when (and (eq (get l2 Layout.code_offset) 8192) (eq (get l2 Layout.code_vaddr) (+ (call data_vaddr) 4096)))
+        (set! p (+ p 1)))
     ;; the header: magic, entry = code page + 2, the data and code at their offsets
     (let code:(ptr buf.Buf) (call buf.make (call alloc.default) 4))
     (call u8 code 144) (call u8 code 144) (call u8 code 195)  ;; nop nop ret
     (let data:(ptr buf.Buf) (call buf.make (call alloc.default) 4))
     (call buf.push_str data "hi")
     (let b:(ptr buf.Buf) (call image (call buf.bytes code) 2 (call buf.bytes data) 0))
-    (if (and (eq (call at32 b 0) 1179403647)                       ;; 7f 'E' 'L' 'F'
+    (when (and (eq (call at32 b 0) 1179403647)                       ;; 7f 'E' 'L' 'F'
              (and (eq (call at32 b 24) (+ (call data_vaddr) 4098))
                   (and (eq (call at8 b 4096) 104)
                        (and (eq (call at8 b 8194) 195) (eq (call buf.len b) 8195)))))
-        (set! p (+ p 1))
-        (block))
+        (set! p (+ p 1)))
     ;; program headers (at 64, 56 bytes each): type and permissions; data
     ;; read+write, code read+execute, stack read+write and never executable
-    (if (and (and (eq (call at32 b 64) 1) (eq (call at32 b 68) 6))
+    (when (and (and (eq (call at32 b 64) 1) (eq (call at32 b 68) 6))
              (and (and (eq (call at32 b 120) 1) (eq (call at32 b 124) 5))
                   (and (eq (call at32 b 176) 1685382481) (eq (call at32 b 180) 6))))
-        (set! p (+ p 1))
-        (block))
+        (set! p (+ p 1)))
     p)
 )

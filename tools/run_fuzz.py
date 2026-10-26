@@ -476,7 +476,7 @@ class Gen:
             return (f"(let {c}:i32 0) (while (and (lt {c} {rng.randint(1, 5)}) {cond}) "
                     f"(set! {c} (+ {c} 1)) {self.stmts(inner, d - 1)})")
         if r < 0.78 and ctx.loop:
-            return f"(if {self.expr(ctx, 'bool', d - 1)} ({rng.choice(['break', 'continue'])}) (block))"
+            return f"(when {self.expr(ctx, 'bool', d - 1)} ({rng.choice(['break', 'continue'])}))"
         if r < 0.84:
             ptrs = [(n, vt[5:-1]) for n, (vt, _) in ctx.vars.items() if vt.startswith("(ptr ")]
             if ptrs:
@@ -498,7 +498,7 @@ class Gen:
             return self.memory_stmt(ctx, d)
         if r < 0.94 and ctx.ret is not None:
             v = "" if ctx.ret == "void" else " " + self.expr(ctx, ctx.ret, d)
-            return f"(if {self.expr(ctx, 'bool', d - 1)} (return{v}) (block))"
+            return f"(when {self.expr(ctx, 'bool', d - 1)} (return{v}))"
         return self.print_stmt(ctx, rng.choice(SCALARS), d)
 
     def memory_stmt(self, ctx, d):
@@ -589,7 +589,7 @@ class Gen:
             contracts += f" (ens (neq res {self.literal('i32')}))"
         body = ""
         if recursive:
-            body = f"(if (lte {params[0][0]} 0) (return {self.literal(ret)}) (block)) "
+            body = f"(when (lte {params[0][0]} 0) (return {self.literal(ret)})) "
         body += self.stmts(ctx, 2)
         # what the body computed, before the result
         body += " " + " ".join(self.show(ctx, t, n) for n, (t, _) in list(ctx.vars.items()) if self.rng.random() < 0.5)

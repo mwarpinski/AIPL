@@ -35,7 +35,7 @@
   (fn nth [g:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
     (let c:(ptr compiler.Node) (call first_child g))
     (for k 1 (+ i 1)
-      (if (eq c (ptr.null compiler.Node)) (return c) (block))
+      (when (eq c (ptr.null compiler.Node)) (return c))
       (set! c (get c compiler.Node.next)))
     c)
 
@@ -50,12 +50,12 @@
 
   ;; The head symbol of a (...) group, or len -1.
   (fn head [st:(ptr St) g:(ptr compiler.Node)] -> str.Bytes
-    (unsafe (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)) (block))
+    (unsafe (when (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)))
     (let h:(ptr compiler.Node) (call first_child g))
     (if (call is_symbol h) (call text st h) (call str.bytes 0 -1))))
 
   (fn fail [st:(ptr St) msg:str name:str.Bytes] -> void
-    (if (get st St.failed) (return) (block))
+    (when (get st St.failed) (return))
     (put st St.failed true)
     (call buf.push_str (get st St.err) msg)
     (call buf.push_bytes (get st St.err) name))
@@ -64,7 +64,7 @@
   (fn last_dot [t:str.Bytes] -> i32
     (let dot:i32 -1)
     (for i 0 (get t str.Bytes.len)
-      (if (eq (call str.byte_at t i) 46) (set! dot i) (block)))
+      (when (eq (call str.byte_at t i) 46) (set! dot i)))
     dot)
 
   (fn slice [t:str.Bytes start:i32 len:i32] -> str.Bytes
@@ -82,7 +82,7 @@
 
   ;; Whether constant t's value is a name or an expression, to be folded.
   (fn is_folded [st:(ptr St) t:str.Bytes] -> bool
-    (if (not (call (map.has str.Bytes (ptr compiler.Node)) (get st St.consts) t)) (return false) (block))
+    (when (not (call (map.has str.Bytes (ptr compiler.Node)) (get st St.consts) t)) (return false))
     (let v:(ptr compiler.Node) (call (map.get_or str.Bytes (ptr compiler.Node)) (get st St.consts) t (ptr.null compiler.Node)))
     (or (eq (get v compiler.Node.kind) compiler.Kind.symbol) (eq (get v compiler.Node.kind) compiler.Kind.paren)))
 
@@ -122,36 +122,26 @@
 
   (fn print_symbol [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let t:str.Bytes (call text st n))
-    (if (call is_folded st t)
-        (block (call cexpr.print (call cexpr.value (get st St.defs) t) out) (return))
-        (block))
-    (if (call (map.has str.Bytes (ptr compiler.Node)) (get st St.consts) t)
-        (block (call print_literal st (call (map.get_or str.Bytes (ptr compiler.Node)) (get st St.consts) t (ptr.null compiler.Node)) out) (return))
-        (block))
-    (if (call (map.has str.Bytes (ptr (map.Map str.Bytes i32))) (get st St.enums) t)
-        (block (call buf.push_str out "i32") (return))
-        (block))
+    (when (call is_folded st t) (call cexpr.print (call cexpr.value (get st St.defs) t) out) (return))
+    (when (call (map.has str.Bytes (ptr compiler.Node)) (get st St.consts) t) (call print_literal st (call (map.get_or str.Bytes (ptr compiler.Node)) (get st St.consts) t (ptr.null compiler.Node)) out) (return))
+    (when (call (map.has str.Bytes (ptr (map.Map str.Bytes i32))) (get st St.enums) t) (call buf.push_str out "i32") (return))
     (let dot:i32 (call last_dot t))
-    (if (gte dot 0)
-        (block
+    (when (gte dot 0)
           (let e:str.Bytes (call slice t 0 dot))
-          (if (call (map.has str.Bytes (ptr (map.Map str.Bytes i32))) (get st St.enums) e)
-              (block
+          (when (call (map.has str.Bytes (ptr (map.Map str.Bytes i32))) (get st St.enums) e)
                 (let members:(ptr (map.Map str.Bytes i32)) (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get st St.enums) e (ptr.null (map.Map str.Bytes i32))))
                 (let m:str.Bytes (call slice t (+ dot 1) (- (get t str.Bytes.len) (+ dot 1))))
                 (if (call (map.has str.Bytes i32) members m)
                     (call buf.push_int out (call (map.get_or str.Bytes i32) members m 0))
                     (call fail st "no such enum member: " t))
-                (return))
-              (block)))
-        (block))
+                (return)))
     (call buf.push_bytes out t))
 
   ;; Each node printed notes where it was (origins, for the line table:
   ;; places.aipl); a constant's literal is where its name was.
   (fn print [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let k:compiler.Kind (get n compiler.Node.kind))
-    (if (neq k compiler.Kind.paren) (call origins.note (get st St.origins) out -1 (get n compiler.Node.pos)) (block))
+    (when (neq k compiler.Kind.paren) (call origins.note (get st St.origins) out -1 (get n compiler.Node.pos)))
     (cond
       ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call print_group st n out false))
       ((eq k compiler.Kind.symbol) (call print_symbol st n out))
@@ -162,11 +152,9 @@
   ;; any other (arm_head), so an enum arm (Color.red ...) prints as (0 ...).
   (fn print_group [st:(ptr St) g:(ptr compiler.Node) out:(ptr buf.Buf) arm_head:bool] -> void
     (let h:str.Bytes (call head st g))
-    (if (gte (get h str.Bytes.len) 0)
-        (block
-          (if (call lit h "enum.cast") (block (call print st (call nth g 2) out) (return)) (block))
-          (if (call lit h "enum.ord") (block (call print st (call nth g 1) out) (return)) (block)))
-        (block))
+    (when (gte (get h str.Bytes.len) 0)
+          (when (call lit h "enum.cast") (call print st (call nth g 2) out) (return))
+          (when (call lit h "enum.ord") (call print st (call nth g 1) out) (return)))
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (let is_match:bool (and (gte (get h str.Bytes.len) 0) (call lit h "match")))
     (call origins.note (get st St.origins) out -1 (get g compiler.Node.pos))
@@ -177,7 +165,7 @@
     (let prev_colon:bool true)
     (while (neq c (ptr.null compiler.Node))
       (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
-      (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+      (when (not (or prev_colon colon)) (call buf.push_byte out 32))
       ;; a form's head is a keyword or an op, printed as written
       (cond
         ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call print_group st c out true))
@@ -220,19 +208,17 @@
         ((call lit h "enum") (call collect_enum st item) (set! found true))
         (else (block)))
       (set! item (get item compiler.Node.next)))
-    (if (not found) (block (call buf.push_bytes out src) (return true)) (block))
+    (when (not found) (call buf.push_bytes out src) (return true))
     (call buf.push_str out "(module ")
     (call buf.push_bytes out (call text st (call nth root 1)))
     (call buf.push_byte out 10)
     (set! item (call nth root 2))
     (while (neq item (ptr.null compiler.Node))
       (let h:str.Bytes (call head st item))
-      (if (or (call lit h "const") (call lit h "enum"))
-          (block)
-          (block
+      (when (not (or (call lit h "const") (call lit h "enum")))
             (call buf.push_str out "  ")
             (call print_group st item out false)
-            (call buf.push_byte out 10)))
+            (call buf.push_byte out 10))
       (set! item (get item compiler.Node.next)))
     (call buf.push_byte out 41)
     (not (get st St.failed)))
@@ -247,23 +233,23 @@
   (fn run_consts_tests [] -> i32 (pub)
     (let p:i32 0)
     ;; nothing to erase: copied unchanged
-    (if (call expands_to "(module m (fn f [] -> i32 1))" "(module m (fn f [] -> i32 1))") (set! p (+ p 1)) (block))
+    (when (call expands_to "(module m (fn f [] -> i32 1))" "(module m (fn f [] -> i32 1))") (set! p (+ p 1)))
     ;; constants of each kind become their literals
-    (if (call expands_to "(module m (const NN:i32 -7) (const SS:str \"a b\") (const BB:bool true) (fn f [] -> i32 (if BB (+ NN (str.len SS)) 0)))"
+    (when (call expands_to "(module m (const NN:i32 -7) (const SS:str \"a b\") (const BB:bool true) (fn f [] -> i32 (if BB (+ NN (str.len SS)) 0)))"
                          "(module m\n  (fn f [] -> i32 (if true (+ -7 (str.len \"a b\")) 0))\n)")
-        (set! p (+ p 1)) (block))
+        (set! p (+ p 1)))
     ;; enum types become i32, members their values (auto and explicit), casts disappear
-    (if (call expands_to "(module m (enum C [a (b 10) c]) (struct S [k:C]) (fn f [x:C] -> i32 (if (eq x C.c) (enum.ord C.b) (enum.ord (enum.cast C 3)))))"
+    (when (call expands_to "(module m (enum C [a (b 10) c]) (struct S [k:C]) (fn f [x:C] -> i32 (if (eq x C.c) (enum.ord C.b) (enum.ord (enum.cast C 3)))))"
                          "(module m\n  (struct S [k:i32])\n  (fn f [x:i32] -> i32 (if (eq x 11) 10 3))\n)")
-        (set! p (+ p 1)) (block))
+        (set! p (+ p 1)))
     ;; an enum match arm's head becomes the member's value; a union's stays a name
-    (if (call expands_to "(module m (enum C [a b]) (fn f [x:C] -> i32 (match x (C.b 1) (else (match (make U.v) (U.v 2)))))"
+    (when (call expands_to "(module m (enum C [a b]) (fn f [x:C] -> i32 (match x (C.b 1) (else (match (make U.v) (U.v 2)))))"
                          "(module m\n  (fn f [x:i32] -> i32 (match x (1 1) (else (match (make U.v) (U.v 2)))))\n)")
-        (set! p (+ p 1)) (block))
+        (set! p (+ p 1)))
     ;; a member that does not exist is an error
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (if (and (not (call expand (call str.from_str "(module m (enum C [a]) (fn f [] -> C C.z))") out err (ptr.null origins.Origins)))
+    (when (and (not (call expand (call str.from_str "(module m (enum C [a]) (fn f [] -> C C.z))") out err (ptr.null origins.Origins)))
              (call str.bytes_eq (call buf.bytes err) (call str.from_str "no such enum member: C.z")))
-        (set! p (+ p 1)) (block))
+        (set! p (+ p 1)))
     p))

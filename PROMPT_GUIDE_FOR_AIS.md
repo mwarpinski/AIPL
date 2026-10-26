@@ -13,7 +13,7 @@ A system-prompt module and verified examples for LLMs writing **AIPL**. Every ex
 | # | You write | Write |
 |---|---|---|
 | 1 | `(f x)` to call your own function | `(call f x)`. Only built-in operations are written bare. |
-| 2 | `(if c (set! x 1))`, or `(if c x (block))` | An `if` has two real branches. For one, `(when c (set! x 1))`. |
+| 2 | `(if c (set! x 1))`, or `(if c x (block))` | An `if` has two real branches, and an empty `(block)` branch is an error. For one branch, `(when c (set! x 1))`; for an else alone, `(when (not c) ...)`. |
 | 3 | `(let x 5)` | `(let x:i32 5)`. Every `let`, parameter, return and field names its type. |
 | 4 | `(loop i 0 n 1 ...)` | `loop` is gone (an error). `(for i 0 n ...)` runs n times: the end is left out. For another step, use `while`. |
 | 5 | A string literal inside a placeholder: `{(call f "x")}` | `(let s:str (call f "x"))`, then `{s}`. A placeholder cannot hold a string literal. |
@@ -40,8 +40,8 @@ RULES:
 3. Types are mandatory everywhere: i32 i64 f32 f64 bool str void (result T E) (ptr S) (arr T). (ptr S) points at a struct S; (arr T) is an array of T. Neither is an integer: no arithmetic, compare only with eq/neq. u8 i8 u16 i16 are only for struct fields and array elements ((arr u8) for bytes); reading one gives an i32, writing one takes an i32.
 4. Every operation is prefix: (+ a b), (lt a b), (and a b). Call user functions with (call f a b), never (f a b).
 5. (let x:T v) declares and is void; (set! x v) assigns and is void. let is block-scoped; shadowing an outer name is an error. A name reused in a sibling scope must keep its type within the function.
-6. (if c a b) always has three parts; both branches are void or both the same type. Use (block ...) to sequence. For an if with nothing to do otherwise, write (when c body...): it is (if c (block body...) (block)).
-7. Loops: (for i 0 n body...) runs i from 0 up to n, n left out (n times; the end evaluated once), so (for i 0 (arr.len xs) ...) visits every element; (while cond body...) for another step or a condition (there is no loop form). (break) leaves the loop, (continue) goes to the next iteration, (return v) leaves the function. These have no value, so a branch that ends in one fits any type: (if c (return v) (block)) as a statement, or (let x:i32 (if ok v (return -1))) for a value. For 3+ branches use (cond (test body...) ... (else body...)); else is required.
+6. (if c a b) always has three parts, two real branches: both void or both the same type. Use (block ...) to sequence. For one branch, write (when c body...): its body is statements (a value in it is dropped) and it has no value; for an else alone, (when (not c) body...). An if whose then or else is an empty (block) is an error.
+7. Loops: (for i 0 n body...) runs i from 0 up to n, n left out (n times; the end evaluated once), so (for i 0 (arr.len xs) ...) visits every element; (while cond body...) for another step or a condition (there is no loop form). (break) leaves the loop, (continue) goes to the next iteration, (return v) leaves the function. These have no value, so a branch that ends in one fits any type: (when c (return v)) as a statement, or (let x:i32 (if ok v (return -1))) for a value. For 3+ branches use (cond (test body...) ... (else body...)); else is required.
 8. Literals: 42 is i32, 42i64 is i64, 1.5 is f64 (needs a dot), 1.5f32 is f32, "s" is str. Never mix number types without converting: (i64.extend_s x) / (i32.wrap x) between i32 and i64, (f64.promote x) / (f32.demote x) between f32 and f64, and f64.convert_i32_s, f32.convert_i32_s, i32.trunc_f64_s and the like between integers and floats.
 9. Memory: every allocation names its allocator. (new S a) gives a zeroed (ptr S) from the alloc.Allocator a; (arr.new T a n) gives an (arr T) of n zeroed Ts. A function that allocates takes the allocator as a parameter, a:alloc.Allocator, and passes it on; the program picks one, usually in main: (call alloc.default) (a shared heap; free with (call (alloc.destroy S) a p)), (call alloc.forever) (never freed: what a program makes once and keeps), or an arena it resets. (new S) without one is an error. (ptr.null S) / (arr.null T) are typed nulls. Raw bytes come from (mem.alloc n), which is an i32; convert explicitly with (ptr.cast S addr) / (arr.cast T addr) (an unchecked pointer: no use-after-free check) and back with (ptr.addr p) / (arr.addr a). Never store to a literal address below 1024. mem.load*/mem.store* and the casts are unchecked: they need (unsafe ...) (rule 20), so prefer (new S a) and (arr.new T a n).
 10. Structs: (get p S.f), (put p S.f v), (sizeof S), with p a (ptr S). Arrays: (arr.get T a i), (arr.set T a i v), (arr.len a), with a an (arr T). Every index is bounds-checked, compiled code included: an index out of range stops the program (`Array index out of bounds: ...`), so check it first where it may be out of range. Structs from an imported module m are m.S: (ptr m.S), (get p m.S.f).
@@ -299,7 +299,8 @@ Prints `-20; a num is a leaf: true`: `(2 + 3) * -4` is `-20`. A union that held 
 - [ ] Both `if` branches are void, or both are the same type.
 - [ ] No name is `let` twice in nested scopes.
 - [ ] `for` leaves out its end: `(for i 0 n ...)` runs `n` times; there is no `loop` (for another step, use `while`).
-- [ ] `return`/`break`/`continue` end a branch or a statement (`(if c (return v) (block))`), and every `cond` ends with `(else ...)`.
+- [ ] `return`/`break`/`continue` end a branch or a statement (`(when c (return v))`), and every `cond` ends with `(else ...)`.
+- [ ] Every `if` has two real branches; one branch is `when` (never an empty `(block)`).
 - [ ] No mixed `i32`/`i64` operands; conversions are explicit.
 - [ ] `and`/`or` have two or more operands: `(and a b c)`, not nested pairs.
 - [ ] Fixed values and codes are `const`s and `enum`s, not bare numbers; enums are compared with `eq`/`neq`, never with arithmetic or `lt`.

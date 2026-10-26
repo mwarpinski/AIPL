@@ -142,7 +142,7 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("trap_failed_req", "(module m (fn f [n:i32 ok:bool] -> i32 (req (gt n 0)) n) (fn main [] -> i32 (call f -3 true)))"),
     (
         "trap_failed_ens_on_return",
-        "(module m (fn f [n:i64] -> i64 (ens (lt res 10i64)) (if (gt n 5i64) (return (* n 2i64)) (block)) n) (fn main [] -> i32 (i32.wrap (call f 7i64))))",
+        "(module m (fn f [n:i64] -> i64 (ens (lt res 10i64)) (when (gt n 5i64) (return (* n 2i64))) n) (fn main [] -> i32 (i32.wrap (call f 7i64))))",
     ),
     ("exit_status_negative_is_an_error", "(module m (fn main [] -> i32 (sys.exit -1) 0))"),
 ];
@@ -337,7 +337,7 @@ fn assert_functions_give(name: &str, src: &str, drop: &[&str], calls: &[(&str, &
             (_, wasmtime::Val::F64(bits)) => (format!("(i64.reinterpret_f64 {call})"), format!("{}i64", bits as i64)),
             (t, other) => panic!("{name}: {f} returns {t:?}, which the checker does not compare ({other:?})"),
         };
-        checks.push_str(&format!("(if (neq {value} {want}) (set! bad (+ bad 1)) (block))\n"));
+        checks.push_str(&format!("(when (neq {value} {want}) (set! bad (+ bad 1)))\n"));
     }
     let printed = aipl_core::printer::print_module(&module);
     let end = printed.rfind(')').unwrap();
@@ -554,7 +554,7 @@ fn wasi_programs_match_natively() {
             "(module m (import io) (import os) (fn main [] -> i32 (unsafe)
                (let p:i32 (mem.alloc 4096)) (let ok:i32 (sys.random p 4096))
                (let nonzero:i32 0)
-               (for i 0 4096 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero (+ nonzero 1)) (block)))
+               (for i 0 4096 (when (neq (mem.load8 (+ p i)) 0) (set! nonzero (+ nonzero 1))))
                (call io.println_int \"result: \" ok)
                (call io.println_int \"mostly nonzero: \" (if (gt nonzero 3900) 1 0))
                (call io.println_int \"differ: \" (if (neq (call os.random_i32) (call os.random_i32)) 1 0))
@@ -2407,8 +2407,8 @@ fn register_locals_survive_atomics_grow_and_imports_natively() {
           (set! a (+ a i)) (set! b (+ b a)) (set! c (^ c b)) (set! d (+ d c)) (set! e (- e d)) (set! f (+ f e)) (set! g (+ g f))
           (let _x:i32 (atomic.add w (+ a g)))
           (if (atomic.cas w 0 1) (set! b (+ b 1)) (set! c (+ c 1)))
-          (if (eq (% i 7) 0) (let _p:i32 (mem.grow 1)) (block))
-          (if (eq (% i 5) 0) (call io.println_int \"i \" (+ a (+ b c))) (block)))
+          (when (eq (% i 7) 0) (let _p:i32 (mem.grow 1)))
+          (when (eq (% i 5) 0) (call io.println_int \"i \" (+ a (+ b c)))))
         (+ a (+ b (+ c (+ d (+ e (+ f (+ g (atomic.add w 0)))))))))
       (fn caller [] -> i32 (unsafe)
         (let p:i32 11) (let q:i32 22) (let r:i32 33) (let s:i32 44) (let t:i32 55) (let u:i32 66)

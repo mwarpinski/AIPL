@@ -40,20 +40,16 @@
     (let b:(ptr buf.Buf) (get o Out.b))
     (call buf.push_byte b (+ 48 d))
     (put o Out.count (+ (get o Out.count) 1))
-    (if (eq (% (get o Out.count) 10) 0)
-        (block (call buf.push_str b "\t:") (call buf.push_int b (get o Out.count)) (call buf.push_byte b 10))
-        (block)))
+    (when (eq (% (get o Out.count) 10) 0) (call buf.push_str b "\t:") (call buf.push_int b (get o Out.count)) (call buf.push_byte b 10)))
 
   (fn finish [o:(ptr Out)] -> void
     (let b:(ptr buf.Buf) (get o Out.b))
     (let left:i32 (% (get o Out.count) 10))
-    (if (neq left 0)
-        (block
+    (when (neq left 0)
           (for k left 10 (call buf.push_byte b 32))
           (call buf.push_str b "\t:")
           (call buf.push_int b (get o Out.count))
-          (call buf.push_byte b 10))
-        (block)))
+          (call buf.push_byte b 10)))
 
   (fn main [] -> i32
     (let started:i64 (call time.now))
@@ -70,13 +66,9 @@
     (while (lt (get o Out.count) n)
       (set! k (+ k 1))
       (call next_term s k)
-      (if (lte (call bigint.compare (get s State.numer) (get s State.accum)) 0)
-          (block
+      (when (lte (call bigint.compare (get s State.numer) (get s State.accum)) 0)
             (let d:i32 (call extract_digit s 3))
-            (if (eq d (call extract_digit s 4))
-                (block (call emit o d) (call eliminate_digit s d))
-                (block)))
-          (block)))
+            (when (eq d (call extract_digit s 4)) (call emit o d) (call eliminate_digit s d))))
     (call finish o)
     ;; the computation's own time, on stderr (the digits stay the output)
     (call time.report "pidigits computed in" started)
