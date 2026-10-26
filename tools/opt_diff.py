@@ -3,10 +3,10 @@
 with a main: compile it as usual (`aipl compile`) and with the optimizer's
 own pipeline (`codegen_opt compile`: resolve, check, lower, optimize, then
 codegen.aipl), run both, and compare standard output and exit status.
-(The optimizer's output text is codegen.aipl's input, after enums are
-numbers, not AIPL source, so it is compared by running what it compiles to.) Standard error is compared with positions taken out
-(optimizing moves code, so line:col and call chains may differ), and only
-for a program that fails (one that succeeds may print timings there).
+(What the optimizer makes is compared by running what it compiles to.)
+For a program that fails, standard error too (one that succeeds may print
+timings there): the message exactly, heap addresses aside, and the call
+chain by chain_ok's rule (an inlined function has no frame).
 
     python3 tools/opt_diff.py [--jobs N] [PROGRAM.aipl ...]
     python3 tools/opt_diff.py --fuzz 300 [--seed 1]   # tools/run_fuzz.py's programs
@@ -14,14 +14,19 @@ for a program that fails (one that succeeds may print timings there).
 Without programs: examples/, benchmarks/ (with a small size argument),
 and tests/aipl/. Writes target/opt/ (the optimizer's wasm, each optimized
 program) and prints one line per program that differs or fails, then a
-summary. Build first: cargo build --release.
+summary; the exit status is 1 if any differs or fails to optimize. The
+optimizer's own tests (codegen_opt --test) run first. Build first: cargo
+build --release. CI runs it on the repository's programs and on 500
+generated ones (.github/workflows/ci.yml).
 """
 import concurrent.futures as cf
 import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AIPL = os.path.join(ROOT, 'target/release/aipl')
@@ -30,25 +35,36 @@ OPT = os.path.join(OUT, 'codegen_opt.wasm')
 TIMEOUT = 60
 
 
-def run(cmd, cwd):
+def run(cmd, cwd, stdin=b''):
     try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, timeout=TIMEOUT)
+        p = subprocess.run(cmd, cwd=cwd, input=stdin, capture_output=True, timeout=TIMEOUT)
         return p.returncode, p.stdout.decode('utf-8', 'replace'), p.stderr.decode('utf-8', 'replace')
     except subprocess.TimeoutExpired:
         return 'timeout', '', ''
 
 
-def scrub(err):
-    """stderr without the toolchain's own lines and positions."""
+def split_err(err):
+    """stderr as (message, call chain): the toolchain's own lines left out,
+    the module's file name and heap addresses (the optimizer shrinks the
+    data, which moves the heap) taken out of the message."""
     lines = [l for l in err.splitlines() if not l.startswith('[AIPL')]
-    text = '\n'.join(lines)
+    chain = [l.strip() for l in lines if l.startswith('  at ') or l.startswith('  ... ')]
+    text = '\n'.join(l for l in lines if not (l.startswith('  at ') or l.startswith('  ... ')))
     text = re.sub(r'^[^:\n]*\.wasm: ', '', text, flags=re.M)
-    text = re.sub(r'[\w./-]*\.aipl:\d+:\d+', 'FILE:L:C', text)
-    text = re.sub(r' at \d+:\d+', ' at L:C', text)
     text = re.sub(r'= \d{4,}', '= ADDR', text)
     text = re.sub(r'@ \d+', '@ ADDR', text)
-    text = re.sub(r'\(\S+\.aipl:\d+:\d+\)', '(FILE:L:C)', text)
-    return re.sub(r'\n  at .*', '', text).strip()
+    return text.strip(), chain
+
+
+def chain_ok(plain, opt):
+    """The optimized call chain is the plain one less whole frames (a function
+    inlined into its caller has none, and a trap in it is reported at the
+    call), every kept frame the same, position and all, and the outermost
+    frame kept."""
+    if bool(plain) != bool(opt) or (plain and plain[-1] != opt[-1]):
+        return False
+    it = iter(plain)
+    return all(any(f == g for g in it) for f in opt)
 
 
 def vm_stdout(out):
@@ -60,10 +76,25 @@ def args_for(path):
     return ['--', '10'] if '/benchmarks/' in path else []
 
 
+def stdin_for(path):
+    # a benchmark's own input file (benchmarks/NAME/stdin), else none
+    p = os.path.join(os.path.dirname(path), 'stdin')
+    return open(p, 'rb').read() if '/benchmarks/' in path and os.path.exists(p) else b''
+
+
+def run_in_copy(wasm, path, args):
+    """Runs wasm in a fresh copy of the program's directory (all a program
+    can reach at run time): the plain and optimized runs cannot see each
+    other's files, and nothing is left in the repository."""
+    with tempfile.TemporaryDirectory(dir=OUT) as tmp:
+        cwd = os.path.join(tmp, 'd')
+        shutil.copytree(os.path.dirname(path), cwd)
+        return run([AIPL, 'run', wasm] + args, cwd, stdin_for(path))
+
+
 def check(path):
     rel = os.path.relpath(path, ROOT)
     name = rel.replace('/', '_').replace('.aipl', '')
-    cwd = os.path.dirname(path)
     args = args_for(path)
     plain = os.path.join(OUT, name + '.wasm')
     opt = os.path.join(OUT, name + '.opt.wasm')
@@ -73,15 +104,20 @@ def check(path):
     o = run([AIPL, 'run', OPT, '--', 'compile', path, '-o', opt], ROOT)
     if o[0] != 0:
         return (rel, 'OPT FAILED', (o[2] or o[1]).strip()[-300:])
-    a = run([AIPL, 'run', plain] + args, cwd)
+    a = run_in_copy(plain, path, args)
     if a[0] == 'timeout':
         return (rel, 'skip', 'times out as written')
-    b = run([AIPL, 'run', opt] + args, cwd)
-    fa, fb = a[0] != 0, b[0] != 0
+    b = run_in_copy(opt, path, args)
     addr = lambda out: re.sub(r'@ \d+', '@ ADDR', out)
-    if (a[0], addr(a[1]), scrub(a[2]) if fa else '') != (b[0], addr(b[1]), scrub(b[2]) if fb else ''):
-        return (rel, 'DIFFERS', f"status {a[0]} -> {b[0]}; stdout {a[1][-160:]!r} -> {b[1][-160:]!r}; stderr {scrub(a[2])[:160]!r} -> {scrub(b[2])[:160]!r}")
-    return (rel, 'same', f"{os.path.getsize(plain)} -> {os.path.getsize(opt)} bytes")
+    if (a[0], addr(a[1])) != (b[0], addr(b[1])):
+        return (rel, 'DIFFERS', f"status {a[0]} -> {b[0]}; stdout {a[1][-160:]!r} -> {b[1][-160:]!r}")
+    if a[0] != 0:
+        (ma, ca), (mb, cb) = split_err(a[2]), split_err(b[2])
+        if ma != mb:
+            return (rel, 'DIFFERS', f"stderr {ma[-200:]!r} -> {mb[-200:]!r}")
+        if not chain_ok(ca, cb):
+            return (rel, 'CHAIN DIFFERS', f"{ca} -> {cb}")
+    return (rel, 'same' if a[0] == 0 else 'same failure', f"{os.path.getsize(plain)} -> {os.path.getsize(opt)} bytes")
 
 
 def main():
@@ -95,6 +131,10 @@ def main():
     built = run([AIPL, 'compile', os.path.join(ROOT, 'aipl_src/codegen_opt.aipl'), '-o', OPT], ROOT)
     if built[0] != 0:
         sys.exit('cannot build the optimizer: ' + built[2])
+    # its own tests (aipl_src/codegen_opt.aipl run_tests: the failures)
+    t = run([AIPL, 'run', OPT, '--', '--test'], ROOT)
+    if t[0] != 0:
+        sys.exit(f"codegen_opt --test: {t[0]} failing" + (': ' + t[2] if t[2] else ''))
     if '--fuzz' in args:
         # tools/run_fuzz.py's generated programs, case by case
         i = args.index('--fuzz')
@@ -107,7 +147,9 @@ def main():
         for k in range(n):
             text = subprocess.run([sys.executable, os.path.join(ROOT, 'tools/run_fuzz.py'), '--seed', str(seed), '--show', str(k)],
                                   capture_output=True, text=True).stdout
-            path = os.path.join(fz, f'case{k}.aipl')
+            # each in its own directory, which run_in_copy copies
+            os.makedirs(os.path.join(fz, f'case{k}'), exist_ok=True)
+            path = os.path.join(fz, f'case{k}', f'case{k}.aipl')
             # the generator prints addresses so that backends agree on the heap's
             # layout; the optimizer may shrink the data, which moves the heap, so
             # addresses are left out here (everything else is compared)
@@ -124,9 +166,10 @@ def main():
     with cf.ThreadPoolExecutor(jobs) as ex:
         for rel, verdict, why in ex.map(check, progs):
             counts[verdict] = counts.get(verdict, 0) + 1
-            if verdict != 'same':
+            if not verdict.startswith('same'):
                 print(f"{verdict:28} {rel}: {why}")
     print(f"{len(progs)} programs: " + ', '.join(f"{v} {n}" for v, n in sorted(counts.items())))
+    sys.exit(0 if all(v.startswith('same') or v == 'skip' for v in counts) else 1)
 
 
 main()

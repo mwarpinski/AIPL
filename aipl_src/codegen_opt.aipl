@@ -1519,6 +1519,18 @@
     (put g ONode.first first_c)
     g)
 
+  ;; Gives every node of the tree n the position pos. An inlined body takes its
+  ;; call's position: an inlined function has no frame of its own, so a trap
+  ;; in it is reported at the call, in the caller's frame, never at the
+  ;; callee's line under the caller's name.
+  (fn restamp [n:(ptr ONode) pos:i32] -> void
+    (when (eq n (ptr.null ONode)) (return))
+    (put n ONode.pos pos)
+    (let c:(ptr ONode) (get n ONode.first))
+    (while (neq c (ptr.null ONode))
+      (call restamp c pos)
+      (set! c (get c ONode.next))))
+
   ;; Recursively inlines eligible `(call callee ...)` sites in `n`.
   (fn inline_in_node [n:(ptr ONode) defs:(ptr (map.Map str.Bytes (ptr InlineDef))) self_name:str.Bytes stats:(ptr Stats)] -> (ptr ONode)
     (when (eq n (ptr.null ONode)) (return (ptr.null ONode)))
@@ -1565,6 +1577,7 @@
     (if (eq (get def InlineDef.stmt_count) 1)
         (block
           (let inlined:(ptr ONode) (call subst_with_map (get def InlineDef.body_first) env))
+          (call restamp inlined pos)
           (if (and (get def InlineDef.is_unsafe) (not (call is_form inlined "unsafe")))
               (call opt_expr (call make_op1 "unsafe" inlined pos) stats)
               (call opt_expr inlined stats)))
@@ -1575,7 +1588,9 @@
           (let b_last:(ptr ONode) bh)
           (let st:(ptr ONode) (get def InlineDef.body_first))
           (while (neq st (ptr.null ONode))
-            (let sub_st:(ptr ONode) (call opt_expr (call subst_with_map st env) stats))
+            (let raw_st:(ptr ONode) (call subst_with_map st env))
+            (call restamp raw_st pos)
+            (let sub_st:(ptr ONode) (call opt_expr raw_st stats))
             (put b_last ONode.next sub_st)
             (set! b_last sub_st)
             (set! st (get st ONode.next)))
@@ -2139,7 +2154,27 @@
     (let got2:str.Bytes (call optimize_with_stats (call str.from_str src2) s2))
     (if (and (call str.bytes_eq got (call str.from_str want)) (call str.bytes_eq got2 (call str.from_str want2))) 1 0))
 
-  ;; Group runner returning pass count (6), matching test_suite.aipl convention.
+  ;; Test 7: what it must not do: drop a call or a read (only pure operands
+  ;; fold away), inline an argument that is not an atom where it would be
+  ;; evaluated twice, or where it could trap and might not be evaluated, or
+  ;; fuse shifts past 31 (counts are masked)
+  (fn test_refusals [] -> i32
+    (let s:(ptr Stats) (call make_stats))
+    (let fns:str "(struct S [x:i32]) (fn g [] -> i32 (sys.print \"g\") 7) (fn twice [x:i32] -> i32 (+ x x)) (fn pick [c:bool x:i32] -> i32 (if c x 0))")
+    (let body:str "(* (call g) 0) (% (get p S.x) 1) (and (gt (call g) 0) false) (call twice (call g)) (call twice (+ a 1)) (call pick (gt a 0) (/ a b)) (shl (shl a 16) 16)")
+    (let src:(ptr buf.Buf) (call buf.make (call alloc.default) 512))
+    (call buf.push_str src "(module m ")
+    (call buf.push_str src fns)
+    (call buf.push_str src " (fn main [a:i32 b:i32 p:(ptr S)] -> i32 ")
+    (call buf.push_str src body)
+    (call buf.push_str src " (shl (shl a 3) 4)))")
+    (let want:(ptr buf.Buf) (call buf.make (call alloc.default) 512))
+    (call buf.push_str want "(module m\n  (struct S [x:i32])\n  (fn g [] -> i32 (sys.print \"g\") 7)\n  (fn twice [x:i32] -> i32 (+ x x))\n  (fn pick [c:bool x:i32] -> i32 (if c x 0))\n  (fn main [a:i32 b:i32 p:(ptr S)] -> i32 ")
+    (call buf.push_str want body)
+    (call buf.push_str want " (shl a 7))\n)")
+    (if (call str.bytes_eq (call optimize_with_stats (call buf.bytes src) s) (call buf.bytes want)) 1 0))
+
+  ;; Group runner returning pass count (7), matching test_suite.aipl convention.
   (fn run_codegen_opt_tests [] -> i32 (pub)
     (let p:i32 0)
     (when (eq (call test_const_folding) 1) (set! p (+ p 1)))
@@ -2148,14 +2183,15 @@
     (when (eq (call test_local_prop_and_branches) 1) (set! p (+ p 1)))
     (when (eq (call test_wasm_compilation_shrink) 1) (set! p (+ p 1)))
     (when (eq (call test_when_folding) 1) (set! p (+ p 1)))
+    (when (eq (call test_refusals) 1) (set! p (+ p 1)))
     p)
 
   ;; Entrypoints for `aipl test aipl_src/codegen_opt.aipl` (0 = 0 failures).
   (fn run_tests [] -> i32 (pub)
-    (- 6 (call run_codegen_opt_tests)))
+    (- 7 (call run_codegen_opt_tests)))
 
   (fn run_all [] -> i32 (pub)
-    (- 6 (call run_codegen_opt_tests)))
+    (- 7 (call run_codegen_opt_tests)))
 
   ;; ===== CLI Entrypoint (`codegen_opt compile [--exe [--sandbox]] FILE.aipl -o OUT`) =====
 
