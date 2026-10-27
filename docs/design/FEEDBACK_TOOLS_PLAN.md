@@ -1,6 +1,6 @@
 # Fast feedback without a REPL: doc, eval -e, dbg, test, watch
 
-**Status: approved 2026-10-18, every decision as recommended; F1-F5 built 2026-10-18; F6 (std's tests as test forms) next.** It replaces a REPL as the
+**Status: approved 2026-10-18, every decision as recommended; F1-F5 built 2026-10-18; F6 (std's tests as test forms) not done: they still run as the `run_*_tests` groups of aipl_src/test_suite.aipl.** It replaces a REPL as the
 next developer-experience work. docs/design/REPL_PLAN.md (a wasm
 interpreter in AIPL) stays a separate, later question: it is what would let
 the self-hosted `aipl` run code itself (section 7).

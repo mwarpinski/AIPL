@@ -21,8 +21,9 @@
 #      fish's conf.d/aipl.fish), unless --no-modify-path is given;
 #   6. checks the result by compiling and running a small program.
 # Nothing runs as root and nothing is written outside ~/.aipl except that
-# one line. The binaries read the standard library from ~/.aipl/src, so
-# keep it; `sh install.sh --uninstall` removes ~/.aipl and that line.
+# one line. The binaries carry the standard library, so ~/.aipl/src is only
+# the examples and what an update pulls into; `sh install.sh --uninstall`
+# removes ~/.aipl and that line.
 #
 # Options:
 #   --ref REF          the branch, tag, or commit to install (default: main)

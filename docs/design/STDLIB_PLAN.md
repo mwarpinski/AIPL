@@ -1,7 +1,8 @@
 # A broader standard library, and string formatting
 
 **Status: approved 2026-10-16, every decision as recommended; L1 to L6
-built 2026-10-18; L7 next (its design doc first).** Four choices were made before writing
+built 2026-10-18; L7 (networking) designed in NET_PLAN.md and built
+through serving (steps 1-4); fetching, TLS, and the measurements are not.** Four choices were made before writing
 (2026-10-16): formatting is part of the language, not a library;
 cryptography stops at hashes and HMAC; regular expressions are the
 guaranteed-linear kind; the work goes in batches. At approval,

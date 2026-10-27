@@ -3,8 +3,11 @@
 **Status: approved 2026-10-20** (the owner's answers to Sonnet's review of
 2026-10-19: retire `loop`, `when` as the only one-branch `if`, measure
 the syntax proposals before deciding, and do this batch before NET_PLAN.md
-step 5). Steps 1 to 3 built 2026-10-21; what each still has outstanding is
-listed at the end of its section.
+step 5). Steps 1 to 6 are done (1 to 4 on 2026-10-21, 5 and 6 on
+2026-10-26: `arr.of`; the duplicates sweep, whose one real duplicate,
+printing, became LANGUAGE_DECISIONS.md item 6). Step 7, the harness, is
+built (tools/harness/, 2026-10-26); its runs, and the syntax proposals
+they decide, are still to come.
 
 AIPL is written by models, and a model does best with one obvious way to
 do each thing: every second way is a choice it can get wrong, and a

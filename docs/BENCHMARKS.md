@@ -148,8 +148,9 @@ bignums; output in the Benchmarks Game's pidigits format). Ran with no
 language changes. What it showed:
 - AIPL needed `std/time` to time its own work, and could not print an
   `i64` at all: added `fmt.int64_to_bytes`/`uint64_to_bytes`,
-  `buf.push_i64`, `io.print_i64`/`println_i64`, and `std/time` (`now`,
-  `since`, `report`, `push_duration`).
+  `buf.push_i64`, a way to print one (since replaced by the format forms:
+  `(println "{n}")`), and `std/time` (`now`, `since`, `report`,
+  `push_duration`).
 - Native code is 2.8 times slower than wasmtime's here (it was 10% slower
   compiling the compiler): the inner loop is one 64-bit division and two
   array accesses per step, where the baseline translator's design costs
@@ -226,10 +227,10 @@ module was imported (`tests/test_generics.rs`).
 **knucleotide** (count every 1-, 2-, ... 18-letter substring of a DNA
 sequence read from stdin; frequency tables and occurrence counts). Its input
 comes from the Benchmarks Game's fasta generator (`fasta.py`, run by
-`tools/bench.py` through `stdin_cmd`). Ran with no language changes, using
-`std/strmap` (keys are slices of the sequence, no copies) and `vec.sort_by`;
-since 2026-10-14 `(map.Map str.Bytes i32)`, the one generic map
-(`strmap` is gone).
+`tools/bench.py` through `stdin_cmd`). Ran with no language changes, using a
+string-keyed map module (keys are slices of the sequence, no copies) and
+`vec.sort_by`; since 2026-10-14 `(map.Map str.Bytes i32)`, the one generic
+map (that module was removed).
 What it showed:
 - **The 64 MiB memory cap.** At the benchmark's usual size (fasta 250000,
   1.25 million letters) both AIPL builds run out of memory: seven maps of up

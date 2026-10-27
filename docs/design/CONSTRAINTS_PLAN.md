@@ -22,7 +22,7 @@ The header says "any T", but the body uses `eq`, which unions do not have.
 this way; C++20 concepts check only the call, not the body.
 
 **A template cannot ask for an operation on its type.** `std/map` is keyed
-by `i32` and `std/strmap` by byte strings, two copies of one hash map,
+by `i32` and `std/strmap` (since merged into `std/map`) by byte strings, two copies of one hash map,
 because a template cannot say "K can be hashed and compared".
 
 ## The design

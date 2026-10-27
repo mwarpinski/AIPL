@@ -44,7 +44,7 @@ This plan defines the design for an interactive REPL and execution engine writte
 
 Currently, the AIPL toolchain has two halves:
 1. **The Rust toolchain (`src/`):** Implements `aipl eval` (via `src/vm.rs`, a 2,537-line AST interpreter), `aipl verify`, `aipl test`, `aipl compile`, and `aipl run` (via the 18 MB `aipl-run` Wasmtime launcher bundle).
-2. **The self-hosted native toolchain (`aipl_src/`):** Generates standalone, statically linked Linux x86-64 ELF executables with zero libc dependencies. However, [`aipl_src/aipl.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl.aipl) currently only exposes `aipl compile` and `aipl --version`. It cannot evaluate code in-memory, run `.wasm` files directly, or provide an interactive REPL without compiling to disk and executing a native binary.
+2. **The self-hosted native toolchain (`aipl_src/`):** Generates standalone, statically linked Linux x86-64 ELF executables with zero libc dependencies. However, [`aipl_src/aipl.aipl`](../../aipl_src/aipl.aipl) currently only exposes `aipl compile` and `aipl --version`. It cannot evaluate code in-memory, run `.wasm` files directly, or provide an interactive REPL without compiling to disk and executing a native binary.
 
 ### The Problem
 To make AIPL a self-sufficient developer experience and provide AI agents with a sub-second evaluation feedback loop for testing expressions and functions, we need:
@@ -69,11 +69,11 @@ Port the 2,537 lines of Rust AST interpretation to AIPL (`aipl_src/vm.aipl`).
   - Subtleties in expression typing, short-circuiting, and coercion risk drifting out of parity with compiled execution.
 
 ### Alternative B: A Pure-AIPL WebAssembly Interpreter (Recommended)
-Interpret the WebAssembly bytecode emitted by [`aipl_src/codegen.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen.aipl).
+Interpret the WebAssembly bytecode emitted by [`aipl_src/codegen.aipl`](../../aipl_src/codegen.aipl).
 - **Advantages:**
-  - **Zero semantic divergence:** The interpreter executes the *exact same bytes* that [`codegen.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen.aipl) emits for the native x86-64 backend and Wasmtime. Every language feature (contracts, value structs, generational checks, format lowerings) is already lowered by the compiler front end.
-  - **Reuses existing infrastructure:** AIPL already has a verified, 907-line Wasm decoder ([`aipl_src/native/wasm_reader.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/wasm_reader.aipl)) that decodes headers, type sections, function bodies, and instructions into structured `Instr` records.
-  - **Strictly bounded scope:** The interpreter does *not* need to support arbitrary WebAssembly from clang or rustc. It only needs to support the exact 73-instruction subset emitted by `codegen.aipl` (already exhaustively enumerated in [`aipl_src/native/lower.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/lower.aipl#L62-L63)).
+  - **Zero semantic divergence:** The interpreter executes the *exact same bytes* that [`codegen.aipl`](../../aipl_src/codegen.aipl) emits for the native x86-64 backend and Wasmtime. Every language feature (contracts, value structs, generational checks, format lowerings) is already lowered by the compiler front end.
+  - **Reuses existing infrastructure:** AIPL already has a verified, 907-line Wasm decoder ([`aipl_src/native/wasm_reader.aipl`](../../aipl_src/native/wasm_reader.aipl)) that decodes headers, type sections, function bodies, and instructions into structured `Instr` records.
+  - **Strictly bounded scope:** The interpreter does *not* need to support arbitrary WebAssembly from clang or rustc. It only needs to support the exact 73-instruction subset emitted by `codegen.aipl` (already exhaustively enumerated in [`aipl_src/native/lower.aipl`](../../aipl_src/native/lower.aipl#L62-L63)).
   - **Uncheatable test oracle:** The interpreter can be verified against Wasmtime across the entire benchmark suite, test corpus, and 50,000-case fuzzing pipeline (`tools/run_fuzz.py`).
 
 ```
@@ -147,7 +147,7 @@ All runtime state structures are preallocated at VM instantiation:
 
 ### 3.3. Guest Linear Memory & Bounds Checking
 - Guest memory is backed by a contiguous buffer allocated on startup (initial 16 pages = 1 MiB, growable up to 1,024 pages = 64 MiB).
-- Every memory load and store verifies `offset + sizeof(T) <= mem_len` before access. An out-of-bounds access raises a VM trap with source line/column coordinates (looked up via [`wasm_reader.lines_of`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/wasm_reader.aipl#L70)).
+- Every memory load and store verifies `offset + sizeof(T) <= mem_len` before access. An out-of-bounds access raises a VM trap with source line/column coordinates (looked up via [`wasm_reader.lines_of`](../../aipl_src/native/wasm_reader.aipl#L70)).
 
 ### 3.4. Host Runtime & WASI Emulation (`aipl_src/interp/wasi.aipl`)
 The interpreter intercepts WASI imports and delegates them directly to AIPL's existing standard library routines:
@@ -197,7 +197,7 @@ Because AIPL is a compiled, statically typed language with no top-level statemen
 
 ### 4.2. Return Type Inference (`T`)
 AIPL functions require explicit return types. When an expression is entered into the REPL without a wrapper:
-- **Strategy 1 (Static Expression Typing):** Add a helper function `checker.type_of_expr` to [`aipl_src/checker.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/checker.aipl) that determines the type of an expression AST node.
+- **Strategy 1 (Static Expression Typing):** Add a helper function `checker.type_of_expr` to [`aipl_src/checker.aipl`](../../aipl_src/checker.aipl) that determines the type of an expression AST node.
 - **Strategy 2 (Probe Fallback):** If `type_of_expr` is not yet available, probe standard scalar types (`void`, `i32`, `i64`, `f64`, `bool`, `str`, `str.Bytes`) through `front.check`. The first type that passes verification is selected.
 
 ### 4.3. Value Printing
@@ -227,7 +227,7 @@ The REPL input loop uses a tokenizer pass to count opening and closing delimiter
 
 ## 5. Toolchain Subcommand Extensions (`aipl_src/aipl.aipl`)
 
-The self-hosted compiler binary [`aipl_src/aipl.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl.aipl) will be expanded with the following command interface:
+The self-hosted compiler binary [`aipl_src/aipl.aipl`](../../aipl_src/aipl.aipl) will be expanded with the following command interface:
 
 ```bash
 aipl repl                      # Launch the interactive AIPL REPL

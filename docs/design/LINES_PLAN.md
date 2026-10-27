@@ -1,5 +1,9 @@
 # Source lines in compiled crashes
 
+**Status: done (LN1-LN3, 2026-10-07)** in both compilers, which still emit
+identical bytes. Kept as the design record; AIPL_SPEC.md 6.5 and 6.6 say
+how the line table works today.
+
 A compiled program that traps prints its call chain (`  at f`). This plan
 adds where in the source each frame was: `  at f (shapes.aipl:12:5)`, under
 `aipl-run` and in native executables, with both compilers still emitting
