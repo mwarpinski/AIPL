@@ -843,6 +843,21 @@
       (set! k (+ k 1)))
     b)
 
+  ;; An operator as C writes it, which AIPL spells as a form: its index in
+  ;; push_head_hint's tables, or -1 (src/parser.rs c_operator).
+  (fn c_operator [head:str.Bytes] -> i32
+    (cond
+      ((or (call str.is head "=") (call str.is head "==")) 0)
+      ((call str.is head "!=") 1)
+      ((call str.is head "<") 2)
+      ((call str.is head ">") 3)
+      ((call str.is head "<=") 4)
+      ((call str.is head ">=") 5)
+      ((call str.is head "&&") 6)
+      ((call str.is head "||") 7)
+      ((call str.is head "!") 8)
+      (else -1)))
+
   ;; What to write after "Unknown op/keyword: HEAD; " (src/parser.rs).
   (fn push_head_hint [p:(ptr P) b:(ptr buf.Buf) head:str.Bytes] -> void
     (let names:(ptr (vec.Vec str.Bytes)) (call head_names (get p P.forms) (get p P.ops)))
@@ -851,6 +866,14 @@
       ((or (call str.is head "else") (call str.is head "elif") (call str.is head "switch")
            (call str.is head "case") (call str.is head "default"))
        (call buf.push_str b "there is no else if, elif, switch, or case: use (cond (test body...) ... (else body...))"))
+      ((gte (call c_operator head) 0)
+       (call buf.push_byte b 39)
+       (call buf.push_bytes b head)
+       (call buf.push_str b "' is not an operator; ")
+       (let k:i32 (call c_operator head))
+       (call buf.push_str b (arr.get str (arr.of str (call alloc.default) "equality" "inequality" "less than" "greater than" "at most" "at least" "and" "or" "not") k))
+       (call buf.push_str b " is ")
+       (call buf.push_str b (arr.get str (arr.of str (call alloc.default) "(eq a b)" "(neq a b)" "(lt a b)" "(gt a b)" "(lte a b)" "(gte a b)" "(and a b)" "(or a b)" "(not a)") k)))
       ((call str.is head "loop")
        (call buf.push_str b "loop is retired: (for i start end body...) counts from start up to end, end left out; for another step, use while"))
       ((gte near 0)

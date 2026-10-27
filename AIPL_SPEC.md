@@ -1408,7 +1408,8 @@ Representative messages, exactly as produced:
 | missing `)` at end of file | `1:1: this bracket is never closed` (the position of the unclosed bracket) |
 | extra `)` after the module | `3:1: unexpected input after the module's closing ')'` |
 | `if` with no else branch | `1:37: Unexpected token parsing expression: ')'` (the `)` where the else was expected) |
-| unknown operator | `3:5: Unknown op/keyword: badop` |
+| unknown operator | `3:5: Unknown op/keyword: badop; to call a function, write (call badop args...)`, or `did you mean when?` for a near name |
+| an operator as C writes it (`=`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `\|\|`, `!`) | `3:5: Unknown op/keyword: =; '=' is not an operator; equality is (eq a b)`, naming the form: `neq`, `lt`, `gt`, `lte`, `gte`, `and`, `or`, `not` |
 | unterminated string | `4:12: Unterminated string literal` |
 | wrong literal type in `let` | `3:5: Type mismatch in 'let': expected i32, got bool` |
 | undefined name | `3:5: Undefined variable 'x'` |
