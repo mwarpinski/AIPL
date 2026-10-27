@@ -70,3 +70,26 @@ fn every_backend_exits_alike() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A full standard output (/dev/full) is an error the command reports, with
+/// status 1, not a panic: `aipl eval` printing its status lines, and `aipl
+/// compile` its own.
+#[test]
+fn a_full_standard_output_is_an_error_not_a_panic() {
+    if !std::path::Path::new("/dev/full").exists() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("aipl_exit_{}_full", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("p.aipl");
+    std::fs::write(&src, "(module p (fn main [] -> i32 0))").unwrap();
+    for args in [vec!["eval"], vec!["compile", "-o", dir.join("p.wasm").to_str().unwrap()]] {
+        let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_aipl")).args(&args).arg(&src).stdout(full).output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{args:?}: {err}");
+        assert!(err.contains("standard output: No space left on device") && !err.contains("panicked"), "{args:?}: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

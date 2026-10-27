@@ -184,6 +184,15 @@ enum Commands {
 /// Locates the first differing byte of two wasm modules: which section (and,
 /// in the code section, which function body) it falls in, plus a hex window
 /// of each side around it.
+/// println! that fails the command, rather than panicking, when standard
+/// output cannot be written (a full disk, a closed pipe).
+macro_rules! say {
+    ($($t:tt)*) => {{
+        use std::io::Write;
+        writeln!(std::io::stdout(), $($t)*).map_err(|e| format!("standard output: {e}"))?;
+    }};
+}
+
 fn rust_out_path(output: &str) -> String {
     format!("{}.rust.wasm", output)
 }
@@ -396,7 +405,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 vm.set_max_pages(aipl_core::compiler::memory_pages(m)? as usize);
             }
             vm.load_module(module);
-            println!("[AIPL VM] Executing function '{}' from '{}'...", func, file);
+            say!("[AIPL VM] Executing function '{}' from '{}'...", func, file);
             // an error is followed by its call chain, as compiled code prints it
             let res = match vm.invoke(&func, vec![]) {
                 // the VM's sys.exit ends the run with this error: exit as compiled code does
@@ -405,7 +414,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 r => r.map_err(|e| format!("{e}\n{}", vm.call_chain()).trim_end().to_string())?,
             };
-            println!("[AIPL Result]: {:?}", res);
+            say!("[AIPL Result]: {:?}", res);
             // main's value is the exit status (AIPL_SPEC.md 6.5), as compiled
             // programs exit: an i32, or a (result i32 str)'s ok, or 1 after
             // err's message on standard error
@@ -446,7 +455,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             if self_flag {
                 let rust_bytes = WasmCompiler::compile_limited(&module, max_pages)?;
-                println!("[AIPL Self-Host] Compiling '{}' via self-hosted codegen.aipl...", file);
+                say!("[AIPL Self-Host] Compiling '{}' via self-hosted codegen.aipl...", file);
                 // Self-hosted end to end, as aiplc: driver.aipl resolves,
                 // checks, and compiles (aipl_src/driver.aipl), in the VM.
                 let self_bytes = aipl_core::selfhost::compile_with_aipl_limited(Path::new(&file), max_pages).map_err(|e| format!("Self-host error: {}", e))?;
@@ -459,7 +468,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("  wrote both outputs: {} and {}", rust_out_path(&output), self_out);
                     return Err("Byte-parity mismatch between Rust backend and self-hosted codegen!".into());
                 }
-                println!("[AIPL Self-Host] SUCCESS: Self-hosted codegen produced 100% BIT-FOR-BIT IDENTICAL WebAssembly!");
+                say!("[AIPL Self-Host] SUCCESS: Self-hosted codegen produced 100% BIT-FOR-BIT IDENTICAL WebAssembly!");
                 fs::write(&output, &self_bytes)?;
             } else if no_opt {
                 fs::write(&output, WasmCompiler::compile_limited(&module, max_pages)?)?;
@@ -502,7 +511,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     })?;
                 }
             }
-            println!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+            say!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
         }
         Commands::Serve { file, fresh, listen, requests, args } => {
             if !fresh {
@@ -553,7 +562,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
-            println!("[AIPL Verifier] OK: module '{}' type-checks. Contracts are type-checked, not proven; req/ens run on every call, in the VM and in compiled code.", module.name);
+            say!("[AIPL Verifier] OK: module '{}' type-checks. Contracts are type-checked, not proven; req/ens run on every call, in the VM and in compiled code.", module.name);
         }
         Commands::Test { file, func, filter, vm, native, all_backends, run_one } => {
             use aipl_core::testrun::{self, Backend};
@@ -581,7 +590,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     failed += q;
                 }
                 let n = passed + failed;
-                println!("{n} test{}: {passed} passed, {failed} failed", if n == 1 { "" } else { "s" });
+                say!("{n} test{}: {passed} passed, {failed} failed", if n == 1 { "" } else { "s" });
                 std::process::exit(if failed > 0 { 1 } else { 0 });
             }
             if path.is_dir() {
@@ -593,10 +602,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut vm = VM::new();
             vm.load_module(module);
-            println!("[AIPL Test] Running '{}' from '{}'...\n", func, file);
+            say!("[AIPL Test] Running '{}' from '{}'...\n", func, file);
             match vm.invoke(&func, vec![]) {
                 Ok(Value::Int(0)) => {
-                    println!("\n[AIPL Test] All groups passed.");
+                    say!("\n[AIPL Test] All groups passed.");
                 }
                 Ok(Value::Int(n)) => {
                     eprintln!("\n[AIPL Test] {} group(s) failed.", n);
