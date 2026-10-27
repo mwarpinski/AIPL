@@ -64,23 +64,28 @@ program to the same bytes as the Rust command, with the same errors.
 ## Where this seed came from
 
 Built 2026-10-27 by the Rust toolchain, from the source of commit
-29416a9, for the release: the executables the compiler writes (this seed
-among them) now map the ELF headers as their own read-only first segment,
-at file offset 0, which Rosetta 2 requires to load them (Task D; they could
-not yet open files under it: the `openat2` fallback, docs/HANDOFF.md, is in
-the next seed), and the source has changed in many small ways since the last
-seed (the scope pass, one print form, the robustness work):
+01bc216, for the release: the executables the compiler writes (this seed
+among them) open files with plain `openat` where `openat2` fails (Linux
+before 5.6, Rosetta 2, a container profile that refuses it; a `--sandbox`
+program says it needs `openat2` and stops at start), so the bootstrap
+finishes there (`tests/test_bootstrap.rs`, with `tools/without_openat2.py`);
+the previous seed stopped at its first file with `cannot read entry file`.
+The earlier seed's change, the ELF headers as their own read-only first
+segment at file offset 0, which Rosetta 2 requires to load an executable
+(Task D), is in this one too:
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `840060d9a7d52bd6a6ca402b5881f791110fa68f9a8386306ef70c52cbe6a0bc`.
+sha256 `ae30b56410a1f5254422ff280e48b22a50334328d9ff04b434f341d086a6b4be`.
 Building that commit's source with the seed gives the same bytes (stage
 2 is the seed), so for now the seed is its own stage 2.
 
-Earlier seeds: the one built 2026-10-26 from bb8c35f (sha256
+Earlier seeds: the one built 2026-10-27 from 29416a9 (sha256
+`840060d9a7d52bd6a6ca402b5881f791110fa68f9a8386306ef70c52cbe6a0bc`), for
+Task D's read-only first segment; the one built 2026-10-26 from bb8c35f (sha256
 `ebc67e10ca127d78e4a03dc7c735ee7a4e48c853af8baa2511f9c49f92b4d5c5`), so
 that the compiler's own source can give a struct's fields by name,
 `(new S a [x:1 y:2])` and `(make V [x:1 y:2])`, and write a zero as

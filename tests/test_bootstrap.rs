@@ -70,6 +70,37 @@ fn the_seed_builds_the_compiler_the_rust_toolchain_builds() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The bootstrap where openat2 is refused (Linux before 5.6, Rosetta 2, an old
+/// container profile: tools/without_openat2.py): the seed, and the compiler it
+/// builds, open the source files with openat, and build the same bytes as
+/// where openat2 works.
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn the_bootstrap_finishes_where_openat2_is_refused() {
+    let dir = scratch("bootstrap_no_openat2");
+    let seed = root().join("bootstrap/aipl-linux-x86_64");
+    let plain = dir.join("plain");
+    build_aipl(&seed, &plain);
+    let helper = root().join("tools/without_openat2.py");
+    let build = |how: &[&str], compiler: &Path, out: &Path| {
+        let r = run(Command::new("python3").arg(&helper).args(how).arg(compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(out));
+        assert_eq!(r.status.code(), Some(0), "{how:?} {}: {}", compiler.display(), String::from_utf8_lossy(&r.stderr));
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let (enosys, eperm, again) = (dir.join("enosys"), dir.join("eperm"), dir.join("again"));
+    build(&[], &seed, &enosys);
+    build(&["--eperm"], &seed, &eperm);
+    // and the compiler the seed built, building itself, with the call refused
+    build(&[], &enosys, &again);
+    let bytes = |p: &Path| std::fs::read(p).unwrap();
+    assert!(bytes(&enosys) == bytes(&plain), "the seed builds other bytes where openat2 returns ENOSYS");
+    assert!(bytes(&eperm) == bytes(&plain), "the seed builds other bytes where openat2 returns EPERM");
+    assert!(bytes(&again) == bytes(&plain), "the compiler the seed built builds other bytes where openat2 is refused");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native seed)")]
