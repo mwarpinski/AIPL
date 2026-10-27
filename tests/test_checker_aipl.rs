@@ -561,6 +561,12 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn main [] -> i32 (elif true 1)))",
     "(module m (fn main [] -> i32 (else if true 1)))",
     "(module m (fn main [] -> i32 (switch 1 (1 2))))",
+    // C's operators name the form AIPL spells them as
+    "(module m (fn main [] -> i32 (if (= 1 1) 0 1)))",
+    "(module m (fn main [] -> i32 (if (== 1 1) 0 1)))",
+    "(module m (fn main [] -> i32 (if (!= 1 2) 0 1)))",
+    "(module m (fn main [] -> i32 (if (<= 1 2) 0 1)))",
+    "(module m (fn main [] -> i32 (if (! true) 0 1)))",
     "(module m (fn main [] -> i32 (arr.of i32 1 2)))",
     "(module m (fn main [] -> i32 (if true 1)))",
     "(module m (fn main [] -> i32 (if true)))",

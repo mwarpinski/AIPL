@@ -66,6 +66,23 @@ pub struct Token {
 /// "did you mean" in the unknown-head error. aipl_src/parser.aipl's
 /// form_table and op_table list the same names (tests/test_checker_aipl.rs
 /// compares them).
+/// An operator as C writes it, which AIPL spells as a form: what it means,
+/// and the form (aipl_src/parser.aipl c_operator alike).
+pub fn c_operator(op: &str) -> Option<(&'static str, &'static str)> {
+    Some(match op {
+        "=" | "==" => ("equality", "(eq a b)"),
+        "!=" => ("inequality", "(neq a b)"),
+        "<" => ("less than", "(lt a b)"),
+        ">" => ("greater than", "(gt a b)"),
+        "<=" => ("at most", "(lte a b)"),
+        ">=" => ("at least", "(gte a b)"),
+        "&&" => ("and", "(and a b)"),
+        "||" => ("or", "(or a b)"),
+        "!" => ("not", "(not a)"),
+        _ => return None,
+    })
+}
+
 pub const HEAD_NAMES: &[&str] = &[
     "when", "%", "*", "+", "-", "/", "^", "and", "args.get", "args.sizes", "arr.addr", "arr.cast",
     "arr.gen", "arr.get", "arr.len", "arr.make", "arr.new", "arr.null", "arr.of", "arr.set", "atomic.add",
@@ -1942,6 +1959,8 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 other => {
                                     let hint = if matches!(other, "else" | "elif" | "switch" | "case" | "default") {
                                         "there is no else if, elif, switch, or case: use (cond (test body...) ... (else body...))".to_string()
+                                    } else if let Some((what, form)) = c_operator(other) {
+                                        format!("'{other}' is not an operator; {what} is {form}")
                                     } else if other == "loop" {
                                         "loop is retired: (for i start end body...) counts from start up to end, end left out; for another step, use while".to_string()
                                     } else if let Some(near) = nearest_name(other, HEAD_NAMES.iter().copied()) {

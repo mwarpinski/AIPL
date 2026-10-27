@@ -29,7 +29,7 @@ model has to remember that the compiler could check.
 | 5 | A name's scope is its block or match arm | No (it allows more) | Medium | **Decided yes, done 2026-10-26** |
 | 6 | One way to print: the format forms | Yes (~230 call sites) | Medium, by a tool | **Decided yes, done 2026-10-26** |
 | 7 | An address-sized integer type | No, if not done | None now | **No: say why in the FAQ** (strong) |
-| 8 | `(= x 1)` says to write `eq` (today it suggests `(call = ...)`) | No (a message) | Tiny | **Yes**, just do it |
+| 8 | `(= x 1)` says to write `eq` (today it suggests `(call = ...)`) | No (a message) | Tiny | **Decided yes, done 2026-10-26** |
 
 Already done, so not proposed: `str.Bytes` as a value struct (the
 checklist's list still names it; std/str.aipl:12 is `(value)` since
@@ -421,6 +421,13 @@ same for `==` and `!=`, which is `neq`), in both toolchains. Not a
 language change; listed so it is not forgotten.
 
 **Recommendation: yes; just do it.**
+
+**Done (2026-10-26).** Both parsers name the form for each operator C
+writes: `=` and `==` (`equality is (eq a b)`), `!=` (`neq`), `<`, `>`,
+`<=`, `>=` (`lt`, `gt`, `lte`, `gte`), `&&`, `||`, and `!` (`and`, `or`,
+`not`): `Unknown op/keyword: =; '=' is not an operator; equality is (eq a
+b)` (src/parser.rs c_operator, parser.aipl c_operator). test_checker_aipl
+compares five of them word for word; test_diagnostics checks two.
 
 ---
 
