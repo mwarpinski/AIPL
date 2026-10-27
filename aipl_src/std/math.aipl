@@ -17,7 +17,10 @@
 ;; real-exponent pow (each is a port of a libm routine, with a test that it
 ;; rounds as libm does); and gcd or pow on big numbers (std/bigint).
 (module math
+  ;; The ratio of a circle's circumference to its diameter, as an f64.
   (const PI:f64 3.141592653589793 (pub))
+
+  ;; A full turn in radians, 2 * PI.
   (const TAU:f64 6.283185307179586 (pub))
 
   ;; ===== i32 =====
