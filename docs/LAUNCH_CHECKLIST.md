@@ -31,7 +31,7 @@ What is left, in the order to do it. Each item below points at its section.
 
 | # | Item | Who | State |
 |---|---|---|---|
-| 6 | Finish Task D, so native executables run under Rosetta 2: a read-only segment for the ELF headers, then merge `features/elf-offset0` (it passed the full CI on x86-64 on 2026-10-26); a seed refresh after it lets the bootstrap run under Rosetta | Claude; the seed refresh is the owner's | The CI is green; the segment and the merge are left |
+| 6 | Task D, so native executables run under Rosetta 2: the ELF headers are their own read-only first segment at file offset 0 (`features/elf-headers`, 2026-10-27; it replaces Gemini's `features/elf-offset0`, which made the headers writable); a seed refresh after it lets the bootstrap run under Rosetta | Claude; the Rosetta run is on the owner's Mac; the seed refresh is the owner's | Written, tested on x86-64 (readelf layout, the self-tests, a built jsonpp runs); the full CI, the merge, and a run under Rosetta are left |
 | 7 | Gemini's round 3 on the Mac mini (docs/APPLE_SILICON_HANDOFF.md, section 7): review its report, then merge its macOS test gating into `development`, so a Mac user's `cargo test` is honest | Claude reviews; the owner merges | Round 3 pushed 2026-10-26; when it merges, README and the FAQ say macOS on Apple Silicon is tested (both say only Linux is, now) |
 
 **After launch** (each already stated in ROADMAP.md or docs/HANDOFF.md)
