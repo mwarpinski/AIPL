@@ -27,7 +27,7 @@ model has to remember that the compiler could check.
 | 3 | An array literal, `(arr.of T a x y z)` | No (new form) | Small | **Decided yes, done 2026-10-26** |
 | 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Decided yes: fields by name, zeros written with `(zero T)`; done 2026-10-26** |
 | 5 | A name's scope is its block or match arm | No (it allows more) | Medium | **Decided yes, done 2026-10-26** |
-| 6 | One way to print: the format forms | Yes (~105 call sites) | Medium, by a tool | **Yes** (moderate) |
+| 6 | One way to print: the format forms | Yes (~230 call sites) | Medium, by a tool | **Decided yes, done 2026-10-26** |
 | 7 | An address-sized integer type | No, if not done | None now | **No: say why in the FAQ** (strong) |
 | 8 | `(= x 1)` says to write `eq` (today it suggests `(call = ...)`) | No (a message) | Tiny | **Yes**, just do it |
 
@@ -375,6 +375,23 @@ spelling of `alloc.create` and `alloc.array`, which generic code needs;
 `cond` and `if`, `for` and `while`, `try` and `match_result`, `str.concat`
 and `buf` and the format forms each do something the other cannot (the
 guide says when to use which).
+
+**Decided (2026-10-26), and done.** std/io's `print_int`, `print_i64`,
+`print_f64`, `println_int`, `println_i64`, and `println_f64` are gone;
+`io.println`, `io.eprintln`, and `io.write_str` print plain text, and
+`sys.print` stays. tools/one_print.py rewrote 220 calls in programs, tests
+(an AIPL string inside a Rust string, raw or not, and inside a `format!`,
+whose braces are Rust's), and the docs' examples:
+`(call io.println_int "lines: " n)` is `(println "lines: {n}")`, a value a
+placeholder cannot hold bound first with `let`; tools/run_fuzz.py's
+printing by hand. The float output is the same (the benchmarks' expected
+outputs pass). The checker's `sys.print` message names the format forms.
+Found on the way: the format walks (formats.rs `split`, `uses_formats`,
+`holds_dbg`; resolver.aipl `uses_formats`) skipped a struct's named field
+list, so a print inside one was not expanded; now they read it, as
+sugar.rs does. A trap inside a placeholder is reported at the string, as
+every format's position is, so tests/test_generations.rs binds the
+accesses it reports with `let`.
 
 ## 7. An address-sized integer type
 

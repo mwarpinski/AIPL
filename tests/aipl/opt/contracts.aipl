@@ -20,6 +20,6 @@
     d)
   (fn main [] -> i32
     (let b:(ptr Box) (new Box (call alloc.forever) [n:5]))
-    (call io.println_int "ok " (call doubled_below b 1))
-    (call io.println_int "not " (call doubled_below b 4))
+    (println "ok {(call doubled_below b 1)}")
+    (println "not {(call doubled_below b 4)}")
     0))

@@ -49,7 +49,7 @@
     (for i 0 n
       (set! vbv (+ vbv (* (arr.get f64 u i) (arr.get f64 v i))))
       (set! vv (+ vv (* (arr.get f64 v i) (arr.get f64 v i)))))
-    (call io.print_f64 (f64.sqrt (/ vbv vv)) 9)
+    (print "{(f64.sqrt (/ vbv vv)):.9}")
     (call io.println "")
     (call time.report "spectralnorm computed in" started)
     0))

@@ -136,7 +136,7 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("trap_null_put", "(module m (struct P [x:i32]) (fn main [] -> i32 (put (ptr.null P) P.x 1) 0))"),
     ("trap_null_array", "(module m (fn main [] -> i32 (arr.len (arr.null i32))))"),
     // the null check comes before the index is evaluated: nothing is printed
-    ("trap_null_before_index", "(module m (import io) (fn main [] -> i32 (arr.get i32 (arr.null i32) (block (call io.println_int \"never \" 1) 0))))"),
+    ("trap_null_before_index", "(module m (import io) (fn main [] -> i32 (arr.get i32 (arr.null i32) (block (println \"never {1}\") 0))))"),
     ("trap_in_a_thread", "(module m (fn work [x:i32] -> i32 (unsafe) (/ 10 x)) (fn main [] -> i32 (unsafe) (thread.join (thread.spawn (ref work) 0))))"),
     // and so do compiled contracts (without the position)
     ("trap_failed_req", "(module m (fn f [n:i32 ok:bool] -> i32 (req (gt n 0)) n) (fn main [] -> i32 (call f -3 true)))"),
@@ -485,7 +485,7 @@ fn wasi_programs_match_natively() {
         ("print_lines", "(module m (fn main [] -> i32 (sys.print \"hello\" \"native world\") 0))".into(), Io::default()),
         (
             "print_numbers",
-            "(module m (import io) (fn main [] -> i32 (call io.println_int \"n: \" -2147483648) (call io.println_int \"m: \" 42) (call io.print_int 7) (call io.println \"\") 0))".into(),
+            "(module m (import io) (fn main [] -> i32 (println \"n: {-2147483648}\") (println \"m: {42}\") (print \"{7}\") (call io.println \"\") 0))".into(),
             Io::default(),
         ),
         ("raw_write_to_fd_1", "(module m (fn main [] -> i32 (unsafe) (sys.exit (fs.write 1 (str.ptr \"raw\\n\") 4)) 0))".into(), Io::default()),
@@ -499,17 +499,17 @@ fn wasi_programs_match_natively() {
         ),
         (
             "stdin_words",
-            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"words: \" (call str.count_words (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str \"\"))))) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (block (let _shown:i32 (call str.count_words (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str \"\"))))) (println \"words: {_shown}\")) 0))".into(),
             Io { stdin: b"one two\nthree four five\n".to_vec(), ..Io::default() },
         ),
         (
             "stdin_large",
-            "(module m (import io) (import str) (fn main [] -> i32 (let b:str.Bytes (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str \"\")))) (call io.println_int \"bytes: \" (get b str.Bytes.len)) (call io.println_int \"words: \" (call str.count_words b)) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (let b:str.Bytes (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str \"\")))) (println \"bytes: {(get b str.Bytes.len)}\") (println \"words: {(call str.count_words b)}\") 0))".into(),
             Io { stdin: big_input.clone(), ..Io::default() },
         ),
         (
             "stdin_empty",
-            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"bytes: \" (match_result (call io.read_stdin) (ok in (get in str.Bytes.len)) (err e -1))) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (println \"bytes: {(match_result (call io.read_stdin) (ok in (get in str.Bytes.len)) (err e -1))}\") 0))".into(),
             Io::default(),
         ),
         (
@@ -518,14 +518,14 @@ fn wasi_programs_match_natively() {
                (fn len_of [o:(option.Option str.Bytes)] -> i32 (match o ((option.Option str.Bytes) some [b] (get b str.Bytes.len)) ((option.Option str.Bytes) none -1)))
                (fn text_of [o:(option.Option str.Bytes)] -> str.Bytes (call (option.unwrap_or str.Bytes) o (call str.from_str \"\")))
                (fn main [] -> i32
-                 (call io.println_int \"argc: \" (call os.arg_count))
-                 (for i 0 (call os.arg_count) (call io.println_int \"len: \" (call len_of (call os.arg i))))
-                 (call io.println_int \"byte: \" (call str.byte_at (call text_of (call os.arg 2)) 1))
-                 (call io.println_int \"missing: \" (call len_of (call os.arg 9)))
-                 (call io.println_int \"probe: \" (match_result (call str.parse_int (call text_of (call os.env \"AIPL_PROBE\"))) (ok v v) (err e -1000)))
-                 (call io.println_int \"prefix: \" (call len_of (call os.env \"AIPL_PRO\")))
-                 (call io.println_int \"empty: \" (call len_of (call os.env \"AIPL_EMPTY\")))
-                 (call io.println_int \"unset: \" (call len_of (call os.env \"AIPL_UNSET\")))
+                 (println \"argc: {(call os.arg_count)}\")
+                 (for i 0 (call os.arg_count) (println \"len: {(call len_of (call os.arg i))}\"))
+                 (println \"byte: {(call str.byte_at (call text_of (call os.arg 2)) 1)}\")
+                 (println \"missing: {(call len_of (call os.arg 9))}\")
+                 (block (let _shown:i32 (match_result (call str.parse_int (call text_of (call os.env \"AIPL_PROBE\"))) (ok v v) (err e -1000))) (println \"probe: {_shown}\"))
+                 (block (let _shown:i32 (call len_of (call os.env \"AIPL_PRO\"))) (println \"prefix: {_shown}\"))
+                 (block (let _shown:i32 (call len_of (call os.env \"AIPL_EMPTY\"))) (println \"empty: {_shown}\"))
+                 (block (let _shown:i32 (call len_of (call os.env \"AIPL_UNSET\"))) (println \"unset: {_shown}\"))
                  0))".into(),
             Io {
                 args: vec!["hello".into(), "a b".into(), "".into(), "three".into()],
@@ -535,7 +535,7 @@ fn wasi_programs_match_natively() {
         ),
         (
             "no_environment",
-            "(module m (import io) (import os) (import str) (import option) (fn main [] -> i32 (call io.println_int \"home: \" (match (call os.env \"HOME\") ((option.Option str.Bytes) some [h] (get h str.Bytes.len)) ((option.Option str.Bytes) none -1))) 0))".into(),
+            "(module m (import io) (import os) (import str) (import option) (fn main [] -> i32 (block (let _shown:i32 (match (call os.env \"HOME\") ((option.Option str.Bytes) some [h] (get h str.Bytes.len)) ((option.Option str.Bytes) none -1))) (println \"home: {_shown}\")) 0))".into(),
             Io { env: env(&[]), ..Io::default() },
         ),
         (
@@ -546,8 +546,8 @@ fn wasi_programs_match_natively() {
                (let p:i32 (mem.alloc 32))
                (mem.store64 p (sys.monotonic)) (mem.store64 (+ p 8) (sys.monotonic)) (mem.store64 (+ p 16) (sys.time))
                (let hi0:i32 (mem.load32 (+ p 4))) (let hi1:i32 (mem.load32 (+ p 12)))
-               (call io.println_int \"after 2020: \" (if (gt (mem.load32 (+ p 20)) 367368757) 1 0))
-               (call io.println_int \"monotonic: \" (if (or (gt hi1 hi0) (and (eq hi1 hi0) (gte (- (mem.load32 (+ p 8)) (mem.load32 p)) 0))) 1 0))
+               (println \"after 2020: {(if (gt (mem.load32 (+ p 20)) 367368757) 1 0)}\")
+               (block (let _shown:i32 (if (or (gt hi1 hi0) (and (eq hi1 hi0) (gte (- (mem.load32 (+ p 8)) (mem.load32 p)) 0))) 1 0)) (println \"monotonic: {_shown}\"))
                0))".into(),
             Io::default(),
         ),
@@ -557,9 +557,9 @@ fn wasi_programs_match_natively() {
                (let p:i32 (mem.alloc 4096)) (let ok:i32 (sys.random p 4096))
                (let nonzero:i32 0)
                (for i 0 4096 (when (neq (mem.load8 (+ p i)) 0) (set! nonzero (+ nonzero 1))))
-               (call io.println_int \"result: \" ok)
-               (call io.println_int \"mostly nonzero: \" (if (gt nonzero 3900) 1 0))
-               (call io.println_int \"differ: \" (if (neq (call os.random_i32) (call os.random_i32)) 1 0))
+               (println \"result: {ok}\")
+               (println \"mostly nonzero: {(if (gt nonzero 3900) 1 0)}\")
+               (println \"differ: {(if (neq (call os.random_i32) (call os.random_i32)) 1 0)}\")
                0))".into(),
             Io::default(),
         ),
@@ -567,8 +567,8 @@ fn wasi_programs_match_natively() {
         (
             "raw_argument_and_environment_sizes",
             "(module m (import io) (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc 16))
-               (let a:i32 (args.sizes p (+ p 4))) (call io.println_int \"argc: \" (mem.load32 p)) (call io.println_int \"argv bytes: \" (mem.load32 (+ p 4)))
-               (let e:i32 (env.sizes (+ p 8) (+ p 12))) (call io.println_int \"envc: \" (mem.load32 (+ p 8))) (call io.println_int \"env bytes: \" (mem.load32 (+ p 12)))
+               (let a:i32 (args.sizes p (+ p 4))) (println \"argc: {(mem.load32 p)}\") (println \"argv bytes: {(mem.load32 (+ p 4))}\")
+               (let e:i32 (env.sizes (+ p 8) (+ p 12))) (println \"envc: {(mem.load32 (+ p 8))}\") (println \"env bytes: {(mem.load32 (+ p 12))}\")
                0))".into(),
             Io { args: vec!["x".into(), "".into(), "yz".into()], env: env(&[("A", "1"), ("BB", "")]), ..Io::default() },
         ),
@@ -619,7 +619,7 @@ fn file_programs_match_natively() {
     let probe = |body: &str| format!("(module m (import io) (import str) (fn main [] -> i32 (unsafe) {body} 0))");
     let open_report = |path: &str, write: bool| {
         format!(
-            "(call io.println_int \"{path}: \" (fs.open (str.ptr \"{path}\") {} {}))",
+            "(block (let _shown:i32 (fs.open (str.ptr \"{path}\") {} {})) (println \"{path}: {{_shown}}\"))",
             path.len(),
             if write { 1 } else { 0 }
         )
@@ -630,8 +630,8 @@ fn file_programs_match_natively() {
     let abs_boxed = format!("{}/abs.txt", run_dir(abs_boxed_name));
     let write_read = |path: &str| {
         probe(&format!(
-            "(call io.println_int \"wrote: \" (match_result (call io.write_path (call str.from_str \"{path}\") (call str.from_str \"absolute ok\")) (ok n n) (err e -1)))
-             (call io.println_int \"read: \" (match_result (call io.read_path (call str.from_str \"{path}\")) (ok b (get b str.Bytes.len)) (err e -1)))"
+            "(block (let _shown:i32 (match_result (call io.write_path (call str.from_str \"{path}\") (call str.from_str \"absolute ok\")) (ok n n) (err e -1))) (println \"wrote: {{_shown}}\"))
+             (block (let _shown:i32 (match_result (call io.read_path (call str.from_str \"{path}\")) (ok b (get b str.Bytes.len)) (err e -1))) (println \"read: {{_shown}}\"))"
         ))
     };
     let big: Vec<u8> = (0..30000).map(|i| format!("w{} ", i % 977)).collect::<String>().into_bytes();
@@ -645,9 +645,9 @@ fn file_programs_match_natively() {
         (
             "write_then_read",
             probe(
-                "(call io.println_int \"wrote: \" (match_result (call io.write_file \"out.txt\" (call str.from_str \"line one\\nline two\\n\")) (ok n n) (err e -1)))
-                 (call io.println_int \"lines: \" (match_result (call io.read_file \"out.txt\") (ok b (call str.count_lines b)) (err e -1)))
-                 (call io.println_int \"again: \" (match_result (call io.write_file \"out.txt\" (call str.from_str \"short\")) (ok n n) (err e -1)))",
+                "(block (let _shown:i32 (match_result (call io.write_file \"out.txt\" (call str.from_str \"line one\\nline two\\n\")) (ok n n) (err e -1))) (println \"wrote: {_shown}\"))
+                 (block (let _shown:i32 (match_result (call io.read_file \"out.txt\") (ok b (call str.count_lines b)) (err e -1))) (println \"lines: {_shown}\"))
+                 (block (let _shown:i32 (match_result (call io.write_file \"out.txt\" (call str.from_str \"short\")) (ok n n) (err e -1))) (println \"again: {_shown}\"))",
             ),
             Io::default(),
         ),
@@ -675,13 +675,13 @@ fn file_programs_match_natively() {
         (
             "delete",
             probe(
-                "(call io.println_int \"a: \" (fs.delete (str.ptr \"a.txt\") 5))
-                 (call io.println_int \"again: \" (fs.delete (str.ptr \"a.txt\") 5))
-                 (call io.println_int \"nested: \" (fs.delete (str.ptr \"sub/b.txt\") 9))
-                 (call io.println_int \"directory: \" (fs.delete (str.ptr \"sub\") 3))
-                 (call io.println_int \"escape: \" (fs.delete (str.ptr \"../run/c.txt\") 12))
-                 (call io.println_int \"symlink: \" (fs.delete (str.ptr \"out/run/c.txt\") 13))
-                 (call io.println_int \"link itself: \" (fs.delete (str.ptr \"alias.txt\") 9))",
+                "(block (let _shown:i32 (fs.delete (str.ptr \"a.txt\") 5)) (println \"a: {_shown}\"))
+                 (block (let _shown:i32 (fs.delete (str.ptr \"a.txt\") 5)) (println \"again: {_shown}\"))
+                 (block (let _shown:i32 (fs.delete (str.ptr \"sub/b.txt\") 9)) (println \"nested: {_shown}\"))
+                 (block (let _shown:i32 (fs.delete (str.ptr \"sub\") 3)) (println \"directory: {_shown}\"))
+                 (block (let _shown:i32 (fs.delete (str.ptr \"../run/c.txt\") 12)) (println \"escape: {_shown}\"))
+                 (block (let _shown:i32 (fs.delete (str.ptr \"out/run/c.txt\") 13)) (println \"symlink: {_shown}\"))
+                 (block (let _shown:i32 (fs.delete (str.ptr \"alias.txt\") 9)) (println \"link itself: {_shown}\"))",
             ),
             Io {
                 files: vec![file("a.txt", b"a"), file("sub/b.txt", b"b"), file("c.txt", b"c")],
@@ -692,15 +692,15 @@ fn file_programs_match_natively() {
         (
             "stat_and_opendir_stay_inside",
             probe(
-                "(call io.println_int \"stat file: \" (fs.stat (str.ptr \"c.txt\") 5 (mem.alloc 64)))
-                 (call io.println_int \"stat escape: \" (fs.stat (str.ptr \"../run/c.txt\") 12 (mem.alloc 64)))
-                 (call io.println_int \"stat through link: \" (fs.stat (str.ptr \"out/run/c.txt\") 13 (mem.alloc 64)))
-                 (call io.println_int \"stat absolute: \" (fs.stat (str.ptr \"/etc/hostname\") 13 (mem.alloc 64)))
-                 (call io.println_int \"opendir sub: \" (if (gte (fs.opendir (str.ptr \"sub\") 3) 0) 1 0))
-                 (call io.println_int \"opendir file: \" (fs.opendir (str.ptr \"c.txt\") 5))
-                 (call io.println_int \"opendir escape: \" (fs.opendir (str.ptr \"..\") 2))
-                 (call io.println_int \"opendir through link: \" (fs.opendir (str.ptr \"out\") 3))
-                 (call io.println_int \"readdir bad fd: \" (fs.readdir 99 (mem.alloc 64) 64 0i64))",
+                "(block (let _shown:i32 (fs.stat (str.ptr \"c.txt\") 5 (mem.alloc 64))) (println \"stat file: {_shown}\"))
+                 (block (let _shown:i32 (fs.stat (str.ptr \"../run/c.txt\") 12 (mem.alloc 64))) (println \"stat escape: {_shown}\"))
+                 (block (let _shown:i32 (fs.stat (str.ptr \"out/run/c.txt\") 13 (mem.alloc 64))) (println \"stat through link: {_shown}\"))
+                 (block (let _shown:i32 (fs.stat (str.ptr \"/etc/hostname\") 13 (mem.alloc 64))) (println \"stat absolute: {_shown}\"))
+                 (block (let _shown:i32 (if (gte (fs.opendir (str.ptr \"sub\") 3) 0) 1 0)) (println \"opendir sub: {_shown}\"))
+                 (block (let _shown:i32 (fs.opendir (str.ptr \"c.txt\") 5)) (println \"opendir file: {_shown}\"))
+                 (block (let _shown:i32 (fs.opendir (str.ptr \"..\") 2)) (println \"opendir escape: {_shown}\"))
+                 (block (let _shown:i32 (fs.opendir (str.ptr \"out\") 3)) (println \"opendir through link: {_shown}\"))
+                 (println \"readdir bad fd: {(fs.readdir 99 (mem.alloc 64) 64 0i64)}\")",
             ),
             Io {
                 files: vec![file("c.txt", b"c"), file("sub/b.txt", b"b")],
@@ -711,9 +711,9 @@ fn file_programs_match_natively() {
         (
             "stat_and_opendir_sandboxed",
             probe(
-                "(call io.println_int \"stat absolute: \" (fs.stat (str.ptr \"/etc/hostname\") 13 (mem.alloc 64)))
-                 (call io.println_int \"opendir absolute: \" (fs.opendir (str.ptr \"/etc\") 4))
-                 (call io.println_int \"stat inside: \" (fs.stat (str.ptr \"c.txt\") 5 (mem.alloc 64)))",
+                "(block (let _shown:i32 (fs.stat (str.ptr \"/etc/hostname\") 13 (mem.alloc 64))) (println \"stat absolute: {_shown}\"))
+                 (block (let _shown:i32 (fs.opendir (str.ptr \"/etc\") 4)) (println \"opendir absolute: {_shown}\"))
+                 (block (let _shown:i32 (fs.stat (str.ptr \"c.txt\") 5 (mem.alloc 64))) (println \"stat inside: {_shown}\"))",
             ),
             Io { files: vec![file("c.txt", b"c")], sandbox: true, ..Io::default() },
         ),
@@ -721,9 +721,9 @@ fn file_programs_match_natively() {
             "read_only_descriptor",
             probe(
                 "(let fd:i32 (fs.open (str.ptr \"data.txt\") 8 0))
-                 (call io.println_int \"write: \" (fs.write fd (str.ptr \"x\") 1))
-                 (call io.println_int \"close: \" (fs.close fd))
-                 (call io.println_int \"closed: \" (fs.close fd))",
+                 (block (let _shown:i32 (fs.write fd (str.ptr \"x\") 1)) (println \"write: {_shown}\"))
+                 (println \"close: {(fs.close fd)}\")
+                 (println \"closed: {(fs.close fd)}\")",
             ),
             Io { files: vec![file("data.txt", b"data")], ..Io::default() },
         ),
@@ -731,13 +731,13 @@ fn file_programs_match_natively() {
             "descriptor_numbers",
             probe(
                 "(let a:i32 (fs.open (str.ptr \"a.txt\") 5 1)) (let b:i32 (fs.open (str.ptr \"b.txt\") 5 1))
-                 (call io.println_int \"a: \" a) (call io.println_int \"b: \" b)
-                 (call io.println_int \"close a: \" (fs.close a))
-                 (call io.println_int \"c: \" (fs.open (str.ptr \"c.txt\") 5 1))
-                 (call io.println_int \"close 0: \" (fs.close 0))
-                 (call io.println_int \"d: \" (fs.open (str.ptr \"d.txt\") 5 1))
-                 (call io.println_int \"close 3: \" (fs.close 3))
-                 (call io.println_int \"e: \" (fs.open (str.ptr \"e.txt\") 5 1))",
+                 (println \"a: {a}\") (println \"b: {b}\")
+                 (println \"close a: {(fs.close a)}\")
+                 (block (let _shown:i32 (fs.open (str.ptr \"c.txt\") 5 1)) (println \"c: {_shown}\"))
+                 (println \"close 0: {(fs.close 0)}\")
+                 (block (let _shown:i32 (fs.open (str.ptr \"d.txt\") 5 1)) (println \"d: {_shown}\"))
+                 (println \"close 3: {(fs.close 3)}\")
+                 (block (let _shown:i32 (fs.open (str.ptr \"e.txt\") 5 1)) (println \"e: {_shown}\"))",
             ),
             Io::default(),
         ),
@@ -843,7 +843,7 @@ fn thread_programs_match_natively() {
        (fn main [] -> i32 (unsafe)
          (call io.println \"before\")
          (let h:i32 (thread.spawn (ref sq) 6))
-         (call io.println_int \"joined: \" (thread.join h))
+         (println \"joined: {(thread.join h)}\")
          0))";
     assert_native_matches("main_thread_prints", main_prints);
     // concurrent memory.grow: 8 threads x 50 one-page grows; every grow
@@ -1424,9 +1424,9 @@ fn i64_programs_match_natively() {
             "clocks_compared_as_i64",
             "(module m (import io) (fn main [] -> i32
                (let t0:i64 (sys.monotonic)) (let t1:i64 (sys.monotonic))
-               (call io.println_int \"after 2020: \" (if (gt (sys.time) 1577836800000000000i64) 1 0))
-               (call io.println_int \"monotonic: \" (if (gte t1 t0) 1 0))
-               (call io.println_int \"microseconds apart, not seconds: \" (if (lt (- t1 t0) 1000000000i64) 1 0))
+               (println \"after 2020: {(if (gt (sys.time) 1577836800000000000i64) 1 0)}\")
+               (println \"monotonic: {(if (gte t1 t0) 1 0)}\")
+               (println \"microseconds apart, not seconds: {(if (lt (- t1 t0) 1000000000i64) 1 0)}\")
                0))",
         ),
     ] {
@@ -2111,10 +2111,10 @@ fn running_out_of_stack_traps() {
     let dir = scratch("stack");
     let prog = dir.join("prog").display().to_string();
     let down = "(fn down [n:i32] -> i32 (if (eq n 0) 0 (+ 1 (call down (- n 1)))))";
-    let in_main = format!("(module m (import io) {down} (fn main [] -> i32 (call io.print_int (call down 10000000)) 0))");
+    let in_main = format!("(module m (import io) {down} (fn main [] -> i32 (print \"{{(call down 10000000)}}\") 0))");
     let in_thread = format!(
         "(module m (import io) {down} (fn work [n:i32] -> i32 (unsafe) (call down n))
-           (fn main [] -> i32 (unsafe) (call io.print_int (thread.join (thread.spawn (ref work) 10000000))) 0))"
+           (fn main [] -> i32 (unsafe) (print \"{{(thread.join (thread.spawn (ref work) 10000000))}}\") 0))"
     );
     for (name, src) in [("main", &in_main), ("thread", &in_thread)] {
         let wasm = to_wasm(src);
@@ -2294,7 +2294,7 @@ fn checked_arithmetic_matches_natively() {
         ("(i32.wrap (checked.mul -1i64 -9223372036854775808i64))", Some("integer overflow")),
     ];
     for (e, trap) in ops {
-        let src = format!("(module m (import io) (fn main [] -> i32 (call io.println_int \"\" {e}) 0))");
+        let src = format!("(module m (import io) (fn main [] -> i32 (block (let _shown:i32 {e}) (println \"{{_shown}}\")) 0))");
         let wasm = to_wasm(&src);
         let native = run_native(&dir, &to_native(&wasm).unwrap());
         let launched = run_wasm(&dir, &wasm);
@@ -2332,18 +2332,18 @@ fn directories_and_file_information_match_natively() {
       ((option.Option fs.Info) some [i]
         (call io.write_str 1 path)
         (call io.write_str 1 (match (get i fs.Info.kind) (fs.Kind.file " file ") (fs.Kind.directory " directory ") (fs.Kind.other " other ")))
-        (call io.println_i64 "" (get i fs.Info.size)))
+        (println "{(get i fs.Info.size)}"))
       ((option.Option fs.Info) none (call io.write_str 1 path) (call io.println " missing"))))
   (fn main [] -> i32
     (match (call fs.list (call alloc.default) "big")
       ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
-        (call io.println_int "names " (call (vec.len str.Bytes) names))
+        (println "names {(call (vec.len str.Bytes) names)}")
         (let i:i32 0)
         (while (lt i (call (vec.len str.Bytes) names))
           (let n:str.Bytes (call (vec.at str.Bytes) names i))
-          (call io.println_int "  length " (get n str.Bytes.len))
-          (call io.println_int "  first byte " (call str.byte_at n 0))
-          (call io.println_int "  last byte " (call str.byte_at n (- (get n str.Bytes.len) 1)))
+          (println "  length {(get n str.Bytes.len)}")
+          (println "  first byte {(call str.byte_at n 0)}")
+          (println "  last byte {(call str.byte_at n (- (get n str.Bytes.len) 1))}")
           (set! i (+ i 37))))
       ((option.Option (ptr (vec.Vec str.Bytes))) none (call io.println "no listing")))
     (call show "big/f007")
@@ -2393,8 +2393,8 @@ fn float_locals_survive_calls_natively() {
           (set! q (- q (call inner p 2))))
         (+ s (+ p (+ q (* 2.0 (call depth 7 1.0))))))
       (fn main [] -> i32
-        (call io.println_f64 \"outer \" (call outer) 6)
-        (call io.println_f64 \"pair \" (+ (call inner 1.0 3) (- (call depth 3 2.0) (call inner 2.0 4))) 6)
+        (println \"outer {(call outer):.6}\")
+        (println \"pair {(+ (call inner 1.0 3) (- (call depth 3 2.0) (call inner 2.0 4))):.6}\")
         0))";
     assert_native_matches("float_locals_survive_calls", src);
 }
@@ -2413,7 +2413,7 @@ fn register_locals_survive_atomics_grow_and_imports_natively() {
           (let _x:i32 (atomic.add w (+ a g)))
           (if (atomic.cas w 0 1) (set! b (+ b 1)) (set! c (+ c 1)))
           (when (eq (% i 7) 0) (let _p:i32 (mem.grow 1)))
-          (when (eq (% i 5) 0) (call io.println_int \"i \" (+ a (+ b c)))))
+          (when (eq (% i 5) 0) (println \"i {(+ a (+ b c))}\")))
         (+ a (+ b (+ c (+ d (+ e (+ f (+ g (atomic.add w 0)))))))))
       (fn caller [] -> i32 (unsafe)
         (let p:i32 11) (let q:i32 22) (let r:i32 33) (let s:i32 44) (let t:i32 55) (let u:i32 66)
@@ -2422,7 +2422,7 @@ fn register_locals_survive_atomics_grow_and_imports_natively() {
           (set! p (+ p (call busy w))) (set! q (+ q p)) (set! r (+ r q)) (set! s (^ s r)) (set! t (+ t s)) (set! u (- u t)))
         (+ p (+ q (+ r (+ s (+ t u))))))
       (fn main [] -> i32 (unsafe)
-        (call io.println_int \"total \" (call caller))
+        (println \"total {(call caller)}\")
         0))";
     assert_native_matches("register_locals_survive_atomics_grow_and_imports", src);
 }
@@ -2446,20 +2446,20 @@ fn calling_convention_matches_natively() {
       (fn fib [n:i32] -> i32 (if (lt n 2) n (+ (call fib (- n 1)) (call fib (- n 2)))))
       (fn main [] -> i32
         (let x:i32 3) (let y:i32 4) (let z:i64 5000000000i64) (let q:f64 1.5)
-        (call io.println_int \"zero \" (call zero))
-        (call io.println_int \"one \" (call one (+ x 1)))
-        (call io.println_int \"two \" (call two (+ x 1) (+ y 2)))
-        (call io.println_int \"two swapped \" (call two (+ y 2) (+ x 1)))
-        (call io.println_f64 \"mixed \" (call mixed z q (+ x y) (* q 2.0) (- z 1i64) (call two x y)) 6)
-        (call io.println_int \"seven \" (call seven 1 x y (+ x y) (call one y) 6 (call two y x)))
-        (call io.println_f64 \"eight \" (call eight z q x y 9 10 11 (- q 3.25)) 6)
-        (call io.println_int \"fib \" (call fib 20))
+        (println \"zero {(call zero)}\")
+        (println \"one {(call one (+ x 1))}\")
+        (println \"two {(call two (+ x 1) (+ y 2))}\")
+        (println \"two swapped {(call two (+ y 2) (+ x 1))}\")
+        (println \"mixed {(call mixed z q (+ x y) (* q 2.0) (- z 1i64) (call two x y)):.6}\")
+        (println \"seven {(call seven 1 x y (+ x y) (call one y) 6 (call two y x))}\")
+        (println \"eight {(call eight z q x y 9 10 11 (- q 3.25)):.6}\")
+        (println \"fib {(call fib 20)}\")
         (let r2:(fn [i32 i32] -> i32) (ref two))
         (let r7:(fn [i32 i32 i32 i32 i32 i32 i32] -> i32) (ref seven))
         (let r6:(fn [i64 f64 i32 f64 i64 i32] -> f64) (ref mixed))
-        (call io.println_int \"ref two \" (call_ref (fn [i32 i32] -> i32) r2 (+ y 2) (+ x 1)))
-        (call io.println_int \"ref seven \" (call_ref (fn [i32 i32 i32 i32 i32 i32 i32] -> i32) r7 7 6 5 4 3 2 1))
-        (call io.println_f64 \"ref mixed \" (call_ref (fn [i64 f64 i32 f64 i64 i32] -> f64) r6 z q x q z y) 6)
+        (println \"ref two {(call_ref (fn [i32 i32] -> i32) r2 (+ y 2) (+ x 1))}\")
+        (println \"ref seven {(call_ref (fn [i32 i32 i32 i32 i32 i32 i32] -> i32) r7 7 6 5 4 3 2 1)}\")
+        (println \"ref mixed {(call_ref (fn [i64 f64 i32 f64 i64 i32] -> f64) r6 z q x q z y):.6}\")
         0))";
     assert_native_matches("calling_convention", src);
 }

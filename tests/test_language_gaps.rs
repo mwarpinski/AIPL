@@ -128,7 +128,7 @@ fn f32_literals_round_alike_in_both_toolchains() {
             break;
         }
     }
-    let body: String = lits.iter().map(|l| format!("    (call io.println_int \"\" (i32.reinterpret_f32 {l}f32))\n")).collect();
+    let body: String = lits.iter().map(|l| format!("    (block (let _shown:i32 (i32.reinterpret_f32 {l}f32)) (println \"{{_shown}}\"))\n")).collect();
     let dir = scratch("literals");
     let file = dir.join("lits.aipl");
     std::fs::write(&file, format!("(module lits\n  (import io)\n  (fn main [] -> i32\n{body}    0))\n")).unwrap();

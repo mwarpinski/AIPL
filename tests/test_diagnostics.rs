@@ -148,7 +148,7 @@ fn ops_the_compilers_cannot_lower_are_rejected_by_the_checker() {
         // threads
         ("(thread.join \"x\")", "thread.join needs the i32 handle thread.spawn returned, got str"),
         // printing
-        ("(sys.print 1) 0", "sys.print prints str values, got i32; for numbers use io.print_int"),
+        ("(sys.print 1) 0", "sys.print prints str values, got i32; for numbers and other values use the format forms"),
         ("(sys.print \"a\" 2.5) 0", "sys.print prints str values, got f64"),
         // arithmetic on things that are not numbers
         ("(str.len (+ \"a\" \"b\"))", "+ does not join strings: join two with (call str.concat a b), or build text with std/buf"),

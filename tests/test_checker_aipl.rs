@@ -625,8 +625,8 @@ fn constants_expand_like_rust() {
     for rel in [
         "tests/aipl/consts_enums.aipl",
         "tests/aipl/sum_types.aipl",
-        // an example with imports and no formatting forms (which the Rust
-        // resolver splits and expand.aipl leaves for fmtlower.aipl)
+        // an example with imports; formatting forms are compared split, as
+        // both leave them before the checker (Resolver::expand_flat)
         "examples/spectralnorm_par.aipl",
         "aipl_src/consts.aipl",
         "aipl_src/codegen.aipl",
@@ -635,10 +635,13 @@ fn constants_expand_like_rust() {
     ] {
         let path = root().join(rel);
         let flat = aipl_core::selfhost::resolve_with_aipl(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        let theirs = aipl_core::printer::print_module(&Resolver::resolve_flat(&flat, &path).unwrap());
+        let theirs = aipl_core::printer::print_module(&Resolver::expand_flat(&flat, &path).unwrap());
         let ours = front.run("expand_print", &flat).unwrap_or_else(|e| panic!("{rel}: {e}"));
         let ours = aipl_core::printer::print_module(&Parser::parse(&ours).unwrap_or_else(|e| panic!("{rel}: {e}\n{ours}")));
-        assert!(ours == theirs, "{rel}: expanded programs differ");
+        if ours != theirs {
+            let first = ours.lines().zip(theirs.lines()).find(|(a, b)| a != b);
+            panic!("{rel}: expanded programs differ, first at\n  aipl: {:?}\n  rust: {:?}", first.map(|f| f.0), first.map(|f| f.1));
+        }
         checked += 1;
     }
     assert_eq!(checked, 7);

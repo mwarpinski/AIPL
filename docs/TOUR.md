@@ -19,8 +19,8 @@ an example as `tour.aipl`, and run it with `aipl eval tour.aipl`.
     (* x x))
 
   (fn main [] -> i32
-    (call io.println_int "7 squared is " (call square 7))
-    (call io.println_int "3 squared plus 4 squared is " (+ (call square 3) (call square 4)))
+    (println "7 squared is {(call square 7)}")
+    (println "3 squared plus 4 squared is {(+ (call square 3) (call square 4))}")
     0))
 ```
 
