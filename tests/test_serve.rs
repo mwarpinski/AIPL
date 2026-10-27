@@ -380,7 +380,7 @@ fn once_answers_a_piped_request_alike_everywhere() {
 /// of itself per connection, and the launcher bundle built with it. A
 /// handler that traps answers 500 (its message and call chain go to the
 /// server's standard error), and the next request is served; so does an
-/// answer longer than a host keeps.
+/// answer longer than a host keeps, the server saying why.
 #[test]
 fn a_fresh_instance_per_request_isolates_a_crash() {
     let src = root().join("tests/aipl/net/fresh_demo.aipl");
@@ -423,6 +423,8 @@ fn a_fresh_instance_per_request_isolates_a_crash() {
         assert!(host != "aipl serve --fresh" || o.status.success(), "{host}: {err}");
         assert!(err.contains(": Array index out of bounds: index 5 for array of length 1\n  at handle (fresh_demo.aipl:32:54)\n"), "{host}: {err}");
         assert_eq!(err.matches("Array index").count(), 1, "{host}: {err}");
+        // and why /big's answer was not sent
+        assert_eq!(err.matches(aipl_core::net::FRESH_TOO_LONG).count(), 1, "{host}: {err}");
     }
     // without --fresh, the way to a long-running server
     let o = Command::new(AIPL).args(["serve", "--listen", "127.0.0.1:1"]).arg(&src).output().unwrap();

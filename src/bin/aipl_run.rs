@@ -425,8 +425,12 @@ impl LineTable {
 /// standard input is the connection and whose standard output is held
 /// back. An instance that exits with 0 has what it wrote sent; one that
 /// traps or exits otherwise has the client sent a bare 500, and its message
-/// (with the call chain) goes to this process's standard error. Nothing
+/// (with the call chain) goes to this process's standard error, as does
+/// why an answer over FRESH_CAP was not sent. Nothing
 /// outlives a request. A threaded module is refused.
+/// The most a fresh instance's answer may be (aipl_src/native/fresh.aipl cap).
+const FRESH_CAP: usize = 64 << 20;
+
 fn serve_fresh(p: Program) -> i32 {
     use std::io::Write;
     let (at, requests) = p.fresh.expect("serve_fresh needs --serve-fresh");
@@ -466,7 +470,7 @@ fn serve_fresh(p: Program) -> i32 {
         let Ok((conn, _)) = listener.accept() else { continue };
         served += 1;
         let Ok(input) = conn.try_clone() else { continue };
-        let output = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(64 << 20);
+        let output = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(FRESH_CAP);
         let mut b = WasiCtxBuilder::new();
         b.stdin(wasmtime_wasi::cli::InputFile::new(std::fs::File::from(std::os::fd::OwnedFd::from(input))));
         b.stdout(output.clone()).inherit_stderr().inherit_env().args(&p.argv);
@@ -486,6 +490,11 @@ fn serve_fresh(p: Program) -> i32 {
                 1
             }
         };
+        // a write that does not fit takes what room is left, so a full pipe
+        // means the answer was longer than a fresh instance may write
+        if code != 0 && output.contents().len() >= FRESH_CAP {
+            eprintln!("{argv0}: {}", aipl_core::net::FRESH_TOO_LONG);
+        }
         let mut conn = conn;
         let _ = if code == 0 {
             conn.write_all(&output.contents())
