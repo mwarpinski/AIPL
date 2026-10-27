@@ -432,7 +432,7 @@
     (for k 1 8 (call buf.push_byte data 0))
     (let sep:i32 (call lower.data_text l ": "))
     (let nl:i32 (call lower.data_text l "\n"))
-    (let wr:(ptr wasi.W) (call wasi.make l))
+    (let wr:(ptr wasi.W) (call wasi.make l sandbox))
     (let sk:(ptr sockets.N) (call sockets.make l granted))
     (let table_problem:str (call reserve_table l w))
     (when (gt (str.len table_problem) 0) (return (call failure (call str.from_str table_problem))))

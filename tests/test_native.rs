@@ -765,6 +765,16 @@ fn file_programs_match_natively() {
         let root = scratch("escapes_checked");
         let dir = prepare(&root, &io);
         let out = run_native_with(&dir, &to_native_with(&to_wasm(src), sandbox).unwrap(), &io);
+        // without openat2 (WITHOUT_OPENAT2): a --sandbox program stops at start,
+        // and a plain one is not confined (see assert_wasm_native_matches_with)
+        if std::env::var_os("WITHOUT_OPENAT2").is_some() {
+            if sandbox {
+                assert_eq!(out.status.code(), Some(1));
+                assert!(String::from_utf8_lossy(&out.stderr).starts_with("this program was built with --sandbox, which needs the openat2 system call"));
+            }
+            let _ = std::fs::remove_dir_all(&root);
+            continue;
+        }
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 5, "{text}");
@@ -1936,6 +1946,25 @@ fn assert_wasm_native_matches_with(name: &str, wasm: &[u8], io: &Io) {
     let got = run_native_with(&dir, &exe, io);
     let got_files = snapshot(&root);
     let _ = std::fs::remove_dir_all(&root);
+    // with openat2 refused (tools/without_openat2.py runs this suite that
+    // way, and says so in WITHOUT_OPENAT2), a --sandbox program says it needs
+    // it and stops at start; every other program must still match
+    if io.sandbox && std::env::var_os("WITHOUT_OPENAT2").is_some() {
+        let err = String::from_utf8_lossy(&got.stderr);
+        assert!(
+            got.status.code() == Some(1) && got.stdout.is_empty() && err.starts_with("this program was built with --sandbox, which needs the openat2 system call"),
+            "{name}: a --sandbox program without openat2 should say so and exit 1: status {:?}, stderr {err:?}",
+            got.status.code()
+        );
+        return;
+    }
+    // and a program without --sandbox is not confined to its directory then:
+    // it follows `..` and symlinks out, as it may open any absolute path
+    // anyway (`/` is preopened), where aipl-run refuses; these two cases test
+    // the refusal
+    if std::env::var_os("WITHOUT_OPENAT2").is_some() && ["escapes_are_refused", "delete", "stat_and_opendir_stay_inside"].contains(&name) {
+        return;
+    }
     assert_eq!(want_files, got_files, "{name}: the files left behind differ (aipl-run, then native)");
     let show = |o: &Output| {
         format!("status {:?}, stdout {:?}, stderr {:?}", o.status.code(), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))

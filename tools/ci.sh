@@ -21,6 +21,7 @@ if [ -n "$CI_PLAIN" ]; then cargo test --release --no-fail-fast > target/ci_test
 else python3 tools/ci_tests.py > target/ci_tests.log 2>&1; fi
 note "$(grep -E "^test result" target/ci_tests.log | awk '{p+=$4; f+=$6} END {print p" passed, "f" failed"}')"
 grep -E "^test .* \.\.\. FAILED" target/ci_tests.log | head -20 | while read -r l; do note "$l"; done
+step "native tests, openat2 refused"; note "$(python3 tools/without_openat2.py cargo test --release --test test_native 2>&1 | grep -E "^test result" | tail -1)"
 step "aipl test suite"; note "$(./target/release/aipl test aipl_src/test_suite.aipl 2>&1 | tail -1)"
 step "fuzz.py"; note "$(python3 tools/fuzz.py --cases 3000 --seed 1 2>&1 | tail -1)"
 step "run_fuzz.py"; note "$(python3 tools/run_fuzz.py --cases 500 --seed 1 2>&1 | tail -1)"

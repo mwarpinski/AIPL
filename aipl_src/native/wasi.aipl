@@ -20,6 +20,11 @@
 ;;   - File access (NE11): a path resolves beneath its directory descriptor
 ;;     (openat2 with RESOLVE_BENEATH): the kernel refuses `..` escapes,
 ;;     absolute paths, and symlinks leading out, as wasmtime's preopens do.
+;;     openat2 is Linux 5.6's, and Rosetta 2 and some container profiles
+;;     lack it (ENOSYS, or EPERM from a seccomp filter): a program built
+;;     without --sandbox then opens with plain openat, losing nothing (it
+;;     has `/` as fd 4 anyway); a --sandbox program, whose point is the
+;;     confinement, says at start that it needs openat2 and exits 1.
 (module wasi
   (import alloc)
   (import str)
@@ -30,7 +35,7 @@
 
   ;; Data addresses and code positions the routines need.
   (struct W [(pub region_routine:i32) fd_table:i32 errno_table:i32
-             argc_cell:i32 argv_cell:i32 envc_cell:i32 envp_cell:i32] (pub))
+             argc_cell:i32 argv_cell:i32 envc_cell:i32 envp_cell:i32 sandbox:bool] (pub))
 
   (fn fd_slots [] -> i32 64)
 
@@ -43,14 +48,15 @@
   ;; ===== Data =====
 
   ;; The data the routines use: the fd table (stdio open) and the errno table.
-  (fn make [l:(ptr lower.L)] -> (ptr W) (pub)
+  (fn make [l:(ptr lower.L) sandbox:bool] -> (ptr W) (pub)
     (let w:(ptr W) (new W (call alloc.forever) [region_routine:-1
                                                 fd_table:(zero i32)
                                                 errno_table:(zero i32)
                                                 argc_cell:(zero i32)
                                                 argv_cell:(zero i32)
                                                 envc_cell:(zero i32)
-                                                envp_cell:(zero i32)]))
+                                                envp_cell:(zero i32)
+                                                sandbox:sandbox]))
     (let fds:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (for i 0 (call fd_slots)
       (call push_u32 fds (if (lte i 2) i -1)))
@@ -449,8 +455,11 @@
 
   ;; openat2(rdi = dir fd, rsi = path, {flags, mode, resolve beneath}) with
   ;; the open flags in rdx; mode 0o666 when creating (openat2 refuses a
-  ;; mode otherwise). Result in rax. Clobbers rcx r11 r10.
-  (fn emit_openat2 [c:(ptr buf.Buf)] -> void
+  ;; mode otherwise). Result in rax. Clobbers rcx r11 r10 (and rdx, with
+  ;; fallback). With `fallback`, a kernel without openat2 (ENOSYS: before
+  ;; Linux 5.6, Rosetta 2) or a seccomp profile that refuses it (EPERM) gets
+  ;; the same open as plain openat, without the confinement.
+  (fn emit_openat2 [c:(ptr buf.Buf) fallback:bool] -> void
     ;; struct open_how { u64 flags; u64 mode; u64 resolve } on the stack;
     ;; resolve = RESOLVE_BENEATH (8) | RESOLVE_NO_MAGICLINKS (2)
     (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 32)
@@ -467,6 +476,21 @@
     (call x64.mov_ri32 c (call r10) 24)
     (call x64.mov_ri32 c (call rax) 437)
     (call x64.syscall c)
+    (when fallback
+      (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -38)
+      (let enosys:i32 (call x64.jcc c (call x64.cc_e)))
+      (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -1)
+      (let eperm:i32 (call x64.jcc c (call x64.cc_e)))
+      (let done:i32 (call x64.jmp c))
+      (call x64.patch_rel32 c enosys (call buf.len c))
+      (call x64.patch_rel32 c eperm (call buf.len c))
+      ;; openat(rdi = dir fd, rsi = path, rdx = flags, r10 = mode): the
+      ;; flags and mode already stored in the open_how struct
+      (call x64.load c 64 (call rdx) (call x64.mem (call rsp) 0))
+      (call x64.load c 64 (call r10) (call x64.mem (call rsp) 8))
+      (call x64.mov_ri32 c (call rax) 257)
+      (call x64.syscall c)
+      (call x64.patch_rel32 c done (call buf.len c)))
     (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 32))
 
   ;; path_open(dirfd, dirflags, path, path_len, oflags, rights_base:i64,
@@ -505,7 +529,7 @@
     (call x64.mov_rr c 64 (call rdi) (call rbx))
     (call x64.mov_rr c 64 (call rsi) (call rsp))
     (call x64.mov_rr c 64 (call rdx) (call r8))
-    (call emit_openat2 c)
+    (call emit_openat2 c (not (get w W.sandbox)))
     (call x64.mov_rr c 64 (call rsp) (call r12))
     (call x64.test_rr c 64 (call rax) (call rax))
     (let failed:i32 (call x64.jcc c (call x64.cc_s)))
@@ -714,7 +738,7 @@
     (call x64.mov_rr c 64 (call rdi) (call rbx))
     (call x64.mov_rr c 64 (call rsi) (call rsp))
     (call x64.mov_rr c 64 (call rdx) (call r8))
-    (call emit_openat2 c)
+    (call emit_openat2 c (not (get w W.sandbox)))
     (call x64.mov_rr c 64 (call rsp) (call r12))
     (call x64.test_rr c 64 (call rax) (call rax))
     (let open_failed:i32 (call x64.jcc c (call x64.cc_s)))
@@ -816,7 +840,7 @@
     ;; parent fd = openat2(dir, parent, O_PATH | O_DIRECTORY | O_CLOEXEC)
     (call x64.mov_rr c 64 (call rdi) (call rbx))
     (call x64.mov_ri32 c (call rdx) 2752512)
-    (call emit_openat2 c)
+    (call emit_openat2 c (not (get w W.sandbox)))
     (call x64.test_rr c 64 (call rax) (call rax))
     (let no_parent:i32 (call x64.jcc c (call x64.cc_s)))
     (call x64.mov_rr c 64 (call rbx) (call rax))
@@ -845,8 +869,58 @@
   ;; (skipped with sandbox), as O_PATH directory descriptors.
   (fn emit_preopens [l:(ptr lower.L) w:(ptr W) sandbox:bool] -> void (pub)
     (let c:(ptr buf.Buf) (get l lower.L.code))
+    (when sandbox (call emit_openat2_probe l))
     (call emit_preopen l w 3 ".")
     (when (not sandbox) (call emit_preopen l w 4 "/")))
+
+  ;; A --sandbox program confines every open with openat2, so one that cannot
+  ;; (the kernel is older than 5.6, or Rosetta 2, or a seccomp profile refuses
+  ;; it) stops at start with a message, not at its first file with an error
+  ;; that does not say why.
+  (fn emit_openat2_probe [l:(ptr lower.L)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let here:i32 (call lower.data_text l "."))
+    (call buf.push_byte (get l lower.L.data) 0)
+    (let said:str "this program was built with --sandbox, which needs the openat2 system call (Linux 5.6 or newer, and not Rosetta 2)\n")
+    (let msg:i32 (call lower.data_text l said))
+    ;; openat2(AT_FDCWD, ".", { O_PATH | O_DIRECTORY | O_CLOEXEC, 0, 0 }, 24)
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 32)
+    (call x64.mov_ri32 c (call rax) 2752512)
+    (call x64.store c 64 (call x64.mem (call rsp) 0) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store c 64 (call x64.mem (call rsp) 8) (call rax))
+    (call x64.store c 64 (call x64.mem (call rsp) 16) (call rax))
+    (call x64.mov_ri32 c (call rdi) -100)
+    (call x64.mov_ri32 c (call rsi) here)
+    (call x64.mov_rr c 64 (call rdx) (call rsp))
+    (call x64.mov_ri32 c (call r10) 24)
+    (call x64.mov_ri32 c (call rax) 437)
+    (call x64.syscall c)
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 32)
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -38)
+    (let enosys:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -1)
+    (let eperm:i32 (call x64.jcc c (call x64.cc_e)))
+    ;; supported: close the probe's descriptor, if it opened one
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let other_error:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call rdi) (call rax))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (let supported:i32 (call x64.jmp c))
+    ;; unsupported: write(2, msg), exit_group(1)
+    (call x64.patch_rel32 c enosys (call buf.len c))
+    (call x64.patch_rel32 c eperm (call buf.len c))
+    (call x64.mov_ri32 c (call rax) 1)
+    (call x64.mov_ri32 c (call rdi) 2)
+    (call x64.mov_ri32 c (call rsi) msg)
+    (call x64.mov_ri32 c (call rdx) (str.len said))
+    (call x64.syscall c)
+    (call x64.mov_ri32 c (call rax) 231)
+    (call x64.mov_ri32 c (call rdi) 1)
+    (call x64.syscall c)
+    (call x64.patch_rel32 c other_error (call buf.len c))
+    (call x64.patch_rel32 c supported (call buf.len c)))
 
   (fn emit_preopen [l:(ptr lower.L) w:(ptr W) fd:i32 path:str] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))

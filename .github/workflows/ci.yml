@@ -28,6 +28,8 @@ jobs:
         run: cargo clippy --release --all-targets -- -D warnings
       - name: Rust tests
         run: cargo test --release --no-fail-fast
+      - name: Native executables on a system without openat2
+        run: python3 tools/without_openat2.py cargo test --release --test test_native
       - name: AIPL test suite
         run: ./target/release/aipl test aipl_src/test_suite.aipl
       - name: Mutated programs, Rust toolchain against the self-hosted one
