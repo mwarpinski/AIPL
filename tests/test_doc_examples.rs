@@ -47,6 +47,9 @@ const EXPECTED: &[(&str, i32, &str)] = &[
     ("interface_demo", 0, "20, 1 key, largest 7\n"),
     ("context_demo", 0, "1 2 0\n"),
     ("values_demo", 0, "y = 5.5\n"),
+    // docs/USING_AIPL.md (empty input here; the next test gives them the input the page states)
+    ("use_lines", 0, ""),
+    ("word_tally", 0, ""),
     // docs/TOUR.md
     ("tour_hello", 0, "7 squared is 49\n3 squared plus 4 squared is 25\n"),
     ("tour_types", 0, "the average of 40 and 3 is 21.5\n"),
@@ -127,7 +130,7 @@ fn doc_examples_run_in_both_backends() {
     std::env::set_current_dir(&scratch).unwrap();
 
     let mut seen = Vec::new();
-    for doc in ["PROMPT_GUIDE_FOR_AIS.md", "README.md", "docs/TOUR.md"] {
+    for doc in ["PROMPT_GUIDE_FOR_AIS.md", "README.md", "docs/TOUR.md", "docs/USING_AIPL.md"] {
         for src in lisp_blocks(doc) {
             // Resolved from a file, so examples may import the standard library.
             let file = scratch.join("example.aipl");
@@ -262,4 +265,64 @@ fn no_program_or_doc_comment_writes_loop() {
     }
     assert!(files.len() > 100, "{} files", files.len());
     assert!(found.is_empty(), "loop is retired; these write it:\n{}", found.join("\n"));
+}
+
+/// docs/USING_AIPL.md says what its two input programs print for a given
+/// input, what `aipl test` reports for its test example, and what three
+/// failures look like: all of it is run here, through the commands the page
+/// teaches (compile, aipl-run, test, verify).
+#[test]
+fn the_usage_page_says_what_the_commands_do() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let aipl = env!("CARGO_BIN_EXE_aipl");
+    let runner = env!("CARGO_BIN_EXE_aipl-run");
+    let dir = std::env::temp_dir().join(format!("aipl_using_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let block = |name: &str| lisp_blocks("docs/USING_AIPL.md").into_iter().find(|b| b.starts_with(&format!("(module {name}"))).unwrap_or_else(|| panic!("no block for {name}"));
+    let run = |name: &str, input: &str| {
+        let (src, wasm) = (dir.join(format!("{name}.aipl")), dir.join(format!("{name}.wasm")));
+        std::fs::write(&src, block(name)).unwrap();
+        let o = Command::new(aipl).arg("compile").arg(&src).arg("-o").arg(&wasm).output().unwrap();
+        assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+        let mut child = Command::new(runner).arg(&wasm).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    };
+    assert_eq!(run("use_lines", "hello\nworld\n"), "1: HELLO\n2: WORLD\n");
+    assert_eq!(run("word_tally", "the cat The dog\nthe end\n"), "cat 1\ndog 1\nend 1\nthe 3\n");
+    // the test example passes, as the page shows
+    let src = dir.join("doubling.aipl");
+    std::fs::write(&src, block("doubling")).unwrap();
+    let o = Command::new(aipl).arg("test").arg(&src).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success() && out.contains("ok    doubles a number") && out.contains("2 tests: 2 passed, 0 failed"), "{out}");
+    // a failing test says where and why
+    std::fs::write(&src, "(module t\n  (fn double [x:i32] -> i32 (* x 2))\n  (test \"fails\" (let n:i32 (call double 3)) (expect (eq n 7))))\n").unwrap();
+    let o = Command::new(aipl).arg("test").arg(&src).output().unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("(expect (eq n 7)): left 6, right 7"));
+    // the two compile-time messages and the trap on the page
+    let verify = |name: &str, text: &str| {
+        let f = dir.join(name);
+        std::fs::write(&f, text).unwrap();
+        let o = Command::new(aipl).arg("verify").arg(name).current_dir(&dir).output().unwrap();
+        assert_eq!(o.status.code(), Some(1));
+        String::from_utf8_lossy(&o.stderr).to_string() + &String::from_utf8_lossy(&o.stdout)
+    };
+    let bad = verify("bad.aipl", "(module bad\n  (fn add [a:i32 b:i32] -> i32 (+ a b))\n  (fn main [] -> i32\n    (let x:i32 (call add 1 true))\n    (let y:i64 x)\n    (println \"{y}\")\n    0))\n");
+    assert!(bad.contains("Error: bad.aipl: 4:16: Arg 1 of 'add' expects i32, got bool"), "{bad}");
+    let syn = verify("syn.aipl", "(module syn (fn main [] -> i32 (if true 1)))");
+    assert!(syn.contains("Error: syn.aipl: 1:42: Unexpected token parsing expression: ')'; if needs both branches: (if c then else); for one branch, write (when c then)"), "{syn}");
+    let trap = dir.join("trap.aipl");
+    std::fs::write(&trap, "(module trap\n  (import alloc)\n  (fn get [a:(arr i32) i:i32] -> i32 (arr.get i32 a i))\n  (fn main [] -> i32\n    (let a:(arr i32) (arr.new i32 (call alloc.default) 3))\n    (println \"{(call get a 5)}\")\n    0))\n").unwrap();
+    let o = Command::new(aipl).args(["compile"]).arg(&trap).arg("-o").arg(dir.join("trap.wasm")).current_dir(&dir).output().unwrap();
+    assert!(o.status.success());
+    let o = Command::new(runner).arg(dir.join("trap.wasm")).current_dir(&dir).output().unwrap();
+    assert_eq!(o.status.code(), Some(134));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("Array index out of bounds: index 5 for array of length 3\n  at main (trap.aipl:6:14)"), "{}", String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
 }

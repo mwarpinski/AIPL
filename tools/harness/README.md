@@ -93,8 +93,15 @@ The two ways above give a model nothing but a prompt. To test an agent that
 works in a folder (a coding agent, a local model with tools) on the limited
 instructions it would have in the field, build it a workspace:
 
-    harness.py workspace /path/to/ws                 # the guide and the spec
-    harness.py workspace /path/to/ws --docs guide    # the guide alone
+    harness.py workspace /path/to/ws                      # the guide and the usage page
+    harness.py workspace /path/to/ws --docs guide         # the guide alone
+    harness.py workspace /path/to/ws --docs guide,spec    # the guide and the full spec
+
+The documents are PROMPT_GUIDE_FOR_AIS.md (the language, by rule and by
+example), docs/USING_AIPL.md (how to build, run, and test a program, and
+where to look in the library; under 2,000 words), and AIPL_SPEC.md (the
+full reference, over 40,000). Running the same model with each set shows how
+much instruction the language needs.
 
 The folder holds the documents named (`docs/`), `bin/aipl` and
 `bin/aipl-run`, the task texts (`tasks/NN_name.md`), a `README.md` telling

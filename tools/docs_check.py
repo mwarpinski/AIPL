@@ -31,7 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # archives and dated records: what they name may be gone, as the record says
 ARCHIVES = ("docs/history/", "docs/notes/", "docs/design/AGENT_FRICTION.md", "docs/NOTES_REVIEW.md", "docs/APPLE_SILICON")
 # the documents a reader meets first
-FRONT = ("README.md", "AIPL_SPEC.md", "PROMPT_GUIDE_FOR_AIS.md", "docs/FAQ.md", "docs/TOUR.md", "ROADMAP.md", "DEVELOPING.md",
+FRONT = ("README.md", "AIPL_SPEC.md", "PROMPT_GUIDE_FOR_AIS.md", "docs/FAQ.md", "docs/TOUR.md", "docs/USING_AIPL.md", "ROADMAP.md", "DEVELOPING.md",
          "bootstrap/README.md", "tools/harness/README.md")
 
 # (regex, what is wrong), checked in FRONT only, outside a line that says it is history

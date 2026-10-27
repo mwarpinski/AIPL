@@ -16,7 +16,7 @@ Python, and Rust, scored the same way.
     harness.py selftest                         each ref.py passes its own tests, and the AIPL,
                                                 Python, and Rust paths compile and run a program,
                                                 and the workspace holds only what an agent may see
-    harness.py workspace DIR [--docs guide,spec]
+    harness.py workspace DIR [--docs guide,using,spec]
                                                 a folder for an agent with a shell: those documents,
                                                 bin/aipl and bin/aipl-run, the task texts, and an
                                                 empty solutions/ (no tests, references, or examples)
@@ -331,7 +331,8 @@ SELFTEST_PROGRAMS = {
 
 # ----- the agent workspace -----
 
-WORKSPACE_DOCS = {"guide": "PROMPT_GUIDE_FOR_AIS.md", "spec": "AIPL_SPEC.md"}
+WORKSPACE_DOCS = {"guide": "PROMPT_GUIDE_FOR_AIS.md", "using": "docs/USING_AIPL.md", "spec": "AIPL_SPEC.md"}
+WORKSPACE_DEFAULT = "guide,using"
 
 WORKSPACE_README = """# AIPL workspace
 
@@ -356,7 +357,7 @@ solves the task. Check a program the way it will be run:
 Your programs are tested afterwards on inputs you cannot see: edge cases
 and large inputs, each with 10 seconds. The output must match exactly.
 Use nothing outside this folder: no other files, no network.
-"""
+{note}"""
 
 
 def cmd_workspace(args):
@@ -372,14 +373,20 @@ def cmd_workspace(args):
     for sub in ("bin", "tasks", "solutions") + (("docs",) if names else ()):
         os.makedirs(os.path.join(d, sub), exist_ok=True)
     for n in names:
-        shutil.copy(os.path.join(ROOT, WORKSPACE_DOCS[n]), os.path.join(d, "docs", WORKSPACE_DOCS[n]))
+        text = open(os.path.join(ROOT, WORKSPACE_DOCS[n]), encoding="utf-8").read()
+        if n == "using":
+            text = text.replace("(../", "(")  # the guide sits beside it here, not a folder up
+        open(os.path.join(d, "docs", os.path.basename(WORKSPACE_DOCS[n])), "w", encoding="utf-8").write(text)
     for b in ("aipl", "aipl-run"):
         shutil.copy(tool(b), os.path.join(d, "bin", b))
         os.chmod(os.path.join(d, "bin", b), 0o755)
     for t in task_names():
         shutil.copy(os.path.join(TASKS, t, "task.md"), os.path.join(d, "tasks", t + ".md"))
-    docs = "".join(f"- `docs/{WORKSPACE_DOCS[n]}`: {'read this first: a guide to writing AIPL' if n == 'guide' else 'the full reference'}.\n" for n in names)
-    open(os.path.join(d, "README.md"), "w").write(WORKSPACE_README.format(docs=docs))
+    what = {"guide": "read this first: a guide to writing AIPL", "using": "how to build, run, and test a program, and where to look in the library",
+            "spec": "the full language reference (long)"}
+    docs = "".join(f"- `docs/{os.path.basename(WORKSPACE_DOCS[n])}`: {what[n]}.\n" for n in names)
+    note = "" if "spec" in names else "\nThe documents sometimes point to AIPL_SPEC.md, the full reference. It is not part of this workspace.\n"
+    open(os.path.join(d, "README.md"), "w").write(WORKSPACE_README.format(docs=docs, note=note))
     open(os.path.join(d, "VERSION"), "w").write(aipl_version() + "\n")
     print(f"workspace in {d}: {len(task_names())} tasks, documents: {', '.join(names) or 'none'}. Point the agent at it, and nothing else; "
           f"afterwards: harness.py score-workspace {d} --model NAME")
@@ -412,7 +419,9 @@ def workspace_selftest():
     with tempfile.TemporaryDirectory(prefix="harness_ws_") as tmp:
         d = os.path.join(tmp, "ws")
         cmd_workspace(argparse.Namespace(dir=d, docs=",".join(WORKSPACE_DOCS)))
-        want = sorted(["README.md", "VERSION", "bin/aipl", "bin/aipl-run"] + [f"docs/{f}" for f in WORKSPACE_DOCS.values()]
+        if "(../" in open(os.path.join(d, "docs", "USING_AIPL.md")).read():
+            return "a link in the workspace's copy of the usage page still goes up a folder"
+        want = sorted(["README.md", "VERSION", "bin/aipl", "bin/aipl-run"] + [f"docs/{os.path.basename(f)}" for f in WORKSPACE_DOCS.values()]
                       + [f"tasks/{t}.md" for t in task_names()])
         got = workspace_files(d)
         if got != want:
@@ -467,7 +476,7 @@ def main():
     s.add_argument("--rounds", type=int, default=3); s.add_argument("--attempts", type=int, default=1); s.add_argument("--tasks")
     s = sub.add_parser("report"); s.add_argument("files", nargs="*")
     sub.add_parser("selftest")
-    s = sub.add_parser("workspace"); s.add_argument("dir"); s.add_argument("--docs", default=",".join(WORKSPACE_DOCS))
+    s = sub.add_parser("workspace"); s.add_argument("dir"); s.add_argument("--docs", default=WORKSPACE_DEFAULT)
     s = sub.add_parser("score-workspace"); s.add_argument("dir"); s.add_argument("--model", required=True); s.add_argument("--attempt", type=int, default=1)
     args = p.parse_args()
     {"gen": cmd_gen, "prompt": cmd_prompt, "prompts": cmd_prompts, "check": cmd_check, "score": cmd_score,
