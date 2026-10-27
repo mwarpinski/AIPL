@@ -14,6 +14,10 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
+/// Why a fresh instance's answer was not sent: it passed the most a host
+/// keeps (aipl-run FRESH_CAP, aipl_src/native/fresh.aipl cap), alike in each.
+pub const FRESH_TOO_LONG: &str = "the answer is more than 64 MiB, the most a fresh instance may write: sent 500 Internal Server Error";
+
 /// Not granted: the program asked for an address and port no `--listen`
 /// names.
 pub const NOT_GRANTED: i32 = -2;

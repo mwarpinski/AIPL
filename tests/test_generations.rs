@@ -84,9 +84,9 @@ fn a_copy_used_after_destroy() {
     (let p:(ptr P) (call (heap.create P) h))
     (let q:(ptr P) p)
     (call (heap.destroy P) h p)
-    (call io.println_int \"x: \" (get q P.x))",
+    (block (let _shown:i32 (get q P.x)) (println \"x: {_shown}\"))",
         "",
-        "  at main (prog.aipl:12:32)",
+        "  at main (prog.aipl:12:28)",
     );
 }
 
@@ -99,7 +99,7 @@ fn an_old_pointer_after_the_memory_holds_a_new_object() {
     (call (heap.destroy P) h p)
     (let r:(ptr P) (call (heap.create P) h))
     (put r P.x 9)
-    (call io.println_int \"same address: \" (if (eq (ptr.addr r) (ptr.addr p)) 1 0))
+    (println \"same address: {(if (eq (ptr.addr r) (ptr.addr p)) 1 0)}\")
     (put p P.x 1)",
         "same address: 1\n",
         "  at main (prog.aipl:14:5)",
@@ -113,9 +113,9 @@ fn an_array_after_free_array() {
         "    (let h:(ptr heap.Heap) (call heap.make))
     (let xs:(arr i32) (call (heap.array i32) h 4))
     (call (heap.free_array i32) h xs)
-    (call io.println_int \"len: \" (arr.len xs))",
+    (block (let _shown:i32 (arr.len xs)) (println \"len: {_shown}\"))",
         "",
-        "  at main (prog.aipl:11:34)",
+        "  at main (prog.aipl:11:28)",
     );
 }
 
@@ -126,9 +126,9 @@ fn an_arena_pointer_after_reset() {
         "    (let a:(ptr arena.Arena) (call arena.make 4096))
     (let p:(ptr P) (call (arena.alloc P) a))
     (call arena.reset a)
-    (call io.println_int \"x: \" (get p P.x))",
+    (block (let _shown:i32 (get p P.x)) (println \"x: {_shown}\"))",
         "",
-        "  at main (prog.aipl:11:32)",
+        "  at main (prog.aipl:11:28)",
     );
 }
 
@@ -140,12 +140,12 @@ fn a_fast_arena_pointer_once_its_memory_is_reused() {
     (let p:(ptr P) (call (arena.fast_alloc P) f))
     (put p P.x 41)
     (call arena.fast_reset f)
-    (call io.println_int \"before reuse: \" (get p P.x))
+    (println \"before reuse: {(get p P.x)}\")
     (let q:(ptr P) (call (arena.fast_alloc P) f))
     (put q P.x 7)
-    (call io.println_int \"after: \" (get p P.x))",
+    (block (let _shown:i32 (get p P.x)) (println \"after: {_shown}\"))",
         "before reuse: 41\n",
-        "  at main (prog.aipl:15:36)",
+        "  at main (prog.aipl:15:28)",
     );
 }
 
@@ -154,7 +154,7 @@ fn an_allocator_pointer_after_destroy() {
     assert_runs(
         "allocator",
         "    (let a:alloc.Allocator (call alloc.of_heap (call heap.make)))
-    (let p:(ptr P) (new P a))
+    (let p:(ptr P) (new P a [x:0 y:0]))
     (call (alloc.destroy P) a p)
     (get p P.y)",
         "",
@@ -170,9 +170,9 @@ fn a_versioned_loop_fails_at_the_access() {
         "    (let h:(ptr heap.Heap) (call heap.make))
     (let xs:(arr i32) (call (heap.array i32) h 10))
     (call (heap.free_array i32) h xs)
-    (call io.println_int \"sum: \" (call sum xs))",
+    (block (let _shown:i32 (call sum xs)) (println \"sum: {_shown}\"))",
         "",
-        "  at sum (prog.aipl:5:14)\n  at main (prog.aipl:11:34)",
+        "  at sum (prog.aipl:5:14)\n  at main (prog.aipl:11:28)",
     );
 }
 
@@ -188,7 +188,7 @@ fn a_versioned_loop_fails_only_where_it_uses_the_pointer() {
     (let n:(ptr P) (ptr.null P))
     (let t:i32 0)
     (for i 0 10 (if (gt i 100) (set! t (+ (get p P.x) (get n P.x))) (set! t (+ t i))))
-    (call io.println_int \"t: \" t)",
+    (println \"t: {t}\")",
         "t: 45\n",
         "",
     );
@@ -198,9 +198,9 @@ fn a_versioned_loop_fails_only_where_it_uses_the_pointer() {
     (let p:(ptr P) (call (heap.create P) h))
     (call (heap.destroy P) h p)
     (let t:i32 0)
-    (for i 0 10 (call io.println_int \"pass \" i) (if (eq i 3) (set! t (get p P.x)) (set! t (+ t i))))",
+    (for i 0 10 (println \"pass {i}\") (if (eq i 3) (set! t (get p P.x)) (set! t (+ t i))))",
         "pass 0\npass 1\npass 2\npass 3\n",
-        "  at main (prog.aipl:12:70)",
+        "  at main (prog.aipl:12:59)",
     );
 }
 
@@ -214,7 +214,7 @@ fn an_unchecked_pointer_is_not_checked() {
     (let p:(ptr P) (call (heap.create P) h))
     (let raw:(ptr P) (ptr.cast P (ptr.addr p)))
     (call (heap.destroy P) h p)
-    (call io.println_int \"x: \" (get raw P.x))",
+    (println \"x: {(get raw P.x)}\")",
         "x: -559038737\n",
         "",
     );
@@ -229,12 +229,12 @@ fn a_pointer_in_a_result_cell_stays_in_its_cell() {
     assert_runs(
         "result_cell",
         "    (let a:alloc.Allocator (call alloc.default))
-    (let _warm:(ptr P) (new P a))
+    (let _warm:(ptr P) (new P a [x:0 y:0]))
     (let inner:(ptr P) (ptr.null P))
-    (let r:(result (ptr P) str) (ok:str (block (let q:(ptr P) (new P a)) (set! inner (new P (call alloc.forever))) q)))
+    (let r:(result (ptr P) str) (ok:str (block (let q:(ptr P) (new P a [x:0 y:0])) (set! inner (new P (call alloc.forever) [x:0 y:0])) q)))
     (put inner P.x 5)
-    (call io.println_int \"x: \" (get inner P.x))
-    (match_result r (ok q (call io.println_int \"q: \" (get q P.x))) (err _e (block)))",
+    (println \"x: {(get inner P.x)}\")
+    (match_result r (ok q (println \"q: {(get q P.x)}\")) (err _e (block)))",
         "x: 5\nq: 0\n",
         "",
     );

@@ -312,7 +312,7 @@
     (call drop whole)
     (call drop fr)
     (call (alloc.free_array i32) (call alloc.default) ints)
-    (make Exact n count more))
+    (make Exact [n:n count:count more:more]))
 
   ;; The fewest digits that read back as positive finite x, written as
   ;; Python's repr does. As ECMAScript's Number::toString chooses: for p =

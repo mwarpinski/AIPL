@@ -66,9 +66,26 @@ pub struct Token {
 /// "did you mean" in the unknown-head error. aipl_src/parser.aipl's
 /// form_table and op_table list the same names (tests/test_checker_aipl.rs
 /// compares them).
+/// An operator as C writes it, which AIPL spells as a form: what it means,
+/// and the form (aipl_src/parser.aipl c_operator alike).
+pub fn c_operator(op: &str) -> Option<(&'static str, &'static str)> {
+    Some(match op {
+        "=" | "==" => ("equality", "(eq a b)"),
+        "!=" => ("inequality", "(neq a b)"),
+        "<" => ("less than", "(lt a b)"),
+        ">" => ("greater than", "(gt a b)"),
+        "<=" => ("at most", "(lte a b)"),
+        ">=" => ("at least", "(gte a b)"),
+        "&&" => ("and", "(and a b)"),
+        "||" => ("or", "(or a b)"),
+        "!" => ("not", "(not a)"),
+        _ => return None,
+    })
+}
+
 pub const HEAD_NAMES: &[&str] = &[
     "when", "%", "*", "+", "-", "/", "^", "and", "args.get", "args.sizes", "arr.addr", "arr.cast",
-    "arr.gen", "arr.get", "arr.len", "arr.make", "arr.new", "arr.null", "arr.set", "atomic.add",
+    "arr.gen", "arr.get", "arr.len", "arr.make", "arr.new", "arr.null", "arr.of", "arr.set", "atomic.add",
     "atomic.cas", "atomic.lock", "atomic.unlock", "bitand", "bitor", "block", "break", "call",
     "call_ref", "checked.add", "checked.mul", "checked.sub", "cond", "continue", "dbg", "defer",
     "divu", "enum.cast", "enum.ord", "env.get", "env.sizes", "eprintln", "eq", "err", "expect",
@@ -87,7 +104,7 @@ pub const HEAD_NAMES: &[&str] = &[
     "print", "println", "ptr.addr", "ptr.cast", "ptr.gen", "ptr.make", "ptr.null", "put", "ref",
     "remu", "return", "set!", "shl", "shr", "shru", "sizeof", "str.len", "str.ptr", "sys.exit",
     "sys.monotonic", "sys.print", "sys.random", "sys.time", "thread.join", "thread.spawn",
-    "try", "try_opt", "try_or", "unsafe", "while", "with",
+    "try", "try_opt", "try_or", "unsafe", "while", "with", "zero",
 ];
 
 /// Edit distance between two names, by bytes (aipl_src/suggest.aipl is the
@@ -1933,7 +1950,7 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 "defer" => OpCode::Defer,
                                 "format.dbg" => OpCode::FormatDbg,
                                 "format.expect" => OpCode::FormatExpect,
-                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" | "new" | "arr.new" => {
+                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" | "new" | "arr.new" | "arr.of" | "zero" => {
                                     return Err(format!(
                                         "{}:{}: ({} ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse",
                                         span.0, span.1, op_str
@@ -1942,10 +1959,10 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 other => {
                                     let hint = if matches!(other, "else" | "elif" | "switch" | "case" | "default") {
                                         "there is no else if, elif, switch, or case: use (cond (test body...) ... (else body...))".to_string()
+                                    } else if let Some((what, form)) = c_operator(other) {
+                                        format!("'{other}' is not an operator; {what} is {form}")
                                     } else if other == "loop" {
                                         "loop is retired: (for i start end body...) counts from start up to end, end left out; for another step, use while".to_string()
-                                    } else if other == "arr.of" {
-                                        "there is no array literal: make the array with (arr.new T a n) and fill it with (arr.set T xs i v)".to_string()
                                     } else if let Some(near) = nearest_name(other, HEAD_NAMES.iter().copied()) {
                                         format!("did you mean {near}?")
                                     } else {

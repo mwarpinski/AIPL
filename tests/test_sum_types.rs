@@ -65,7 +65,7 @@ fn native_main() -> Option<i32> {
         std::fs::copy(root().join("tests/aipl").join(f), dir.join(f)).unwrap();
     }
     let wrap = dir.join("wrap.aipl");
-    std::fs::write(&wrap, "(module wrap (import sum_types) (import io)\n  (fn main [] -> i32 (call io.println_int \"\" (call sum_types.checksum)) 0))").unwrap();
+    std::fs::write(&wrap, "(module wrap (import sum_types) (import io)\n  (fn main [] -> i32 (println \"{(call sum_types.checksum)}\") 0))").unwrap();
     let m = Resolver::resolve(&wrap).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     let exe = dir.join("prog");
@@ -139,8 +139,7 @@ fn make_allocates_nothing() {
            (union U [(v p:i32) (more next:(ptr Next))]) (struct Next [u:U]) (union W [(v p:i32)])
            (fn chain [] -> i32 (unsafe)
              (let p0:i32 (mem.alloc 8))
-             (let n:(ptr Next) (new Next (call alloc.default)))
-             (put n Next.u (make U.v (mem.alloc 8)))
+             (let n:(ptr Next) (new Next (call alloc.default) [u:(make U.v (mem.alloc 8))]))
              (match (get n Next.u) (U.v [p1] (- p1 p0)) (U.more [_] 0)))
            (fn main [] -> i32 (unsafe)
              (let p0:i32 (mem.alloc 8))
@@ -212,9 +211,10 @@ fn every_rule_has_its_message() {
         (format!("{u} (fn f [a:S] -> i32 (+ a 1))"), "+ on union 'S': unions have no arithmetic; take them apart with match"),
         (format!("{u} (fn f [] -> S (ptr.null S))"), "'S' is a union, which is a value: write S, not (ptr S); a union is never null, so use a variant such as (none) for no value"),
         (format!("{u} (fn f [] -> S (enum.cast S 1))"), "'S' is a union, not an enum: its values are made with (make S.variant ...)"),
-        // a name keeps one type per function
-        (format!("{u} (fn f [s:S] -> i32 (match s (S.circle [x] 1) (S.sq [x] x) (else 0)))"), "'x' is i32 here but f64 elsewhere in this function; a name keeps one type per function (rename one)"),
-        ("(fn f [] -> i32 (block (let y:f64 1.5) 0) (block (let y:i32 3) y))".into(), "'y' is i32 here but f64 elsewhere in this function"),
+        // a name's scope is its arm or block, and one still visible is not shadowed
+        // (named as written, though the second x is renamed for the code generators)
+        (format!("{u} (fn f [s:S] -> i32 (match s (S.circle [x] 1) (S.sq [x] (let x:f64 2.0) 1) (else 0)))"), "Cannot shadow existing variable 'x'"),
+        ("(fn f [] -> i32 (block (let y:f64 1.5) 0) (block (let y:i32 3) (block (let y:i32 4) y)))".into(), "Cannot shadow existing variable 'y'"),
     ];
     for (i, (body, want)) in cases.iter().enumerate() {
         let src = format!("(module m {body})");

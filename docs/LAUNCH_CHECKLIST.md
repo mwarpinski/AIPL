@@ -144,7 +144,8 @@ more than usual.
   it), or by design (and why), all in one document: docs/NOTES_REVIEW.md
   (2026-10-19, all eight notes). Its open items still to do: `str.Bytes` as a
   value struct (before L7); `io.read_file`, `os.arg`, `os.env` returning
-  len -1 instead of an Option (after the seed refresh); match binders
+  len -1 instead of an Option (done 2026-10-26: Options and io.Error
+  results, docs/design/LANGUAGE_DECISIONS.md item 2); match binders
   scoped to their arm; "Unknown op/keyword: =" suggesting `eq`; the
   double parse in the self-hosted compiler (a large refactor, for after
   launch). (codegen_opt type-checking its output: done 2026-10-25,
@@ -215,21 +216,20 @@ more than usual.
   `cargo install --git`: its binaries point at a cargo checkout that cargo
   deletes after about a month unused. Later, optionally: prebuilt `aipl`
   and `aipl-run` on a GitHub release, so Rust is not needed.
-- [ ] **A binary that works wherever it is** (noted 2026-10-18, from
-  docs/notes/freedom.md). install.sh works only because it builds in
-  place: the Rust CLI finds the standard library at the checkout it was
-  built from (`env!("CARGO_MANIFEST_DIR")` in `src/resolver.rs`
-  `find_module_file`) and ignores `AIPL_STD`, so a copied or prebuilt
-  `aipl` cannot import `str`. The self-hosted `aipl` (`aipl.aipl`,
-  `driver.aipl`, `doc.aipl`) falls back to `./aipl_src/std/`, so it works
-  only from the repository root, and install.sh does not install it. To
-  do, in both toolchains: look in `$AIPL_STD`, then beside the executable
-  (`<bin>/../share/aipl/std`, as Go and rustup do), then the build-time
-  path; install.sh copies the library there; a test copies both binaries
-  out of the repository and compiles a program importing std. Then
-  prebuilt release binaries are possible. Later: the self-hosted binary
-  could embed the library (460 KB) and become one file; it still needs
-  `chmod +x` (WASI cannot set file modes) and has no `verify` or `test`.
+- [x] **A binary that works wherever it is** (done 2026-10-26; noted
+  2026-10-18, from docs/notes/freedom.md). The Rust `aipl` carries its
+  library (aipl_src/: the standard library and the toolchain's sources,
+  built in by build.rs) and, outside its own checkout's target/, writes it
+  once to its cache and reads it from there (src/library.rs); `$AIPL_STD`
+  now replaces std for programs in the Rust command too. The self-hosted
+  `aipl` looks in `$AIPL_STD`, then `share/aipl/std/` beside its folder,
+  then `./aipl_src/std/` (aipl_src/stdpath.aipl). tests/test_portable.rs
+  copies `aipl` out of the repository and runs every command; the kit
+  (tools/make_kit.sh) is the real binaries, tested with the build's source
+  hidden. Prebuilt release binaries are now possible. Later: the
+  self-hosted binary could embed the library too and become one file; it
+  still needs `chmod +x` (WASI cannot set file modes) and has no `verify`
+  or `test`.
 - [x] **CI** (added 2026-10-06, `.github/workflows/ci.yml`; check its first run on GitHub). A GitHub Actions workflow running `cargo build`, `cargo test`,
   and `aipl test aipl_src/test_suite.aipl` on Linux, with the badge in the
   README. The native tests need Linux x86-64, which GitHub's runners are.
@@ -252,13 +252,17 @@ more than usual.
 "A language designed for AI agents" invites "prove it". The strongest post
 is a small, honest experiment:
 
-- [ ] **Task set:** 20-30 small programs with tests (parse a format,
+- [x] **Task set:** 20-30 small programs with tests (parse a format,
   aggregate a file, a data structure, a small simulation), each specified
-  in plain language.
+  in plain language. Done 2026-10-26: 26 tasks in tools/harness/tasks/,
+  each a task.md, a Python reference that writes its tests, and the tests;
+  none solved in AIPL here.
 - [ ] **Conditions:** the same model writes each task in AIPL (with
   PROMPT_GUIDE_FOR_AIS.md as its only documentation) and in Python and
   Rust; several attempts each; the model may read compiler errors and
-  retry, up to a fixed number of rounds.
+  retry, up to a fixed number of rounds. The harness for it is built
+  (tools/harness/README.md: by hand in fresh chats, or through any
+  command, local models included); the runs are the owner's.
 - [ ] **Measures:** compiles on the first try; passes the tests on the
   first try; rounds to pass; how many bugs were caught by the checker or a
   contract rather than by a wrong answer; length of the program.
@@ -281,18 +285,19 @@ FAQ or ROADMAP.md.
   the signed address comparisons in std and the compiler rely on. Wanted
   with the servers (MEMORY_PLAN.md M5): a runaway request fails cleanly
   instead of taking the machine.
-- [ ] **"Out of memory" said as such**: at the limit (2 GiB, or
+- [x] **"Out of memory" said as such**: at the limit (2 GiB, or
   `--max-memory`'s) `mem.alloc` does not fail, so the program stops at its
   first access past the end, with "Memory store out of bounds" (VM) or
   "wasm trap: out of bounds memory access" (compiled) and a call chain into
   std/heap. A failed grow should stop at `mem.alloc` with "out of memory:
-  the limit is N MiB", alike in every backend and both toolchains.
-- [ ] **An address-sized integer, decided on purpose** (before launch):
+  the limit is N MiB", alike in every backend and both toolchains. Done 2026-10-26: `mem.alloc` stops with "Out of memory: the limit is N MiB" in every backend and both toolchains ($aipl_oom in wasm.rs and codegen.aipl, vm.rs MemAlloc); tests/test_memory.rs.
+
+- [x] **An address-sized integer, decided on purpose** (before launch):
   `ptr.addr`, `mem.*`, and `mem.alloc` use `i32` addresses, a promise to
   users' (unsafe) code. A 64-bit target (ROADMAP.md, after launch) wants
   an address-sized type such as Rust's `usize`; adding it later breaks
   only unsafe code. Decide whether to add it now or say in the FAQ why
-  not.
+  not. Decided 2026-10-26: not now; docs/FAQ.md says why (LANGUAGE_DECISIONS.md item 7).
 
 - [x] **Option types / generic unions** (done 2026-10-12): generic unions
   (`(union (Tree T) ...)`), `std/option`'s `(option.Option T)`, and
@@ -342,7 +347,7 @@ FAQ or ROADMAP.md.
 - [x] **Results by value** (done 2026-10-15, VALUES_PLAN.md V5): every
   `ok`/`err` names its other side, `(ok:E v)`; a result without a `str`
   side that fits in 8 slots allocates nothing. AIPL_SPEC.md 4.F.
-- [ ] **The self-hosted compiler's fixed tables** (found 2026-10-19). It
+- [x] **The self-hosted compiler's fixed tables** (found 2026-10-19). It
   refuses, as numbered compile errors, programs the Rust compiler
   accepts: more than 16 parameters (92), 255 structs, unions, or
   variants, 64 fields, or 31 `call_ref` signatures (94), 1,024 locals
@@ -351,24 +356,26 @@ FAQ or ROADMAP.md.
   as wasm.rs's vectors do (as the label stack now does: at 255 nested
   blocks it crashed instead of giving error 100), and a refusal should
   say what it refuses, not "compile error 94 (AIPL_SPEC.md 6.4)". Until
-  then the two compilers agree only below those sizes.
-- [ ] **Using a module without importing it** (found 2026-10-19; a
-  decision). A module that imports `io` can call `str.from_str` without
-  `(import str)`, because io imports str and imports are flattened into
-  one program (AIPL_SPEC.md 11); with no imports at all, `str.Bytes` is
-  "Unknown struct". The spec says neither that this is allowed nor that it
-  is not. For a language that wants every dependency written down, the
-  rule should be: `m.x` needs `(import m)` in that module, checked by
-  both resolvers; existing programs that lean on an import's imports
-  would need the missing lines.
-- [ ] **Making a heap struct in one form** (noted 2026-10-18, from
+  then the two compilers agree only below those sizes. Done 2026-10-26: the tables of functions, parameters, locals, structs, unions, variants, fields, and `call_ref` signatures grow (codegen.aipl `room`); error 94 is left for more than 8 scalars in a value; tests/test_selfhost.rs compiles a program past each old size to the Rust code generator's bytes.
+
+- [x] **Using a module without importing it** (decided and done
+  2026-10-26, docs/design/LANGUAGE_DECISIONS.md item 1). `m.x` needs
+  `(import m)` in that file, checked by both resolvers with one message
+  (`'str.Bytes' is in module str, which this file does not import: add
+  (import str)`); what the compiler writes for `new`, the formatting
+  forms, and a test build is exempt. One repository file needed a line
+  (tests/aipl/memory/request_paths.aipl), as did two programs inside Rust
+  tests, tools/run_fuzz.py's generated ones, and the kit's test program. AIPL_SPEC.md 11,
+  tests/test_visibility.rs.
+- [x] **Making a heap struct in one form** (noted 2026-10-18, from
   docs/notes/painpoints.md item 4; a language change, for approval).
   Today it is `(new S)` and a `put` per field (std/regex's Regex: 20), and
   nothing notices a field left out: a new field means finding every place
   that makes one. Proposed: `(new S v1 v2 ...)` with every field, in
   order, as `make` already does for value structs, so a missing or extra
   field is a compile error. The compiler's own source can use it only
-  after the seed refresh below.
+  after the seed refresh below. Decided and done 2026-10-26: fields by name, `(zero T)` for a field that starts empty (LANGUAGE_DECISIONS.md item 4).
+
 - [x] **Refresh the stage-0 seed** (done 2026-10-19, for MEMORY_PLAN.md's checked views, which need `(arr u8)`; bootstrap/README.md has the new hash; noted 2026-10-18).
   The compiler's source may use only what bootstrap/aipl-linux-x86_64
   knows, and that seed (2026-10-16) predates `when`, `for`, variadic

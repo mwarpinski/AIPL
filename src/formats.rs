@@ -28,9 +28,22 @@ const FORMS: [(&str, &str); 5] = [
     ("eprintln", "format.eprintln"),
 ];
 
+/// Whether sx is a named `(new S a [f:v ...])` or `(make V [f:v ...])`,
+/// whose last item, a `[...]` list, holds expressions (sugar.rs alike).
+fn names_fields(sx: &Sx) -> bool {
+    matches!(sx.head(), Some("new" | "make")) && matches!(sx.items().last(), Some(Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. }))
+}
+
+/// sx's items, and a named field list's (names_fields).
+fn children(sx: &Sx) -> impl Iterator<Item = &Sx> {
+    let fields = if names_fields(sx) { sx.items().last().map(|l| l.items()).unwrap_or(&[]) } else { &[] };
+    sx.items().iter().chain(fields.iter())
+}
+
 /// Whether any item uses a formatting form (so its module needs `std/show`).
 /// A `[...]` list (parameters, fields, an enum's members, a union's
-/// variants, binders) holds no expression, so `(enum E [(print 1)])` is no form.
+/// variants, binders) holds no expression, so `(enum E [(print 1)])` is no
+/// form, but for a struct's named fields.
 pub fn uses_formats(items: &[Sx]) -> bool {
     fn walk(sx: &Sx) -> bool {
         if !sx.is_paren() {
@@ -41,7 +54,7 @@ pub fn uses_formats(items: &[Sx]) -> bool {
                 return true;
             }
         }
-        sx.items().iter().any(walk)
+        children(sx).any(walk)
     }
     items.iter().any(walk)
 }
@@ -78,9 +91,17 @@ pub fn split(sx: &mut Sx, src: &str, file: &str, err: &dyn Fn(&Sx, &str) -> Stri
             *sx = list_at(vec![Sx::symbol_at("format.expect".into(), &items[0]), string_at(label, sx), items[1].clone()], sx);
         }
     }
+    let named = names_fields(sx);
     if let Some(items) = sx.items_mut() {
-        for i in items {
-            split(i, src, file, err)?;
+        let last = items.len().saturating_sub(1);
+        for (k, i) in items.iter_mut().enumerate() {
+            if named && k == last {
+                for v in i.items_mut().into_iter().flatten() {
+                    split(v, src, file, err)?;
+                }
+            } else {
+                split(i, src, file, err)?;
+            }
         }
     }
     Ok(())
@@ -214,7 +235,7 @@ fn split_form(sx: &Sx, form: &str, op: &str, err: &dyn Fn(&Sx, &str) -> String) 
 
 /// Whether sx is or holds a `(dbg ...)`.
 fn holds_dbg(sx: &Sx) -> bool {
-    sx.is_paren() && (sx.head() == Some("dbg") || sx.items().iter().any(holds_dbg))
+    sx.is_paren() && (sx.head() == Some("dbg") || children(sx).any(holds_dbg))
 }
 
 /// One piece of a format string: text, or a value (a name, or an

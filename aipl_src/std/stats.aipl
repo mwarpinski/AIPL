@@ -31,7 +31,7 @@
   (fn two_sum [a:f64 b:f64] -> Two
     (let x:f64 (+ a b))
     (let z:f64 (- x a))
-    (make Two x (+ (- a (- x z)) (- b z))))
+    (make Two [hi:x lo:(+ (- a (- x z)) (- b z))]))
 
   ;; a * b exactly (Dekker's product, with Veltkamp's split): what fma(a,
   ;; b, -a*b) gives for the error, as CPython's dl_mul.
@@ -43,15 +43,14 @@
     (let cb:f64 (* 134217729.0 b))
     (let bhi:f64 (- cb (- cb b)))
     (let blo:f64 (- b bhi))
-    (make Two p (+ (+ (+ (- (* ahi bhi) p) (* ahi blo)) (* alo bhi)) (* alo blo))))
+    (make Two [hi:p lo:(+ (+ (+ (- (* ahi bhi) p) (* ahi blo)) (* alo bhi)) (* alo blo))]))
 
   ;; An exact sum of many f64s: CPython's math.fsum partials, nonoverlapping
   ;; and increasing in magnitude.
   (struct Exact [parts:(ptr (vec.Vec f64))])
 
   (fn exact [] -> (ptr Exact)
-    (let e:(ptr Exact) (new Exact (call alloc.default)))
-    (put e Exact.parts (call (vec.make f64) (call alloc.default) 16))
+    (let e:(ptr Exact) (new Exact (call alloc.default) [parts:(call (vec.make f64) (call alloc.default) 16)]))
     e)
 
   (fn drop [e:(ptr Exact)] -> void
@@ -371,19 +370,21 @@
     (let sm:Two (call two_sum (get t Three.hi) (get pr Two.hi)))
     (let r1:Two (call two_sum (get t Three.lo) (get pr Two.lo)))
     (let r2:Two (call two_sum (get r1 Two.hi) (get sm Two.lo)))
-    (make Three (get sm Two.hi) (get r2 Two.hi) (+ (+ (get t Three.tiny) (get r1 Two.lo)) (get r2 Two.lo))))
+    (make Three [hi:(get sm Two.hi)
+                 lo:(get r2 Two.hi)
+                 tiny:(+ (+ (get t Three.tiny) (get r1 Two.lo)) (get r2 Two.lo))]))
 
   (fn tl_to_d [t:Three] -> f64
     (let last:Two (call two_sum (get t Three.lo) (get t Three.hi)))
     (+ (+ (get t Three.tiny) (get last Two.lo)) (get last Two.hi)))
 
   (fn sumprod [p:(arr f64) pm:f64 q:(arr f64) qm:f64] -> f64
-    (let t:Three (make Three 0.0 0.0 0.0))
+    (let t:Three (make Three [hi:0.0 lo:0.0 tiny:0.0]))
     (for k 0 (arr.len p) (set! t (call tl_fma (- (arr.get f64 p k) pm) (- (arr.get f64 q k) qm) t)))
     (+ 0.0 (call tl_to_d t)))
 
   (fn sumprod2 [a:f64 b:f64 c:f64 d:f64] -> f64
-    (+ 0.0 (call tl_to_d (call tl_fma b d (call tl_fma a c (make Three 0.0 0.0 0.0))))))
+    (+ 0.0 (call tl_to_d (call tl_fma b d (call tl_fma a c (make Three [hi:0.0 lo:0.0 tiny:0.0]))))))
 
   ;; statistics._sqrtprod: sqrt(x * y), corrected, without overflow.
   (fn sqrtprod [x:f64 y:f64] -> f64
@@ -426,7 +427,7 @@
     (let ybar:f64 (/ (call sum ys) n))
     (let slope:f64 (/ (+ (call sumprod xs xbar ys ybar) 0.0) (call sumprod xs xbar xs xbar)))
     (let r:f64 (call correlation xs ys))
-    (make Fit slope (- ybar (* slope xbar)) (* r r)))
+    (make Fit [slope:slope intercept:(- ybar (* slope xbar)) r2:(* r r)]))
 
   ;; ===== Others =====
 

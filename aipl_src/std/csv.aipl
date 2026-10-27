@@ -20,6 +20,7 @@
 ;; texts (tests/aipl/csv, tools/csv_vectors.py).
 (module csv
   (import str)
+  (import io)
   (import buf)
   (import vec)
   (import alloc)
@@ -48,27 +49,26 @@
 
   ;; reader with another delimiter byte (9 for tab-separated values).
   (fn reader_with [a:alloc.Allocator r:(ptr stream.Reader) delim:i32] -> (ptr Reader) (pub)
-    (let cr:(ptr Reader) (new Reader a))
-    (put cr Reader.src r)
-    (put cr Reader.owns false)
-    (put cr Reader.delim delim)
-    (put cr Reader.state State.start_record)
-    (put cr Reader.data (call buf.make a 256))
-    (put cr Reader.field_start 0)
-    (put cr Reader.spans (call (vec.make i32) a 32))
-    (put cr Reader.views (call (vec.make str.Bytes) a 16))
-    (put cr Reader.n 0)
-    (put cr Reader.row 0)
-    (put cr Reader.names (call (vec.make str.Bytes) a 8))
-    (put cr Reader.a a)
+    (let cr:(ptr Reader) (new Reader a [src:r
+                                        owns:false
+                                        delim:delim
+                                        state:State.start_record
+                                        data:(call buf.make a 256)
+                                        field_start:0
+                                        spans:(call (vec.make i32) a 32)
+                                        views:(call (vec.make str.Bytes) a 16)
+                                        n:0
+                                        row:0
+                                        names:(call (vec.make str.Bytes) a 8)
+                                        a:a]))
     cr)
 
   ;; Opens a file of comma-separated rows; close closes it.
-  (fn open [a:alloc.Allocator path:str] -> (result (ptr Reader) str) (pub)
+  (fn open [a:alloc.Allocator path:str] -> (result (ptr Reader) io.Error) (pub)
     (let r:(ptr stream.Reader) (try (call stream.open a path)))
     (let cr:(ptr Reader) (call reader a r))
     (put cr Reader.owns true)
-    (ok:str cr))
+    (ok:io.Error cr))
 
   ;; Reads the text of b.
   (fn of_bytes [a:alloc.Allocator b:str.Bytes] -> (ptr Reader) (pub)
@@ -230,9 +230,9 @@
 
   ;; An error from the reader's allocator; its `what` is a str, never freed.
   (fn fail [cr:(ptr Reader) i:i32 why:str] -> (ptr Error)
-    (let e:(ptr Error) (new Error (get cr Reader.a)))
-    (put e Error.row (get cr Reader.row))
-    (put e Error.column (+ i 1))
+    (let e:(ptr Error) (new Error (get cr Reader.a) [row:(get cr Reader.row)
+                                                     column:(+ i 1)
+                                                     what:(zero str)]))
     (let what:str (if (lt i (get cr Reader.n))
                       (format "row {(get cr Reader.row)}, column {(+ i 1)}: {(call field cr i)} is not {why}")
                       (format "row {(get cr Reader.row)} has no column {(+ i 1)}")))
@@ -296,12 +296,7 @@
 
   ;; writer with another delimiter byte.
   (fn writer_with [a:alloc.Allocator w:(ptr stream.Writer) delim:i32] -> (ptr Writer) (pub)
-    (let cw:(ptr Writer) (new Writer a))
-    (put cw Writer.out w)
-    (put cw Writer.delim delim)
-    (put cw Writer.fields 0)
-    (put cw Writer.wrote false)
-    (put cw Writer.a a)
+    (let cw:(ptr Writer) (new Writer a [out:w delim:delim fields:0 wrote:false a:a]))
     cw)
 
   ;; Frees the writer (not its stream: flush or close that).

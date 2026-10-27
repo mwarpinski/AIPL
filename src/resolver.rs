@@ -68,6 +68,9 @@ struct Vis {
     all: HashSet<String>,
     public: HashSet<String>,
     fields: HashMap<String, HashMap<String, Level>>,
+    /// each struct's field names in declaration order, for the named forms
+    /// (new S a [f:v ...]) and (make V [f:v ...])
+    order: HashMap<String, Vec<String>>,
     values: HashSet<String>,
 }
 
@@ -83,6 +86,11 @@ enum Level {
 struct ModuleSx {
     name: String,
     imports: Vec<(String, Option<String>)>,
+    /// the modules its own `(import ...)` lines name (not those the
+    /// compiler adds for `new`, the formatting forms, or a test build)
+    uses: HashSet<String>,
+    /// a test build's `_start`, which the compiler writes, is in items
+    generated_start: bool,
     items: Vec<Sx>,
     /// its `(test "name" ...)` items: each name and where it is
     tests: Vec<TestInfo>,
@@ -117,6 +125,40 @@ impl Resolver {
         std::thread::Builder::new()
             .stack_size(256 * 1024 * 1024)
             .spawn(move || Self::resolve_on_this_thread(&src, &path))
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the resolver thread panicked".to_string())?
+    }
+
+    /// `resolve_source` for a resolver's own output (the flat program
+    /// aipl_src/resolver.aipl writes, which the tests compare by resolving
+    /// it again): it holds the positional `(make V v ...)` the resolver
+    /// writes for a value struct's named make, which source may not.
+    pub fn resolve_flat(flat: &str, entry_path: &Path) -> Result<Module, String> {
+        let (src, path) = (flat.to_string(), entry_path.to_path_buf());
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                READING_FLAT.with(|f| f.set(true));
+                Self::resolve_on_this_thread(&src, &path)
+            })
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the resolver thread panicked".to_string())?
+    }
+
+    /// `resolve_flat`, its formatting forms left split, not lowered to
+    /// std/show calls (formats.rs step 3, which needs the checked types):
+    /// the program aipl_src/expand.aipl gives, for comparing the two.
+    pub fn expand_flat(flat: &str, entry_path: &Path) -> Result<Module, String> {
+        let (src, path) = (flat.to_string(), entry_path.to_path_buf());
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                READING_FLAT.with(|f| f.set(true));
+                KEEP_FORMATS.with(|f| f.set(true));
+                Self::resolve_on_this_thread(&src, &path)
+            })
             .map_err(|e| e.to_string())?
             .join()
             .map_err(|_| "the resolver thread panicked".to_string())?
@@ -158,7 +200,9 @@ impl Resolver {
         }
         let flat = crate::generics::expand(flat)?;
         let mut module = Self::parse_flat(crate::consts::expand(flat)?)?;
-        crate::formats::lower(&mut module);
+        if !KEEP_FORMATS.with(|f| f.get()) {
+            crate::formats::lower(&mut module);
+        }
         Ok(module)
     }
 
@@ -287,7 +331,9 @@ fn read_module(src: &str, file: &str, tests: bool) -> Result<ModuleSx, String> {
             items.push(item.clone());
         }
     }
-    if tests && !test_items.is_empty() {
+    let uses: HashSet<String> = imports.iter().map(|(m, _)| module_name(m).to_string()).collect();
+    let generated_start = tests && !test_items.is_empty();
+    if generated_start {
         test_functions(&test_items, &mut imports, &mut items)?;
     }
     // when, for, variadic and/or, and new and arr.new (sugar.rs): new and
@@ -308,25 +354,31 @@ fn read_module(src: &str, file: &str, tests: bool) -> Result<ModuleSx, String> {
             format!("{}:{}: {}", l, c, msg)
         })?;
     }
-    if uses_new && name != "alloc" && !imports.iter().any(|(m, _)| module_name(m) == "alloc") {
-        imports.push(("alloc".to_string(), None));
-    }
     // the formatting forms become std/show calls (formats.rs): a module that
     // uses one imports it, after its own imports; their strings are split
     // here, before names are qualified, so a placeholder's names are renamed
-    // like the rest of the module's
-    if crate::formats::uses_formats(&items) {
-        if !imports.iter().any(|(m, _)| module_name(m) == "show") {
-            imports.push(("show".to_string(), None));
-        }
+    // like the rest of the module's, and its sugar rewritten (a second pass,
+    // which changes nothing already rewritten), as resolver.aipl does
+    let formats = crate::formats::uses_formats(&items);
+    if formats {
         for item in items.iter_mut() {
             crate::formats::split(item, src, file, &|sx, msg| {
                 let (l, c) = sx.position();
                 format!("{}:{}: {}", l, c, msg)
             })?;
+            crate::sugar::rewrite(item, &alloc, &mut uses_new, &|sx, msg| {
+                let (l, c) = sx.position();
+                format!("{}:{}: {}", l, c, msg)
+            })?;
         }
     }
-    Ok(ModuleSx { name: name.to_string(), imports, items, tests: infos })
+    if uses_new && name != "alloc" && !imports.iter().any(|(m, _)| module_name(m) == "alloc") {
+        imports.push(("alloc".to_string(), None));
+    }
+    if formats && !imports.iter().any(|(m, _)| module_name(m) == "show") {
+        imports.push(("show".to_string(), None));
+    }
+    Ok(ModuleSx { name: name.to_string(), imports, uses, generated_start, items, tests: infos })
 }
 
 /// A test build's entry: test K as `(fn __test_K [] -> void body...)`, and
@@ -456,7 +508,10 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         }
         if item.head() == Some("struct") {
             let levels = take_field_marks(item, file)?;
+            // with the marks out, the list is name : type, three by three
+            let order: Vec<String> = item.items().get(2).map(|l| l.items().iter().step_by(3).filter_map(|e| e.symbol().map(str::to_string)).collect()).unwrap_or_default();
             if let Some(n) = &named {
+                st.vis.order.insert(canonical(n), order);
                 if is_value_struct(item) {
                     st.vis.values.insert(canonical(n));
                 }
@@ -483,6 +538,8 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         known_templates: &st.templates,
         module: prefix.clone().unwrap_or_else(|| module.name.clone()),
         modules,
+        uses: module.uses.clone(),
+        generated: std::cell::Cell::new(false),
         vis: &st.vis,
         file: file.to_path_buf(),
         err: std::cell::RefCell::new(None),
@@ -514,6 +571,8 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     let mut out_structs = Vec::new();
     let mut out_fns = Vec::new();
     for mut item in module.items {
+        // a test build's _start is the compiler's, not the file's
+        names.generated.set(module.generated_start && item.head() == Some("fn") && item.items().get(1).and_then(|n| n.symbol()) == Some("_start"));
         names.walk(&mut item, 0);
         if let Some(e) = names.err.borrow_mut().take() {
             return Err(e);
@@ -683,6 +742,14 @@ fn at_sx(file: &Path, sx: &Sx, msg: &str) -> String {
     format!("{}: {}:{}: {}", file.display(), l, c, msg)
 }
 
+thread_local! {
+    /// Set on the thread of Resolver::resolve_flat, which reads a resolver's
+    /// output: forms only the resolvers write are accepted there.
+    static READING_FLAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set on the thread of Resolver::expand_flat: formatting forms stay split.
+    static KEEP_FORMATS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The renaming rules (resolver.aipl `rename` and `child_role`). Roles: 0
 /// none, 1 function name, 2 struct name, 3 field reference `S.f`.
 /// Constants and enums are renamed wherever their names appear (a constant
@@ -700,6 +767,10 @@ struct Names<'a> {
     /// This module's name, every module's name, and what they give others.
     module: String,
     modules: HashSet<String>,
+    /// The modules this file imports by its own lines (ModuleSx uses), and
+    /// whether the item being walked is one the compiler wrote.
+    uses: HashSet<String>,
+    generated: std::cell::Cell<bool>,
     vis: &'a Vis,
     file: PathBuf,
     /// The first use of something another module keeps private.
@@ -707,10 +778,19 @@ struct Names<'a> {
 }
 
 impl Names<'_> {
-    /// The module a canonical name belongs to, if it is another module.
-    fn foreign<'s>(&self, name: &'s str) -> Option<&'s str> {
+    /// The module a canonical name belongs to, if it is another module;
+    /// naming one this file does not import is an error (AIPL_SPEC.md 11:
+    /// every module a file names, it imports, so a file shows what it
+    /// depends on). The names `new` and `arr.new` are written as
+    /// (alloc.create, alloc.array) and a test build's _start are the
+    /// compiler's.
+    fn foreign<'s>(&self, name: &'s str, at: (u32, u32)) -> Option<&'s str> {
         let (m, _) = name.split_once('.')?;
-        (m != self.module && self.modules.contains(m)).then_some(m)
+        let other = m != self.module && self.modules.contains(m);
+        if other && !self.uses.contains(m) && !self.generated.get() && name != "alloc.create" && name != "alloc.array" {
+            self.fail(at, format!("'{name}' is in module {m}, which this file does not import: add (import {m})"));
+        }
+        other.then_some(m)
     }
 
     fn fail(&self, at: (u32, u32), msg: String) {
@@ -722,7 +802,7 @@ impl Names<'_> {
 
     /// `name` (canonical) may be used here: it is this module's, or (pub).
     fn check_item(&self, name: &str, at: (u32, u32)) {
-        if let Some(m) = self.foreign(name) {
+        if let Some(m) = self.foreign(name, at) {
             if !self.vis.public.contains(name) {
                 if self.vis.all.contains(name) {
                     self.fail(at, format!("'{}' is private to module {}: mark it (pub) there to use it here", name, m));
@@ -741,7 +821,7 @@ impl Names<'_> {
     /// A constant, enum, union, or one of their members (`m.Color.red`):
     /// the declaration is the first two parts.
     fn check_decl(&self, name: &str, at: (u32, u32)) {
-        if self.foreign(name).is_some() {
+        if self.foreign(name, at).is_some() {
             let decl: Vec<&str> = name.splitn(3, '.').take(2).collect();
             self.check_item(&decl.join("."), at);
         }
@@ -750,7 +830,7 @@ impl Names<'_> {
     /// Made outside its module (`new`, or a struct type argument, which
     /// lets a template make one): every field must be (pub).
     fn check_makes(&self, name: &str, at: (u32, u32)) {
-        if let Some(m) = self.foreign(name) {
+        if let Some(m) = self.foreign(name, at) {
             if let Some(fields) = self.vis.fields.get(name) {
                 if fields.values().any(|l| *l != Level::Pub) {
                     self.fail(at, format!("'{}' has fields private to module {}, so only {} can make one", name, m, m));
@@ -761,7 +841,7 @@ impl Names<'_> {
 
     /// Field `f` of struct `s` (canonical), read (get) or written (put).
     fn check_field(&self, s: &str, f: &str, put: bool, at: (u32, u32)) {
-        let Some(m) = self.foreign(s) else { return };
+        let Some(m) = self.foreign(s, at) else { return };
         let level = self.vis.fields.get(s).and_then(|fs| fs.get(f)).copied().unwrap_or(Level::Private);
         if level == Level::Private {
             self.fail(at, format!("field '{}' of {} is private to module {}", f, s, m));
@@ -865,7 +945,95 @@ impl Names<'_> {
         }
     }
 
+    /// A struct made with its fields named, (new S a [f:v ...]) or
+    /// (make V [f:v ...]) (LANGUAGE_DECISIONS.md item 4): every field once,
+    /// in declaration order, or an error; then the form it is,
+    /// (block (let _new_L_C:(ptr S) (call (alloc.create S) a)) (put _new_L_C S.f v) ... _new_L_C)
+    /// or (make V v ...), at the form's place (aipl_src/resolver.aipl
+    /// emit_named_fields alike). None for any other form.
+    fn named_fields(&self, sx: &Sx) -> Option<Sx> {
+        let items = sx.items();
+        let bracket = |e: &Sx| matches!(e, Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. });
+        let is_new = match sx.head() {
+            Some("new") if items.len() == 4 && bracket(&items[3]) => true,
+            Some("make") if items.len() == 3 && bracket(&items[2]) => false,
+            _ => return None,
+        };
+        let at = sx.position();
+        let form = if is_new { "new" } else { "make" };
+        let list = &items[if is_new { 3 } else { 2 }];
+        let entries = list.items();
+        let colon = |e: &Sx| matches!(e, Sx::Atom(Token { kind: TokenKind::Colon, .. }));
+        if !entries.len().is_multiple_of(3) || entries.chunks(3).any(|c| c[0].symbol().is_none() || !colon(&c[1])) {
+            self.fail(list.position(), format!("{form}'s fields are given as name:value, each once and in order: ({form} S{} [x:1 y:2])", if is_new { " a" } else { "" }));
+            return None;
+        }
+        let given: Vec<&str> = entries.chunks(3).map(|c| c[0].symbol().unwrap()).collect();
+        // the struct, canonical: a name, or a generic one's template
+        let s = &items[1];
+        let canonical = match (s.symbol(), s.head()) {
+            (Some(n), _) => Some(self.rename(n, 2)),
+            (None, Some(h)) => self.template_ref(h),
+            _ => None,
+        };
+        if let Some(order) = canonical.as_ref().and_then(|c| self.vis.order.get(c)) {
+            if given != *order {
+                self.fail(at, format!("{form} gives the fields [{}]; {}'s fields, each once and in order, are [{}]", given.join(" "), canonical.as_deref().unwrap_or(""), order.join(" ")));
+                return None;
+            }
+        }
+        let list_at = |items: Vec<Sx>| Sx::List { open: Token { kind: TokenKind::LParen, line: at.0, col: at.1 }, items, close: Token { kind: TokenKind::RParen, line: at.0, col: at.1 } };
+        let sym = |t: &str| Sx::Atom(Token { kind: TokenKind::Symbol(t.to_string()), line: at.0, col: at.1 });
+        let values = entries.chunks(3).map(|c| c[2].clone());
+        if !is_new {
+            let mut out = vec![items[0].clone(), s.clone()];
+            out.extend(values);
+            return Some(list_at(out));
+        }
+        let name = format!("_new_{}_{}", at.0, at.1);
+        let make = list_at(vec![sym("call"), list_at(vec![sym("alloc.create"), s.clone()]), items[2].clone()]);
+        let colon_tok = Sx::Atom(Token { kind: TokenKind::Colon, line: at.0, col: at.1 });
+        let mut out = vec![sym("block"), list_at(vec![sym("let"), sym(&name), colon_tok, list_at(vec![sym("ptr"), s.clone()]), make])];
+        for (f, v) in given.iter().zip(values) {
+            out.push(match s.symbol() {
+                Some(n) => list_at(vec![sym("put"), sym(&name), sym(&format!("{n}.{f}")), v]),
+                // a generic struct's field: (put p (Name T) f v)
+                None => list_at(vec![sym("put"), sym(&name), s.clone(), sym(f), v]),
+            });
+        }
+        out.push(sym(&name));
+        Some(list_at(out))
+    }
+
+    /// `(make V v ...)` of a value struct, its fields by position: refused
+    /// as written in source (LANGUAGE_DECISIONS.md item 4); named_fields
+    /// writes this form, after (aipl_src/resolver.aipl positional_make).
+    fn positional_make(&self, sx: &Sx) {
+        if READING_FLAT.with(|f| f.get()) {
+            return;
+        }
+        let items = sx.items();
+        if sx.head() != Some("make") || items.len() < 2 || matches!(items.last(), Some(Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. })) {
+            return;
+        }
+        let s = &items[1];
+        let canonical = match (s.symbol(), s.head()) {
+            (Some(n), _) => Some(self.rename(n, 2)),
+            (None, Some(h)) => self.template_ref(h),
+            _ => None,
+        };
+        let Some(c) = canonical.filter(|c| self.vis.values.contains(c)) else { return };
+        let fields: Vec<String> = self.vis.order.get(&c).map(|o| o.iter().map(|f| format!("{f}:v")).collect()).unwrap_or_default();
+        self.fail(sx.position(), format!("a value struct's fields are given by name, each once and in order: (make {} [{}])", c, fields.join(" ")));
+    }
+
     fn walk(&self, sx: &mut Sx, role: u8) {
+        match self.named_fields(sx) {
+            Some(r) => *sx = r,
+            // (call (make T) ...) calls a generic function named make (std/vec's)
+            None if role != 1 => self.positional_make(sx),
+            None => {}
+        }
         let at = sx.position();
         match sx {
             Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) => {
@@ -1007,7 +1175,8 @@ impl Names<'_> {
 
 /// Search order for `(import name)` (AIPL_SPEC.md section 11): the
 /// importing file's directory, the entry file's directory, the standard
-/// library (`aipl_src/std/` in this repository), then each directory of
+/// library (`$AIPL_STD`, else the library's std/: src/library.rs; the
+/// toolchain's own modules always the library's), then each directory of
 /// the colon-separated `AIPL_PATH` environment variable. First match wins.
 fn find_module_file(name: &str, importer_path: &Path, entry_path: &Path) -> Result<PathBuf, String> {
     let filename = format!("{}.aipl", name);
@@ -1020,7 +1189,8 @@ fn find_module_file(name: &str, importer_path: &Path, entry_path: &Path) -> Resu
             }
         }
     }
-    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/std").join(&filename));
+    let std = if crate::library::contains(entry_path) { crate::library::dir().join("std") } else { crate::library::std_dir() };
+    candidates.push(std.join(&filename));
     if let Ok(path) = std::env::var("AIPL_PATH") {
         for dir in path.split(':').filter(|d| !d.is_empty()) {
             candidates.push(PathBuf::from(dir).join(&filename));

@@ -5,6 +5,7 @@
 ;; instead of reading the second request's bytes.
 (module serve_keep
   (import alloc)
+  (import option)
   (import str)
   (import os)
   (import net)
@@ -25,9 +26,9 @@
     (block))
 
   (fn main [] -> (result i32 str)
-    (match_result (call net.listen (call alloc.default) (call os.arg 1))
+    (match_result (call net.listen (call alloc.default) (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
       (ok l
-        (let k:(ptr Keep) (new Keep (call alloc.default)))
+        (let k:(ptr Keep) (new Keep (call alloc.default) [has:(zero bool) last:(zero str.Bytes)]))
         (let _s:serve.Stats (call (serve.run_with (ptr Keep)) l k (ref handle) (call serve.requests (call serve.options) 2)))
         (ok:str 0))
       (err e (err:i32 (call net.message e)))))

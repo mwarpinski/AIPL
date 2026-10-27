@@ -41,7 +41,8 @@ fn flat(src: &str) -> String {
         return src.to_string();
     }
     let path = std::env::temp_dir().join(format!("aipl_selfhost_flat_{}.aipl", std::process::id()));
-    let m = Resolver::resolve_source(src, &path).expect("resolve test src");
+    // src may already be a resolved program, printed: resolve_flat reads it too
+    let m = Resolver::resolve_flat(src, &path).expect("resolve test src");
     aipl_core::printer::print_module(&m)
 }
 
@@ -174,7 +175,9 @@ fn vm_self_host_on_this_thread(src: &str, name: &str) -> Result<Vec<u8>, String>
 }
 
 fn run_rust_backend(src_path: &Path) -> Vec<u8> {
-    let module = Resolver::resolve(src_path).expect("resolve test src");
+    // the source may be a resolved program, printed (flat): resolve_flat reads it too
+    let src = std::fs::read_to_string(src_path).expect("read test src");
+    let module = Resolver::resolve_flat(&src, src_path).expect("resolve test src");
     TypeChecker::new().check_module(&module).expect("check test src");
     WasmCompiler::compile(&module).expect("compile wasm")
 }
@@ -194,12 +197,21 @@ fn assert_self_hosted_matches_rust(test_name: &str, src: &str) {
             // code generators flat, as the front end hands it over
             // a program with imports or a `for` is resolved first: the code generator reads
             // what the resolver prints (counted_loop), not the sugar
+            // and so is one in which the generics pass renames a local declared
+            // again in a sibling scope (src/scopes.rs: a name 'K.x)
+            let flat = || aipl_core::printer::print_module(&Resolver::resolve_flat(&src, &temp_src).expect("resolve test src"));
             let src = if src.contains("(import ") || src.contains("(for ") {
-                let flat = aipl_core::printer::print_module(&Resolver::resolve(&temp_src).expect("resolve test src"));
+                let flat = flat();
                 fs::write(&temp_src, &flat).unwrap();
                 flat
             } else {
-                src
+                match flat() {
+                    f if f.contains(" '") || f.contains("('") => {
+                        fs::write(&temp_src, &f).unwrap();
+                        f
+                    }
+                    _ => src,
+                }
             };
 
             let rust_bytes = run_rust_backend(&temp_src);
@@ -345,10 +357,20 @@ fn self_hosted_bytes_match_f64_sqrt() {
 /// 15, which the native backend's translator state passed in NE8).
 #[test]
 fn self_hosted_bytes_match_a_wide_struct() {
-    let fields: Vec<String> = (0..40).map(|i| format!("f{i}:{}", if i % 3 == 0 { "i64" } else { "i32" })).collect();
+    let ty = |i: usize| if i.is_multiple_of(3) { "i64" } else { "i32" };
+    let fields: Vec<String> = (0..40).map(|i| format!("f{i}:{}", ty(i))).collect();
+    // every field named, f37 and f38 given, the rest their zeros
+    let given: Vec<String> = (0..40)
+        .map(|i| match i {
+            37 => "f37:7".to_string(),
+            38 => "f38:5".to_string(),
+            _ => format!("f{i}:(zero {})", ty(i)),
+        })
+        .collect();
     let src = format!(
-        "(module wide (import alloc) (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (new W (call alloc.forever))) (put w W.f37 7) (put w W.f38 5) (+ (get w W.f37) (get w W.f38))))",
-        fields.join(" ")
+        "(module wide (import alloc) (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (new W (call alloc.forever) [{}])) (+ (get w W.f37) (get w W.f38))))",
+        fields.join(" "),
+        given.join(" ")
     );
     assert_self_hosted_matches_rust("wide", &src);
 }
@@ -399,13 +421,10 @@ fn self_hosted_bytes_match_struct() {
   (struct Point [x:i32 y:i32])
   (struct Flags [on:bool name:str])
   (fn make_point [x:i32 y:i32] -> i32
-    (let p:(ptr Point) (new Point (call alloc.forever)))
-    (put p Point.x x)
-    (put p Point.y y)
+    (let p:(ptr Point) (new Point (call alloc.forever) [x:x y:y]))
     (+ (get p Point.x) (get p Point.y)))
   (fn flags [] -> bool
-    (let f:(ptr Flags) (new Flags (call alloc.forever)))
-    (put f Flags.on true)
+    (let f:(ptr Flags) (new Flags (call alloc.forever) [on:true name:(zero str)]))
     (put f Flags.name "n")
     (let a:(arr bool) (arr.new bool (call alloc.forever) 2))
     (arr.set bool a 1 (get f Flags.on))
@@ -510,7 +529,7 @@ fn self_hosted_bytes_match_wide_results() {
 fn self_hosted_bytes_match_with_visibility_marks() {
     assert_self_hosted_matches_rust(
         "marks",
-        "(module m (import alloc) (struct P [(read x:i32) (pub y:i32) z:i32] (pub)) (fn f [] -> i32 (pub) (let p:(ptr P) (new P (call alloc.forever))) (put p P.y 4) (+ (get p P.y) (get p P.x))))",
+        "(module m (import alloc) (struct P [(read x:i32) (pub y:i32) z:i32] (pub)) (fn f [] -> i32 (pub) (let p:(ptr P) (new P (call alloc.forever) [x:(zero i32) y:4 z:(zero i32)])) (+ (get p P.y) (get p P.x))))",
     );
 }
 
@@ -548,8 +567,7 @@ fn self_hosted_bytes_match_i64() {
   (fn cmp [a:i64 b:i64] -> i32 (unsafe)
     (if (and (lte a b) (neq a 0i64)) (i32.wrap (shru b 1i64)) -1))
   (fn acc [n:i32] -> i64 (unsafe)
-    (let s:(ptr Acc) (new Acc (call alloc.forever)))
-    (put s Acc.total 0i64)
+    (let s:(ptr Acc) (new Acc (call alloc.forever) [flag:(zero bool) total:0i64 n:(zero i32)]))
     (counted_loop i 1 n 1
       (put s Acc.total (+ (get s Acc.total) (i64.extend_u i))))
     (let arr:(arr i64) (arr.new i64 (call alloc.forever) 4))
@@ -673,9 +691,7 @@ fn self_hosted_bytes_match_pointers() {
 (module list (import alloc)
   (struct Node [val:i32 next:(ptr Node)])
   (fn push [head:(ptr Node) v:i32] -> (ptr Node)
-    (let n:(ptr Node) (new Node (call alloc.forever)))
-    (put n Node.val v)
-    (put n Node.next head)
+    (let n:(ptr Node) (new Node (call alloc.forever) [val:v next:head]))
     n)
   (fn sum [] -> i32
     (let h:(ptr Node) (ptr.null Node))
@@ -692,8 +708,7 @@ fn self_hosted_bytes_match_pointers() {
   (fn f [] -> i32 (unsafe)
     (let ps:(arr (ptr P)) (arr.new (ptr P) (call alloc.forever) 4))
     (counted_loop i 0 3 1
-      (let p:(ptr P) (new P (call alloc.forever)))
-      (put p P.x (* i i))
+      (let p:(ptr P) (new P (call alloc.forever) [x:(* i i)]))
       (arr.set (ptr P) ps i p))
     (let total:i32 0)
     (counted_loop i 0 (- (arr.len ps) 1) 1
@@ -768,8 +783,9 @@ fn self_hosted_bytes_match_clock_random_stdin_paths() {
     std::fs::write(&path, r#"(module surface
   (import io)
   (import os)
+  (import str)
   (fn surface [] -> i64 (unsafe)
-    (let b:str.Bytes (call io.read_stdin))
+    (let b:str.Bytes (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str ""))))
     (let p:i32 (mem.alloc 8))
     (let ok:i32 (sys.random p 8))
     (let fd:i32 (fs.open (str.ptr "/tmp/x") (str.len "/tmp/x") 0))
@@ -848,8 +864,7 @@ fn self_hosted_bytes_match_function_refs() {
     (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) (call alloc.forever) 2))
     (arr.set (fn [i32 i32] -> i32) ops 0 (ref add))
     (arr.set (fn [i32 i32] -> i32) ops 1 (ref mul))
-    (let o:(ptr Op) (new Op (call alloc.forever)))
-    (put o Op.apply (ref mul))
+    (let o:(ptr Op) (new Op (call alloc.forever) [apply:(ref mul) name:(zero str)]))
     (let n:i64 (call_ref (fn [i64] -> i64) (ref neg) 5i64))
     (+ (call twice (arr.get (fn [i32 i32] -> i32) ops 0) 20)
        (+ (call_ref (fn [i32 i32] -> i32) (get o Op.apply) 3 4)
@@ -987,9 +1002,7 @@ fn self_hosted_bytes_match_complex() {
 (module complex (import alloc)
   (struct Node [val:i32 next:(ptr Node)])
   (fn process [n:i32] -> (result i32 i32)
-    (let head:(ptr Node) (new Node (call alloc.forever)))
-    (put head Node.val n)
-    (put head Node.next (ptr.null Node))
+    (let head:(ptr Node) (new Node (call alloc.forever) [val:n next:(ptr.null Node)]))
     (if (gt (get head Node.val) 10)
         (ok:i32 (get head Node.val))
         (err:i32 -1))))
@@ -1014,6 +1027,37 @@ fn self_hosted_bytes_match_void_and_scoping() {
     res))
 "#;
     assert_self_hosted_matches_rust("void_scope", src);
+}
+
+/// Past the self-hosted code generator's old fixed tables (16 parameters,
+/// 255 structs, unions, and variants, 64 fields, 1,024 locals, 31 call_ref
+/// signatures, 8,192 functions): they grow now, and the bytes are the Rust
+/// code generator's (docs/LAUNCH_CHECKLIST.md).
+#[test]
+fn self_hosted_bytes_match_past_the_old_table_sizes() {
+    let list = |n: usize, f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<Vec<_>>().join(" ");
+    let mut sigs = Vec::new();
+    let mut calls = Vec::new();
+    for i in 0..40 {
+        let kinds: Vec<&str> = (0..6).map(|b| if (i >> b) & 1 == 1 { "i32" } else { "f64" }).collect();
+        let params = kinds.iter().enumerate().map(|(k, t)| format!("a{k}:{t}")).collect::<Vec<_>>().join(" ");
+        let args = kinds.iter().map(|t| if *t == "i32" { "1" } else { "1.0" }).collect::<Vec<_>>().join(" ");
+        sigs.push(format!("(fn g{i} [{params}] -> i32 {i})"));
+        calls.push(format!("(set! t (+ t (call_ref (fn [{}] -> i32) (ref g{i}) {args})))", kinds.join(" ")));
+    }
+    let cases = [
+        ("params130", format!("(module m (fn f [{}] -> i32 (+ p0 p129)) (fn main [] -> i32 (call f {})))", list(130, &|i| format!("p{i}:i32")), list(130, &|i| (i % 100).to_string()))),
+        ("structs300", format!("(module m {} (fn main [] -> i32 (sizeof S299)))", list(300, &|i| format!("(struct S{i} [x:i32])")))),
+        ("fields70", format!("(module m (struct W [{}]) (fn main [] -> i32 (sizeof W)))", list(70, &|i| format!("f{i}:i32")))),
+        ("unions300", format!("(module m {} (fn main [] -> i32 (match (make U299.b 4) (U299.a 0) (U299.b [x] x))))", list(300, &|i| format!("(union U{i} [(a) (b x:i32)])")))),
+        ("variants300", format!("(module m (union V [{}]) (fn main [] -> i32 (match (make V.v299 5) (V.v299 [x] x) (else 0))))", list(300, &|i| format!("(v{i} x:i32)")))),
+        ("locals1100", format!("(module m (fn main [] -> i32 {} l1099))", list(1100, &|i| format!("(let l{i}:i32 {})", i % 7)))),
+        ("sigs40", format!("(module m {} (fn main [] -> i32 (let t:i32 0) {} t))", sigs.join(" "), calls.join(" "))),
+        ("fns9000", format!("(module m {} (fn main [] -> i32 (call h8999)))", list(9000, &|i| format!("(fn h{i} [] -> i32 {})", i % 5)))),
+    ];
+    for (name, src) in cases {
+        assert_self_hosted_matches_rust(name, &src);
+    }
 }
 
 /// Runs the self-hosted output under wasmtime with a WASI context and a
@@ -1302,8 +1346,7 @@ fn self_hosted_bytes_match_consts_and_enums() {
   (fn same [a:Kind b:Kind] -> bool (eq a b))
   (fn bump [k:Kind] -> (result Kind i32) (ok:i32 (enum.cast Kind (+ (enum.ord k) 1))))
   (fn main [] -> i32
-    (let n:(ptr Node) (new Node (call alloc.forever)))
-    (put n Node.kind Kind.group)
+    (let n:(ptr Node) (new Node (call alloc.forever) [kind:Kind.group next:(zero i32)]))
     (let ks:(arr Kind) (arr.new Kind (call alloc.forever) 3))
     (arr.set Kind ks 2 Kind.square)
     (let f:(fn [Kind Kind] -> bool) (ref same))
@@ -1332,20 +1375,6 @@ fn self_hosted_bytes_match_nested_locals() {
        (+ (block (let x:i32 40) (+ x 2))
           (match_result (block (let y:i32 5) (call g y)) (ok v (* v 100)) (err w 0))))))",
     );
-}
-
-/// Past its table limits the self-hosted compiler reports an error rather
-/// than failing: more than 1024 locals in a function is compile error 93,
-/// and more than 8192 functions is 92 (codegen.aipl's tables are bounded
-/// arrays since the CR6 rewrite, so the counts stop at the limit).
-#[test]
-fn self_hosted_table_limits_are_compile_errors() {
-    let lets: String = (0..1100).map(|i| format!("(let v{i}:i32 {i}) ")).collect();
-    let err = self_host(&format!("(module m (fn f [] -> i32 {lets} 0))")).unwrap_err();
-    assert!(err.contains("compile error 93"), "{err}");
-    let fns: String = (0..8200).map(|i| format!("(fn f{i} [] -> i32 {i}) ")).collect();
-    let err = self_host(&format!("(module m {fns})")).unwrap_err();
-    assert!(err.contains("compile error 92"), "{err}");
 }
 
 #[test]
@@ -1397,17 +1426,14 @@ fn self_hosted_bytes_match_sum_types() {
   (fn sum [l:List] -> i32 (unsafe)
     (match l (List.nil 0) (List.cons [x rest] (+ x (call sum (get rest Rest.l))))))
   (fn cons [x:i32 l:List] -> List (unsafe)
-    (let r:(ptr Rest) (new Rest (call alloc.forever)))
-    (put r Rest.l l)
+    (let r:(ptr Rest) (new Rest (call alloc.forever) [l:l]))
     (make List.cons x r))
   (fn code [c:Color] -> i32 (unsafe) (match c (Color.red 1) (Color.blue 3) (else 2)))
   (fn always [c:Color] -> i32 (unsafe) (match c (else 7)))
   (fn effect [s:Shape] -> void (unsafe)
     (match s (Shape.empty (mem.store32 2048 1)) (else (mem.store32 2048 2))))
   (fn main [] -> i32 (unsafe)
-    (let h:(ptr Holder) (new Holder (call alloc.forever)))
-    (put h Holder.s (make Shape.rect 3 (match (make Shape.circle 2.0) (Shape.circle [q] (i32.wrap (i64.trunc_f64_s q))) (else 0))))
-    (put h Holder.c Color.blue)
+    (let h:(ptr Holder) (new Holder (call alloc.forever) [s:(make Shape.rect 3 (match (make Shape.circle 2.0) (Shape.circle [q] (i32.wrap (i64.trunc_f64_s q))) (else 0))) c:Color.blue]))
     (call effect (get h Holder.s))
     (let l:List (call cons 1 (call cons 2 (make List.nil))))
     (+ (i32.wrap (call area (get h Holder.s))) (+ (call sum l) (+ (call code (get h Holder.c)) (call always Color.red))))))",

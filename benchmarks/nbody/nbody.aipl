@@ -18,7 +18,9 @@
   ;; masses in solar masses
   (fn body [x:f64 y:f64 z:f64 vx:f64 vy:f64 vz:f64 m:f64] -> Body
     (let dpy:f64 365.24)
-    (make Body (make Vec3 x y z) (make Vec3 (* vx dpy) (* vy dpy) (* vz dpy)) (* m (call solar_mass))))
+    (make Body [pos:(make Vec3 [x:x y:y z:z])
+                vel:(make Vec3 [x:(* vx dpy) y:(* vy dpy) z:(* vz dpy)])
+                mass:(* m (call solar_mass))]))
 
   (fn solar_mass [] -> f64
     (let pi:f64 3.141592653589793)
@@ -27,7 +29,7 @@
   (fn system [] -> (arr Body)
     (let bs:(arr Body) (arr.new Body (call alloc.forever) 5))
     (let sm:f64 (call solar_mass))
-    (arr.set Body bs 0 (make Body (make Vec3 0.0 0.0 0.0) (make Vec3 0.0 0.0 0.0) sm))
+    (arr.set Body bs 0 (make Body [pos:(make Vec3 [x:0.0 y:0.0 z:0.0]) vel:(make Vec3 [x:0.0 y:0.0 z:0.0]) mass:sm]))
     ;; jupiter, saturn, uranus, neptune
     (arr.set Body bs 1 (call body 4.84143144246472090 -1.16032004402742839 -0.103622044471123109 0.00166007664274403694 0.00769901118419740425 -0.0000690460016972063023 0.000954791938424326609))
     (arr.set Body bs 2 (call body 8.34336671824457987 4.12479856412430479 -0.403523417114321381 -0.00276742510726862411 0.00499852801234917238 0.0000230417297573763929 0.000285885980666130812))
@@ -40,7 +42,9 @@
       (set! px (+ px (* (get b Body.vel Vec3.x) (get b Body.mass))))
       (set! py (+ py (* (get b Body.vel Vec3.y) (get b Body.mass))))
       (set! pz (+ pz (* (get b Body.vel Vec3.z) (get b Body.mass)))))
-    (arr.set Body bs 0 Body.vel (make Vec3 (/ (- 0.0 px) sm) (/ (- 0.0 py) sm) (/ (- 0.0 pz) sm)))
+    (arr.set Body bs 0 Body.vel (make Vec3 [x:(/ (- 0.0 px) sm)
+                                            y:(/ (- 0.0 py) sm)
+                                            z:(/ (- 0.0 pz) sm)]))
     bs)
 
   (fn energy [bs:(arr Body)] -> f64
@@ -77,24 +81,30 @@
         (let va:Vec3 (get a Body.vel))
         (let vb:Vec3 (get b Body.vel))
         (arr.set Body bs i Body.vel
-          (make Vec3 (- (get va Vec3.x) (* (* dx mj) mag)) (- (get va Vec3.y) (* (* dy mj) mag)) (- (get va Vec3.z) (* (* dz mj) mag))))
+          (make Vec3 [x:(- (get va Vec3.x) (* (* dx mj) mag))
+                      y:(- (get va Vec3.y) (* (* dy mj) mag))
+                      z:(- (get va Vec3.z) (* (* dz mj) mag))]))
         (arr.set Body bs j Body.vel
-          (make Vec3 (+ (get vb Vec3.x) (* (* dx mi) mag)) (+ (get vb Vec3.y) (* (* dy mi) mag)) (+ (get vb Vec3.z) (* (* dz mi) mag))))))
+          (make Vec3 [x:(+ (get vb Vec3.x) (* (* dx mi) mag))
+                      y:(+ (get vb Vec3.y) (* (* dy mi) mag))
+                      z:(+ (get vb Vec3.z) (* (* dz mi) mag))]))))
     (for i 0 5
       (let b:Body (arr.get Body bs i))
       (let p:Vec3 (get b Body.pos))
       (let v:Vec3 (get b Body.vel))
       (arr.set Body bs i Body.pos
-        (make Vec3 (+ (get p Vec3.x) (* dt (get v Vec3.x))) (+ (get p Vec3.y) (* dt (get v Vec3.y))) (+ (get p Vec3.z) (* dt (get v Vec3.z)))))))
+        (make Vec3 [x:(+ (get p Vec3.x) (* dt (get v Vec3.x)))
+                    y:(+ (get p Vec3.y) (* dt (get v Vec3.y)))
+                    z:(+ (get p Vec3.z) (* dt (get v Vec3.z)))]))))
 
   (fn main [] -> i32
     (let started:i64 (call time.now))
     (let n:i32 (call os.arg_int 1 1000))
     (let bs:(arr Body) (call system))
-    (call io.print_f64 (call energy bs) 9)
+    (print "{(call energy bs):.9}")
     (call io.println "")
     (for s 1 (+ n 1) (call advance bs 0.01))
-    (call io.print_f64 (call energy bs) 9)
+    (print "{(call energy bs):.9}")
     (call io.println "")
     (call time.report "nbody computed in" started)
     0))

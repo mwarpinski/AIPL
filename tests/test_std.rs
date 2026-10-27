@@ -155,10 +155,10 @@ fn std_printing_is_byte_exact_under_wasi() {
 (module printing
   (import io)
   (fn main [] -> i32
-    (call io.print_int -2147483648)
+    (print "{-2147483648}")
     (call io.println "")
-    (call io.println_int "x=" 0)
-    (call io.println_int "max " 2147483647)
+    (println "x={0}")
+    (println "max {2147483647}")
     (call io.eprintln "to stderr")
     (call io.println "done")
     7))"#).unwrap();

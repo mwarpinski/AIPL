@@ -12,12 +12,12 @@
   ;; the most a value holds: 8 scalars, of every width
   (struct Oct [a:i32 b:i64 c:f64 d:i32 e:bool f:i32 g:f64 h:i64] (value))
 
-  (fn v [x:i32 y:i32] -> V2 (make V2 x y))
+  (fn v [x:i32 y:i32] -> V2 (make V2 [x:x y:y]))
 
   (fn pick [n:i32] -> V2
     (cond
       ((lt n 0) (call v -1 -1))
-      ((eq n 0) (if (lt n 1) (make V2 0 0) (call v 1 1)))
+      ((eq n 0) (if (lt n 1) (make V2 [x:0 y:0]) (call v 1 1)))
       (else (let m:i32 (* n 2)) (call v m (+ m 1)))))
 
   ;; binders that are values, arms that yield one
@@ -25,7 +25,7 @@
     (match s
       (Shape.pt [at] at)
       (Shape.line [sg] (get sg Seg.a))
-      (Shape.none (make V2 9 9))))
+      (Shape.none (make V2 [x:9 y:9]))))
 
   (fn found [n:i32] -> (result V2 str)
     (if (gt n 0) (ok:str (call v n n)) (err:V2 "none")))
@@ -33,7 +33,7 @@
   (fn or_zero [n:i32] -> V2
     (match_result (call found n)
       (ok w w)
-      (err e (make V2 0 0))))
+      (err e (make V2 [x:0 y:0]))))
 
   ;; with ens the result waits in res, a return's too; a contract reads
   ;; from a computed value
@@ -46,12 +46,19 @@
 
   ;; reads from values that are computed, not held
   (fn far [] -> i32
-    (+ (get (call pick 3) V2.y) (get (get (make Seg (call v 1 2) (call v 3 4) true) Seg.b) V2.x)))
+    (+ (get (call pick 3) V2.y) (get (get (make Seg [a:(call v 1 2) b:(call v 3 4) on:true]) Seg.b) V2.x)))
 
-  (fn twice [p:V2] -> V2 (make V2 (* 2 (get p V2.x)) (* 2 (get p V2.y))))
+  (fn twice [p:V2] -> V2 (make V2 [x:(* 2 (get p V2.x)) y:(* 2 (get p V2.y))]))
 
   ;; 8 results; 8 parameters (more than go in registers)
-  (fn oct [n:i32] -> Oct (make Oct n (i64.extend_s (* n 2)) 0.5 (+ n 3) true 7 1.25 9i64))
+  (fn oct [n:i32] -> Oct (make Oct [a:n
+                                    b:(i64.extend_s (* n 2))
+                                    c:0.5
+                                    d:(+ n 3)
+                                    e:true
+                                    f:7
+                                    g:1.25
+                                    h:9i64]))
 
   (fn oct_sum [o:Oct] -> i32
     (+ (+ (get o Oct.a) (i32.wrap (get o Oct.b)))
@@ -64,20 +71,20 @@
     (let a:V2 (call pick 5))                                            ;; (10 11)
     (let b:V2 (call pick -3))                                           ;; (-1 -1)
     (set! total (+ total (+ (get a V2.y) (get b V2.x))))                ;; 10
-    (set! total (+ total (get (call first (make Shape.line (make Seg (call v 4 5) a false))) V2.y)))  ;; +5
+    (set! total (+ total (get (call first (make Shape.line (make Seg [a:(call v 4 5) b:a on:false]))) V2.y)))  ;; +5
     (set! total (+ total (get (call first (make Shape.pt (call pick 1))) V2.x)))  ;; +2
     (set! total (+ total (get (call first (make Shape.none)) V2.x)))   ;; +9
     (set! total (+ total (get (call or_zero 4) V2.y)))                  ;; +4
     (set! total (+ total (get (call or_zero -4) V2.y)))                 ;; +0
-    (set! total (+ total (get (call clamp (make V2 50 -3) 20) V2.x)))  ;; +20
-    (set! total (+ total (get (call clamp (make V2 5 -3) 20) V2.y)))   ;; +0
-    (set! total (+ total (get (call clamp (make V2 5 7) 20) V2.y)))    ;; +7
+    (set! total (+ total (get (call clamp (make V2 [x:50 y:-3]) 20) V2.x)))  ;; +20
+    (set! total (+ total (get (call clamp (make V2 [x:5 y:-3]) 20) V2.y)))   ;; +0
+    (set! total (+ total (get (call clamp (make V2 [x:5 y:7]) 20) V2.y)))    ;; +7
     (set! total (+ total (call far)))                                   ;; +10 = 67
     (let c:V2 (if (gt total 60) (with (with a V2.x 1) V2.y 2) b))       ;; (1 2)
     (set! total (+ total (* 10 (get c V2.y))))                          ;; +20 = 87
     ;; a heap struct holding a value that holds values; paths
-    (let bx:(ptr Box) (new Box (call alloc.forever)))
-    (put bx Box.seg (make Seg c (call v 7 8) true))
+    (let bx:(ptr Box) (new Box (call alloc.forever) [seg:(make Seg [a:c b:(call v 7 8) on:true])
+                                                     tag:(zero i64)]))
     (put bx Box.seg Seg.b (call pick 2))                                ;; (4 5)
     (put bx Box.seg Seg.a V2.y 30)
     (put bx Box.tag 5i64)
@@ -94,7 +101,7 @@
     (when (get (arr.get Seg segs 2) Seg.on) (set! total (+ total 1)))  ;; +1 = 158
     ;; a function reference that takes and gives values
     (let f:(fn [V2] -> V2) (ref twice))
-    (set! total (+ total (get (call_ref (fn [V2] -> V2) f (make V2 1 2)) V2.y)))  ;; +4
+    (set! total (+ total (get (call_ref (fn [V2] -> V2) f (make V2 [x:1 y:2])) V2.y)))  ;; +4
     ;; values as statements (dropped), and a value binder in a loop
     (for i 1 4
       (call pick i)
@@ -108,4 +115,4 @@
     (+ total (i32.wrap (get bx Box.tag))))                              ;; 219
   ;; prints the checksum the tests compare (they call checksum)
   (import io)
-  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))
+  (fn main [] -> i32 (println "checksum {(call checksum)}") 0))

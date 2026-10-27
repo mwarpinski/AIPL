@@ -62,7 +62,7 @@ fn native_main() -> Option<i32> {
         std::fs::copy(root().join("tests/aipl").join(f), dir.join(f)).unwrap();
     }
     let wrap = dir.join("wrap.aipl");
-    std::fs::write(&wrap, "(module wrap (import consts_enums) (import io)\n  (fn main [] -> i32 (call io.println_int \"\" (call consts_enums.checksum)) 0))").unwrap();
+    std::fs::write(&wrap, "(module wrap (import consts_enums) (import io)\n  (fn main [] -> i32 (println \"{(call consts_enums.checksum)}\") 0))").unwrap();
     let m = Resolver::resolve(&wrap).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     let exe = dir.join("prog");

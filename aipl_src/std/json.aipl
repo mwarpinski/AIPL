@@ -2,7 +2,7 @@
 ;;
 ;;   (match_result (call json.parse (call alloc.default) text)
 ;;     (ok v (match (call json.get v "name") ...))
-;;     (err e (call io.println_int "bad JSON at " (get e json.Error.at))))
+;;     (err e (println "bad JSON at {(get e json.Error.at)}")))
 ;;   (call json.write out v)                  ;; compact text into a buf.Buf
 ;;
 ;; Parsing is strict: UTF-8 text, the RFC's grammar exactly (no trailing
@@ -38,9 +38,7 @@
 
   ;; A member for building an object: key and value.
   (fn field [a:alloc.Allocator key:str.Bytes value:Value] -> (ptr Field) (pub) (no_leak)
-    (let f:(ptr Field) (new Field a))
-    (put f Field.key key)
-    (put f Field.value value)
+    (let f:(ptr Field) (new Field a [key:key value:value]))
     f)
 
   ;; ===== Reading values =====
@@ -158,12 +156,7 @@
   ;; An error, and the parser's own state, come from a (free an error with
   ;; free_error).
   (fn parse [a:alloc.Allocator text:str.Bytes] -> (result Value (ptr Error)) (pub) (no_leak)
-    (let p:(ptr P) (new P a))
-    (put p P.text text)
-    (put p P.pos 0)
-    (put p P.a a)
-    (put p P.depth 0)
-    (put p P.err (ptr.null Error))
+    (let p:(ptr P) (new P a [text:text pos:0 a:a depth:0 err:(ptr.null Error)]))
     (when (not (call str.valid_utf8 text)) (call fail p 0 "the text is not UTF-8"))
     (let v:Value (if (eq (get p P.err) (ptr.null Error)) (call value p) (make Value.null)))
     (when (eq (get p P.err) (ptr.null Error))
@@ -180,9 +173,7 @@
   ;; The first error wins.
   (fn fail [p:(ptr P) at:i32 what:str] -> void
     (when (neq (get p P.err) (ptr.null Error)) (return))
-    (let e:(ptr Error) (new Error (get p P.a)))
-    (put e Error.at at)
-    (put e Error.what what)
+    (let e:(ptr Error) (new Error (get p P.a) [at:at what:what]))
     (put p P.err e))
 
   (fn failed [p:(ptr P)] -> bool (neq (get p P.err) (ptr.null Error)))
@@ -484,7 +475,7 @@
     (let n_all:i32 (get all str.Bytes.len))
     (let n:i32 (- n_all k))
     (let text:(ptr buf.Buf) (call buf.make a 40))
-    (let found:Decimal (make Decimal (call str.absent) 0))
+    (let found:Decimal (make Decimal [digits:(call str.absent) n:0]))
     (for p 1 18
       ;; down: the first p digits; up: down plus one in the last place
       (let down:(arr i32) (arr.new i32 a p))
@@ -532,7 +523,7 @@
     (while (and (gt kept 1) (eq (arr.get i32 r (- kept 1)) 0)) (set! kept (- kept 1)))
     (call buf.clear out)
     (for q 0 kept (call buf.push_byte out (+ 48 (arr.get i32 r q))))
-    (make Decimal (call buf.bytes out) n))
+    (make Decimal [digits:(call buf.bytes out) n:n]))
 
   ;; ECMAScript's Number::toString for 0.digits * 10^n (k digits): plain
   ;; digits up to 21 places, then exponential; small numbers down to 1e-6.

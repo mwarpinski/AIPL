@@ -58,7 +58,7 @@ fn k_picks_tests_by_name() {
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(
         stdout(&o),
-        "tests/aipl/testing/rows.aipl\n  ok    an empty line has no fields\n  ok    three fields\n  FAIL  a struct compares by pointer, and shows its fields\n        rows.aipl:33:5: (expect (eq (call make_row 1) (call make_row 1))): left Row{n: 1, name: \"r\"}, right Row{n: 1, name: \"r\"}\n3 tests: 2 passed, 1 failed\n"
+        "tests/aipl/testing/rows.aipl\n  ok    an empty line has no fields\n  ok    three fields\n  FAIL  a struct compares by pointer, and shows its fields\n        rows.aipl:31:5: (expect (eq (call make_row 1) (call make_row 1))): left Row{n: 1, name: \"r\"}, right Row{n: 1, name: \"r\"}\n3 tests: 2 passed, 1 failed\n"
     );
     let o = aipl(&["test", "-k", "afresh", ROWS]);
     assert_eq!(o.status.code(), Some(0));

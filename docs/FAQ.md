@@ -151,6 +151,20 @@ be changed either, are held by value without being declared so whenever
 they fit (they do not contain themselves and need at most eight numbers),
 so returning an `(option.Option i32)` allocates nothing.
 
+### Why are addresses `i32`? Is there a `usize`?
+
+Addresses are `i32` because AIPL compiles to 32-bit WebAssembly, whose
+addresses are 32 bits, and there is no address-sized type like Rust's
+`usize` or C's `size_t`. A program rarely sees an address: it uses typed
+pointers, `(ptr Node)`, and arrays, `(arr i32)`, which never turn into
+numbers. Raw addresses (`ptr.addr`, `mem.load32`, `mem.alloc`) appear only
+inside `(unsafe ...)`, in a few places in the standard library and the
+compiler. So if AIPL gains a 64-bit target, the type comes with it, and
+only that marked unsafe code changes; adding it now would change the type
+of every address computation for a target that does not exist yet, and
+give models one more type to convert to and from
+([docs/design/LANGUAGE_DECISIONS.md](design/LANGUAGE_DECISIONS.md), item 7).
+
 ### How fast is it?
 
 Between C and Python. On the eight benchmarks, native executables take
@@ -177,6 +191,12 @@ Linux x86-64 is the one that is tested, and the only one with native
 executables. Elsewhere, programs compile to WebAssembly and run under the
 `aipl-run` launcher (built on wasmtime), which should work on macOS and
 Windows but is not tested there.
+
+Native executables open files with a system call that arrived in Linux
+5.6 (`openat2`), so on an older kernel, or in an x86-64 container under
+Apple's Rosetta 2, which lacks it, they cannot open files yet. Everything
+else they do works on any kernel since 3.17, and WebAssembly under
+`aipl-run` is not affected.
 
 ### Is there a package manager?
 

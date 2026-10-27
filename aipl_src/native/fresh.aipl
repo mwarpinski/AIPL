@@ -15,7 +15,8 @@
 ;;     for the child, and sends what it wrote if it exited with status 0;
 ;;     otherwise (another status, a trap, a signal, or more output than it
 ;;     keeps) a plain 500. The child's standard error is the host's, so a
-;;     trap's message and call chain are logged there;
+;;     trap's message and call chain are logged there, and the host says
+;;     there why an answer past `cap` was not sent;
 ;;   - then shuts the connection down and closes it.
 ;; One connection at a time; until the process is ended.
 (module fresh
@@ -49,7 +50,7 @@
   (struct Why [errno:i32 text:i32 len:i32] (value))
 
   (fn why [l:(ptr lower.L) errno:i32 text:str] -> Why
-    (make Why errno (call lower.data_text l text) (str.len text)))
+    (make Why [errno:errno text:(call lower.data_text l text) len:(str.len text)]))
 
   (fn syscall [c:(ptr buf.Buf) n:i32] -> void
     (call x64.mov_ri32 c (call rax) n)
@@ -92,6 +93,9 @@
     (let sa_len:i32 (call buf.len sa))
     (let failed_text:str "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 22\r\n\r\nInternal Server Error\n")
     (let failed:i32 (call lower.data_text l failed_text))
+    ;; why an answer past `cap` was not sent (src/net.rs FRESH_TOO_LONG)
+    (let too_long_text:str "the answer is more than 64 MiB, the most a fresh instance may write: sent 500 Internal Server Error\n")
+    (let too_long:i32 (call lower.data_text l too_long_text))
     (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) (call frame))
     ;; socket(family, SOCK_STREAM | SOCK_CLOEXEC, 0)
     (call x64.mov_ri32 c (call rdi) (if v4 2 10))
@@ -222,6 +226,15 @@
     (call x64.load c 32 (call rax) (call x64.mem (call rsp) (call wstatus)))
     (call x64.alu_rm c 32 (call x64.op_or) (call rax) (call x64.mem (call rsp) (call over)))
     (let send:i32 (call x64.jcc c (call x64.cc_e)))
+    ;; more than it keeps: said on standard error, write(2, text, n)
+    (call x64.load c 32 (call rax) (call x64.mem (call rsp) (call over)))
+    (call x64.test_rr c 32 (call rax) (call rax))
+    (let kept:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.mov_ri32 c (call rdi) 2)
+    (call x64.mov_ri32 c (call rsi) too_long)
+    (call x64.mov_ri32 c (call rdx) (str.len too_long_text))
+    (call syscall c 1)
+    (call x64.patch_rel32 c kept (call buf.len c))
     (call x64.mov_ri32 c (call rbx) failed)
     (call x64.mov_ri32 c (call r14) (str.len failed_text))
     (call x64.patch_rel32 c send (call buf.len c))

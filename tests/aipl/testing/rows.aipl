@@ -10,9 +10,7 @@
     (if (eq (str.len s) 0) 0 (+ 1 (call str.count_byte (call str.from_str s) 44))))
 
   (fn make_row [n:i32] -> (ptr Row)
-    (let r:(ptr Row) (new Row (call alloc.forever)))
-    (put r Row.n n)
-    (put r Row.name "r")
+    (let r:(ptr Row) (new Row (call alloc.forever) [n:n name:"r"]))
     r)
 
   (fn main [] -> i32 (let n:i32 (call parse_row "a,b")) (println "a,b has {n} fields") 0)

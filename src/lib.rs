@@ -11,6 +11,8 @@ pub mod consts;
 pub mod evalexpr;
 pub mod formats;
 pub mod leaks;
+pub mod library;
+pub mod scopes;
 pub mod sugar;
 pub mod native;
 pub mod net;

@@ -395,7 +395,11 @@ fn parsers_agree_on_original_sources() {
         assert_eq!(ours, theirs, "{name}");
         compared += 1;
     }
-    assert!(compared >= 15, "{compared}");
+    // every repository file the bare parser reads (one with a formatting
+    // form, an import's sugar, or a struct's named fields needs the resolver
+    // first): 13 since examples/spectralnorm_par.aipl makes its value
+    // structs with named fields (2026-10-26)
+    assert!(compared >= 13, "{compared}");
 }
 
 /// CK4: malformed programs reaching each of src/parser.rs's errors (and the
@@ -557,6 +561,12 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn main [] -> i32 (elif true 1)))",
     "(module m (fn main [] -> i32 (else if true 1)))",
     "(module m (fn main [] -> i32 (switch 1 (1 2))))",
+    // C's operators name the form AIPL spells them as
+    "(module m (fn main [] -> i32 (if (= 1 1) 0 1)))",
+    "(module m (fn main [] -> i32 (if (== 1 1) 0 1)))",
+    "(module m (fn main [] -> i32 (if (!= 1 2) 0 1)))",
+    "(module m (fn main [] -> i32 (if (<= 1 2) 0 1)))",
+    "(module m (fn main [] -> i32 (if (! true) 0 1)))",
     "(module m (fn main [] -> i32 (arr.of i32 1 2)))",
     "(module m (fn main [] -> i32 (if true 1)))",
     "(module m (fn main [] -> i32 (if true)))",
@@ -621,7 +631,9 @@ fn constants_expand_like_rust() {
     for rel in [
         "tests/aipl/consts_enums.aipl",
         "tests/aipl/sum_types.aipl",
-        "examples/word_count.aipl",
+        // an example with imports; formatting forms are compared split, as
+        // both leave them before the checker (Resolver::expand_flat)
+        "examples/spectralnorm_par.aipl",
         "aipl_src/consts.aipl",
         "aipl_src/codegen.aipl",
         "aipl_src/native/x64.aipl",
@@ -629,10 +641,13 @@ fn constants_expand_like_rust() {
     ] {
         let path = root().join(rel);
         let flat = aipl_core::selfhost::resolve_with_aipl(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        let theirs = aipl_core::printer::print_module(&Resolver::resolve_source(&flat, &path).unwrap());
+        let theirs = aipl_core::printer::print_module(&Resolver::expand_flat(&flat, &path).unwrap());
         let ours = front.run("expand_print", &flat).unwrap_or_else(|e| panic!("{rel}: {e}"));
         let ours = aipl_core::printer::print_module(&Parser::parse(&ours).unwrap_or_else(|e| panic!("{rel}: {e}\n{ours}")));
-        assert!(ours == theirs, "{rel}: expanded programs differ");
+        if ours != theirs {
+            let first = ours.lines().zip(theirs.lines()).find(|(a, b)| a != b);
+            panic!("{rel}: expanded programs differ, first at\n  aipl: {:?}\n  rust: {:?}", first.map(|f| f.0), first.map(|f| f.1));
+        }
         checked += 1;
     }
     assert_eq!(checked, 7);
@@ -693,7 +708,8 @@ fn constant_errors_match_word_for_word() {
 fn rust_verdict(flat: &str) -> Result<(), String> {
     // both name the file; check_text is given text, not a file
     let strip = |e: String| e.split('\n').map(|l| l.strip_prefix("m.aipl: ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
-    let m = Resolver::resolve_source(flat, Path::new("m.aipl")).map_err(strip)?;
+    // the cases are resolved programs, as checker.aipl reads them
+    let m = Resolver::resolve_flat(flat, Path::new("m.aipl")).map_err(strip)?;
     TypeChecker::new().check_module(&m).map_err(strip)
 }
 

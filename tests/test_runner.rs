@@ -52,12 +52,12 @@ fn the_runner_gives_programs_args_files_stdin_and_exit_codes() {
     std::fs::write(
         dir.join("prog.aipl"),
         r#"(module prog
-  (import io) (import str) (import os)
+  (import io) (import str) (import os) (import option)
   (fn main [] -> i32
-    (call io.println_int "argc: " (call os.arg_count))
-    (call io.println_int "stdin words: " (call str.count_words (call io.read_stdin)))
-    (let f:str.Bytes (call io.read_path (call os.arg 1)))
-    (call io.println_int "file bytes: " (get f str.Bytes.len))
+    (println "argc: {(call os.arg_count)}")
+    (block (let _shown:i32 (call str.count_words (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str ""))))) (println "stdin words: {_shown}"))
+    (let path:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (println "file bytes: {(match_result (call io.read_path path) (ok f (get f str.Bytes.len)) (err e -1))}")
     (when (gt (call os.arg_count) 2) (sys.exit 3))
     0))"#,
     )
@@ -126,8 +126,8 @@ fn null_pointers_stop_the_vm_and_compiled_code_alike() {
         "(get (ptr.null P) P.x)",
         "(block (put (ptr.null P) P.x 1) 0)",
         "(arr.len (arr.null i32))",
-        "(arr.get i32 (arr.null i32) (block (call io.println_int \"never \" 1) 0))",
-        "(block (arr.set i32 (arr.null i32) (block (call io.println_int \"never \" 1) 0) 5) 0)",
+        "(arr.get i32 (arr.null i32) (block (println \"never {1}\") 0))",
+        "(block (arr.set i32 (arr.null i32) (block (println \"never {1}\") 0) 5) 0)",
     ] {
         let src = format!("(module t (import io) (struct P [x:i32])\n  (fn main [] -> i32\n    {body}))");
         std::fs::write(dir.join("t.aipl"), &src).unwrap();
@@ -160,7 +160,7 @@ fn threads_run_under_the_runner() {
     (let b:i32 (thread.spawn (ref work) c))
     (let _x:i32 (thread.join a))
     (let _y:i32 (thread.join b))
-    (call io.println_int "total: " (mem.load32 c))
+    (println "total: {(mem.load32 c)}")
     0))"#,
     )
     .unwrap();
@@ -256,7 +256,7 @@ fn standalone_executables_for(target: &str) {
     assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{}: wasm trap: integer divide by zero\n  at main (t.aipl:1:30)\n", trapper.display()));
     std::fs::write(
         dir.join("th.aipl"),
-        "(module th (import io) (fn sq [x:i32] -> i32 (unsafe) (* x x)) (fn main [] -> i32 (unsafe) (call io.println_int \"joined: \" (thread.join (thread.spawn (ref sq) 9))) 0))",
+        "(module th (import io) (fn sq [x:i32] -> i32 (unsafe) (* x x)) (fn main [] -> i32 (unsafe) (println \"joined: {(thread.join (thread.spawn (ref sq) 9))}\") 0))",
     )
     .unwrap();
     let threaded = dir.join("threaded");

@@ -177,4 +177,5 @@ def main():
     print(f"{total} loops {'rewritten' if write else 'would be rewritten'}")
 
 
-main()
+if __name__ == '__main__':
+    main()

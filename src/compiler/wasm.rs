@@ -129,7 +129,7 @@ impl WasmCompiler {
             functions.function(base);
         }
         // A module with compiled checks (an array or struct access, a req or ens) ends
-        // with the six check helpers (`check_functions`), after every other
+        // with the check helpers (`check_functions`), after every other
         // function, each with its own type.
         let uses_checks = module_uses_checks(module);
         let checks_base = start_fn + if auto_start { 1 } else { 0 };
@@ -449,7 +449,7 @@ impl WasmCompiler {
             codes.function(&f.f);
         }
         if uses_checks {
-            for f in check_functions(&check_fns) {
+            for f in check_functions(&check_fns, max_pages) {
                 codes.function(&f.f);
             }
         }
@@ -517,7 +517,7 @@ impl WasmCompiler {
             fn_names.append(start_fn, "_start");
         }
         if uses_checks {
-            for (k, n) in ["aipl.dec", "aipl.oob", "aipl.text", "aipl.begin", "aipl.end", "aipl.null", "aipl.uaf"].iter().enumerate() {
+            for (k, n) in ["aipl.dec", "aipl.oob", "aipl.text", "aipl.begin", "aipl.end", "aipl.null", "aipl.uaf", "aipl.oom"].iter().enumerate() {
                 fn_names.append(checks_base + k as u32, n);
             }
         }
@@ -1872,7 +1872,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 compile_expr(&args[0], ctx, func)?;
                 emit_round8(func);
                 func.instruction(&Instruction::I32AtomicRmwAdd(M4));
-                emit_grow_to_cursor(func);
+                emit_grow_or_stop(func, ctx.checks.oom);
             }
             OpCode::MemGrow => {
                 compile_expr(&args[0], ctx, func)?;
@@ -2808,6 +2808,39 @@ fn emit_grow_to_cursor(func: &mut Body) {
     func.instruction(&End);
 }
 
+/// emit_grow_to_cursor for mem.alloc, which stops the program with
+/// $aipl_oom (`oom`) when memory cannot grow to hold the block, rather than
+/// trapping later at the first access past the end.
+fn emit_grow_or_stop(func: &mut Body, oom: u32) {
+    use Instruction::*;
+    let size_bytes = |func: &mut Body| {
+        func.instruction(&MemorySize(0));
+        func.instruction(&I32Const(16));
+        func.instruction(&I32Shl);
+    };
+    func.instruction(&I32Const(0));
+    func.instruction(&I32Load(M4));
+    size_bytes(func);
+    func.instruction(&I32GtU);
+    func.instruction(&If(wasm_encoder::BlockType::Empty));
+    func.instruction(&I32Const(0));
+    func.instruction(&I32Load(M4));
+    size_bytes(func);
+    func.instruction(&I32Sub);
+    func.instruction(&I32Const(65535));
+    func.instruction(&I32Add);
+    func.instruction(&I32Const(16));
+    func.instruction(&I32ShrU);
+    func.instruction(&MemoryGrow(0));
+    func.instruction(&I32Const(-1));
+    func.instruction(&I32Eq);
+    func.instruction(&If(wasm_encoder::BlockType::Empty));
+    func.instruction(&Call(oom));
+    func.instruction(&Unreachable);
+    func.instruction(&End);
+    func.instruction(&End);
+}
+
 /// The ok and err payload types of a result-typed expression (i32 for
 /// anything else, which the checker has ruled out).
 fn result_sides(ty: Type) -> (Type, Type) {
@@ -3506,11 +3539,12 @@ pub struct CheckFns {
     end: u32,
     null: u32,
     uaf: u32,
+    oom: u32,
 }
 
 impl CheckFns {
     fn at(base: u32) -> CheckFns {
-        CheckFns { dec: base, oob: base + 1, text: base + 2, begin: base + 3, end: base + 4, null: base + 5, uaf: base + 6 }
+        CheckFns { dec: base, oob: base + 1, text: base + 2, begin: base + 3, end: base + 4, null: base + 5, uaf: base + 6, oom: base + 7 }
     }
 }
 
@@ -3523,6 +3557,7 @@ fn check_signatures() -> Vec<(Vec<ValType>, Vec<ValType>)> {
         (vec![I32, I32, I32], vec![I32]),
         (vec![I32, I32, I32], vec![I32]),
         (vec![I32], vec![]),
+        (vec![], vec![]),
         (vec![], vec![]),
         (vec![], vec![]),
     ]
@@ -3543,7 +3578,10 @@ fn check_signatures() -> Vec<(Vec<ValType>, Vec<ValType>)> {
 /// - $aipl_end(end): stores the message's length in cell 96 and traps.
 /// - $aipl_null(): writes "Null pointer dereference" at RT_FAIL_TEXT, stores
 ///   its address and length in cells 92 and 96, and traps.
-fn check_functions(fns: &CheckFns) -> Vec<Body> {
+/// - $aipl_uaf(), $aipl_oom(): the same with "Use after free", and with
+///   "Out of memory: the limit is N MiB" (oom_text), for a mem.alloc that
+///   memory cannot grow to hold.
+fn check_functions(fns: &CheckFns, max_pages: u32) -> Vec<Body> {
     use Instruction::*;
     let b0 = MemArg { offset: 0, align: 0, memory_index: 0 };
 
@@ -3739,7 +3777,26 @@ fn check_functions(fns: &CheckFns) -> Vec<Body> {
     u.instruction(&I32Store(M4));
     u.instruction(&Unreachable);
     u.instruction(&End);
-    vec![d, o, t, b, e, n, u]
+
+    // $aipl_oom
+    let text = oom_text(max_pages);
+    let mut m = Body::new(vec![]);
+    emit_text_store(&mut m, &I32Const(RT_FAIL_TEXT), text.as_bytes());
+    m.instruction(&I32Const(RT_FAIL_ADDR));
+    m.instruction(&I32Const(RT_FAIL_TEXT));
+    m.instruction(&I32Store(M4));
+    m.instruction(&I32Const(RT_FAIL_LEN));
+    m.instruction(&I32Const(text.len() as i32));
+    m.instruction(&I32Store(M4));
+    m.instruction(&Unreachable);
+    m.instruction(&End);
+    vec![d, o, t, b, e, n, u, m]
+}
+
+/// What a program says when memory cannot grow to hold a mem.alloc, its
+/// limit in MiB (vm.rs alloc_bytes, codegen.aipl oom_text alike).
+pub fn oom_text(max_pages: u32) -> String {
+    format!("Out of memory: the limit is {} MiB", max_pages.min(crate::vm::MAX_PAGES as u32) / 16)
 }
 
 /// A contract: whether it is an `ens`, its condition, and its message.
@@ -4366,7 +4423,10 @@ fn module_uses_checks(module: &Module) -> bool {
         .iter()
         .any(|f| !f.contracts.is_empty());
     walk_module(module, &mut |e| {
-        if matches!(e, Expr::ArrGet { .. } | Expr::ArrSet { .. } | Expr::ArrLen { .. } | Expr::GetField { .. } | Expr::PutField { .. }) {
+        // mem.alloc stops with $aipl_oom when memory cannot grow
+        if matches!(e, Expr::ArrGet { .. } | Expr::ArrSet { .. } | Expr::ArrLen { .. } | Expr::GetField { .. } | Expr::PutField { .. })
+            || matches!(e, Expr::Op { op: OpCode::MemAlloc, .. })
+        {
             found = true;
         }
     });
@@ -4452,12 +4512,18 @@ fn io_locals(ctx: &Ctx) -> Result<(u32, u32), String> {
         .ok_or_else(|| "Wasm Codegen: internal error, I/O op in a function without I/O scratch locals".to_string())
 }
 
-/// With a WASI errno on the stack: leaves -1 if it is non-zero, otherwise the
-/// i32 loaded from `out_cell` (or 0 when there is no out-parameter). This is
-/// the VM's convention for every fs.* op: a count/fd on success, -1 on failure.
+/// With a WASI errno on the stack: leaves minus it if it is non-zero,
+/// otherwise the i32 loaded from `out_cell` (or 0 when there is no
+/// out-parameter). The convention of every fs.* op in every backend
+/// (AIPL_SPEC.md 4.C): a count or fd on success, minus the WASI errno on
+/// failure (std/io's io.Error reads it). The index scratch local holds the
+/// errno (no bounds check is pending after a host call).
 fn emit_errno_to_result(func: &mut Body, ctx: &Ctx, out_cell: Option<i32>) {
+    func.instruction(&Instruction::LocalTee(ctx.index_scratch));
     func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
-    func.instruction(&Instruction::I32Const(-1));
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::LocalGet(ctx.index_scratch));
+    func.instruction(&Instruction::I32Sub);
     func.instruction(&Instruction::Else);
     match out_cell {
         Some(cell) => {

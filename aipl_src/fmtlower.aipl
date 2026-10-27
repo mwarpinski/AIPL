@@ -625,17 +625,18 @@
   ;; in low; false (out untouched) when it has none.
   (fn lower [src:i32 len:i32 fmts:(ptr (vec.Vec (ptr checker.Fmt))) out:(ptr buf.Buf) low:(ptr origins.Origins)] -> bool (pub)
     (unsafe (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
-    (let l:(ptr L) (new L (call alloc.forever)))
-    (put l L.src src)
-    (put l L.toks toks)
-    (put l L.n (call compiler.tokenize src len toks))
-    (put l L.out out)
-    (put l L.low low)
-    (put l L.fmts fmts)
-    (put l L.fn_at 0)
-    (put l L.tries 0)
-    (put l L.dbgs 0)
-    (put l L.expects 0)
+    (let l:(ptr L) (new L (call alloc.forever) [src:src
+                                                toks:toks
+                                                n:(call compiler.tokenize src len toks)
+                                                out:out
+                                                low:low
+                                                fmts:fmts
+                                                fn_at:0
+                                                tries:0
+                                                defers:(zero (ptr (vec.Vec i32)))
+                                                rets:(zero i32)
+                                                dbgs:0
+                                                expects:0]))
     (put l L.defers (call (vec.make i32) (call alloc.default) 4))
     (put l L.rets 0)
     (let any:bool false)

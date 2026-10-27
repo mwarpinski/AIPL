@@ -14,12 +14,12 @@
   ;; A view of len bytes at the address addr, unchecked. Unsafe to call:
   ;; the memory is the caller's word.
   (fn bytes [addr:i32 len:i32] -> Bytes (pub) (unsafe)
-    (make Bytes (arr.null u8) addr len))
+    (make Bytes [data:(arr.null u8) start:addr len:len]))
 
   ;; A checked view of bytes start .. start + len - 1 of a.
   (fn of_array [a:(arr u8) start:i32 len:i32] -> Bytes (pub)
     (req (and (gte start 0) (and (gte len 0) (lte (+ start len) (arr.len a)))))
-    (make Bytes a start len))
+    (make Bytes [data:a start:start len:len]))
 
   ;; Whether b is checked (it has an array; see Bytes).
   (fn checked [b:Bytes] -> bool (pub) (neq (get b Bytes.data) (arr.null u8)))
@@ -36,7 +36,7 @@
 
   ;; The view that stands for no text where one may be missing (len -1, as
   ;; a failed read is).
-  (fn absent [] -> Bytes (pub) (make Bytes (arr.null u8) 0 -1))
+  (fn absent [] -> Bytes (pub) (make Bytes [data:(arr.null u8) start:0 len:-1]))
   ;; Whether b is text (empty or not), not absent.
   (fn present [b:Bytes] -> bool (pub) (gte (get b Bytes.len) 0))
 
@@ -56,7 +56,7 @@
   ;; (a value: nothing is allocated).
   (fn slice [b:Bytes start:i32 len:i32] -> Bytes (pub)
     (req (and (gte start 0) (and (gte len 0) (lte (+ start len) (get b Bytes.len)))))
-    (make Bytes (get b Bytes.data) (+ (get b Bytes.start) start) len))
+    (make Bytes [data:(get b Bytes.data) start:(+ (get b Bytes.start) start) len:len]))
 
   ;; Sets byte i of b to c (its low 8 bits).
   (fn set_byte [b:Bytes i:i32 c:i32] -> void (pub)
@@ -250,7 +250,8 @@
     (let i:i32 (call find b sep))
     (when (lt i 0) (return (make (option.Option Halves) none)))
     (let j:i32 (+ i (get sep Bytes.len)))
-    (make (option.Option Halves) some (make Halves (call slice b 0 i) (call slice b j (- (get b Bytes.len) j)))))
+    (make (option.Option Halves) some (make Halves [before:(call slice b 0 i)
+                                                    after:(call slice b j (- (get b Bytes.len) j))])))
 
   ;; Whether a and b are equal but for the case of ASCII letters.
   (fn eq_ignore_case [a:Bytes b:Bytes] -> bool (pub)

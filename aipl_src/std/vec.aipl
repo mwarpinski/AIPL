@@ -17,10 +17,7 @@
   (fn (make T) [a:alloc.Allocator capacity:i32] -> (ptr (Vec T)) (pub)
     (req (gte capacity 0))
     (let cap:i32 (if (lt capacity 4) 4 capacity))
-    (let v:(ptr (Vec T)) (new (Vec T) a))
-    (put v (Vec T) items (arr.new T a cap))
-    (put v (Vec T) len 0)
-    (put v (Vec T) allocator a)
+    (let v:(ptr (Vec T)) (new (Vec T) a [items:(arr.new T a cap) len:0 allocator:a]))
     v)
 
   ;; Frees the storage and the vec itself; neither may be used afterwards.
@@ -262,8 +259,7 @@
     (call (push i64) big 5000000000i64)
     (let pts:(ptr (Vec (ptr Point))) (call (make (ptr Point)) (call alloc.default) 0))
     (for i 0 5
-      (let pt:(ptr Point) (new Point (call alloc.forever)))
-      (put pt Point.x (- 10 i))
+      (let pt:(ptr Point) (new Point (call alloc.forever) [x:(- 10 i) y:(zero i32)]))
       (call (push (ptr Point)) pts pt))
     (call (sort_by (ptr Point)) pts (ref by_x))
     (when (and (eq (call (at i64) big 0) 5000000000i64) (eq (get (call (at (ptr Point)) pts 0) Point.x) 6))

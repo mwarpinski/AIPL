@@ -11,13 +11,16 @@
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
-;; The standard library is found at $AIPL_STD, else aipl_src/std/ (relative
-;; to the working directory). Exit status 0 on success, 1 on a resolve,
+;; The standard library is found at $AIPL_STD, else share/aipl/std/ beside
+;; the executable's folder, else aipl_src/std/ below the working directory
+;; (stdpath.aipl). Exit status 0 on success, 1 on a resolve,
 ;; type, compile, or write error (reported on stderr as "Error: ..."), 2 on
 ;; bad usage. WASI cannot set the execute bit, so a written executable
 ;; still needs `chmod +x`.
 (module aipl
   (import driver)
+  (import option)
+  (import stdpath)
   (import native/native)
   (import os)
   (import io)
@@ -32,6 +35,10 @@
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
+
+  ;; Argument i, whose index the caller checked against os.arg_count.
+  (fn arg [i:i32] -> str.Bytes
+    (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str "")))
 
   (fn fail [s:str] -> i32
     (call io.write_str 2 "Error: ")
@@ -52,7 +59,7 @@
   (fn main [] -> i32
     (let n:i32 (call os.arg_count))
     (when (lt n 2) (return (call usage)))
-    (let cmd:str.Bytes (call os.arg 1))
+    (let cmd:str.Bytes (call arg 1))
     (when (call str.is cmd "--version") (call io.println "aipl 0.1.0") (return 0))
     (when (call str.is cmd "doc") (return (call doc.command 2)))
     (when (not (call str.is cmd "compile")) (return (call usage)))
@@ -71,7 +78,7 @@
     (let out_i:i32 -1)
     (let i:i32 2)
     (while (lt i n)
-      (let a:str.Bytes (call os.arg i))
+      (let a:str.Bytes (call arg i))
       (cond
         ((call str.is a "--exe") (set! exe true))
         ((call str.is a "--tests") (set! tests true))
@@ -79,35 +86,35 @@
         ((call str.is a "--sandbox") (set! sandbox true))
         ((call str.is a "--max-memory")
          (when (gte (+ i 1) n) (return (call usage)))
-         (set! max_pages (call driver.memory_pages (call os.arg (+ i 1))))
+         (set! max_pages (call driver.memory_pages (call arg (+ i 1))))
          (when (lt max_pages 0)
                (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
                (call buf.push_str m "--max-memory ")
-               (call buf.push_bytes m (call os.arg (+ i 1)))
+               (call buf.push_bytes m (call arg (+ i 1)))
                (call buf.push_str m ": expected a size from 1M to 2G in whole 64K pages, as 512M")
                (return (call fail_bytes "" (call buf.bytes m))))
          (set! i (+ i 1)))
         ((call str.is a "--listen")
          (when (gte (+ i 1) n) (return (call usage)))
          ;; checked before anything is compiled, with src/net.rs parse_grant's message
-         (when (not (call native.valid_grant (call os.arg (+ i 1))))
+         (when (not (call native.valid_grant (call arg (+ i 1))))
                (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
                (call buf.push_str m "--listen ")
-               (call buf.push_bytes m (call os.arg (+ i 1)))
+               (call buf.push_bytes m (call arg (+ i 1)))
                (call buf.push_str m ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
                (return (call fail_bytes "" (call buf.bytes m))))
-         (call buf.push_bytes listen (call os.arg (+ i 1)))
+         (call buf.push_bytes listen (call arg (+ i 1)))
          (call buf.push_byte listen 10)
          (set! i (+ i 1)))
         ((call str.is a "--serve")
          (when (or (gte (+ i 1) n) (gt (call buf.len serve) 0)) (return (call usage)))
-         (when (not (call native.valid_grant (call os.arg (+ i 1))))
+         (when (not (call native.valid_grant (call arg (+ i 1))))
                (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
                (call buf.push_str m "--serve ")
-               (call buf.push_bytes m (call os.arg (+ i 1)))
+               (call buf.push_bytes m (call arg (+ i 1)))
                (call buf.push_str m ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
                (return (call fail_bytes "" (call buf.bytes m))))
-         (call buf.push_bytes serve (call os.arg (+ i 1)))
+         (call buf.push_bytes serve (call arg (+ i 1)))
          (set! i (+ i 1)))
         ((call str.is a "-o")
          (when (gte (+ i 1) n) (return (call usage)))
@@ -118,10 +125,9 @@
       (set! i (+ i 1)))
     (when (or (lt in_i 0) (lt out_i 0)) (return (call usage)))
     (when (and (or sandbox (or (gt (call buf.len listen) 0) (gt (call buf.len serve) 0))) (not exe)) (return (call usage)))
-    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
-    (when (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")))
-    (let entry:str.Bytes (call os.arg in_i))
-    (let out:str.Bytes (call os.arg out_i))
+    (let std_dir:str.Bytes (call stdpath.find))
+    (let entry:str.Bytes (call arg in_i))
+    (let out:str.Bytes (call arg out_i))
     (let ea:i32 (call str.addr entry))
     (let el:i32 (get entry str.Bytes.len))
     (let da:i32 (call str.addr std_dir))
@@ -144,7 +150,7 @@
           (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen) (call buf.bytes serve)))
           (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
           (set! bytes (get o native.Output.exe)))
-    (when (neq (call io.write_path out bytes) (get bytes str.Bytes.len))
+    (when (match_result (call io.write_path out bytes) (ok wrote (neq wrote (get bytes str.Bytes.len))) (err e true))
         (return (call fail_bytes "cannot write " out)))
     (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
     (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))

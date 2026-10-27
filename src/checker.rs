@@ -455,10 +455,6 @@ pub struct TypeChecker {
     union_defs: HashMap<String, UnionDef>,
     /// Number of while/loop bodies enclosing the expression being checked.
     loop_depth: std::cell::Cell<u32>,
-    /// Every name declared in the function being checked, with its type: a
-    /// compiled function has one local per name, so a name declared again in
-    /// another scope (a sibling block, another arm) must keep its type.
-    declared: std::cell::RefCell<HashMap<String, Type>>,
     /// Return type of the function body being checked; None inside contracts.
     return_type: std::cell::RefCell<Option<Type>>,
     /// The `Module::sources` key of the item being checked, so an error can name its file.
@@ -495,7 +491,6 @@ impl TypeChecker {
             struct_defs: Structs::default(),
             enum_defs: HashMap::new(),
             union_defs: HashMap::new(),
-            declared: std::cell::RefCell::new(HashMap::new()),
             loop_depth: std::cell::Cell::new(0),
             return_type: std::cell::RefCell::new(None),
             item: std::cell::RefCell::new(String::new()),
@@ -1026,28 +1021,11 @@ fn fits(got: &Type, want: &Type) -> bool {
         self.struct_defs.get(name)
     }
 
-    /// Records a local's declaration; see `declared`.
-    fn declare(&self, name: &str, ty: &Type, (l, c): (u32, u32)) -> Result<(), String> {
-        let mut declared = self.declared.borrow_mut();
-        match declared.get(name) {
-            Some(prev) if prev != ty => Err(format!(
-                "{}:{}: '{}' is {} here but {} elsewhere in this function; a name keeps one type per function (rename one)",
-                l, c, name, ty, prev
-            )),
-            _ => {
-                declared.insert(name.to_string(), ty.clone());
-                Ok(())
-            }
-        }
-    }
-
     fn check_fn_def(&self, f: &FnDef) -> Result<(), String> {
         self.in_unsafe_fn.set(f.is_unsafe);
         self.unsafe_depth.set(0);
         let mut env = HashMap::new();
-        self.declared.borrow_mut().clear();
         for (param_name, param_ty) in &f.params {
-            self.declared.borrow_mut().insert(param_name.clone(), param_ty.clone());
             self.validate_type(param_ty, f.span)
                 .map_err(|e| format!("{} (parameter '{}' of '{}')", e, param_name, shown(&f.name)))?;
             env.insert(param_name.clone(), param_ty.clone());
@@ -1176,7 +1154,7 @@ fn fits(got: &Type, want: &Type) -> bool {
             }
             Expr::Let { name, ty, val, .. } => {
                 if env.contains_key(name) {
-                    return Err(format!("{}:{}: Cannot shadow existing variable '{}'", l, c, name));
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}'", l, c, shown(name)));
                 }
                 self.validate_type(ty, (l, c))?;
                 let val_ty = self.infer_expr_type(val, env)?;
@@ -1186,7 +1164,6 @@ fn fits(got: &Type, want: &Type) -> bool {
                         l, c, ty, val_ty, self.fit_why(&val_ty, ty, val)
                     ));
                 }
-                self.declare(name, ty, (l, c))?;
                 env.insert(name.clone(), ty.clone());
                 Ok(Type::Void)
             }
@@ -1235,10 +1212,9 @@ fn fits(got: &Type, want: &Type) -> bool {
                     return Err(format!("{}:{}: Loop bounds and step must be i32", l, c));
                 }
                 if env.contains_key(var) {
-                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in loop", l, c, var));
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in loop", l, c, shown(var)));
                 }
                 let mut local_env = env.clone();
-                self.declare(var, &Type::I32, (l, c))?;
                 local_env.insert(var.clone(), Type::I32);
                 self.check_loop_body(body, &mut local_env)?;
                 Ok(Type::Void)
@@ -1619,7 +1595,7 @@ fn fits(got: &Type, want: &Type) -> bool {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::Str {
                             return Err(format!(
-                                "{}:{}: sys.print prints str values, got {}; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)",
+                                "{}:{}: sys.print prints str values, got {}; for numbers and other values use the format forms, (print \"{{n}}\") or (println \"n: {{n}}\")",
                                 l, c, t
                             ));
                         }
@@ -1857,10 +1833,9 @@ fn fits(got: &Type, want: &Type) -> bool {
                 };
 
                 if env.contains_key(ok_var) {
-                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result ok arm", l, c, ok_var));
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result ok arm", l, c, shown(ok_var)));
                 }
                 let mut ok_env = env.clone();
-                self.declare(ok_var, &ok_ty, (l, c))?;
                 ok_env.insert(ok_var.clone(), ok_ty);
                 let mut last_ok_ty = Type::Void;
                 for stmt in ok_body {
@@ -1868,10 +1843,9 @@ fn fits(got: &Type, want: &Type) -> bool {
                 }
 
                 if env.contains_key(err_var) {
-                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result err arm", l, c, err_var));
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result err arm", l, c, shown(err_var)));
                 }
                 let mut err_env = env.clone();
-                self.declare(err_var, &err_ty, (l, c))?;
                 err_env.insert(err_var.clone(), err_ty);
                 let mut last_err_ty = Type::Void;
                 for stmt in err_body {
@@ -2264,9 +2238,8 @@ fn fits(got: &Type, want: &Type) -> bool {
                             // `_` binds nothing: the field is not read
                             for (n, f) in names.iter().zip(fields.iter()).filter(|(n, _)| n.as_str() != "_") {
                                 if arm_env.contains_key(n) {
-                                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in the {}.{} arm", al, ac, n, tname, member));
+                                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in the {}.{} arm", al, ac, shown(n), tname, member));
                                 }
-                                self.declare(n, &f.ty, (al, ac))?;
                                 arm_env.insert(n.clone(), f.ty.clone());
                             }
                         }

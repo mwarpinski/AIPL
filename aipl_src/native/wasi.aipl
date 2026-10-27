@@ -44,8 +44,13 @@
 
   ;; The data the routines use: the fd table (stdio open) and the errno table.
   (fn make [l:(ptr lower.L)] -> (ptr W) (pub)
-    (let w:(ptr W) (new W (call alloc.forever)))
-    (put w W.region_routine -1)
+    (let w:(ptr W) (new W (call alloc.forever) [region_routine:-1
+                                                fd_table:(zero i32)
+                                                errno_table:(zero i32)
+                                                argc_cell:(zero i32)
+                                                argv_cell:(zero i32)
+                                                envc_cell:(zero i32)
+                                                envp_cell:(zero i32)]))
     (let fds:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (for i 0 (call fd_slots)
       (call push_u32 fds (if (lte i 2) i -1)))
@@ -68,7 +73,10 @@
     (call buf.push_byte b (bitand (shru v 16) 255))
     (call buf.push_byte b (bitand (shru v 24) 255)))
 
-  ;; Linux errno (0-63) -> WASI errno; anything unlisted is EIO (29).
+  ;; Linux errno (0-63) -> WASI errno; anything unlisted is EIO (29). EXDEV
+  ;; (18) comes only from openat2's RESOLVE_BENEATH refusing a path that
+  ;; leaves its directory, which wasmtime reports as EPERM (63), so it is
+  ;; 63 here (src/vm.rs wasi_errno alike).
   (fn errno_bytes [] -> (ptr buf.Buf)
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (for e 0 64
@@ -76,7 +84,7 @@
         (cond ((eq e 0) 0)
               ((eq e 1) 63)  ((eq e 2) 44)  ((eq e 4) 27)  ((eq e 5) 29)  ((eq e 9) 8)
               ((eq e 11) 6)  ((eq e 12) 48) ((eq e 13) 2)  ((eq e 14) 21) ((eq e 16) 10)
-              ((eq e 17) 20) ((eq e 18) 75) ((eq e 20) 54) ((eq e 21) 31) ((eq e 22) 28)
+              ((eq e 17) 20) ((eq e 18) 63) ((eq e 20) 54) ((eq e 21) 31) ((eq e 22) 28)
               ((eq e 24) 33) ((eq e 27) 22) ((eq e 28) 51) ((eq e 29) 70) ((eq e 30) 69)
               ((eq e 32) 64) ((eq e 36) 37) ((eq e 39) 55) ((eq e 40) 32)
               (else 29))))
@@ -220,6 +228,13 @@
     (call x64.store c 32 (call x64.mem_index (call r15) (call r8) 1 0) (call rbx))
     (call emit_return_errno c 0)
     (call patch_all c errs)
+    ;; reading a directory: wasmtime's directory handles cannot be read, so
+    ;; it gives EBADF where Linux gives EISDIR (src/vm.rs FsRead alike)
+    (when reading
+          (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -21)
+          (let not_dir:i32 (call x64.jcc c (call x64.cc_ne)))
+          (call emit_return_errno c 8)
+          (call x64.patch_rel32 c not_dir (call buf.len c)))
     (call emit_errno_return l w)
     (call patch_all c badf)
     (call emit_return_errno c 8))
@@ -528,6 +543,32 @@
     (call x64.syscall c)
     (call emit_return_errno c 33)
     (call x64.patch_rel32 c failed (call buf.len c))
+    ;; O_DIRECTORY | O_NOFOLLOW on a symbolic link: Linux says ENOTDIR,
+    ;; wasmtime, which does not follow the link, ELOOP (32). readlinkat
+    ;; succeeds only on a link, so it tells the two apart.
+    (let plain:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -20)
+    (call (vec.push i32) plain (call x64.jcc c (call x64.cc_ne)))
+    (call x64.mov_rr c 32 (call rcx) (call r8))
+    (call x64.alu_ri c 32 (call x64.op_and) (call rcx) 196608)
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call rcx) 196608)
+    (call (vec.push i32) plain (call x64.jcc c (call x64.cc_ne)))
+    (call x64.mov_rr c 64 (call r9) (call rax))
+    (call emit_path_to_stack l w)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 16)
+    (call x64.mov_rr c 64 (call rdx) (call rsp))
+    (call x64.mov_ri32 c (call r10) 1)
+    (call x64.mov_ri32 c (call rax) 267)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rsp) (call r12))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let not_link:i32 (call x64.jcc c (call x64.cc_s)))
+    (call emit_return_errno c 32)
+    (call x64.patch_rel32 c not_link (call buf.len c))
+    (call x64.mov_rr c 64 (call rax) (call r9))
+    (call patch_all c plain)
     (call emit_errno_return l w)
     (call patch_all c badf)
     (call emit_return_errno c 8))

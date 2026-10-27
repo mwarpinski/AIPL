@@ -7,6 +7,7 @@
 ;; file it came from).
 (module front
   (import alloc)
+  (import ast)
   (import compiler)
   (import parser)
   (import expand)
@@ -34,10 +35,10 @@
     (if (get x expand.Expanded.ok)
         (call parser.parse_tokens src (get x expand.Expanded.toks) (get x expand.Expanded.n))
         (block
-          (let r:(ptr parser.Parsed) (new parser.Parsed (call alloc.forever)))
-          (put r parser.Parsed.ok false)
-          (put r parser.Parsed.err (get x expand.Expanded.err))
-          (put r parser.Parsed.err_at (get x expand.Expanded.err_at))
+          (let r:(ptr parser.Parsed) (new parser.Parsed (call alloc.forever) [module:(zero (ptr ast.Module))
+                                                                              ok:false
+                                                                              err:(get x expand.Expanded.err)
+                                                                              err_at:(get x expand.Expanded.err_at)]))
           r)))
 
   ;; "line:col: message" for each error, one per line, counting in the

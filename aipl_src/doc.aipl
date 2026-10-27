@@ -12,8 +12,8 @@
 ;;   --private                 private items too
 ;;
 ;; Built into the self-hosted aipl (aipl.aipl calls command) and run by the
-;; Rust CLI's aipl doc (src/tools.rs). The standard library is at $AIPL_STD,
-;; else aipl_src/std/. Written with only what the stage-0 seed compiles
+;; Rust CLI's aipl doc (src/tools.rs), which sets $AIPL_STD. The standard
+;; library is found as stdpath.aipl says. Written with only what the stage-0 seed compiles
 ;; (bootstrap/README.md), since the self-hosted aipl includes it.
 (module doc
   (import str)
@@ -24,6 +24,7 @@
   (import os)
   (import fs)
   (import option)
+  (import stdpath)
 
   ;; One item of a module: its kind (fn, struct, union, enum, const,
   ;; interface), its name as written ("split", or "(unwrap_or T)" for a
@@ -151,14 +152,14 @@
           (let c:i32 0)
           (while (and (lt c (get bare str.Bytes.len)) (neq (call str.byte_at bare c) 58)) (set! c (+ c 1)))
           (set! bare (call str.slice bare 0 c)))
-    (let it:(ptr Item) (new Item (call alloc.forever)))
-    (put it Item.kind kind)
-    (put it Item.name (call slice b n0 n1))
-    (put it Item.bare bare)
-    (put it Item.from from)
-    (put it Item.to to)
-    (put it Item.line line)
-    (put it Item.doc doc)
+    (let it:(ptr Item) (new Item (call alloc.forever) [kind:kind
+                                                       name:(call slice b n0 n1)
+                                                       bare:bare
+                                                       from:from
+                                                       to:to
+                                                       line:line
+                                                       doc:doc
+                                                       public:(zero bool)]))
     ;; (pub) is one of the item's own forms
     (let public:bool false)
     (let i:i32 (call next_token b n1 to))
@@ -172,10 +173,13 @@
   ;; Reads the module in src (from path).
   (fn scan [path:str.Bytes src:str.Bytes] -> (ptr Mod)
     (let a:alloc.Allocator (call alloc.default))
-    (let m:(ptr Mod) (new Mod (call alloc.forever)))
-    (put m Mod.path path)
-    (put m Mod.src src)
-    (put m Mod.ok false)
+    (let m:(ptr Mod) (new Mod (call alloc.forever) [name:(zero str.Bytes)
+                                                    path:path
+                                                    src:src
+                                                    doc:(zero (ptr buf.Buf))
+                                                    items:(zero (ptr (vec.Vec (ptr Item))))
+                                                    types:(zero (ptr (vec.Vec str.Bytes)))
+                                                    ok:false]))
     (put m Mod.name (call str.from_str "?"))
     (put m Mod.doc (call buf.make a 64))
     (put m Mod.items (call (vec.make (ptr Item)) a 32))
@@ -413,8 +417,7 @@
 
   ;; The module at path, or null if it cannot be read.
   (fn load [path:str.Bytes] -> (ptr Mod)
-    (let src:str.Bytes (call io.read_path path))
-    (when (lt (get src str.Bytes.len) 0) (return (ptr.null Mod)))
+    (let src:str.Bytes (match_result (call io.read_path path) (ok text text) (err e (return (ptr.null Mod)))))
     (call scan path src))
 
   ;; The module a name means: a path ending in .aipl, else NAME.aipl here,
@@ -577,15 +580,14 @@
     (let check:bool false)
     (let args:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 8))
     (for i first (call os.arg_count)
-      (let x:str.Bytes (call os.arg i))
+      (let x:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str "")))
       (cond
         ((call str.is x "--private") (set! private true))
         ((call str.is x "--find") (set! find true))
         ((call str.is x "--check") (set! check true))
         ((or (call str.is x "--help") (call str.is x "-h")) (return (call usage)))
         (else (call (vec.push str.Bytes) args x))))
-    (let std:str.Bytes (call os.env "AIPL_STD"))
-    (when (lt (get std str.Bytes.len) 0) (set! std (call str.from_str "aipl_src/std/")))
+    (let std:str.Bytes (call stdpath.find))
     (let out:(ptr buf.Buf) (call buf.make a 4096))
     (let n:i32 (call (vec.len str.Bytes) args))
     (let status:i32 0)

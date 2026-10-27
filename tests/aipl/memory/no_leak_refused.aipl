@@ -11,7 +11,7 @@
   (fn uses_format [n:i32] -> str (no_leak)
     (format "n = {n}"))
   (fn uses_forever [] -> i32 (no_leak)
-    (let q:(ptr P) (new P (call alloc.forever)))
+    (let q:(ptr P) (new P (call alloc.forever) [x:(zero i32)]))
     (get q P.x))
   (fn fine [a:alloc.Allocator] -> i32 (no_leak)
     (let b:(ptr buf.Buf) (call buf.make a 16))

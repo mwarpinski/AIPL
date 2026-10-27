@@ -49,7 +49,7 @@ fn run_both(entry: &Path, f: &str) -> i32 {
 fn assert_aipl_resolver_agrees(entry: &Path) {
     let flat = aipl_core::selfhost::resolve_with_aipl(entry).unwrap_or_else(|e| panic!("aipl resolve: {e}"));
     // the flat program can hold constants (std/gen's), which need the resolver
-    let m = Resolver::resolve_source(&flat, entry).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
+    let m = Resolver::resolve_flat(&flat, entry).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat output does not check: {e}\n{flat}"));
     let same = |w: &[u8]| aipl_core::compiler::wasm::without_lines(w);
     let rust = WasmCompiler::compile(&Resolver::resolve(entry).unwrap()).unwrap();
@@ -74,9 +74,7 @@ const MAIN: &str = r#"(module main (import alloc)
       (and (eq (get a Pair.a) (get b Pair.a)) (eq (get a Pair.b) (get b Pair.b)))))
 
   (fn pair [a:i32 b:i32] -> (ptr Pair)
-    (let p:(ptr Pair) (new Pair (call alloc.forever)))
-    (put p Pair.a a)
-    (put p Pair.b b)
+    (let p:(ptr Pair) (new Pair (call alloc.forever) [a:a b:b]))
     p)
 
   (fn std_impls [] -> i32
@@ -104,7 +102,7 @@ const SHAPES: &str = r#"(module shapes (import alloc)
   (struct Square [side:i32])
   (impl (cmp.Eq (ptr Square)) (fn same [a:(ptr Square) b:(ptr Square)] -> bool (eq (get a Square.side) (get b Square.side))))
   (fn sides [] -> i32 (pub)
-    (let s:(ptr Square) (new Square (call alloc.forever)))
+    (let s:(ptr Square) (new Square (call alloc.forever) [side:(zero i32)]))
     (if (call (cmp.Eq.same (ptr Square)) s s) 4 3)))"#;
 
 #[test]
@@ -188,8 +186,7 @@ const WHERE: &str = r#"(module main (import alloc)
   (fn main [] -> i32
     (let xs:(arr i64) (arr.new i64 (call alloc.forever) 3))
     (arr.set i64 xs 1 7i64)
-    (let s:(ptr (Set str)) (new (Set str) (call alloc.forever)))
-    (put s (Set str) n 100)
+    (let s:(ptr (Set str)) (new (Set str) (call alloc.forever) [items:(zero (arr str)) n:100]))
     (+ (get s (Set str) n) (+ (if (call (contains i64) xs 7i64) 10 0) (i32.wrap (call (largest i64) xs))))))"#;
 
 #[test]
@@ -248,9 +245,9 @@ fn templates_are_checked_once_in_both_toolchains() {
         (r#"(module m (fn (f T) [x:T] -> i32 (where (struct T)) 0) (fn main [] -> i32 0))"#, "1:11: 'T' is a struct, which is only used through a pointer: write (ptr T) (parameter 'x' of 'f<T>')"),
         (r#"(module m (import vec) (fn (g T) [v:(ptr (vec.Vec T)) x:T] -> i32 (call (vec.index_of T) v x)) (fn main [] -> i32 0))"#, "1:73: vec.index_of<T> needs (cmp.Eq T): add (where (cmp.Eq T)) to g"),
         (r#"(module m (import cmp) (fn (g T) [a:T] -> bool (call (cmp.Eq.same T) a a)) (fn main [] -> i32 0))"#, "1:54: no implementation of (cmp.Eq T): add (where (cmp.Eq T)) to g"),
-        (r#"(module m (import alloc) (fn (g T) [] -> (ptr T) (new T (call alloc.default))) (fn main [] -> i32 0))"#, "1:50: alloc.create<T>: T must be a struct, so g needs (where (struct T))"),
+        (r#"(module m (import alloc) (fn (g T) [] -> (ptr T) (call (alloc.create T) (call alloc.default))) (fn main [] -> i32 0))"#, "1:56: alloc.create<T>: T must be a struct, so g needs (where (struct T))"),
         (r#"(module m (import vec) (struct Point [x:i32]) (fn main [] -> i32 (sizeof (vec.Vec Point))))"#, "1:74: vec.Vec<Point>: T is a value type, and Point is a struct, used only through a pointer: write (ptr Point)"),
-        (r#"(module m (import alloc) (fn main [] -> i32 (sizeof (ptr.null i32)) (i32.wrap 0i64) (let p:(ptr i32) (new i32 (call alloc.default))) 0))"#, "1:102: alloc.create<i32>: T must be a struct (where (struct T)), and i32 is not one"),
+        (r#"(module m (import alloc) (fn main [] -> i32 (sizeof (ptr.null i32)) (i32.wrap 0i64) (let p:(ptr i32) (call (alloc.create i32) (call alloc.default))) 0))"#, "1:108: alloc.create<i32>: T must be a struct (where (struct T)), and i32 is not one"),
         (r#"(module m (import option) (fn main [] -> i32 (let o:(option.Option void) (make (option.Option void) none)) 0))"#, "1:53: option.Option<void>: T is a value type, and void cannot be stored"),
         (r#"(module m (fn (f T) [] -> (ptr T) (ptr.null T)) (fn main [] -> i32 0))"#, "1:11: T is a type parameter that is not a struct: to use it as one, add (where (struct T)) (return type of 'f<T>')"),
         (r#"(module m (fn (f T) [a:T] -> i32 (req 5) 0) (fn main [] -> i32 0))"#, "1:39: Contract expression in 'f<T>' must evaluate to bool, got i32"),
@@ -289,14 +286,14 @@ fn templates_are_checked_once_in_both_toolchains() {
 fn plain_type_arguments_are_checked_in_both_toolchains() {
     let header = "(module m (import alloc) (struct Box [n:i32]) (struct Holds [b:(ptr Box)] (value)) (struct Deep [h:Holds] (value)) (struct Ok2 [x:i32 y:f64] (value)) (union U [(a p:(ptr Box)) (b)]) (union V [(a x:f64) (b)]) (enum E [red green]) (struct (Pair A B) [a:A b:B] (value)) (struct (Wrap T) [p:(Pair T i32)] (value)) (union (Opt T) [(none) (some v:T)]) (fn (need T) [x:T] -> i32 (where (plain T)) 7)";
     let refused: &[(&str, &str)] = &[
-        ("(ptr Box)", "(call (need (ptr Box)) (new Box (call alloc.forever)))"),
+        ("(ptr Box)", "(call (need (ptr Box)) (new Box (call alloc.forever) [n:(zero i32)]))"),
         ("(arr i32)", "(call (need (arr i32)) (arr.new i32 (call alloc.forever) 1))"),
-        ("Holds", "(call (need Holds) (make Holds (new Box (call alloc.forever))))"),
-        ("Deep", "(call (need Deep) (make Deep (make Holds (new Box (call alloc.forever)))))"),
+        ("Holds", "(call (need Holds) (make Holds [b:(new Box (call alloc.forever) [n:(zero i32)])]))"),
+        ("Deep", "(call (need Deep) (make Deep [h:(make Holds [b:(new Box (call alloc.forever) [n:(zero i32)])])]))"),
         ("U", "(call (need U) (make U.b))"),
         // generic instances are looked into, at any depth
-        ("Pair<ptr<Box>,i32>", "(call (need (Pair (ptr Box) i32)) (make (Pair (ptr Box) i32) (new Box (call alloc.forever)) 1))"),
-        ("Wrap<arr<i32>>", "(call (need (Wrap (arr i32))) (make (Wrap (arr i32)) (make (Pair (arr i32) i32) (arr.new i32 (call alloc.forever) 1) 1)))"),
+        ("Pair<ptr<Box>,i32>", "(call (need (Pair (ptr Box) i32)) (make (Pair (ptr Box) i32) [a:(new Box (call alloc.forever) [n:(zero i32)]) b:1]))"),
+        ("Wrap<arr<i32>>", "(call (need (Wrap (arr i32))) (make (Wrap (arr i32)) [p:(make (Pair (arr i32) i32) [a:(arr.new i32 (call alloc.forever) 1) b:1])]))"),
         ("Opt<ptr<Box>>", "(call (need (Opt (ptr Box))) (make (Opt (ptr Box)) none))"),
         ("Opt<Wrap<Pair<i32,arr<f64>>>>", "(call (need (Opt (Wrap (Pair i32 (arr f64))))) (make (Opt (Wrap (Pair i32 (arr f64)))) none))"),
     ];
@@ -318,14 +315,14 @@ fn plain_type_arguments_are_checked_in_both_toolchains() {
     // plain ones: 7 each (a result is never a type argument; enums are
     // plain too, but this helper's flat output keeps their names)
     let src = format!(
-        "{header} (fn (wrap T) [x:T] -> i32 (where (plain T)) (call (need T) x)) (fn main [] -> i32 (+ (call (need i32) 1) (+ (call (need str) \"s\") (+ (call (need Ok2) (make Ok2 1 2.0)) (+ (call (need V) (make V.b)) (+ (call (need (fn [i32] -> i32)) (ref main2)) (call (wrap i64) 5i64))))))) (fn main2 [x:i32] -> i32 x))"
+        "{header} (fn (wrap T) [x:T] -> i32 (where (plain T)) (call (need T) x)) (fn main [] -> i32 (+ (call (need i32) 1) (+ (call (need str) \"s\") (+ (call (need Ok2) (make Ok2 [x:1 y:2.0])) (+ (call (need V) (make V.b)) (+ (call (need (fn [i32] -> i32)) (ref main2)) (call (wrap i64) 5i64))))))) (fn main2 [x:i32] -> i32 x))"
     );
     let entry = write_program("plain_yes", &[("main.aipl", &src)]);
     assert_eq!(run_both(&entry, "main"), 42);
     assert_aipl_resolver_agrees(&entry);
     // and generic ones whose fields, with the arguments put in, are plain
     let src = format!(
-        "{header} (fn main [] -> i32 (+ (call (need (Pair i32 f64)) (make (Pair i32 f64) 1 2.0)) (+ (call (need (Wrap f64)) (make (Wrap f64) (make (Pair f64 i32) 1.0 2))) (call (need (Opt (Pair i32 i32))) (make (Opt (Pair i32 i32)) none))))))"
+        "{header} (fn main [] -> i32 (+ (call (need (Pair i32 f64)) (make (Pair i32 f64) [a:1 b:2.0])) (+ (call (need (Wrap f64)) (make (Wrap f64) [p:(make (Pair f64 i32) [a:1.0 b:2])])) (call (need (Opt (Pair i32 i32))) (make (Opt (Pair i32 i32)) none))))))"
     );
     let entry = write_program("plain_generic_yes", &[("main.aipl", &src)]);
     assert_eq!(run_both(&entry, "main"), 21);
@@ -344,10 +341,7 @@ fn templates_within_their_clauses_check_and_run() {
   (union (Tree T) [(leaf) (node n:(ptr (Node T)))])
   (struct (Node T) [l:(Tree T) v:T r:(Tree T)])
   (fn (node T) [l:(Tree T) v:T r:(Tree T)] -> (Tree T)
-    (let n:(ptr (Node T)) (new (Node T) (call alloc.default)))
-    (put n (Node T) l l)
-    (put n (Node T) v v)
-    (put n (Node T) r r)
+    (let n:(ptr (Node T)) (new (Node T) (call alloc.default) [l:l v:v r:r]))
     (make (Tree T) node n))
   (fn (insert T) [t:(Tree T) x:T] -> (Tree T) (where (cmp.Ord T))
     (match t
@@ -360,7 +354,7 @@ fn templates_within_their_clauses_check_and_run() {
   (fn (size T) [t:(Tree T)] -> i32
     (match t ((Tree T) leaf 0) ((Tree T) node [n] (+ 1 (+ (call (size T) (get n (Node T) l)) (call (size T) (get n (Node T) r)))))))
   (struct Cell [n:i32])
-  (fn (fresh S) [] -> (ptr S) (where (struct S)) (new S (call alloc.default)))
+  (fn (fresh S) [] -> (ptr S) (where (struct S)) (call (alloc.create S) (call alloc.default)))
   (fn (never_used T) [x:T] -> T x)
   (fn main [] -> i32
     (let t:(Tree str) (make (Tree str) leaf))

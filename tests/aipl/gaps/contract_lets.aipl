@@ -11,5 +11,5 @@
     (let h:i32 (/ n 2))
     h)
   (fn main [] -> i32
-    (call io.println_int "half " (call halve (call os.arg_int 1 10)))
+    (println "half {(call halve (call os.arg_int 1 10))}")
     0))

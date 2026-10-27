@@ -45,7 +45,7 @@
   ;; two came from an IPv4 address, and their bits (the last group lowest).
   (struct G [pos:i32 count:i32 v4:bool hi:i64 lo:i64] (value))
 
-  (fn no [] -> R (no_leak) (make R -1 0))
+  (fn no [] -> R (no_leak) (make R [pos:-1 val:0]))
 
   ;; The byte at i, or -1 past the end.
   (fn at [t:str.Bytes i:i32] -> i32 (no_leak)
@@ -75,7 +75,7 @@
       (set! i (+ i 1)))
     (cond ((eq n 0) (call no))
           ((and (not zero_prefix) leading_zero (gt n 1)) (call no))
-          (else (make R i v))))
+          (else (make R [pos:i val:v]))))
 
   ;; parser.rs read_ipv4_addr: the address's 32 bits.
   (fn v4 [t:str.Bytes pos:i32] -> R (no_leak)
@@ -88,7 +88,7 @@
       (when (lt (get r R.pos) 0) (return r))
       (set! v (bitor (shl v 8) (get r R.val)))
       (set! i (get r R.pos)))
-    (make R i v))
+    (make R [pos:i val:v]))
 
   ;; (hi, lo) shifted left by `bits` (0-128), as 128 bits.
   (fn shl_hi [hi:i64 lo:i64 bits:i32] -> i64 (no_leak)
@@ -116,21 +116,24 @@
         (let r:R (call v4 t j))
         (when (gte (get r R.pos) 0)
           (let bits:i64 (bitand (i64.extend_u (get r R.val)) 4294967295i64))
-          (return (make G (get r R.pos) (+ count 2) true
-                        (call shl_hi hi lo 32) (bitor (call shl_lo lo 32) bits)))))
-      (when (not sep) (return (make G i count false hi lo)))
+          (return (make G [pos:(get r R.pos)
+                           count:(+ count 2)
+                           v4:true
+                           hi:(call shl_hi hi lo 32)
+                           lo:(bitor (call shl_lo lo 32) bits)]))))
+      (when (not sep) (return (make G [pos:i count:count v4:false hi:hi lo:lo])))
       (let g:R (call number t j 16 4 65535 true))
-      (when (lt (get g R.pos) 0) (return (make G i count false hi lo)))
+      (when (lt (get g R.pos) 0) (return (make G [pos:i count:count v4:false hi:hi lo:lo])))
       (set! hi (call shl_hi hi lo 16))
       (set! lo (bitor (call shl_lo lo 16) (i64.extend_u (get g R.val))))
       (set! i (get g R.pos))
       (set! count (+ count 1)))
-    (make G i count false hi lo))
+    (make G [pos:i count:count v4:false hi:hi lo:lo]))
 
   ;; parser.rs read_ipv6_addr: the position after it (-1 if none) and its
   ;; bits, in a G.
   (fn v6 [t:str.Bytes pos:i32] -> G (no_leak)
-    (let none:G (make G -1 0 false 0i64 0i64))
+    (let none:G (make G [pos:-1 count:0 v4:false hi:0i64 lo:0i64]))
     (let h:G (call groups t pos 8))
     (when (eq (get h G.count) 8) (return h))
     ;; an IPv4 part only at the end, after `::` if there is one
@@ -140,9 +143,11 @@
     ;; `::` is at least one group, so at most 7 - head groups follow it
     (let tl:G (call groups t (+ i 2) (- 7 (get h G.count))))
     (let up:i32 (* 16 (- 8 (get h G.count))))
-    (make G (get tl G.pos) 8 false
-          (bitor (call shl_hi (get h G.hi) (get h G.lo) up) (get tl G.hi))
-          (bitor (call shl_lo (get h G.lo) up) (get tl G.lo))))
+    (make G [pos:(get tl G.pos)
+             count:8
+             v4:false
+             hi:(bitor (call shl_hi (get h G.hi) (get h G.lo) up) (get tl G.hi))
+             lo:(bitor (call shl_lo (get h G.lo) up) (get tl G.lo))]))
 
   ;; parser.rs read_port: ':' then a decimal number of 0-65535 (leading
   ;; zeros allowed, as Rust allows them).
@@ -158,11 +163,13 @@
     ;; as Rust's or_else: an IPv4 address read is the answer, whole or not
     (when (gte (get r R.pos) 0)
       (return (if (eq (get r R.pos) n)
-                  (make (option.Option Addr) some (make Addr false 0i64 (bitand (i64.extend_u (get r R.val)) 4294967295i64)))
+                  (make (option.Option Addr) some (make Addr [v6:false
+                                                              hi:0i64
+                                                              lo:(bitand (i64.extend_u (get r R.val)) 4294967295i64)]))
                   (make (option.Option Addr) none))))
     (let g:G (call v6 t 0))
     (if (eq (get g G.pos) n)
-        (make (option.Option Addr) some (make Addr true (get g G.hi) (get g G.lo)))
+        (make (option.Option Addr) some (make Addr [v6:true hi:(get g G.hi) lo:(get g G.lo)]))
         (make (option.Option Addr) none)))
 
   ;; The endpoint `t` is, all of it: `a.b.c.d:port` or `[v6]:port` (Rust's
@@ -176,7 +183,10 @@
       (when (gte (get p R.pos) 0)
         (return (if (eq (get p R.pos) n)
                     (make (option.Option Endpoint) some
-                          (make Endpoint (make Addr false 0i64 (bitand (i64.extend_u (get r R.val)) 4294967295i64)) (get p R.val)))
+                          (make Endpoint [addr:(make Addr [v6:false
+                                                           hi:0i64
+                                                           lo:(bitand (i64.extend_u (get r R.val)) 4294967295i64)])
+                                          port:(get p R.val)]))
                     none))))
     (when (neq (call at t 0) 91) (return none))
     (let g:G (call v6 t 1))
@@ -184,7 +194,10 @@
     (when (neq (call at t (get g G.pos)) 93) (return none))
     (let p:R (call port t (+ (get g G.pos) 1)))
     (if (eq (get p R.pos) n)
-        (make (option.Option Endpoint) some (make Endpoint (make Addr true (get g G.hi) (get g G.lo)) (get p R.val)))
+        (make (option.Option Endpoint) some (make Endpoint [addr:(make Addr [v6:true
+                                                                             hi:(get g G.hi)
+                                                                             lo:(get g G.lo)])
+                                                            port:(get p R.val)]))
         none))
 
   ;; ===== Tests =====

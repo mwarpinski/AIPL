@@ -300,7 +300,7 @@ fn a_view_kept_past_its_request_stops_the_program() {
         let o = finish(server);
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(!o.status.success() && err.contains("Use after free"), "{backend}: {err}");
-        assert!(err.contains("serve_keep.aipl:19:41"), "{backend}: the trap names the handler's read: {err}");
+        assert!(err.contains("serve_keep.aipl:20:41"), "{backend}: the trap names the handler's read: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -383,7 +383,7 @@ const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
 /// of itself per connection, and the launcher bundle built with it. A
 /// handler that traps answers 500 (its message and call chain go to the
 /// server's standard error), and the next request is served; so does an
-/// answer longer than a host keeps.
+/// answer longer than a host keeps, the server saying why.
 #[test]
 fn a_fresh_instance_per_request_isolates_a_crash() {
     let src = root().join("tests/aipl/net/fresh_demo.aipl");
@@ -431,6 +431,8 @@ fn a_fresh_instance_per_request_isolates_a_crash() {
         assert!(host != "aipl serve --fresh" || o.status.success(), "{host}: {err}");
         assert!(err.contains(": Array index out of bounds: index 5 for array of length 1\n  at handle (fresh_demo.aipl:32:54)\n"), "{host}: {err}");
         assert_eq!(err.matches("Array index").count(), 1, "{host}: {err}");
+        // and why /big's answer was not sent
+        assert_eq!(err.matches(aipl_core::net::FRESH_TOO_LONG).count(), 1, "{host}: {err}");
     }
     // without --fresh, the way to a long-running server
     let o = Command::new(AIPL).args(["serve", "--listen", "127.0.0.1:1"]).arg(&src).output().unwrap();
@@ -495,4 +497,24 @@ fn both_toolchains_compile_the_fresh_server_alike() {
     aipl_core::checker::TypeChecker::new().check_module(&m).unwrap();
     let rust = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
     assert_eq!(aipl_core::selfhost::compile_with_aipl(&src).unwrap(), rust);
+}
+
+/// `aipl serve --fresh` becomes the aipl-run that serves (it does not start
+/// one and wait), so ending it by its process id ends the server: nothing
+/// is left listening, and its temporary module is gone.
+#[test]
+fn ending_aipl_serve_ends_the_server() {
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let at = format!("127.0.0.1:{}", free_port("127.0.0.1"));
+    let mut server = Command::new(AIPL).args(["serve", "--fresh", "--listen", &at]).arg(&src).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let pid = server.id();
+    let start = std::time::Instant::now();
+    while std::net::TcpStream::connect(&at).is_err() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(60), "the server never listened");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    server.kill().unwrap();
+    server.wait().unwrap();
+    assert!(std::net::TcpStream::connect(&at).is_err(), "something is still listening on {at}");
+    assert!(!std::env::temp_dir().join(format!("aipl_serve_{pid}")).exists());
 }

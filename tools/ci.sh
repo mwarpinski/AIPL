@@ -6,6 +6,8 @@
 # target/ci_tests.jsonl; CI_PLAIN=1 runs plain `cargo test` instead.
 #   sh tools/ci.sh /path/to/checkout
 cd "$1" || exit 1
+# a fresh worktree has no target/ until the first build
+mkdir -p target
 L=target/ci_steps.log
 date '+%Y-%m-%d %H:%M:%S CI run' > $L
 rm -f target/ci_tests.jsonl
@@ -23,4 +25,5 @@ step "aipl test suite"; note "$(./target/release/aipl test aipl_src/test_suite.a
 step "fuzz.py"; note "$(python3 tools/fuzz.py --cases 3000 --seed 1 2>&1 | tail -1)"
 step "run_fuzz.py"; note "$(python3 tools/run_fuzz.py --cases 500 --seed 1 2>&1 | tail -1)"
 step "opt_diff.py"; note "$(python3 tools/opt_diff.py 2>&1 | tail -1)"; note "$(python3 tools/opt_diff.py --fuzz 500 --seed 1 2>&1 | tail -1)"
+step "harness selftest"; note "$(python3 tools/harness/harness.py selftest 2>&1 | tail -1)"
 step "done"

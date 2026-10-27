@@ -27,7 +27,8 @@
     (for i 0 (call (vec.len Op) ops)
       (set! total (+ total (call_ref (fn [Op i32 i32] -> i32) f (call (vec.at Op) ops i) 6 3))))
     ;; total: 6 - 3 + 6 * 3 = 21
-    (let s:(ptr pal.Swatch) (new pal.Swatch (call alloc.forever)))
+    (let s:(ptr pal.Swatch) (new pal.Swatch (call alloc.forever) [c:(zero palette.Color)
+                                                                  weight:(zero i64)]))
     (put s palette.Swatch.c (call palette.next pal.Color.blue))
     (put s pal.Swatch.weight (/ SCALE 1000000000i64))
     (let colours:(ptr (vec.Vec palette.Color)) (call palette.all))
@@ -42,4 +43,4 @@
                             (call (vec.len palette.Color) colours))))))))))     ;; 4
   ;; prints the checksum the tests compare (they call checksum)
   (import io)
-  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))
+  (fn main [] -> i32 (println "checksum {(call checksum)}") 0))

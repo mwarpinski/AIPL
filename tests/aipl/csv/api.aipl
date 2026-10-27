@@ -3,6 +3,7 @@
 ;; and a file written and read back, with try and defer.
 (module api
   (import csv)
+  (import io)
   (import str)
   (import alloc)
   (import stream)
@@ -10,7 +11,7 @@
   (import vec)
 
   (fn total [a:alloc.Allocator path:str] -> (result f64 str)
-    (let cr:(ptr csv.Reader) (try (call csv.open a path)))
+    (let cr:(ptr csv.Reader) (match_result (call csv.open a path) (ok r r) (err why (return (err:f64 (call io.message why))))))
     (defer (call csv.close cr))
     (when (not (call csv.header cr)) (return (err:f64 "no header")))
     (let price:i32 (call csv.column cr "price"))
@@ -36,7 +37,7 @@
           (call csv.field_str cw "say \"hi\"") (call csv.field_f64 cw 0.25) (call csv.field_i64 cw 2i64) (call csv.end_row cw)
           (call csv.free cw)
           (let _ok:bool (call stream.close_writer w))))
-      (err msg (println "{msg}")))
+      (err msg (println "{(call io.message msg)}")))
     (match_result (call total a "_api.csv")
       (ok sum (println "total {sum}"))
       (err why (println "error {why}")))

@@ -15,6 +15,7 @@
 ;; any that follow.
 (module cli
   (import str)
+  (import option)
   (import buf)
   (import vec)
   (import alloc)
@@ -35,20 +36,18 @@
 
   ;; A parser for the program `name`, which does `about`.
   (fn parser [a:alloc.Allocator name:str about:str] -> (ptr Parser) (pub)
-    (let p:(ptr Parser) (new Parser a))
-    (put p Parser.name name)
-    (put p Parser.about about)
-    (put p Parser.specs (call (vec.make (ptr Spec)) a 8))
-    (put p Parser.a a)
+    (let p:(ptr Parser) (new Parser a [name:name
+                                       about:about
+                                       specs:(call (vec.make (ptr Spec)) a 8)
+                                       a:a]))
     p)
 
   (fn add [p:(ptr Parser) kind:Kind name:str short:str help:str default:str] -> void
-    (let s:(ptr Spec) (new Spec (call alloc.forever)))
-    (put s Spec.kind kind)
-    (put s Spec.name name)
-    (put s Spec.short short)
-    (put s Spec.help help)
-    (put s Spec.default default)
+    (let s:(ptr Spec) (new Spec (call alloc.forever) [kind:kind
+                                                      name:name
+                                                      short:short
+                                                      help:help
+                                                      default:default]))
     (call (vec.push (ptr Spec)) (get p Parser.specs) s))
 
   ;; A flag, --name or -short (short "" for none): on when given.
@@ -158,10 +157,9 @@
   ;; first that does not fit, with a hint; "help" when --help was asked.
   (fn parse_list [p:(ptr Parser) argv:(ptr (vec.Vec str))] -> (result (ptr Args) str) (pub)
     (let a:alloc.Allocator (get p Parser.a))
-    (let args:(ptr Args) (new Args (call alloc.forever)))
-    (put args Args.names (call (vec.make str) a 8))
-    (put args Args.values (call (vec.make str) a 8))
-    (put args Args.rest (call (vec.make str) a 4))
+    (let args:(ptr Args) (new Args (call alloc.forever) [names:(call (vec.make str) a 8)
+                                                         values:(call (vec.make str) a 8)
+                                                         rest:(call (vec.make str) a 4)]))
     (let specs:(ptr (vec.Vec (ptr Spec))) (get p Parser.specs))
     ;; defaults first
     (for k 0 (call (vec.len (ptr Spec)) specs)
@@ -233,7 +231,7 @@
   ;; parse_list over the program's own arguments.
   (fn parse [p:(ptr Parser)] -> (result (ptr Args) str) (pub)
     (let argv:(ptr (vec.Vec str)) (call (vec.make str) (get p Parser.a) 8))
-    (for k 1 (call os.arg_count) (call (vec.push str) argv (call str.from_bytes (call os.arg k))))
+    (for k 1 (call os.arg_count) (call (vec.push str) argv (call str.from_bytes (call (option.unwrap_or str.Bytes) (call os.arg k) (call str.from_str "")))))
     (call parse_list p argv))
 
   ;; parse, printing the usage and exiting 0 for --help, or the error and
@@ -246,7 +244,9 @@
           (if (call str.same why "help")
               (block (print "{(call usage p)}") (sys.exit 0))
               (block (eprintln "{(get p Parser.name)}: {why} ({(get p Parser.name)} --help shows the options)") (sys.exit 2)))
-          (new Args (call alloc.forever))))))
+          (new Args (call alloc.forever) [names:(zero (ptr (vec.Vec str)))
+                                          values:(zero (ptr (vec.Vec str)))
+                                          rest:(zero (ptr (vec.Vec str)))])))))
 
   ;; ===== Values =====
 

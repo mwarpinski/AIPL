@@ -46,7 +46,7 @@
 
   ;; std/http's default limits, 64 KiB arena chunks, and no end.
   (fn options [] -> Options (pub) (no_leak)
-    (make Options (call http.default_limits) 65536 -1))
+    (make Options [limits:(call http.default_limits) arena_bytes:65536 requests:-1]))
 
   ;; o, serving n requests and then returning.
   (fn requests [o:Options n:i32] -> Options (pub) (no_leak)
@@ -82,7 +82,7 @@
           (when (call (one C) a c ctx handler (get o Options.limits)) (set! served (+ served 1)))
           (call arena.reset ar))
         (err e (block))))
-    (make Stats served (call arena.reserved ar)))
+    (make Stats [served:served arena_bytes:(call arena.reserved ar)]))
 
   ;; One connection: answered (answer), the answer sent, and closed.
   ;; Whether it answered.

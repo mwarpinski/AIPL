@@ -19,8 +19,8 @@ an example as `tour.aipl`, and run it with `aipl eval tour.aipl`.
     (* x x))
 
   (fn main [] -> i32
-    (call io.println_int "7 squared is " (call square 7))
-    (call io.println_int "3 squared plus 4 squared is " (+ (call square 3) (call square 4)))
+    (println "7 squared is {(call square 7)}")
+    (println "3 squared plus 4 squared is {(+ (call square 3) (call square 4))}")
     0))
 ```
 
@@ -99,9 +99,7 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
   (struct Point [x:i32 y:i32])
 
   (fn make_point [x:i32 y:i32] -> (ptr Point)
-    (let p:(ptr Point) (new Point (call alloc.forever)))
-    (put p Point.x x)
-    (put p Point.y y)
+    (let p:(ptr Point) (new Point (call alloc.forever) [x:x y:y]))
     p)
 
   (fn total [ps:(arr (ptr Point))] -> i32
@@ -121,8 +119,8 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
 
 It prints `total: 33`: the points are (0, 0), (1, 10), and (2, 20).
 
-`(new Point a)` makes a struct from the allocator `a` and gives a `(ptr
-Point)`; every allocation names where its memory comes from, and
+`(new Point a [x:x y:y])` makes a struct from the allocator `a`, every
+field named, and gives a `(ptr Point)`; every allocation names where its memory comes from, and
 `(call alloc.forever)` is memory kept until the program exits (a function
 that allocates usually takes the allocator as a parameter, so its caller
 decides). A pointer to one
@@ -145,7 +143,7 @@ nothing allocated, copied where it goes, never changed in place.
 
   (fn main [] -> i32
     (let ps:(arr Point) (arr.new Point (call alloc.forever) 3))
-    (for i 0 3 (arr.set Point ps i (make Point i (* i 10))))
+    (for i 0 3 (arr.set Point ps i (make Point [x:i y:(* i 10)])))
     (let q:Point (call shift (arr.get Point ps 2) 5))
     (println "shifted: ({(get q Point.x)}, {(get q Point.y)}); second y: {(arr.get Point ps 1 Point.y)}")
     0))

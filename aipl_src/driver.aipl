@@ -4,12 +4,13 @@
 ;; command that compiles AIPL with no Rust involved:
 ;;   aipl compile aipl_src/driver.aipl -o aiplc.wasm
 ;;   wasmtime run --dir . --env AIPL_PATH aiplc.wasm examples/word_count.aipl wc.wasm
-;; The standard library is found at $AIPL_STD, else aipl_src/std/ (relative to
-;; the working directory). In the VM: aipl eval aipl_src/driver.aipl -- IN OUT.
+;; The standard library is found as stdpath.aipl says ($AIPL_STD, else beside
+;; the executable, else aipl_src/std/ below the working directory). In the VM: aipl eval aipl_src/driver.aipl -- IN OUT.
 ;; A host can also call compile_file directly with paths in memory taken from
 ;; host_alloc (tests/test_resolver_aipl.rs does both).
 (module driver
   (import alloc)
+  (import option)
   (import resolver)
   (import front)
   (import checker)
@@ -24,6 +25,7 @@
   (import vec)
   (import fmtlower)
   (import codegen_opt)
+  (import stdpath)
 
   ;; status 0: the wasm module is at (addr, len)
   ;; status 1: import resolution failed; the message is at (addr, len)
@@ -87,7 +89,9 @@
     (if (or (lt pages 16i64) (gt pages 32768i64)) -1 (i32.wrap pages)))
 
   (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool max_pages:i32 opt:bool] -> (ptr Out)
-    (unsafe (let res:(ptr Out) (new Out (call alloc.forever)))
+    (unsafe (let res:(ptr Out) (new Out (call alloc.forever) [status:(zero i32)
+                                                              addr:(zero i32)
+                                                              len:(zero i32)]))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let orig:(ptr origins.Origins) (call origins.make))
@@ -122,8 +126,8 @@
           (let opt_orig:(ptr origins.Origins) (call origins.make))
           (let opt_src:str.Bytes (call codegen_opt.optimize_mapped stage (call str.absent) (ptr.null codegen_opt.Stats) low opt_orig -1))
           ;; AIPL_OPT_DUMP=FILE: the optimizer's output, for reading what it did
-          (let dump:str.Bytes (call os.env "AIPL_OPT_DUMP"))
-          (when (gt (get dump str.Bytes.len) 0) (let _w:i32 (call io.write_path dump opt_src)))
+          (let dump:str.Bytes (call (option.unwrap_or str.Bytes) (call os.env "AIPL_OPT_DUMP") (call str.from_str "")))
+          (when (gt (get dump str.Bytes.len) 0) (let _w:bool (match_result (call io.write_path dump opt_src) (ok n true) (err e false))))
           (let op:(ptr checker.Problem) (call front.check (call str.addr opt_src) (get opt_src str.Bytes.len)))
           (when (neq op (ptr.null checker.Problem))
                 (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
@@ -204,19 +208,18 @@
   ;; compile, or write error (reported on stderr), 2 on bad usage.
   (fn main [] -> i32
     (unsafe (when (neq (call os.arg_count) 3) (call io.eprintln "usage: driver ENTRY.aipl OUT.wasm") (return 2))
-    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
-    (when (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")))
-    (let entry:str.Bytes (call os.arg 1))
-    (let out:str.Bytes (call os.arg 2))
+    (let std_dir:str.Bytes (call stdpath.find))
+    (let entry:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (let out:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 2) (call str.from_str "")))
     (let res:(ptr Out) (call compile_file (call str.addr entry) (get entry str.Bytes.len)
                                           (call str.addr std_dir) (get std_dir str.Bytes.len)))
     (let status:i32 (get res Out.status))
     (cond
       ((eq status 0)
        (let wasm:str.Bytes (call str.bytes (get res Out.addr) (get res Out.len)))
-       (if (eq (call io.write_path out wasm) (get res Out.len))
+       (if (match_result (call io.write_path out wasm) (ok n (eq n (get res Out.len))) (err e false))
            (block
-             (call io.println_int "compiled, bytes: " (get res Out.len))
+             (println "compiled, bytes: {(get res Out.len)}")
              0)
            (block (call io.write_str 2 "cannot write ") (call write_err out) (call io.eprintln "") 1)))
       ((or (eq status 1) (eq status 3))

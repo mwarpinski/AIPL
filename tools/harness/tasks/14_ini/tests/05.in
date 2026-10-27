@@ -1,0 +1,300 @@
+size= x=y
+
+  user=x=y
+path = on
+[web]
+  host  =  /tmp
+ path = a b
+ host  = x=y
+[cache]
+  port= /tmp
+  level= 1
+ user= 1
+ level=  /tmp
+user  =  on
+  user=  x=y
+host = a b
+ host=  /tmp
+  path =  a b
+size=  1
+path=  a b
+[log]
+size=  /tmp
+  path =a b
+  host=on
+  user= a b
+ level = 1
+  user=  x=y
+ host  =on
+  host  = a b
+  # x = 1
+path  =a b
+ user  = 1
+[web]
+  host  =  on
+  size =  x=y
+port =  /tmp
+size  = on
+size=  /tmp
+; note
+size =  /tmp
+[db]
+ level=a b
+host =  1
+  level =a b
+  path  = on
+[log]
+  size =  a b
+user =  on
+ port =1
+  level  = a b
+port =  on
+ host=  x=y
+user=  on
+  host=  a b
+ host =a b
+  user =  on
+ level  = on
+ path  =/tmp
+  user  = /tmp
+  # x = 1
+ user =/tmp
+ user  =  /tmp
+   
+  # x = 1
+ size =  x=y
+user  =x=y
+[web]
+  host = on
+level =x=y
+path =  on
+
+ level = /tmp
+ port  =x=y
+  size= x=y
+user = on
+[web]
+  path=  x=y
+[log]
+ port =  1
+size = on
+   
+ level = x=y
+[cache]
+user =  a b
+  path=  x=y
+   
+; note
+level  =1
+; note
+host = /tmp
+[db]
+ port= x=y
+  level  =a b
+  port =  x=y
+  level =  x=y
+  path  = x=y
+  # x = 1
+  path=on
+ path = a b
+user=on
+path=on
+port = 1
+   
+path  =  1
+  path  =  /tmp
+  user  = on
+  user= x=y
+ host= 1
+[web]
+ port=  x=y
+[db]
+ level= /tmp
+path=  a b
+ host  = /tmp
+path = /tmp
+  host  = 1
+; note
+[db]
+  size=  x=y
+[log]
+level = x=y
+  level= x=y
+  level  =  a b
+ path  =  x=y
+user =  1
+ size  =  on
+  size =  /tmp
+[cache]
+   
+ level  = a b
+   
+ level = a b
+  # x = 1
+user= on
+   
+ user =/tmp
+[cache]
+ user  =a b
+[web]
+size=x=y
+user  = a b
+ path =/tmp
+[log]
+ size =  1
+  path =1
+
+  level=/tmp
+; note
+[cache]
+[db]
+user=  x=y
+[log]
+path=  on
+ port =/tmp
+  # x = 1
+size=  on
+  # x = 1
+level =x=y
+[cache]
+ port= x=y
+[web]
+  host  =/tmp
+user=  a b
+  level  =  x=y
+ host  =/tmp
+[log]
+ size =a b
+port= 1
+  path =  on
+size = on
+level=/tmp
+   
+port =  x=y
+ path = x=y
+ level =  /tmp
+  port =on
+[cache]
+host=  a b
+  port =a b
+[db]
+[db]
+  size  =on
+size= a b
+host = on
+level  = on
+ host  =1
+  port = a b
+size  =  x=y
+[db]
+ port  = 1
+port  = /tmp
+port= x=y
+size  = on
+ size  =a b
+   
+  port  =  1
+[db]
+[db]
+size  =1
+  port= on
+ host  = on
+port=  on
+ path=a b
+  size= on
+port=  on
+  port=  /tmp
+port  =  x=y
+level  =  a b
+path  = x=y
+port=  1
+[cache]
+  level  =on
+host  =  /tmp
+port  = a b
+[db]
+ host= on
+  path =  a b
+[web]
+  port=on
+port  =  /tmp
+size = 1
+  host = /tmp
+host= x=y
+  size  =x=y
+level  =a b
+; note
+ port=  a b
+  level= on
+user  =x=y
+
+[web]
+[db]
+  size=1
+user  =/tmp
+  port  =x=y
+  user=  1
+ port = /tmp
+user=on
+ port =x=y
+  size  =on
+  port  =  1
+ host  = on
+[web]
+; note
+ port=x=y
+ port =  on
+
+[db]
+  path= a b
+path =a b
+host= a b
+[cache]
+[log]
+ port  =  a b
+[cache]
+user = 1
+ host=  a b
+ port  =/tmp
+ host=a b
+  user  =x=y
+path=  1
+[log]
+path= a b
+  path =1
+  port  = on
+host  = on
+ host= /tmp
+ size  =  a b
+[db]
+  path  =  a b
+ user=1
+path =/tmp
+   
+port  = on
+ level  =  x=y
+  # x = 1
+ port= a b
+  user=on
+level=on
+  port= 1
+ path=1
+user=1
+ port =x=y
+user  =  on
+  user  =  a b
+port  =  1
+level=on
+size = on
+[cache]
+path  = 1
+ level  =  on
+  level=  on
+  user =  on
+user =  1
+level=on
+[log]
+
+ size  = 1
+[log]
+  level  =  x=y
