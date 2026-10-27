@@ -351,6 +351,17 @@ fn exit_with(program: &str, n: i64) -> ! {
 /// Flags: bit 0 sandbox, bit 1 --serve, whose address is then the grants'
 /// first line. Rust only because WASI cannot set the executable bit; the
 /// format is plain.
+/// Writes `bytes` as a new file at `path`, replacing what is there. A file
+/// that was run is never opened for writing again: macOS kills the next run
+/// of a binary rewritten in place (its code signature is stale), and Linux can
+/// refuse the open with "Text file busy" just after the old run ends.
+fn write_replacing(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = format!("{path}.tmp{}", std::process::id());
+    fs::write(&tmp, bytes).and_then(|_| fs::rename(&tmp, path)).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
+}
+
 fn write_executable(output: &str, wasm: &[u8], sandbox: bool, listen: &[String], serve: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = fs::read(runner_path()?)?;
     if bytes.ends_with(b"AIPLEXE1") || bytes.ends_with(b"AIPLEXE2") {
@@ -373,7 +384,7 @@ fn write_executable(output: &str, wasm: &[u8], sandbox: bool, listen: &[String],
     bytes.extend_from_slice(&(grants.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&(wasm.len() as u32).to_le_bytes());
     bytes.extend_from_slice(b"AIPLEXE2");
-    fs::write(output, &bytes)?;
+    write_replacing(output, &bytes)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -469,9 +480,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     return Err("Byte-parity mismatch between Rust backend and self-hosted codegen!".into());
                 }
                 say!("[AIPL Self-Host] SUCCESS: Self-hosted codegen produced 100% BIT-FOR-BIT IDENTICAL WebAssembly!");
-                fs::write(&output, &self_bytes)?;
+                write_replacing(&output, &self_bytes)?;
             } else if no_opt {
-                fs::write(&output, WasmCompiler::compile_limited(&module, max_pages)?)?;
+                write_replacing(&output, &WasmCompiler::compile_limited(&module, max_pages)?)?;
             } else {
                 // the optimizer (docs/design/OPT_PLAN.md): driver.aipl's
                 // compile_file_opt under wasmtime, after the checks above, so a
@@ -479,7 +490,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // program those passed is a toolchain bug
                 let bytes = aipl_core::selfhost::compile_optimized(Path::new(&file), max_pages, tests)
                     .map_err(|e| format!("{e}\n(the optimized build failed on a program that checks: a toolchain bug; --no-opt builds without the optimizer)"))?;
-                fs::write(&output, &bytes)?;
+                write_replacing(&output, &bytes)?;
             }
             if exe {
                 // `output` holds the module; replace it with the executable
@@ -497,7 +508,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let exe_bytes = aipl_core::native::executable_with(&wasm, sandbox, &listen, serve.as_deref()).inspect_err(|_| {
                         let _ = fs::remove_file(&output);
                     })?;
-                    fs::write(&output, &exe_bytes)?;
+                    write_replacing(&output, &exe_bytes)?;
                     // WASI cannot set the execute bit, so the host does (ROADMAP.md)
                     #[cfg(unix)]
                     {
