@@ -10,6 +10,49 @@ The bar: nothing a reader can find in five minutes is embarrassing, every
 claim survives being checked, and the pitch ("a language for AI agents")
 has evidence behind it.
 
+## Where we stand (2026-10-27)
+
+Done since this list was written: all eight language decisions
+(docs/design/LANGUAGE_DECISIONS.md), the robustness leftovers, the A/B
+harness and its tasks, the portable binary, the optimizer on by default.
+What is left, in the order to do it. Each item below points at its section.
+
+**Needed for launch**
+
+| # | Item | Who | State |
+|---|---|---|---|
+| 1 | A showcase program (section 4) | Claude | In progress: `examples/jsonpp.aipl` |
+| 2 | The evidence: run the A/B harness with other models, in fresh contexts (section 5; tools/harness/README.md), then publish the tasks, prompts, transcripts, and numbers, including where AIPL loses | Owner runs; Claude helps read the results | Harness built; no runs yet |
+| 3 | The README for newcomers (sections 4 and 7: "Later") | Claude | Not started; its examples are current |
+| 4 | Release mechanics: one last seed refresh, then merge `development` into `main` | Owner approves both | Waiting on items 1-3 |
+| 5 | The final checks (section 8): every box ticked or given a reason; tests, the AIPL suite, both fuzzers, and the benchmarks on a fresh clone from the README alone; the documentation's numbers rerun; a cold read by someone who has never seen the project; the post itself | Both | After 1-4 |
+
+**Small, soon**
+
+| # | Item | Who | State |
+|---|---|---|---|
+| 6 | Finish Task D, so native executables run under Rosetta 2: a read-only segment for the ELF headers, then merge `features/elf-offset0` (it passed the full CI on x86-64 on 2026-10-26); a seed refresh after it lets the bootstrap run under Rosetta | Claude; the seed refresh is the owner's | The CI is green; the segment and the merge are left |
+| 7 | Gemini's round 3 on the Mac mini (docs/APPLE_SILICON_HANDOFF.md, section 7): review its report, then merge its macOS test gating into `development`, so a Mac user's `cargo test` is honest | Claude reviews; the owner merges | Round 3 pushed 2026-10-26 |
+
+**After launch** (each already stated in ROADMAP.md or docs/HANDOFF.md)
+
+- the `openat2` fallback, so native executables open files on Linux before
+  5.6 and under Rosetta 2 (pinned by the owner 2026-10-26; the plan is in
+  docs/HANDOFF.md, "Open problems");
+- the rest of the way off Rust (ROADMAP.md, "Next" 3): `verify` in the
+  self-hosted command, the execute bit, an AIPL way to start a process (so
+  `eval`, `run`, `test`, and `watch` can be self-hosted, and the test
+  suite itself), an installer built from the seed, and a WebAssembly seed
+  for other platforms;
+- a native ARM64 backend (docs/design/ARM64_PLAN.md, a proposal);
+- the syntax proposals (inferred `let` types, `(f x)` without `call`, ...),
+  to be decided by the harness's numbers (docs/design/CANONICAL_PLAN.md,
+  step 7);
+- codegen_opt.aipl's pattern matcher (section 6), the self-hosted
+  compiler's double parse, exact trap positions inside format
+  placeholders (docs/HANDOFF.md), and splitting the spec into a reference
+  and a tour (section 7).
+
 ---
 
 ## 1. Correctness and robustness (blocking)
@@ -134,7 +177,7 @@ more than usual.
 
 ## 3. Claims (every sentence must survive being checked)
 
-- [ ] **Every claim in docs/notes has a checked verdict** (noted
+- [x] **Every claim in docs/notes has a checked verdict** (done 2026-10-27; noted
   2026-10-18). The notes (assessment, final_thoughts, freedom,
   kernel_notes, painpoints, pitfalls, speed-ups, arm64_build; the .txt
   originals hold more than the .md versions) are an outside model's
@@ -142,13 +185,13 @@ more than usual.
   claim gets a verdict with evidence (a test, a command, file:line): true
   and fixed, true and open (with an item here), wrong (and what shows
   it), or by design (and why), all in one document: docs/NOTES_REVIEW.md
-  (2026-10-19, all eight notes). Its open items still to do: `str.Bytes` as a
-  value struct (before L7); `io.read_file`, `os.arg`, `os.env` returning
-  len -1 instead of an Option (done 2026-10-26: Options and io.Error
-  results, docs/design/LANGUAGE_DECISIONS.md item 2); match binders
-  scoped to their arm; "Unknown op/keyword: =" suggesting `eq`; the
-  double parse in the self-hosted compiler (a large refactor, for after
-  launch). (codegen_opt type-checking its output: done 2026-10-25,
+  (2026-10-19, all eight notes). Its open items are done: `str.Bytes` as a
+  value struct (std/str.aipl, since MEMORY_PLAN.md M1); `io.read_file`,
+  `os.arg`, `os.env` returning len -1 instead of an Option (2026-10-26:
+  Options and io.Error results, docs/design/LANGUAGE_DECISIONS.md item 2);
+  match binders scoped to their arm (item 5); "Unknown op/keyword: ="
+  suggesting `eq` (item 8). Left, for after launch: the double parse in
+  the self-hosted compiler, a large refactor. (codegen_opt type-checking its output: done 2026-10-25,
   docs/design/OPT_PLAN.md step 1.)
 - [x] **`Cargo.toml`** (fixed 2026-10-06): `authors = ["AI Swarm Team <ai@antigravity.internal>"]`
   must go (use your name); the comment "Only the aipl-run launcher uses
