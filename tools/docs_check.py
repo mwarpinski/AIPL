@@ -249,8 +249,9 @@ def main():
         archive = doc.startswith(ARCHIVES)
         if archive and not show_all:
             continue
-        # a plan not started names files it would make
-        planned = "planned, not started" in "".join(open(os.path.join(ROOT, doc), encoding="utf-8").readlines()[:15])
+        # a plan not started, or only proposed, names files it would make
+        head = "".join(open(os.path.join(ROOT, doc), encoding="utf-8").readlines()[:15])
+        planned = "planned, not started" in head or "**Status: proposed" in head
         in_fence = False
         for n, line in enumerate(open(os.path.join(ROOT, doc), encoding="utf-8"), 1):
             if line.lstrip().startswith("```"):
