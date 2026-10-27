@@ -95,6 +95,7 @@ fn readelf_accepts_the_executable_when_installed() {
         "EXEC (Executable file)",
         "Advanced Micro Devices X86-64",
         "Entry point address:               0x402000",
+        "LOAD           0x000000 0x0000000000400000 0x0000000000400000 0x000120 0x000120 R   0x1000",
         "LOAD           0x001000 0x0000000000401000 0x0000000000401000 0x000017 0x000017 RW  0x1000",
         "LOAD           0x002000 0x0000000000402000 0x0000000000402000 0x000024 0x000024 R E 0x1000",
         "GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10",

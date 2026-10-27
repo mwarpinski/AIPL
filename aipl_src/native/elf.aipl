@@ -3,7 +3,9 @@
 ;; docs/design/NATIVE_BACKEND_PLAN.md).
 ;;
 ;; Layout (all page-aligned, 4 KiB pages):
-;;   file 0x0000          ELF header + 3 program headers (not loaded)
+;;   file 0x0000          ELF header + 4 program headers, loaded read-only at
+;;                        base_vaddr (0x400000): the first segment maps file
+;;                        offset 0, as Rosetta 2 requires
 ;;   file 0x1000          data, loaded read+write at data_vaddr (0x401000),
 ;;                        followed in memory by `bss` zero bytes
 ;;   file code_offset     code, loaded read+execute at code_vaddr
@@ -84,11 +86,12 @@
     (call u32 b 0)                                     ;; e_flags
     (call u16 b 64)                                    ;; e_ehsize
     (call u16 b 56)                                    ;; e_phentsize
-    (call u16 b 3)                                     ;; e_phnum
+    (call u16 b 4)                                     ;; e_phnum
     (call u16 b 64)                                    ;; e_shentsize
     (call u16 b 0)                                     ;; e_shnum
     (call u16 b 0)                                     ;; e_shstrndx
-    ;; data: read+write; code: read+execute; the stack: read+write, not executable
+    ;; the headers: read; data: read+write; code: read+execute; the stack: read+write, not executable
+    (call phdr b 1 4 0 (call base_vaddr) 288 288 (call page))   ;; 64 + 4 * 56 bytes
     (call phdr b 1 6 (get l Layout.data_offset) (get l Layout.data_vaddr) dlen (+ dlen bss) (call page))
     (call phdr b 1 5 (get l Layout.code_offset) (get l Layout.code_vaddr) clen clen (call page))
     (call phdr b 1685382481 6 0 0 0 0 16)              ;; PT_GNU_STACK (0x6474e551)
@@ -130,11 +133,14 @@
                   (and (eq (call at8 b 4096) 104)
                        (and (eq (call at8 b 8194) 195) (eq (call buf.len b) 8195)))))
         (set! p (+ p 1)))
-    ;; program headers (at 64, 56 bytes each): type and permissions; data
-    ;; read+write, code read+execute, stack read+write and never executable
-    (when (and (and (eq (call at32 b 64) 1) (eq (call at32 b 68) 6))
-             (and (and (eq (call at32 b 120) 1) (eq (call at32 b 124) 5))
-                  (and (eq (call at32 b 176) 1685382481) (eq (call at32 b 180) 6))))
+    ;; program headers (at 64, 56 bytes each): type and permissions; the
+    ;; headers read-only from file offset 0, data read+write, code
+    ;; read+execute, stack read+write and never executable
+    (when (and (and (eq (call at32 b 64) 1) (eq (call at32 b 68) 4))
+             (and (and (eq (call at32 b 72) 0) (eq (call at32 b 80) (call base_vaddr)))
+                  (and (and (eq (call at32 b 120) 1) (eq (call at32 b 124) 6))
+                       (and (and (eq (call at32 b 176) 1) (eq (call at32 b 180) 5))
+                            (and (eq (call at32 b 232) 1685382481) (eq (call at32 b 236) 6))))))
         (set! p (+ p 1)))
     p)
 )
