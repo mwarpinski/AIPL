@@ -1,0 +1,211 @@
+;; jsonpp: reads JSON, from a file or standard input, and prints it laid out
+;; for reading: one list element or object member to a line, indented.
+;;
+;;   jsonpp [--indent N] [--sort] [--compact] [--query PATH] [FILE]
+;;
+;;   --indent N     spaces per level, 0 to 16 (default 2)
+;;   --sort         put each object's members in key order
+;;   --compact      no layout: the whole value on one line
+;;   --query PATH   print only the value at PATH, as in a.b[2].c or [0].name
+;;
+;; A document that is not JSON is reported as FILE:LINE:COLUMN: what, with
+;; status 1 (standard input is named as such). Numbers and strings are written exactly as std/json writes them
+;; (as JavaScript's JSON.stringify does).
+;;
+;;   aipl compile --exe examples/jsonpp.aipl -o jsonpp
+;;   echo '{"b":[1,2,{}],"a":null}' | ./jsonpp --sort
+;;   aipl test examples/jsonpp.aipl          (the tests below)
+(module jsonpp
+  (import alloc)
+  (import buf)
+  (import cli)
+  (import io)
+  (import json)
+  (import option)
+  (import str)
+  (import vec)
+
+  ;; Where byte `at` of text is, as LINE:COLUMN, both counted from 1 (a
+  ;; column counts bytes).
+  (fn position [text:str.Bytes at:i32] -> str
+    (req (and (gte at 0) (lte at (get text str.Bytes.len))))
+    (let line:i32 1)
+    (let col:i32 1)
+    (for i 0 at
+      (if (eq (call str.byte_at text i) 10)
+          (block (set! line (+ line 1)) (set! col 1))
+          (set! col (+ col 1))))
+    (format "{line}:{col}"))
+
+  ;; The order of two members' keys: byte by byte, the shorter first when one
+  ;; begins the other. For UTF-8 that is the order of Unicode code points.
+  (fn by_key [a:(ptr json.Field) b:(ptr json.Field)] -> i32 (no_leak)
+    (let x:str.Bytes (get a json.Field.key))
+    (let y:str.Bytes (get b json.Field.key))
+    (let shorter:i32 (if (lt (get x str.Bytes.len) (get y str.Bytes.len)) (get x str.Bytes.len) (get y str.Bytes.len)))
+    (for i 0 shorter
+      (let p:i32 (call str.byte_at x i))
+      (let q:i32 (call str.byte_at y i))
+      (when (neq p q) (return (if (lt p q) -1 1))))
+    (cond
+      ((lt (get x str.Bytes.len) (get y str.Bytes.len)) -1)
+      ((gt (get x str.Bytes.len) (get y str.Bytes.len)) 1)
+      (else 0)))
+
+  ;; The members of an object in key order, as a new list.
+  (fn sorted_members [a:alloc.Allocator members:(ptr (vec.Vec (ptr json.Field)))] -> (ptr (vec.Vec (ptr json.Field)))
+    (let n:i32 (call (vec.len (ptr json.Field)) members))
+    (let copy:(ptr (vec.Vec (ptr json.Field))) (call (vec.make (ptr json.Field)) a n))
+    (for i 0 n (call (vec.push (ptr json.Field)) copy (call (vec.at (ptr json.Field)) members i)))
+    (call (vec.sort_by (ptr json.Field)) copy (ref by_key))
+    copy)
+
+  ;; A line break and `depth` levels of `width` spaces; nothing when the
+  ;; layout is compact (width below 0).
+  (fn break_line [out:(ptr buf.Buf) width:i32 depth:i32] -> void
+    (when (gte width 0)
+      (call buf.push_byte out 10)
+      (for i 0 (* width depth) (call buf.push_byte out 32))))
+
+  ;; v written to out: each list element and object member on a line of its
+  ;; own, `width` spaces deeper than its container (compact when width is
+  ;; below 0); `[]` and `{}` when empty; every other value as json.write
+  ;; writes it. With sort, each object's members come in key order.
+  (fn pretty [a:alloc.Allocator out:(ptr buf.Buf) v:json.Value width:i32 depth:i32 sort:bool] -> void
+    (match v
+      (json.Value.list [items]
+        (let n:i32 (call (vec.len json.Value) items))
+        (if (eq n 0)
+            (call buf.push_str out "[]")
+            (block
+              (call buf.push_byte out 91)
+              (for i 0 n
+                (when (gt i 0) (call buf.push_byte out 44))
+                (call break_line out width (+ depth 1))
+                (call pretty a out (call (vec.at json.Value) items i) width (+ depth 1) sort))
+              (call break_line out width depth)
+              (call buf.push_byte out 93))))
+      (json.Value.object [members]
+        (let n:i32 (call (vec.len (ptr json.Field)) members))
+        (if (eq n 0)
+            (call buf.push_str out "{}")
+            (block
+              (let ordered:(ptr (vec.Vec (ptr json.Field))) (if sort (call sorted_members a members) members))
+              (call buf.push_byte out 123)
+              (for i 0 n
+                (let member:(ptr json.Field) (call (vec.at (ptr json.Field)) ordered i))
+                (when (gt i 0) (call buf.push_byte out 44))
+                (call break_line out width (+ depth 1))
+                (call json.write out (make json.Value.text (get member json.Field.key)))
+                (call buf.push_str out (if (lt width 0) ":" ": "))
+                (call pretty a out (get member json.Field.value) width (+ depth 1) sort))
+              (call break_line out width depth)
+              (call buf.push_byte out 125))))
+      (else (call json.write out v))))
+
+  ;; text as JSON, the value at `query` of it (all of it for ""), laid out
+  ;; as pretty lays it out; or why not, in words that begin with `name` (the
+  ;; file's): NAME:LINE:COLUMN: what, where the text stops being JSON, or
+  ;; NAME: nothing at PATH.
+  (fn render [a:alloc.Allocator name:str text:str.Bytes query:str width:i32 sort:bool] -> (result str str)
+    (req (call json.valid_path query))
+    (let doc:json.Value
+      (match_result (call json.parse a text)
+        (ok parsed parsed)
+        (err e (return (err:str (format "{name}:{(call position text (get e json.Error.at))}: {(get e json.Error.what)}"))))))
+    (let found:json.Value
+      (match (call json.get_path doc query)
+        ((option.Option json.Value) some [value] value)
+        ((option.Option json.Value) none (return (err:str (format "{name}: nothing at {query}"))))))
+    (let out:(ptr buf.Buf) (call buf.make a 1024))
+    (call pretty a out found width 0 sort)
+    (ok:str (call buf.to_str out)))
+
+  (fn main [] -> (result i32 str)
+    (let a:alloc.Allocator (call alloc.default))
+    (let p:(ptr cli.Parser) (call cli.parser a "jsonpp" "print JSON laid out for reading"))
+    (call cli.flag p "compact" "c" "print the whole value on one line")
+    (call cli.flag p "sort" "s" "put each object's members in key order")
+    (call cli.option p "indent" "i" "2" "spaces per level, 0 to 16")
+    (call cli.option p "query" "q" "" "print only the value at this path, as in a.b[2].c or [0].name")
+    (call cli.rest p "file" "the file to read; standard input if none, or -")
+    (let args:(ptr cli.Args) (call cli.parse_or_exit p))
+    (let indent:i64 (match_result (call cli.get_i64 args "indent")
+                      (ok k k)
+                      (err why (return (err:i32 (format "jsonpp: {why}"))))))
+    (when (or (lt indent 0i64) (gt indent 16i64))
+      (return (err:i32 "jsonpp: --indent is 0 to 16")))
+    (let query:str (call cli.get_str args "query"))
+    (when (not (call json.valid_path query))
+      (return (err:i32 (format "jsonpp: bad path {query}: write a.b[2].c, or [0].name"))))
+    (let files:(ptr (vec.Vec str)) (call cli.rest_args args))
+    (when (gt (call (vec.len str) files) 1)
+      (return (err:i32 "jsonpp: one file at a time")))
+    (let name:str (if (eq (call (vec.len str) files) 0) "-" (call (vec.at str) files 0)))
+    (let shown:str (if (call str.same name "-") "standard input" name))
+    (let text:str.Bytes
+      (match_result (if (call str.same name "-") (call io.read_stdin) (call io.read_path (call str.from_str name)))
+        (ok contents contents)
+        (err e (return (err:i32 (format "jsonpp: {shown}: {(call io.message e)}"))))))
+    (let width:i32 (if (call cli.get_bool args "compact") -1 (i32.wrap indent)))
+    (match_result (call render a shown text query width (call cli.get_bool args "sort"))
+      (ok laid_out (call io.println laid_out) (ok:str 0))
+      (err why (err:i32 (format "jsonpp: {why}")))))
+
+  ;; ===== Tests =====
+
+  ;; render's answer as text: the layout, or its message
+  (fn laid_out [r:(result str str)] -> str
+    (match_result r (ok text text) (err why why)))
+
+  (test "an object and its list go one member to a line"
+    (let a:alloc.Allocator (call alloc.default))
+    (let got:str (call laid_out (call render a "t" (call str.from_str "{\"a\":[1,2],\"b\":{}}") "" 2 false)))
+    (expect (call str.same got "{\n  \"a\": [\n    1,\n    2\n  ],\n  \"b\": {}\n}")))
+
+  (test "the indent is the width given"
+    (let a:alloc.Allocator (call alloc.default))
+    (let got:str (call laid_out (call render a "t" (call str.from_str "[[1]]") "" 4 false)))
+    (expect (call str.same got "[\n    [\n        1\n    ]\n]")))
+
+  (test "compact is one line, with no space after a colon"
+    (let a:alloc.Allocator (call alloc.default))
+    (let got:str (call laid_out (call render a "t" (call str.from_str "{ \"a\" : [ 1 , 2 ] , \"b\" : { } }") "" -1 false)))
+    (expect (call str.same got "{\"a\":[1,2],\"b\":{}}")))
+
+  (test "sorting puts members in key order, in every object, and leaves lists alone"
+    (let a:alloc.Allocator (call alloc.default))
+    (let got:str (call laid_out (call render a "t" (call str.from_str "{\"b\":[3,1],\"a\":{\"z\":0,\"y\":0},\"ab\":1}") "" -1 true)))
+    (expect (call str.same got "{\"a\":{\"y\":0,\"z\":0},\"ab\":1,\"b\":[3,1]}")))
+
+  (test "without sorting, members keep the order written"
+    (let a:alloc.Allocator (call alloc.default))
+    (let got:str (call laid_out (call render a "t" (call str.from_str "{\"b\":1,\"a\":2}") "" -1 false)))
+    (expect (call str.same got "{\"b\":1,\"a\":2}")))
+
+  (test "numbers and strings are written as JSON.stringify writes them"
+    (let a:alloc.Allocator (call alloc.default))
+    (let got:str (call laid_out (call render a "t" (call str.from_str "[1.50, 1e2, -0.0, \"\\u0041\\n\"]") "" -1 false)))
+    (expect (call str.same got "[1.5,100,0,\"A\\n\"]")))
+
+  (test "a query prints just that value"
+    (let a:alloc.Allocator (call alloc.default))
+    (let doc:str.Bytes (call str.from_str "{\"a\":{\"b\":[10,20,{\"c\":true}]}}"))
+    (expect (call str.same (call laid_out (call render a "t" doc "a.b[1]" 2 false)) "20"))
+    (expect (call str.same (call laid_out (call render a "t" doc "a.b[2]" -1 false)) "{\"c\":true}")))
+
+  (test "a query that finds nothing says so"
+    (let a:alloc.Allocator (call alloc.default))
+    (let got:str (call laid_out (call render a "t" (call str.from_str "{\"a\":[]}") "a[0]" 2 false)))
+    (expect (call str.same got "t: nothing at a[0]")))
+
+  (test "a document that is not JSON is reported at its line and column"
+    (let a:alloc.Allocator (call alloc.default))
+    (let got:str (call laid_out (call render a "t" (call str.from_str "{\n  \"a\": 1,\n}") "" 2 false)))
+    (expect (call str.starts_with (call str.from_str got) (call str.from_str "t:3:1:"))))
+
+  (test "positions count lines from 1 and columns in bytes"
+    (let text:str.Bytes (call str.from_str "ab\ncd\n"))
+    (expect (call str.same (call position text 0) "1:1"))
+    (expect (call str.same (call position text 4) "2:2"))
+    (expect (call str.same (call position text 6) "3:1"))))
