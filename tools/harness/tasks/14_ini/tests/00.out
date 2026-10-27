@@ -1,0 +1,4 @@
+.name=demo
+client.retries=3
+server.host=localhost
+server.port=9090

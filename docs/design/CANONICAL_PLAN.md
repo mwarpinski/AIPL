@@ -27,7 +27,7 @@ decides the larger syntax questions with numbers.
 | 4 | `when` is the only `if` with one branch | **Done** 2026-10-25 on features/when (outstanding items in section 4) |
 | 5 | An array literal, `arr.of` | Done 2026-10-26 (LANGUAGE_DECISIONS.md item 3) |
 | 6 | The other duplicates: a sweep of the spec, a proposal for each | Not started |
-| 7 | The A/B harness, then the syntax proposals one at a time | Not started |
+| 7 | The A/B harness, then the syntax proposals one at a time | Harness built 2026-10-26 (tools/harness/); runs to come |
 
 Each step: both toolchains (src/ and aipl_src/), byte for byte alike;
 every backend; the spec, the prompt guide, and the tour; the full CI.

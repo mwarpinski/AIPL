@@ -1,0 +1,12 @@
+db.host=/tmp
+db.path=1
+db.port=a b
+db.size=x=y
+db.user=a b
+log.host=x=y
+log.port=1
+log.size=on
+web.level=/tmp
+web.port=on
+web.size=1
+web.user=a b

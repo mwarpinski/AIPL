@@ -1,0 +1,9 @@
+name = demo
+[server]
+port = 8080
+host=localhost
+; a comment
+[client]
+retries = 3
+[server]
+port = 9090

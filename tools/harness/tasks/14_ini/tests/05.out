@@ -1,0 +1,27 @@
+.path=on
+.size=x=y
+.user=x=y
+cache.host=a b
+cache.level=on
+cache.path=1
+cache.port=/tmp
+cache.size=1
+cache.user=1
+db.host=a b
+db.level=on
+db.path=1
+db.port=1
+db.size=on
+db.user=a b
+log.host=/tmp
+log.level=x=y
+log.path=1
+log.port=on
+log.size=1
+log.user=1
+web.host=x=y
+web.level=on
+web.path=/tmp
+web.port=on
+web.size=x=y
+web.user=x=y
