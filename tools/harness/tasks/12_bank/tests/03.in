@@ -1,0 +1,40 @@
+open gus
+transfer ed ed 37051
+transfer gus gus 2059
+withdraw ann 28289
+deposit bo 7818
+open bo
+withdraw dee 9853
+withdraw cy 6572
+deposit dee 39579
+withdraw cy 40731
+withdraw gus 37447
+deposit flo 6752
+withdraw ed 29087
+withdraw ed 32004
+transfer dee dee 38211
+deposit cy 4086
+transfer ed dee 44821
+transfer bo cy 11159
+withdraw flo 42805
+transfer cy bo 6188
+withdraw cy 49816
+deposit dee 13300
+deposit ed 32694
+deposit bo 75755
+withdraw ann 47383
+transfer ann gus 30002
+withdraw bo 30809
+deposit flo 50150
+transfer gus ed 34285
+withdraw cy 8509
+open gus
+transfer ed ed 2858
+withdraw dee 2606
+withdraw bo 46960
+withdraw flo 13639
+transfer cy bo 15174
+withdraw gus 42061
+transfer flo ed 38036
+open dee
+deposit dee 81928

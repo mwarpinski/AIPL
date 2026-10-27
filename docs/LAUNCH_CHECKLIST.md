@@ -252,13 +252,17 @@ more than usual.
 "A language designed for AI agents" invites "prove it". The strongest post
 is a small, honest experiment:
 
-- [ ] **Task set:** 20-30 small programs with tests (parse a format,
+- [x] **Task set:** 20-30 small programs with tests (parse a format,
   aggregate a file, a data structure, a small simulation), each specified
-  in plain language.
+  in plain language. Done 2026-10-26: 26 tasks in tools/harness/tasks/,
+  each a task.md, a Python reference that writes its tests, and the tests;
+  none solved in AIPL here.
 - [ ] **Conditions:** the same model writes each task in AIPL (with
   PROMPT_GUIDE_FOR_AIS.md as its only documentation) and in Python and
   Rust; several attempts each; the model may read compiler errors and
-  retry, up to a fixed number of rounds.
+  retry, up to a fixed number of rounds. The harness for it is built
+  (tools/harness/README.md: by hand in fresh chats, or through any
+  command, local models included); the runs are the owner's.
 - [ ] **Measures:** compiles on the first try; passes the tests on the
   first try; rounds to pass; how many bugs were caught by the checker or a
   contract rather than by a wrong answer; length of the program.

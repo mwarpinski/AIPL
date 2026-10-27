@@ -38,6 +38,8 @@ jobs:
         run: |
           python3 tools/opt_diff.py
           python3 tools/opt_diff.py --fuzz 500 --seed 1
+      - name: The A/B harness, its references and toolchain paths
+        run: python3 tools/harness/harness.py selftest
 
   install:
     # install.sh, as a user runs it: shellcheck, then a full install of

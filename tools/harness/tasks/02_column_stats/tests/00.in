@@ -1,0 +1,5 @@
+price
+item,price,qty
+apple,3,10
+pear,4,2
+fig,-1,5
