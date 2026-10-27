@@ -27,6 +27,20 @@ beside its folder (an install or a kit, `<prefix>/bin/aipl` with
 directory (aipl_src/stdpath.aipl). WASI has no way to set a file's execute bit, so an
 executable it writes needs `chmod +x` (the script does this).
 
+**By hand**, each executable builds the next:
+
+```bash
+./bootstrap/aipl-linux-x86_64 compile --exe aipl_src/aipl.aipl -o target/aipl1
+chmod +x target/aipl1
+./target/aipl1 compile --exe aipl_src/aipl.aipl -o target/aipl2
+chmod +x target/aipl2
+cmp target/aipl1 target/aipl2       # no output: the compiler reproduces itself
+```
+
+**The first executable** of all was built by the Rust toolchain, which is how
+the seed was made (`cargo build --release`, then
+`./target/release/aipl compile --exe aipl_src/aipl.aipl -o target/aipl0`).
+
 The rest of the Rust command (`eval`, `test`, `run`) is not here: the
 interpreter is Rust, and running WebAssembly takes wasmtime. Native
 executables run directly.
