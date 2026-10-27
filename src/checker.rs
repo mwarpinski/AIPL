@@ -1595,7 +1595,7 @@ fn fits(got: &Type, want: &Type) -> bool {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::Str {
                             return Err(format!(
-                                "{}:{}: sys.print prints str values, got {}; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)",
+                                "{}:{}: sys.print prints str values, got {}; for numbers and other values use the format forms, (print \"{{n}}\") or (println \"n: {{n}}\")",
                                 l, c, t
                             ));
                         }

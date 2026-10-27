@@ -4,8 +4,8 @@
 ;;   (let d:date.Date (call date.now))
 ;;   (call io.println (call date.to_str d))           ;; 2026-10-16T09:41:07.25Z
 ;;   (match_result (call date.parse (call str.from_str "2026-10-16T11:41:07+02:00"))
-;;     (ok t (call io.println_i64 "unix " (call date.to_unix t)))   ;; 1792143667
-;;     (err at (call io.println_int "bad byte " at)))
+;;     (ok t (println "unix {(call date.to_unix t)}"))   ;; 1792143667
+;;     (err at (println "bad byte {at}")))
 ;;
 ;; The calendar is the proleptic Gregorian one, years 0000 through 9999.
 ;; There are no time zones (an offset in parsed text is applied, to give

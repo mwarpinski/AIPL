@@ -219,7 +219,7 @@
        (let wasm:str.Bytes (call str.bytes (get res Out.addr) (get res Out.len)))
        (if (match_result (call io.write_path out wasm) (ok n (eq n (get res Out.len))) (err e false))
            (block
-             (call io.println_int "compiled, bytes: " (get res Out.len))
+             (println "compiled, bytes: {(get res Out.len)}")
              0)
            (block (call io.write_str 2 "cannot write ") (call write_err out) (call io.eprintln "") 1)))
       ((or (eq status 1) (eq status 3))

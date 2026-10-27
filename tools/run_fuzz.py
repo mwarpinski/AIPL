@@ -558,14 +558,15 @@ class Gen:
 
     def print_value(self, t, e):
         label = self.fresh("p")
+        # the value bound first: a placeholder does not expand sugar (and, or)
         if t == "i32":
-            return f'(call io.println_int "{label} " {e})'
+            return f'(block (let _shown:i32 {e}) (println "{label} {{_shown}}"))'
         if t == "i64":
-            return f'(call io.println_i64 "{label} " {e})'
+            return f'(block (let _shown:i64 {e}) (println "{label} {{_shown}}"))'
         if t == "f64":
-            return f'(call io.println_f64 "{label} " {e} {self.rng.choice([0, 3, 17])})'
+            return f'(block (let _shown:f64 {e}) (println "{label} {{_shown:.{self.rng.choice([0, 3, 17])}}}"))'
         if t == "E":
-            return f'(call io.println_int "{label} " (enum.ord {e}))'
+            return f'(block (let _shown:i32 (enum.ord {e})) (println "{label} {{_shown}}"))'
         return f'(if {e} (sys.print "{label} T") (sys.print "{label} F"))'
 
     # ----- the program -----

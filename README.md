@@ -48,8 +48,8 @@ tasks in AIPL and in other languages is the next major step
     x)
 
   (fn main [] -> i32
-    (call io.println_int "gcd: " (call gcd 1071 462))
-    (call io.println_int "gcd: " (call gcd 10 0))
+    (println "gcd: {(call gcd 1071 462)}")
+    (println "gcd: {(call gcd 10 0)}")
     0))
 ```
 

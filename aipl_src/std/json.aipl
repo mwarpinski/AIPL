@@ -2,7 +2,7 @@
 ;;
 ;;   (match_result (call json.parse (call alloc.default) text)
 ;;     (ok v (match (call json.get v "name") ...))
-;;     (err e (call io.println_int "bad JSON at " (get e json.Error.at))))
+;;     (err e (println "bad JSON at {(get e json.Error.at)}")))
 ;;   (call json.write out v)                  ;; compact text into a buf.Buf
 ;;
 ;; Parsing is strict: UTF-8 text, the RFC's grammar exactly (no trailing

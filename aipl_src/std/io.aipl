@@ -1,10 +1,10 @@
-;; std/io: printing and whole-file reads/writes over fs.*. fds 1 and 2 are
-;; stdout and stderr in both the VM and under WASI. A read or write that
+;; std/io: plain text out, and whole-file reads/writes over fs.*. fds 1 and
+;; 2 are stdout and stderr in both the VM and under WASI. Numbers and values
+;; are printed with the format forms, (println "total {n}") (AIPL_SPEC.md 4.K). A read or write that
 ;; fails gives an io.Error (not_found, denied, is_directory, other), with
 ;; io.message for its words.
 (module io
   (import str)
-  (import fmt)
   (import alloc)
 
   ;; Writes s to file descriptor fd (1 is stdout, 2 stderr).
@@ -20,47 +20,6 @@
   (fn eprintln [s:str] -> void (pub)
     (call write_str 2 s)
     (call write_str 2 "\n"))
-
-  ;; Decimal, with '-' when negative. Its scratch bytes come from the
-  ;; shared heap and go back to it, as in print_i64 and print_f64.
-  (fn print_int [n:i32] -> void (pub)
-    (let a:alloc.Allocator (call alloc.default))
-    (unsafe (let buf:i32 (call alloc.raw a 16))
-    (fs.write 1 buf (call fmt.int_to_bytes n buf))
-    (call alloc.free_raw a buf 16)))
-
-  ;; An i64 in decimal.
-  (fn print_i64 [n:i64] -> void (pub)
-    (let a:alloc.Allocator (call alloc.default))
-    (unsafe (let buf:i32 (call alloc.raw a 24))
-    (fs.write 1 buf (call fmt.int64_to_bytes n buf))
-    (call alloc.free_raw a buf 24)))
-
-  ;; label, then the i64 n, then a newline.
-  (fn println_i64 [label:str n:i64] -> void (pub)
-    (call write_str 1 label)
-    (call print_i64 n)
-    (call write_str 1 "\n"))
-
-  ;; An f64 with `digits` decimals, as printf("%.*f") prints it.
-  (fn print_f64 [x:f64 digits:i32] -> void (pub)
-    (req (and (gte digits 0) (lte digits 40)))
-    (let a:alloc.Allocator (call alloc.default))
-    (unsafe (let buf:i32 (call alloc.raw a (+ 312 digits)))
-    (fs.write 1 buf (call fmt.f64_fixed x digits buf))
-    (call alloc.free_raw a buf (+ 312 digits))))
-
-  ;; label, then x with `digits` decimals, then a newline.
-  (fn println_f64 [label:str x:f64 digits:i32] -> void (pub)
-    (call write_str 1 label)
-    (call print_f64 x digits)
-    (call write_str 1 "\n"))
-
-  ;; label, then n, then a newline: (call io.println_int "lines: " 4) prints "lines: 4".
-  (fn println_int [label:str n:i32] -> void (pub)
-    (call write_str 1 label)
-    (call print_int n)
-    (call write_str 1 "\n"))
 
   ;; What went wrong reading or writing a file; io.message says it in words.
   ;; A program that needs more (which file, what it was doing) says so

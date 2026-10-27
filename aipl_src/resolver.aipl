@@ -2010,15 +2010,22 @@
 
   ;; Whether node n holds a formatting form.
   (fn uses_formats [src:(ptr Src) n:(ptr compiler.Node)] -> bool
-    ;; a [...] list holds no expression (formats.rs uses_formats)
+    ;; a [...] list holds no expression (formats.rs uses_formats), but for a
+    ;; struct's named fields: a new's or make's last item
     (when (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false))
     (let h:str.Bytes (call head src n))
     (when (or (or (call str.is h "format") (or (call str.is h "format_to") (or (call str.is h "dbg") (call str.is h "expect"))))
             (or (call str.is h "print") (or (call str.is h "println") (call str.is h "eprintln"))))
         (return true))
+    (let named:bool (or (call str.is h "new") (call str.is h "make")))
     (let c:(ptr compiler.Node) (call first_child n))
     (while (neq c (ptr.null compiler.Node))
       (when (call uses_formats src c) (return true))
+      (when (and named (and (eq (get c compiler.Node.next) (ptr.null compiler.Node)) (eq (get c compiler.Node.kind) compiler.Kind.bracket)))
+            (let v:(ptr compiler.Node) (call first_child c))
+            (while (neq v (ptr.null compiler.Node))
+              (when (call uses_formats src v) (return true))
+              (set! v (get v compiler.Node.next))))
       (set! c (get c compiler.Node.next)))
     false)
 

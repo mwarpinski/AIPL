@@ -135,4 +135,4 @@
     (i32.wrap (i64.trunc_f64_s (* total 2.0))))                               ;; 239
   ;; prints the checksum the tests compare (they call checksum)
   (import io)
-  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))
+  (fn main [] -> i32 (println "checksum {(call checksum)}") 0))

@@ -1920,7 +1920,7 @@
          (when (neq (call tag t) 5)
                (let b:(ptr buf.Buf) (call msg c at))
                (call s b "sys.print prints str values, got ") (call ty b t)
-               (call s b "; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)")
+               (call s b "; for numbers and other values use the format forms, (print \"{n}\") or (println \"n: {n}\")")
                (call fail c b) (return (call void_t))))
        (call void_t))
       ((or (eq o ast.Op.sys_time) (eq o ast.Op.sys_monotonic))

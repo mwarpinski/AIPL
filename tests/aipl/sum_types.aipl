@@ -38,4 +38,4 @@
                    (call eval (make Op.add (call sub a (make Op.lit 90)) (call sub a (make Op.neg (call sub a (make Op.lit 4))))))))))))  ;; 86
   ;; prints the checksum the tests compare (they call checksum)
   (import io)
-  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))
+  (fn main [] -> i32 (println "checksum {(call checksum)}") 0))

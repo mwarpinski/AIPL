@@ -176,8 +176,7 @@ two additions, both now in the language and standard library:
   SSE2 `sqrtsd` natively, Rust's `sqrt` in the VM), so results match C to
   the bit. A library square root (Newton's method) could differ in the last
   bit and break the output comparison.
-- Printing floats: `fmt.f64_fixed` (and `buf.push_f64`, `io.print_f64`,
-  `io.println_f64`) writes the exact decimal value rounded half to even, as
+- Printing floats: `fmt.f64_fixed` (and `buf.push_f64`) writes the exact decimal value rounded half to even, as
   C's `printf("%.9f")` and Python's format do, using a small
   arbitrary-precision integer; checked against Rust's exact formatting on
   20,000 random doubles. Shortest round-trip printing (`printf("%g")`

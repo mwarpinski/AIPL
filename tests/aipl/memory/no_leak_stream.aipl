@@ -55,7 +55,7 @@
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let t:i32 (call handle a "one\ntwo\nthree\n" out))
     (call io.println (call buf.to_str out))
-    (call io.println_int "tally " t)
+    (println "tally {t}")
     (call arena.reset ar)
     (let first:i32 (call arena.reserved ar))
     (for i 0 1000
