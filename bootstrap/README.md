@@ -66,8 +66,9 @@ program to the same bytes as the Rust command, with the same errors.
 Built 2026-10-27 by the Rust toolchain, from the source of commit
 29416a9, for the release: the executables the compiler writes (this seed
 among them) now map the ELF headers as their own read-only first segment,
-at file offset 0, which Rosetta 2 requires (Task D, so the bootstrap can run
-under it), and the source has changed in many small ways since the last
+at file offset 0, which Rosetta 2 requires to load them (Task D; they still
+cannot open files under it, so the bootstrap cannot finish there until the
+`openat2` fallback, docs/HANDOFF.md), and the source has changed in many small ways since the last
 seed (the scope pass, one print form, the robustness work):
 
 ```bash
