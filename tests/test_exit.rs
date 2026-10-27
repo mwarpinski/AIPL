@@ -75,10 +75,8 @@ fn every_backend_exits_alike() {
 /// status 1, not a panic: `aipl eval` printing its status lines, and `aipl
 /// compile` its own.
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "needs /dev/full, which Linux has")]
 fn a_full_standard_output_is_an_error_not_a_panic() {
-    if !std::path::Path::new("/dev/full").exists() {
-        return;
-    }
     let dir = std::env::temp_dir().join(format!("aipl_exit_{}_full", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

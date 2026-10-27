@@ -105,8 +105,9 @@ This builds `target/release/aipl` (the compiler, interpreter, and checker)
 and `target/release/aipl-run` (the launcher for compiled WebAssembly). Either
 way, the binaries find the standard library in the source they were built
 from (`~/.aipl/src` for the installer), so keep it in place. Native
-executables need Linux x86-64; the WebAssembly path should work wherever
-wasmtime runs, but only Linux is tested.
+executables need Linux x86-64, and Linux 5.6 or newer to open files (not
+yet on older kernels, nor under Rosetta 2); the WebAssembly path should
+work wherever wasmtime runs, but only Linux is tested.
 
 ## Try it
 

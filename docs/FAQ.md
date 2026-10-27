@@ -192,6 +192,12 @@ executables. Elsewhere, programs compile to WebAssembly and run under the
 `aipl-run` launcher (built on wasmtime), which should work on macOS and
 Windows but is not tested there.
 
+Native executables open files with a system call that arrived in Linux
+5.6 (`openat2`), so on an older kernel, or in an x86-64 container under
+Apple's Rosetta 2, which lacks it, they cannot open files yet. Everything
+else they do works on any kernel since 3.17, and WebAssembly under
+`aipl-run` is not affected.
+
 ### Is there a package manager?
 
 Not yet. Modules import each other by name from the importing file's
