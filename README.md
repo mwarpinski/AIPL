@@ -103,8 +103,9 @@ cargo build --release
 
 This builds `target/release/aipl` (the compiler, interpreter, and checker)
 and `target/release/aipl-run` (the launcher for compiled WebAssembly). Either
-way, the binaries find the standard library in the source they were built
-from (`~/.aipl/src` for the installer), so keep it in place. Native
+way, `aipl` carries the standard library inside it, so a copied or installed
+one needs nothing beside it (run from a clone's `target/`, it reads that
+clone's `aipl_src/`, so an edit there shows at once). Native
 executables need Linux x86-64, and Linux 5.6 or newer to open files (not
 yet on older kernels, nor under Rosetta 2); the WebAssembly path should
 work wherever wasmtime runs, but only Linux is tested.
@@ -212,7 +213,7 @@ referee ([bootstrap/README.md](bootstrap/README.md) explains why).
 - **Three ways to run a program,** which must agree: an interpreter for
   quick runs, WebAssembly with WASI (files, stdio, the command line, the
   environment, clocks, threads), and native Linux x86-64 executables with no
-  runtime (`word_count` is 104 KB).
+  runtime (`word_count` is 94 KB).
 - **A standard library** with printing and file I/O, `"x = {x}"`
   formatting (built into the language), strings and text (search, split,
   join, replace, trim, case, UTF-8), streams (files, standard input and
@@ -257,16 +258,16 @@ is not checked. A check runs once per loop where nothing in the loop can
 free memory, so six of the eight benchmarks take the time they took
 without generation checks or less; k-nucleotide takes 1.3 times as long,
 and binarytrees, whose small nodes take four times the memory, about
-twice ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+twice ([docs/BENCHMARKS.md](docs/BENCHMARKS.md), "Generation checks").
 
 It is not as fast as C. On the eight benchmarks, native code takes 1.2 to
-17 times as long as C compiled with `gcc -O2`, and WebAssembly under
-wasmtime 1.0 to 16 times as long. The slowest are k-nucleotide, where C
-packs each key into one 64-bit integer and AIPL hashes byte strings, and
-pidigits, where C uses GMP's hand-tuned big integers and AIPL its own.
-binarytrees (1.2 and 1.0) is not like for like: AIPL frees each tree at
-once from an arena, where C frees every node. Native code takes 0.8 to 2.0
-times as long as wasmtime's.
+10.4 times as long as C compiled with `gcc -O2`, and WebAssembly under
+wasmtime 1.4 to 7.5 times as long. The slowest are k-nucleotide (8.9 and
+7.5), where C packs each key into one 64-bit integer and AIPL hashes byte
+strings, and pidigits (10.4 and 5.1), where C uses GMP's hand-tuned big
+integers and AIPL its own. binarytrees (2.0 and 1.7) is not like for like:
+AIPL frees each tree at once from an arena, where C frees every node. Native
+code takes 0.8 to 2.0 times as long as wasmtime's.
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has every number and why.
 
 ## What is next

@@ -13,8 +13,6 @@ an example as `tour.aipl`, and run it with `aipl eval tour.aipl`.
 
 ```lisp
 (module tour_hello
-  (import io)
-
   (fn square [x:i32] -> i32
     (* x x))
 
@@ -33,8 +31,9 @@ which keeps a user function apart from a built-in operation like `+`. A
 function's last expression is its value. `main`'s value is the program's
 exit status, 0 for success, so a program prints its answers and returns 0.
 
-A file is one `(module name ...)`. `(import io)` brings in a module from the
-standard library; its functions are then `io.something`.
+A file is one `(module name ...)`. Printing is built in. Anything else from
+the standard library is imported by name, as `(import alloc)` is in section
+4, and its functions are then written `alloc.something`.
 
 ## 2. Types are written out
 
@@ -85,11 +84,12 @@ an `i64`, `2.0` an `f64`. Nothing converts on its own, so `(+ a b)` with an
 
 It prints `evens up to 10 add to 30; the sign of -5 is -1`.
 
-`if` always has two real branches (an empty `(block)` branch is an error), and `when` is the `if` with one: its body is statements, and it has no value. `for` counts
-from its start up to its end, the end left out; `while` repeats
-while a condition holds (and is the loop for any other step). `cond` picks the first clause whose test is true,
-and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
-`gt`, `gte`.
+`if` always has two real branches (an empty `(block)` branch is an error),
+and `when` is the `if` with one: its body is statements, and it has no
+value. `for` counts from its start up to its end, the end left out; `while`
+repeats while a condition holds (and is the loop for any other step). `cond`
+picks the first clause whose test is true, and must end with `else`.
+Comparisons are words: `eq`, `neq`, `lt`, `lte`, `gt`, `gte`.
 
 ## 4. Structs, pointers, and arrays
 
@@ -119,16 +119,15 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
 
 It prints `total: 33`: the points are (0, 0), (1, 10), and (2, 20).
 
-`(new Point a [x:x y:y])` makes a struct from the allocator `a`, every
-field named, and gives a `(ptr Point)`; every allocation names where its memory comes from, and
-`(call alloc.forever)` is memory kept until the program exits (a function
-that allocates usually takes the allocator as a parameter, so its caller
-decides). A pointer to one
-struct can never be used as another, or as a number. `get` and `put` name
-the field as `Struct.field`. An `(arr T)` holds values of type `T`, and
-`arr.get` and `arr.set` repeat the element type. Every index is checked: an
-index past the end stops the program with a message, compiled code
-included.
+`(new Point a [x:x y:y])` makes a struct from the allocator `a`, every field
+named, and gives a `(ptr Point)`; every allocation names where its memory
+comes from, and `(call alloc.forever)` is memory kept until the program
+exits (a function that allocates usually takes the allocator as a parameter,
+so its caller decides). A pointer to one struct can never be used as
+another, or as a number. `get` and `put` name the field as `Struct.field`.
+An `(arr T)` holds values of type `T`, and `arr.get` and `arr.set` repeat
+the element type. Every index is checked: an index past the end stops the
+program with a message, compiled code included.
 
 A struct declared `(value)` is a value instead, like a number: no pointer,
 nothing allocated, copied where it goes, never changed in place.

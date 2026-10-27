@@ -1,7 +1,9 @@
 # Language decisions before release
 
-**Status: proposed (2026-10-26), for the owner to decide item by item.**
-Written by Claude (Opus 5.5) as step 2 of the release order (docs/HANDOFF.md):
+**Status: decided and done (2026-10-26), items 1-8** (7 is a decision not to
+build: the FAQ says why). Each item below keeps its proposal, then what the
+owner decided and what was built. Written by Claude (Opus 5.5) as step 2 of
+the release order (docs/HANDOFF.md):
 the changes that would break existing programs, settled before anything is
 measured or published, so the seed is refreshed once and the evidence for
 the launch post (LAUNCH_CHECKLIST.md section 5) is gathered on the final

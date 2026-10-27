@@ -1,7 +1,7 @@
 # Roadmap
 
 Where AIPL is going and what it does not do yet, checked against the code
-on 2026-10-06. [AIPL_SPEC.md](AIPL_SPEC.md) describes what it does;
+on 2026-10-27. [AIPL_SPEC.md](AIPL_SPEC.md) describes what it does;
 [DEVELOPING.md](DEVELOPING.md) has how to build and test it and the
 decisions behind it; [docs/history/](docs/history/) has what was done when.
 When something here gets built, delete its entry rather than appending a
@@ -32,9 +32,10 @@ benchmarks against C and Python.
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **The standard library:** networking, once WASI has listening sockets;
-   starting processes, once WASI can (preview 1 cannot); time zones; a
-   faster small-block path in `std/heap`.
+2. **The standard library:** fetching over HTTP (docs/design/NET_PLAN.md,
+   step 5: `connect`, `--allow-connect`, `http.fetch`); starting processes,
+   which needs a host import of AIPL's own (WASI preview 1 has no way);
+   time zones; a faster small-block path in `std/heap`.
 3. **Rust out of the build path:** the stage-0 seed is done (2026-10-15,
    bootstrap/README.md): a checked-in native `aipl` builds the compiler on
    Linux x86-64 with no Rust, checked byte for byte against the Rust
@@ -55,7 +56,7 @@ versioning (once packages exist).
 
 ### Toolchain
 
-- **Rust is needed to bootstrap off Linux x86-64.** The self-hosted compiler (`aipl_src/aipl.aipl`: driver.aipl's resolver, generics, checker, and code generator, plus the native backend) compiles every program to the Rust toolchain's bytes, itself included. On Linux x86-64 it builds from the checked-in seed (`bootstrap/`); elsewhere the first build takes the Rust toolchain ("Next" 4). The `aipl` CLI's `verify`, `eval`, and `test` use the Rust front end.
+- **Rust is needed to bootstrap off Linux x86-64.** The self-hosted compiler (`aipl_src/aipl.aipl`: driver.aipl's resolver, generics, checker, and code generator, plus the native backend) compiles every program to the Rust toolchain's bytes, itself included. On Linux x86-64 it builds from the checked-in seed (`bootstrap/`); elsewhere the first build takes the Rust toolchain ("Next" 3). The `aipl` CLI's `verify`, `eval`, and `test` use the Rust front end.
 - **Native executables cannot open files on Linux before 5.6, nor under Rosetta 2.** They open files with `openat2`, which those lack; everything else they do works on any kernel since 3.17. The planned fix: fall back to `openat` for a program without `--sandbox`, and have a `--sandbox` program refuse at start with a message naming the kernel it needs (docs/HANDOFF.md).
 - **WASI cannot set the execute bit.** The AIPL `aipl compile --exe` writes the executable, but `chmod +x` is left to the caller (`bootstrap/build.sh` does it); the Rust CLI sets it, and builds the launcher bundle for platforms without a native backend. The planned fix is a host-provided import. Native executables exist only for Linux x86-64; elsewhere the bundle is about 18 MB (wasmtime) and built for the host's OS and CPU.
 - **Two of everything in the front end.** Resolver, generics, constants, parser, and checker exist in Rust (`src/`, used by the `aipl` CLI and the VM) and in AIPL (`aipl_src/`, used by the self-hosted compiler); tests hold each pair equal, message for message (AIPL_SPEC.md 6.4, 11). The Rust copies go when the CLI runs the AIPL ones.
@@ -69,30 +70,30 @@ versioning (once packages exist).
 
 - **No closures, by design.** `(ref f)` and `call_ref` give references to named functions; nothing captures variables, and a callback's data is a typed context passed as its first argument (`vec.sort_by_with`, `thread.spawn_with`, `alloc.custom`; AIPL_SPEC.md 4.G). Closures would allocate behind the program's back, enlarge every function value, and slow every call through one.
 - **Generics are explicit.** Every use names its type arguments (no inference), and every call to an interface's function names the interface and the type. Templates are checked once with sealed type parameters (AIPL_SPEC.md 4.H). Not yet: interfaces with several type parameters, generic implementations (`(impl (Hash (ptr T)) ...)`, which need a rule against overlap first), and default functions in an interface.
-- **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, and no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does).
+- **Structs are behind pointers unless declared `(value)`.** `(ptr S)` and `(arr T)` are strictly typed. A struct declared `(value)` is held inline, copied where it goes, and never changed (at most 8 scalars), and an array of them is inline (AIPL_SPEC.md 4.E). A heap struct cannot be nested inside another by value (hold it by pointer), and packed records beyond that need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does.
 - **No module-level variables, by design.** Modules keep state in a struct passed to every function (codegen.aipl's `Cg`), or in a `mem.alloc`'d block whose pointer lives in a runtime cell (codegen.aipl's keyword map, cell 16). Constants may be computed from other constants (`(const PAGES:i32 (* 4 PAGE_SIZE))`, since 2026-10-16; AIPL_SPEC.md 4.I), folded at compile time; there is no `f32` constant. Older code still uses zero-argument functions as constants (`(fn cc_e [] -> i32 4)` in `aipl_src/native/x64.aipl`).
 - **8- and 16-bit types are for storage only** (since 2026-10-16): `u8 i8 u16 i16` struct fields and array elements, read as `i32`, and signed and 16-bit loads and stores (AIPL_SPEC.md 4.A). There is no arithmetic at those widths. Unsigned comparisons (`ltu lteu gtu gteu`) and overflow-checked arithmetic (`checked.add/sub/mul`) exist (AIPL_SPEC.md 8.2); there is no checked division or shift, and no form that reports overflow as a value rather than stopping.
-- **Unions are boxed and immutable.** A union value (AIPL_SPEC.md 4.J) is always a heap cell, even a variant without fields, and `make` is the only way to fill one: no in-place update, no union fields stored inline in a struct, and no nested patterns (a `match` arm binds one level of fields; match again on a field). Generic unions and `std/option` exist (AIPL_SPEC.md 4.J); `result` stays its own form, beside them, with payloads of any type. Older code still uses a tag plus fields reused by cast; `codegen.aipl`'s keyword and type tables are enums, but its AST is `compiler.aipl`'s generic `Node`.
+- **Unions are values, and immutable.** A union value (AIPL_SPEC.md 4.J) is held by value, in up to 8 slots, inline in struct fields and arrays; a part that contains itself, or would need more slots, is held through a pointer to a struct. `make` is the only way to fill one: no in-place update, and no nested patterns (a `match` arm binds one level of fields; match again on a field). Generic unions and `std/option` exist; `result` stays its own form, beside them, with payloads of any type. Older code still uses a tag plus fields reused by cast; `codegen.aipl`'s keyword and type tables are enums, but its AST is `compiler.aipl`'s generic `Node`.
 - **Numeric gaps:** `f32` literals (`1.5f32`) and the conversions between `f32`, `f64`, `i32`, and `i64` exist (since 2026-10-16), but not every pair (no unsigned conversions, no `f64.convert_i32_u`, no `i64.trunc_f64_u`); no float loads or stores on raw memory (keep floats in struct fields or arrays, or move bits with `mem.load64` and `f64.reinterpret_i64`); and loop bounds and addresses are `i32` only.
 
-- **Friction for code generators** (audit D3). The pitfalls table (AIPL_SPEC.md 13) is long because the chosen spelling is often not what generators write first: `if` always needs an else (the repository has hundreds of empty `(block)` branches), `loop` includes its end bound, `and`/`or` take exactly two operands, and there is no implicit widening. Each is deliberate; each should be measured against what agents actually produce (docs/LAUNCH_CHECKLIST.md 5).
-- **Errors are easy to ignore and lossy** (audit D5). A `result` or an `fs.*` status in statement position is discarded silently; every WASI errno becomes `-1`, so "not found" and "permission denied" look the same; library failures use sentinels (`len` -1).
+- **Friction for code generators** (audit D3). The pitfalls table (AIPL_SPEC.md 13) is long because the chosen spelling is often not what generators write first. Several were removed (a one-branch `if` is `when`, `loop` is `for`, `and`/`or` take two or more operands, a missing value is an `Option`, a struct's fields are named), the ten most common are at the top of the guide, and each that is a compile error has a message that names the fix. There is still no implicit widening, deliberately. What is left is measured by the A/B harness (tools/harness/, docs/LAUNCH_CHECKLIST.md 5).
+- **A `result` or an `fs.*` status in statement position is discarded silently** (audit D5; `aipl verify` says nothing). The rest of D5 is fixed (2026-10-26, docs/design/LANGUAGE_DECISIONS.md item 2): a failed `fs.*` gives minus its WASI errno, the same number in every backend; std's reads, writes, streams, and CSV give an `io.Error` (not found, denied, is a directory, other); a missing `os.arg` or `os.env` is an `Option`. The searches (`str.find`, `vec.index_of`) still return -1 for not found.
 
 ### Memory
 
-- **The built-ins never free.** `mem.alloc`, `new`, `arr.new`, `make`, and result cells come from a bump cursor that only grows. Freeable memory comes from the standard library (docs/design/HEAP_PLAN.md): `std/heap` frees single objects (checking double frees, wrong sizes or types, and writes after free), `std/arena` frees a region at once, and `std/alloc` makes either one `Allocator`, which the collections take. A heap's memory is reused but never returned to the system. Freeing object by object costs about 4x C's malloc/free on binarytrees.
+- **Only an allocator that frees, frees.** `mem.alloc` and `alloc.forever` come from a bump cursor that only grows, and a `str` made at run time is never freed. `new` and `arr.new` take the allocator to make the object from (AIPL_SPEC.md 4.E): `std/heap` frees single objects (checking double frees, wrong sizes or types, and writes after free), `std/arena` frees a region at once, and `std/alloc` makes either one `Allocator`, which the collections take (docs/design/HEAP_PLAN.md). A heap's memory is reused but never returned to the system.
 - **Memory-safe outside `unsafe`, with stated limits** (AIPL_SPEC.md 3; parallel work without `unsafe` through `std/par` since 2026-10-16). Bounds checks, null checks, generation checks (use after free, since 2026-10-16), contracts, and the reserved-block guard run in every backend; the unchecked operations (`mem.*`, `ptr.cast`/`arr.cast`/`ptr.make`/`arr.make`, threads, atomics) are fenced inside `(unsafe ...)`; module visibility (AIPL_SPEC.md 11.1) keeps safe code from forging the standard library's descriptors. The limits: no data-race checking (threads are unsafe); after an arena reuses its memory, a stale pointer is caught unless the new data at its generation word happens to equal its old 32-bit generation; a fast arena catches a stale pointer only once its memory is reused; `ptr.cast` pointers are unchecked.
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
-- **Memory caps at 32768 pages (2 GiB)** in every backend (raised from 64 MiB on 2026-10-05; above 2 GiB addresses would be negative `i32`s). Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
+- **Memory caps at 32768 pages (2 GiB)** in every backend, or at `--max-memory`'s (above 2 GiB addresses would be negative `i32`s). Allocation grows memory up to the cap automatically; a program that needs more stops at the `mem.alloc` with `Out of memory: the limit is N MiB`.
 
 ### Strings and I/O
 
 - **No string operators.** There is no `+` on `str` (it once worked only in the VM; removed 2026-10-05), and no `eq` (since 2026-10-16: a string made at run time has its own address, so `eq` would differ between the VM and compiled code). Functions do both: `str.concat`, `str.same`, `(cmp.Ord.compare str)`.
 - **`sys.print` takes only `str`.** Numbers print through the format forms (`(println "n = {n}")`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`); floats print with a fixed number of decimals (`fmt.f64_fixed`, exact) or, in `std/json`, as the shortest digits that read back, and `float.from_decimal` parses them; still missing are a shortest-digits printer outside JSON, and sets.
 - **VM `str` values are Rust strings, not pointers.** The VM lays out the first loaded module's literals at the same addresses as wasm, so `str.ptr` agrees; a string that is not one of those literals (from a module loaded later into the same VM) is copied onto the heap each time it is used.
-- **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code.
+- **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) to its caller; the `aipl eval` command turns it into the exit status, as compiled code has.
 - **Three kinds of text** (audit D7): `str` (immutable), `str.Bytes` (a slice), and `buf.Buf` (a builder), converted by calling a function each way (`str.from_str`, `str.from_bytes`, `buf.bytes`, `buf.to_str`; AIPL_SPEC.md 4.B says which to use when). A `str` made at run time is never freed.
-- **No time zones, no sockets, no starting processes.** `std/date` (since 2026-10-16) has UTC dates and ISO 8601; there is no time-zone database. The runtime surface is preopened files and directories, stdio, args, environment, two clocks, and randomness: WASI preview 1 has no listening sockets and no way to start a process.
+- **No time zones, and no starting processes.** `std/date` has UTC dates and ISO 8601; there is no time-zone database. The runtime surface is preopened files and directories, stdio, args, environment, two clocks, randomness, and TCP sockets (AIPL's own host interface beside WASI, granted on the command line: `std/net`, `std/serve`; docs/design/NET_PLAN.md). WASI preview 1 has no way to start a process, and AIPL's host interface has none yet.
 
 ### Concurrency
 
@@ -100,7 +101,7 @@ Threads and atomics work in both backends (AIPL_SPEC.md 4.D). Gaps: compiled thr
 
 ### Self-hosted compiler capacities
 
-`codegen.aipl` uses fixed-size tables (typed arrays in its `Cg`) and reports a compile error (never a miscompile) past them: 8192 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function (AIPL_SPEC.md 6.4). String literals have the 1 MiB limit both backends share. The aipl command (the compiler and the native backend) is about 2,100 functions, generic instances included (2026-10-16). The Rust backend has none of these limits.
+`codegen.aipl`'s tables (functions, parameters, locals, structs, fields, unions, variants, `call_ref` signatures, nested blocks) grow as the Rust backend's vectors do (since 2026-10-26; before that they were fixed at 8192, 16, 1024, 255, 64, and 31, and a program past one got a compile error, never a miscompile): what is left is the memory the compile has (compile error 90 past 32768 pages) and the 1 MiB limit on string literals that both backends share (AIPL_SPEC.md 6.4). The aipl command (the compiler and the native backend) is 3,366 functions, generic instances included (2026-10-27, unoptimized).
 
 ### Before "many modules from many authors" is safe
 
@@ -166,7 +167,7 @@ language, and nearly every program stay as they are; what changes is the
 two code generators (a mode in each), the native backend's translation,
 the layout of a checked pointer (an address and a generation no longer
 share 64 bits), and std's unsafe code that handles raw addresses, which
-needs an address-sized integer type (launch checklist section 6).
+would come with an address-sized integer type (decided 2026-10-26: not before there is a 64-bit target; docs/FAQ.md says why).
 Wanted when a program needs more than 2 GiB in memory; a lower limit
 (`--max-memory`) comes first.
 

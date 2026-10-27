@@ -37,12 +37,12 @@ and the 2026-10 audit.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 413 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
+cargo test                                   # 456 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
 
-Expected AIPL suite output (35 groups):
+Expected AIPL suite output (37 groups):
 ```
 [PASS] compiler: tokenizer (2 tests)
 [PASS] compiler: parser (2 tests)
@@ -57,8 +57,9 @@ Expected AIPL suite output (35 groups):
 [PASS] native/x64: instruction encodings vs GNU as (15 tests)
 [PASS] native/elf: executable layout and headers (4 tests)
 [PASS] std/io: file round trip (2 tests)
-[PASS] std/vec: generic list + stable sort (7 tests)
-[PASS] std/map: generic hash map over cmp.Hash keys (9 tests)
+[PASS] std/vec: generic list + stable sort (8 tests)
+[PASS] std/ip: addresses read as Rust reads them (5 tests)
+[PASS] std/map: generic hash map over cmp.Hash keys (10 tests)
 [PASS] std/buf: string builder (4 tests)
 [PASS] std/time: durations and the clock (7 tests)
 [PASS] std/date: UTC dates, ISO 8601 (8 tests)
@@ -68,7 +69,7 @@ Expected AIPL suite output (35 groups):
 [PASS] std/stream: readers and writers over files, memory, and functions (7 tests)
 [PASS] std/arena: typed region allocator (7 tests)
 [PASS] std/heap: general-purpose allocator (8 tests)
-[PASS] std/alloc: any allocator as one value (7 tests)
+[PASS] std/alloc: any allocator as one value (9 tests)
 [PASS] std/bigint: arbitrary-precision integers (13 tests)
 [PASS] std/option: Option T, a generic union (7 tests)
 [PASS] std/cmp: Eq, Ord, Hash for built-in types (10 tests)
@@ -78,6 +79,7 @@ Expected AIPL suite output (35 groups):
 [PASS] std/json: parsing and writing JSON (6 tests)
 [PASS] std/float: decimal text to the nearest f64 (14 tests)
 [PASS] consts: constants and enums erased for codegen (5 tests)
+[PASS] codegen_opt: the optimizer's folds, inlining, and refusals (7 tests)
 [PASS] thread_sync: 4 threads x 1000 atomic adds = 4000
 [AIPL Test] All groups passed.
 ```
@@ -144,7 +146,7 @@ These are the project owner's goals. They decide the order below and the answer 
 
 - **Imports are qualified by default:** `(import name)` / `(import name as alias)`, called as `name.fn`, and struct names likewise (`name.Struct`). The goal is code from many uncoordinated AI authors composing without silent name collisions.
 - **The compile target is wasm + WASI.** It is the only vendor-neutral ABI with real I/O, and the semantic reference for every backend. Native code is produced *from* that wasm (next item), never directly from AIPL.
-- **Native executables come from a wasm-to-machine-code backend written in AIPL** (decided 2026-10-02, replacing P13's "no native backend"; the earlier decision is P13 in docs/history/AUDIT_2026-10.md, and docs/design/NATIVE_BACKEND_PLAN.md opens with why it changed). Linux x86-64 first (`docs/design/NATIVE_BACKEND_PLAN.md`); wasm plus the `aipl-run` launcher on every other platform. `attic/elf_emitter.aipl` stays in the attic.
+- **Native executables come from a wasm-to-machine-code backend written in AIPL** (decided 2026-10-02, replacing P13's "no native backend"; the earlier decision is P13 in docs/history/AUDIT_2026-10.md, and docs/design/NATIVE_BACKEND_PLAN.md opens with why it changed). Linux x86-64 first (`docs/design/NATIVE_BACKEND_PLAN.md`); wasm plus the `aipl-run` launcher on every other platform. The earlier `elf_emitter` experiment was deleted with the attic (2026-10-06; git keeps it).
 - **Rust is for primitives and infrastructure, not compiler logic.** New opcodes and bootstrap bug fixes are fine. Parsing, resolution, and codegen policy belong in AIPL. Ask "is this a primitive or logic?" before reaching for Rust.
 - **Wasm semantics are the spec.** When the VM and wasm disagree, fix the VM. Contracts and array bounds checks used to be VM-only; since 2026-10-05 compiled code runs them too (docs/design/CHECKS_PLAN.md).
 - **Threads use the wasi-threads ABI** (shared memory, `wasi.thread-spawn`) with AIPL's own host, since wasmtime 47 dropped wasi-threads (decided 2026-10-02). Native builds create threads with Linux `clone` under the same semantics.

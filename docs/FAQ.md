@@ -29,10 +29,11 @@ line does without tracing types across the file.
 They are good languages, and models write them well. AIPL is a bet that a
 language designed around how models fail can do better on correctness:
 smaller, more regular, with contracts and bounds checks everywhere, and
-errors that point at the exact expression. The bet is not proven. The next
-major step is an experiment where agents write the same set of tasks in
-AIPL and in other languages, measured on how often the result works
-([ROADMAP.md](../ROADMAP.md)). If AIPL loses, the write-up will say so.
+errors that point at the exact expression. The bet is not proven. The
+experiment is built, with 26 tasks that models write in AIPL, Python, and
+Rust, scored the same way on how often the result works
+([tools/harness/](../tools/harness/README.md)); its results are not in yet.
+If AIPL loses, the write-up will say so.
 
 ### Why compile to WebAssembly?
 
@@ -45,7 +46,7 @@ made by translating the WebAssembly to x86-64 machine code.
 ### Why not compile through LLVM or C?
 
 To keep the toolchain small and written in AIPL. The native backend is
-about 5,800 lines of AIPL with no dependencies: a single-pass translator
+about 6,700 lines of AIPL with no dependencies: a single-pass translator
 that keeps values in registers, in the manner of V8's Liftoff, whose code
 takes 0.8 to 2.0 times as long as wasmtime's (Cranelift's) on the eight
 benchmarks. LLVM would make the code faster still and the toolchain far
@@ -56,9 +57,9 @@ larger, and could not be self-hosted.
 Yes, with one caveat. The import resolver, type checker, code generator,
 and native backend are written in AIPL. They produce the same bytes and the
 same error messages as the Rust implementation, and the compiler, built as a
-native executable, compiles itself to the same bytes in about half a
-second. On Linux x86-64 it builds from a checked-in native seed with no
-Rust at all (`sh bootstrap/build.sh`, about 3 seconds), and every test run
+native executable, compiles itself to the same bytes in under three
+seconds. On Linux x86-64 it builds from a checked-in native seed with no
+Rust at all (`sh bootstrap/build.sh`, about 8 seconds), and every test run
 checks that the seed's build is byte for byte the Rust toolchain's, so the
 seed cannot carry anything the source does not say (bootstrap/README.md).
 The caveat: the `aipl` command most people use is still the Rust one,
@@ -168,8 +169,8 @@ give models one more type to convert to and from
 ### How fast is it?
 
 Between C and Python. On the eight benchmarks, native executables take
-1.2 to 17 times as long as C compiled with `gcc -O2`, and WebAssembly run
-by wasmtime 1.0 to 16 times as long. The slowest are k-nucleotide (C packs
+1.2 to 10.4 times as long as C compiled with `gcc -O2`, and WebAssembly run
+by wasmtime 1.4 to 7.5 times as long. The slowest are k-nucleotide (C packs
 each key into one 64-bit integer where AIPL hashes byte strings) and
 pidigits (C uses GMP's hand-tuned big integers). binarytrees is not a fair
 race: AIPL frees whole trees from an arena while C frees every node.

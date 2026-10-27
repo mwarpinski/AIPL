@@ -1688,8 +1688,8 @@
     found))
 
   ;; Records every (struct ...) of the module, its name and whether it is a
-  ;; value struct (marked (value)); returns the count. Past 255 structs:
-  ;; compile error 94. Laid out later (layout_struct), once every struct
+  ;; value struct (marked (value)); returns the count. The table grows as
+  ;; structs are added. Laid out later (layout_struct), once every struct
   ;; and union is known.
   (fn register_structs [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
     (let scount:i32 0)
@@ -2615,7 +2615,7 @@
   ;; at out (wasm-level, so (fn [bool] -> i32) and (fn [i32] -> i32) coincide).
   ;; The wasm signature of a (fn [..] -> r) type node.
   ;; A (fn [params] -> r) type node's signature: a value struct is its
-  ;; scalars (at most 8 each, so 16 parameters are at most 128).
+  ;; scalars (at most 8 each).
   (fn encode_sig [cg:(ptr Cg) sig:(ptr compiler.Node)] -> (ptr Sig)
     (let out:(ptr Sig) (call new_sig))
     (let p:(ptr compiler.Node) (call first_child (call nth_child sig 1)))

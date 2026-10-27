@@ -32,7 +32,7 @@ What is left, in the order to do it. Each item below points at its section.
 | # | Item | Who | State |
 |---|---|---|---|
 | 6 | Finish Task D, so native executables run under Rosetta 2: a read-only segment for the ELF headers, then merge `features/elf-offset0` (it passed the full CI on x86-64 on 2026-10-26); a seed refresh after it lets the bootstrap run under Rosetta | Claude; the seed refresh is the owner's | The CI is green; the segment and the merge are left |
-| 7 | Gemini's round 3 on the Mac mini (docs/APPLE_SILICON_HANDOFF.md, section 7): review its report, then merge its macOS test gating into `development`, so a Mac user's `cargo test` is honest | Claude reviews; the owner merges | Round 3 pushed 2026-10-26 |
+| 7 | Gemini's round 3 on the Mac mini (docs/APPLE_SILICON_HANDOFF.md, section 7): review its report, then merge its macOS test gating into `development`, so a Mac user's `cargo test` is honest | Claude reviews; the owner merges | Round 3 pushed 2026-10-26; when it merges, README and the FAQ say macOS on Apple Silicon is tested (both say only Linux is, now) |
 
 **After launch** (each already stated in ROADMAP.md or docs/HANDOFF.md)
 
@@ -480,7 +480,7 @@ FAQ or ROADMAP.md.
 - [ ] `cargo test`, the AIPL suite, both fuzzers (an hour each), and the
   benchmarks run clean on a fresh clone, from the README's instructions
   alone.
-- [ ] The documentation check is rerun; the numbers are today's.
+- [ ] The documentation check is rerun (`python3 tools/docs_check.py`, also in CI: files, functions, flags, forms, sections, the seed's hash, the test and module lists); the numbers it cannot count are today's (benchmark times, sizes, compile times: re-measure, as on 2026-10-27).
 - [ ] Someone who has never seen the project follows the README cold and
   reports where they got stuck.
 - [ ] The post says what AIPL is, what is unfinished, and how it was built,
