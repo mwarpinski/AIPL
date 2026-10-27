@@ -307,11 +307,11 @@ fn macos_launcher_bundle_executes_and_preserves_behavior() {
     std::fs::write(
         &src,
         r#"(module prog
-  (import io) (import os) (import str)
+  (import io) (import os) (import str) (import option)
   (fn main [] -> i32
-    (call io.println_int "args: " (call os.arg_count))
-    (let f:str.Bytes (call os.arg 1))
-    (call io.println_int "arg1 len: " (get f str.Bytes.len))
+    (println "args: {(call os.arg_count)}")
+    (let f:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (println "arg1 len: {(get f str.Bytes.len)}")
     0))"#,
     )
     .unwrap();

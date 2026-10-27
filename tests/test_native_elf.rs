@@ -82,13 +82,14 @@ fn the_vm_and_compiled_wasm_build_identical_executables() {
 
 /// readelf, when installed, accepts the file without warnings.
 #[test]
+#[cfg_attr(target_os = "macos", ignore = "needs readelf (binutils), which macOS lacks")]
 fn readelf_accepts_the_executable_when_installed() {
     let path = write_executable("readelf", &hello_from_vm());
-    let Ok(out) = Command::new("readelf").args(["-h", "-l", "-W"]).arg(&path).output() else {
-        std::fs::remove_file(&path).ok();
-        eprintln!("readelf not installed; skipped");
-        return;
-    };
+    let out = Command::new("readelf")
+        .args(["-h", "-l", "-W"])
+        .arg(&path)
+        .output()
+        .expect("readelf not found: Linux requires binutils");
     std::fs::remove_file(&path).ok();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success() && out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));

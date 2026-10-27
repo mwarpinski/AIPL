@@ -1,9 +1,217 @@
 # AIPL on Apple Silicon: Porting and Verification Report
 
-**Date:** 2026-10-26 (Round 2 update; Round 1: 2026-10-25)  
-**Platform:** macOS 27.0.1 (Darwin 27.0.0 arm64, Apple M4)  
+**Date:** 2026-10-27 (Round 3 update; Round 2: 2026-10-26; Round 1: 2026-10-25)  
+**Platform:** macOS 27.0.1 (Darwin 27.0.0 arm64, Apple M4 Mac mini, bare metal)  
 **Branch:** `features/apple-silicon`  
-**Agent:** Gemini 3.8 Flash (High)
+**Agent:** Gemini 4 Argon (Medium)
+
+---
+
+## Round 3 (2026-10-27)
+
+### 1. What is Broken and What to Do Next
+
+#### What is Broken or Open
+1. **In-place executable overwrite flake in `tests/test_opt.rs::an_inlined_function_traps_at_its_call` (Audit A3, reproduced and traced on both macOS and `linux/arm64`)**:
+   - **On macOS (Apple M4)**: 1 out of 50 runs of `cargo test --release --test test_opt` failed on the second loop iteration (`--no-opt --exe`) when executing the launcher bundle `p` (`ExitStatus(unix_wait_status(9))`, `signal: Some(9)` / `SIGKILL`). The macOS kernel crash report (`~/Library/Logs/DiagnosticReports/p-2026-10-27-102916.ips`, and four earlier `p-*.ips` reports) shows that the killed process is the launcher bundle `p` (`"procName": "p"`), terminated at `dyld` entry with `"signal": "SIGKILL (Code Signature Invalid)"` (`"codeSigningFlags": 16777728` = `0x01000200`, `"codeSigningID": ""`).
+   - **On `linux/arm64` (Docker Desktop, Linux 7.0.14-linuxkit)**: In the full `cargo test --release --no-fail-fast` run, the exact same second loop iteration (`compile(&["--no-opt", "--exe"], &src, &exe, None)`) failed inside `aipl compile` with `Error: Text file busy (os error 26)` (`ETXTBSY`).
+   - **Root Cause (shown by both failures)**: In `tests/test_opt.rs:67-73`, `an_inlined_function_traps_at_its_call` compiles and executes `dir.join("p")` twice at the same path. In `src/main.rs` (`Commands::Compile` lines 472–483 and `write_executable` line 376), `aipl compile` writes to `&output` via `fs::write(&output, ...)`, which opens the existing file with `O_WRONLY | O_CREAT | O_TRUNC` (reusing the same inode/vnode in-place). On macOS, truncating and overwriting an already-executed Mach-O vnode in-place while `syspolicyd` is scanning it invalidates the vnode's cached `cs_blob` in the kernel (`SIGKILL (Code Signature Invalid)`). On Linux 5.15+ (where `FMODE_EXEC` releases `allow_write_access` in `__fput()`), opening the existing executable inode with `O_WRONLY | O_TRUNC` immediately after process exit races with deferred `__fput()` and fails with `ETXTBSY` (`os error 26`).
+2. **`tests/test_serve.rs` wall-clock time on macOS (~410–421 s vs ~36.5 s on Linux)**:
+   - Not a test failure (5 of 5 standalone runs on macOS passed all 11 tests), but 11x slower than Linux (`36.51s` in `linux/arm64`).
+   - **Measured cause**: `test_serve.rs` opens 223,006 sequential loopback TCP connections across `many_requests_leave_memory_flat_natively` (101,002), `many_requests_leave_memory_flat_under_aipl_run` (101,002), and `twenty_thousand_requests_leave_memory_flat_in_the_vm` (21,002). On macOS (`sysctl net.inet.ip.portrange.first=49152 net.inet.ip.portrange.last=65535 net.inet.tcp.msl=15000`), the ephemeral port pool has only `16,384` ports (`65535 - 49152 + 1`) and closed client sockets remain in `TIME_WAIT` for `2 * MSL = 30 s`. Cycling `223,006` connections through `16,384` ports requires `13.61` full port-range cycles (`13.61 * 30 s = 408.3 s`), during which `TcpStream::connect` in `exchange()` sleeps in its 20 ms retry loop waiting for `TIME_WAIT` expiry.
+3. **Rosetta 2 `openat2` and seed refresh (`features/elf-offset0`)**:
+   - Pinned by the owner in `docs/HANDOFF.md` and `AIPL_SPEC.md` 6.6; Task D (`features/elf-offset0`) is kept by Claude on x86-64 hardware (handoff 7.1–7.2).
+
+#### Recommended Next Steps
+1. **Fix in-place executable overwrite in `src/main.rs` (for Claude / owner; `src/` is off-limits in Round 3 per handoff 7.4)**:
+   - Before writing `&output` in `src/main.rs` (`Commands::Compile` before line 472, or in `write_executable` at line 376 and the native branch at line 500), remove any existing file first (`let _ = fs::remove_file(&output);`) or write to a temporary file and `fs::rename` it into place. Unlinking first allocates a fresh inode/vnode, eliminating both macOS's `SIGKILL (Code Signature Invalid)` vnode cache race and Linux's `ETXTBSY (os error 26)`.
+   - Also note that `Commands::Compile` in `src/main.rs:472-486` currently writes the `.wasm` bytes to `&output`, reads them back (`fs::read(&output)`), and then overwrites `&output` with the executable; holding the `wasm: Vec<u8>` in memory when `exe` is true avoids writing `&output` twice.
+2. **Merge `features/apple-silicon` into `development`** once the owner reviews Round 3.
+
+---
+
+### 2. Summary of Round 3 Changes (on `features/apple-silicon`)
+
+1. **`tests/test_runner.rs`**: Updated `macos_launcher_bundle_executes_and_preserves_behavior` (which is `#[cfg(target_os = "macos")]` and therefore did not compile on Linux during the language-decisions migration) to use `(import option)`, `(println "args: {(call os.arg_count)}")`, and `(call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str ""))` instead of the removed `io.println_int` and bare `os.arg`.
+2. **`tests/test_opt.rs`**: Updated `trap()`'s assertion message to report `o.status`, `std::os::unix::process::ExitStatusExt::signal(&o.status)`, `stdout`, and `stderr` without changing what is asserted.
+3. **`tests/test_native_elf.rs`**: Replaced the silent early return when `readelf` is absent in `readelf_accepts_the_executable_when_installed` with `#[cfg_attr(target_os = "macos", ignore = "needs readelf (binutils), which macOS lacks")]` and `.expect("readelf not found: Linux requires binutils")`.
+4. **`tests/test_bootstrap.rs`**: Replaced the file-wide `#![cfg(all(target_os = "linux", target_arch = "x86_64"))]` with `#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")), ignore = "runs Linux x86-64 executables (the native seed)")]` on both tests so they are counted as `2 ignored` on macOS and `linux/arm64`.
+5. **`tools/container_test.sh`**: Added `opt_diff.py --fuzz 500 --seed 1` and `harness.py selftest` to `arm64` mode, removed the stale Rosetta offset-`0x1000` note and `|| true` from `amd64` mode so the script exits with `cargo test`'s status, and excluded `./target` when copying `/repo` into `/build`.
+6. **`docs/APPLE_SILICON_REPORT.md`**: Added Round 3 findings and corrected the stale statements listed in Audit A7.
+
+---
+
+### 3. Tasks A & C: Full Verification Summary and Per-Target `cargo test` Table
+
+#### Command Summary (Last Lines)
+
+| Command | macOS Bare Metal (Apple M4) | `linux/arm64` Container (Docker Desktop) |
+|---|---|---|
+| `cargo build --release` | `Finished release profile [optimized] target(s) in 0.30s` (clean build: `54.26s`) | `Finished release profile [optimized] target(s) in 45.42s` |
+| `cargo clippy --release --all-targets -- -D warnings` | `Finished release profile [optimized] target(s) in 0.53s` | `Finished release profile [optimized] target(s) in 20.31s` |
+| `cargo test --release --no-fail-fast` | **65 targets: 427 passed, 0 failed, 27 ignored** (initial run had 1 failure in `test_runner.rs` before updating `io.println_int`; rerun: `9 passed; 0 failed`) | **65 targets: 427 passed, 1 failed, 25 ignored** (`test_opt.rs` hit `ETXTBSY`; rerun: `2 passed; 0 failed`, giving **428 passed, 0 failed, 25 ignored**) |
+| `./target/release/aipl test aipl_src/test_suite.aipl` | `[AIPL Test] All groups passed.` (37 groups) | `[AIPL Test] All groups passed.` (37 groups) |
+| `python3 tools/fuzz.py --cases 3000 --seed 1` | `3000 cases, seed 1: 0 failing (kept under target/fuzz/)` | `3000 cases, seed 1: 0 failing (kept under target/fuzz/)` |
+| `python3 tools/run_fuzz.py --cases 500 --seed 1` | `500 cases, seed 1: 0 failing (kept under target/run_fuzz/)` | `500 cases, seed 1: 0 failing (kept under target/run_fuzz/)` |
+| `python3 tools/opt_diff.py` | `83 programs: same 70, same failure 12, skip 1` | `83 programs: same 70, same failure 12, skip 1` |
+| `python3 tools/opt_diff.py --fuzz 500 --seed 1` | `500 programs: same 366, same failure 134` | `500 programs: same 366, same failure 134` |
+| `python3 tools/harness/harness.py selftest` | `selftest: 26 references and 3 toolchains, 0 failing` | `selftest: 26 references and 3 toolchains, 0 failing` |
+
+#### Per-Target `cargo test --release --no-fail-fast` Counts (All 65 Targets)
+
+| Target | Mac Passed | Mac Failed | Mac Ignored | Mac Time | `linux/arm64` Passed | `linux/arm64` Failed | `linux/arm64` Ignored | `linux/arm64` Time |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `unittests src/lib.rs` | 0 | 0 | 0 | 0.00s | 0 | 0 | 0 | 0.00s |
+| `unittests src/main.rs` | 0 | 0 | 0 | 0.00s | 0 | 0 | 0 | 0.00s |
+| `unittests src/bin/aipl_run.rs` | 0 | 0 | 0 | 0.00s | 0 | 0 | 0 | 0.00s |
+| `tests/test_all.rs` | 4 | 0 | 0 | 0.00s | 4 | 0 | 0 | 0.00s |
+| `tests/test_benchmarks.rs` | 1 | 0 | 0 | 0.48s | 1 | 0 | 0 | 0.36s |
+| `tests/test_bootstrap.rs` | 0 | 0 | 2 | 0.00s | 0 | 0 | 2 | 0.00s |
+| `tests/test_checker_aipl.rs` | 13 | 0 | 0 | 15.23s | 13 | 0 | 0 | 18.26s |
+| `tests/test_consts_enums.rs` | 5 | 0 | 0 | 0.08s | 5 | 0 | 0 | 0.07s |
+| `tests/test_control_flow.rs` | 17 | 0 | 0 | 0.06s | 17 | 0 | 0 | 0.17s |
+| `tests/test_csv.rs` | 2 | 0 | 0 | 1.15s | 2 | 0 | 0 | 0.90s |
+| `tests/test_dbg.rs` | 2 | 0 | 0 | 0.55s | 2 | 0 | 0 | 0.40s |
+| `tests/test_deflate.rs` | 2 | 0 | 0 | 28.16s | 2 | 0 | 0 | 33.62s |
+| `tests/test_diagnostics.rs` | 14 | 0 | 0 | 0.00s | 14 | 0 | 0 | 0.00s |
+| `tests/test_differential.rs` | 42 | 0 | 0 | 36.93s | 42 | 0 | 0 | 45.71s |
+| `tests/test_doc.rs` | 5 | 0 | 0 | 0.24s | 5 | 0 | 0 | 0.28s |
+| `tests/test_doc_examples.rs` | 2 | 0 | 0 | 1.65s | 2 | 0 | 0 | 1.75s |
+| `tests/test_early_returns.rs` | 2 | 0 | 0 | 2.85s | 2 | 0 | 0 | 2.09s |
+| `tests/test_encode.rs` | 2 | 0 | 0 | 0.87s | 2 | 0 | 0 | 0.79s |
+| `tests/test_eval_expr.rs` | 4 | 0 | 0 | 0.89s | 4 | 0 | 0 | 0.97s |
+| `tests/test_exit.rs` | 1 | 0 | 1 | 4.53s | 2 | 0 | 0 | 2.09s |
+| `tests/test_formats.rs` | 5 | 0 | 0 | 30.54s | 5 | 0 | 0 | 35.98s |
+| `tests/test_generations.rs` | 10 | 0 | 0 | 0.90s | 10 | 0 | 0 | 0.73s |
+| `tests/test_generics.rs` | 9 | 0 | 0 | 0.12s | 9 | 0 | 0 | 0.11s |
+| `tests/test_hash.rs` | 2 | 0 | 0 | 4.59s | 2 | 0 | 0 | 5.22s |
+| `tests/test_heap.rs` | 7 | 0 | 0 | 0.26s | 7 | 0 | 0 | 0.14s |
+| `tests/test_i64.rs` | 12 | 0 | 0 | 0.00s | 12 | 0 | 0 | 0.00s |
+| `tests/test_interfaces.rs` | 8 | 0 | 0 | 0.22s | 8 | 0 | 0 | 0.24s |
+| `tests/test_io.rs` | 1 | 0 | 0 | 0.51s | 1 | 0 | 0 | 0.35s |
+| `tests/test_language_gaps.rs` | 7 | 0 | 0 | 4.96s | 7 | 0 | 0 | 3.34s |
+| `tests/test_libs.rs` | 2 | 0 | 0 | 2.25s | 2 | 0 | 0 | 1.78s |
+| `tests/test_memory.rs` | 9 | 0 | 0 | 44.94s | 9 | 0 | 0 | 52.60s |
+| `tests/test_memory_layout.rs` | 13 | 0 | 0 | 0.01s | 13 | 0 | 0 | 0.02s |
+| `tests/test_native.rs` | 2 | 0 | 21 | 0.15s | 2 | 0 | 21 | 0.15s |
+| `tests/test_native_elf.rs` | 2 | 0 | 2 | 0.10s | 3 | 0 | 1 | 0.09s |
+| `tests/test_native_reader.rs` | 8 | 0 | 0 | 3.86s | 8 | 0 | 0 | 4.45s |
+| `tests/test_native_x64.rs` | 2 | 0 | 0 | 0.16s | 2 | 0 | 0 | 0.16s |
+| `tests/test_net.rs` | 4 | 0 | 0 | 1.09s | 4 | 0 | 0 | 0.81s |
+| `tests/test_opcode_conformance.rs` | 2 | 0 | 0 | 1.09s | 2 | 0 | 0 | 1.27s |
+| `tests/test_opt.rs` | 2 | 0 | 0 | 1.32s | 1 (2*) | 1 (0*) | 0 | 1.57s |
+| `tests/test_par.rs` | 1 | 0 | 0 | 1.33s | 1 | 0 | 0 | 1.23s |
+| `tests/test_pointers.rs` | 11 | 0 | 0 | 0.03s | 11 | 0 | 0 | 0.02s |
+| `tests/test_portable.rs` | 2 | 0 | 1 | 1.56s | 2 | 0 | 1 | 1.07s |
+| `tests/test_printer.rs` | 3 | 0 | 0 | 3.82s | 3 | 0 | 0 | 4.28s |
+| `tests/test_refs.rs` | 6 | 0 | 0 | 0.03s | 6 | 0 | 0 | 0.01s |
+| `tests/test_regex.rs` | 2 | 0 | 0 | 16.43s | 2 | 0 | 0 | 19.52s |
+| `tests/test_resolver_aipl.rs` | 20 | 0 | 0 | 10.07s | 20 | 0 | 0 | 10.24s |
+| `tests/test_runner.rs` | 9** | 0** | 0 | 1.79s | 8 | 0 | 0 | 0.79s |
+| `tests/test_scopes.rs` | 2 | 0 | 0 | 3.05s | 2 | 0 | 0 | 2.97s |
+| `tests/test_selfhost.rs` | 51 | 0 | 0 | 158.61s | 51 | 0 | 0 | 206.15s |
+| `tests/test_serve.rs` | 11 | 0 | 0 | 410.03s | 11 | 0 | 0 | 36.51s |
+| `tests/test_stats.rs` | 2 | 0 | 0 | 152.73s | 2 | 0 | 0 | 184.30s |
+| `tests/test_std.rs` | 9 | 0 | 0 | 1.94s | 9 | 0 | 0 | 1.91s |
+| `tests/test_stream.rs` | 2 | 0 | 0 | 1.17s | 2 | 0 | 0 | 1.08s |
+| `tests/test_sugar.rs` | 2 | 0 | 0 | 7.68s | 2 | 0 | 0 | 7.73s |
+| `tests/test_sum_types.rs` | 6 | 0 | 0 | 0.07s | 6 | 0 | 0 | 0.06s |
+| `tests/test_testing.rs` | 4 | 0 | 0 | 3.18s | 4 | 0 | 0 | 3.07s |
+| `tests/test_text.rs` | 1 | 0 | 0 | 0.92s | 1 | 0 | 0 | 0.80s |
+| `tests/test_threads.rs` | 7 | 0 | 0 | 0.05s | 7 | 0 | 0 | 0.04s |
+| `tests/test_v2.rs` | 8 | 0 | 0 | 0.00s | 8 | 0 | 0 | 0.00s |
+| `tests/test_values.rs` | 16 | 0 | 0 | 6.22s | 16 | 0 | 0 | 6.82s |
+| `tests/test_visibility.rs` | 3 | 0 | 0 | 0.33s | 3 | 0 | 0 | 0.36s |
+| `tests/test_wasi.rs` | 17 | 0 | 0 | 0.10s | 17 | 0 | 0 | 0.10s |
+| `tests/test_watch.rs` | 2 | 0 | 0 | 0.37s | 2 | 0 | 0 | 0.37s |
+| `tests/test_web.rs` | 5 | 0 | 0 | 1.83s | 5 | 0 | 0 | 1.86s |
+| `Doc-tests aipl_core` | 0 | 0 | 0 | 0.00s | 0 | 0 | 0 | 0.00s |
+| **Total (65 targets)** | **427** | **0** | **27** | | **427 (428\*)** | **1 (0\*)** | **25** | |
+
+*(\*In `linux/arm64`, `test_opt.rs` failed 1 of 2 in the initial full suite run with `ETXTBSY` and passed 2 of 2 in the immediate rerun (`1.67s`). \*\*On macOS, `test_runner.rs` failed 1 of 9 in the first run before `macos_launcher_bundle_executes_and_preserves_behavior` was updated for the removal of `io.println_int`, and passed 9 of 9 (`1.79s`) after updating the test.)*
+
+**Why the ignored/passed counts differ between macOS (427 passed, 27 ignored) and `linux/arm64` (428 passed, 25 ignored):**
+- `tests/test_exit.rs::a_full_standard_output_is_an_error_not_a_panic`: ignored on macOS (`needs /dev/full, which Linux has`), runs and passes on `linux/arm64`.
+- `tests/test_native_elf.rs::readelf_accepts_the_executable_when_installed`: ignored on macOS (`needs readelf (binutils), which macOS lacks`), runs and passes on `linux/arm64`.
+- `tests/test_runner.rs::macos_launcher_bundle_executes_and_preserves_behavior`: `#[cfg(target_os = "macos")]` (runs on macOS, not compiled on Linux).
+- All 25 other ignored tests are identical on both platforms: 21 in `test_native.rs`, 1 in `test_native_elf.rs` (`the_first_native_executable_prints_and_exits_7`), 2 in `test_bootstrap.rs`, and 1 in `test_portable.rs` (`the_self_hosted_aipl_finds_its_library_beside_it`).
+
+---
+
+### 4. Task B Details: Audit Items (A3, A4, A7)
+
+#### B.1 `tests/test_opt.rs` Flake Investigation (Audit A3)
+Updated `trap()` in `tests/test_opt.rs` to print the command, `ExitStatus`, Unix signal (`ExitStatusExt::signal`), `stdout`, and `stderr`, then executed 50 consecutive runs on the M4 Mac:
+```bash
+for i in $(seq 50); do cargo test --release --test test_opt; done
+```
+- **Result**: **49 passed, 1 failed (Run 47 of 50)**.
+- **Run 47 failure output**:
+  ```text
+  ---- an_inlined_function_traps_at_its_call stdout ----
+
+  thread 'an_inlined_function_traps_at_its_call' (2678705) panicked at tests/test_opt.rs:42:5:
+  assertion `left == right` failed: command "/var/folders/yy/zph9pqns10qdk68j2qd7crgr0000gn/T/aipl_opt_1921_inline/p": expected status 134, got ExitStatus(unix_wait_status(9)) (signal: Some(9)), stdout: "", stderr: ""
+    left: None
+   right: Some(134)
+  ```
+- **Which process got the signal and why**:
+  - The command that failed was `"/var/folders/yy/zph9pqns10qdk68j2qd7crgr0000gn/T/aipl_opt_1921_inline/p"` (the standalone Mach-O launcher bundle `p`, not `aipl-run p.wasm`), killed with **signal 9 (`SIGKILL`)**.
+  - The corresponding macOS crash report generated at that exact second (`/Users/matt/Library/Logs/DiagnosticReports/p-2026-10-27-102916.ips`) records:
+    ```json
+    "procName" : "p",
+    "procPath" : "/private/var/folders/*/p",
+    "parentProc" : "test_opt-ebe64ebc954b189d",
+    "parentPid" : 1921,
+    "codeSigningID" : "",
+    "codeSigningFlags" : 16777728,
+    "codeSigningValidationCategory" : 0,
+    "exception" : {"codes":"0x0000000000000000, 0x0000000000000000","rawCodes":[0,0],"type":"EXC_CRASH","signal":"SIGKILL (Code Signature Invalid)"}
+    ```
+    Four earlier crash reports in `~/Library/Logs/DiagnosticReports/` (`p-2026-10-26-170703.ips` from Round 2's audit failure, plus `p-2026-10-27-010500.ips`, `p-2026-10-27-010535.ips`, and `p-2026-10-27-010600.ips`) show the identical signature (`"parentProc": "test_opt-ebe64ebc954b189d"`, `"procName": "p"`, `"signal": "SIGKILL (Code Signature Invalid)"`, `"codeSigningFlags": 16777728`).
+  - Why it happens in `an_inlined_function_traps_at_its_call`: The loop in `tests/test_opt.rs:67-73` runs twice (`args = []`, then `args = ["--no-opt"]`), writing the launcher bundle to the same path `dir.join("p")` via `fs::write` (`src/main.rs:376, 474, 482`). Because `fs::write` truncates the existing file in-place (`O_WRONLY | O_CREAT | O_TRUNC`) without unlinking it first, the vnode is reused while macOS's `syspolicyd` (logged at `10:29:14.010`–`10:29:14.134` in `/usr/bin/log show`: `syspolicyd: STRICT VALIDATION ERROR: invalid structure`) is scanning the vnode from the first iteration's execution, invalidating the vnode's cached code signature in the kernel.
+  - In the `linux/arm64` container (`test-arm64-r3.log`), the same in-place `fs::write` on the second iteration of `an_inlined_function_traps_at_its_call` failed inside `aipl compile` with:
+    ```text
+    thread 'an_inlined_function_traps_at_its_call' (48201) panicked at tests/test_opt.rs:32:5:
+    compile ["--no-opt", "--exe"]: Error: Text file busy (os error 26)
+    ```
+    Unlinking `&output` (`let _ = fs::remove_file(&output);`) before `fs::write` (or writing to a temporary file and renaming) in `src/main.rs` will allocate a new inode/vnode and prevent both failures.
+
+---
+
+### 5. Task D Details: Bare-Metal Repetitions and Timing Comparison
+
+#### 5 Runs of `tests/test_net.rs` on macOS (M4 Bare Metal)
+Command:
+```bash
+for i in $(seq 5); do cargo test --release --test test_net; done
+```
+Results:
+- **Run 1**: `test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.71s`
+- **Run 2**: `test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.54s`
+- **Run 3**: `test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.54s`
+- **Run 4**: `test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.52s`
+- **Run 5**: `test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.58s`
+
+#### 5 Runs of `tests/test_serve.rs` on macOS (M4 Bare Metal)
+Command:
+```bash
+for i in $(seq 5); do cargo test --release --test test_serve; done
+```
+Results (in addition to `410.03s` during the full suite run):
+- **Run 1**: `test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 412.73s`
+- **Run 2**: `test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 421.28s`
+- **Run 3**: `test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 414.19s`
+- **Run 4**: `test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 420.77s`
+- **Run 5**: `test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 418.30s`
+
+#### Timing Comparison Against Linux CI (`test_serve`, `test_selfhost`, `test_stats`)
+
+| Target | Linux x86-64 CI (Handoff 7.3) | `linux/arm64` Container (M4) | macOS Bare Metal (M4) | Explanation of Difference |
+|---|---|---|---|---|
+| `tests/test_selfhost.rs` | ~240 s (~4 min) | `206.15s` (3.4 min) | `158.61s` (2.6 min) | Faster on M4 bare metal due to single-core IPC speed. |
+| `tests/test_stats.rs` | ~180 s (~3 min) | `184.30s` (3.1 min) | `152.73s` (2.5 min) | Faster on M4 bare metal. |
+| `tests/test_serve.rs` | ~40 s | `36.51s` | `410.03s`–`421.28s` | **10.5x slower on macOS** than on Linux (`36.51s` in `linux/arm64` on the same M4 hardware). `test_serve.rs` makes `223,006` sequential loopback TCP connections (`101,002` in `many_requests_leave_memory_flat_natively`, `101,002` in `many_requests_leave_memory_flat_under_aipl_run`, `21,002` in `twenty_thousand_requests_leave_memory_flat_in_the_vm`). On macOS (`sysctl net.inet.ip.portrange.first=49152 net.inet.ip.portrange.last=65535 net.inet.tcp.msl=15000`), there are `16,384` ephemeral ports and `TIME_WAIT` lasts `2 * MSL = 30 s`, requiring `223,006 / 16,384 = 13.61` cycles × `30 s` = `408.3 s` waiting for ephemeral ports to leave `TIME_WAIT`. |
 
 ---
 
@@ -34,7 +242,7 @@ Following instructions in `docs/APPLE_SILICON_HANDOFF.md` Section 6 from Claude 
 |---|---|---|---|
 | `cargo build --release` | **Passed** (0.14s) | **Passed** | Clean release build |
 | `cargo clippy --release --all-targets -- -D warnings` | **Passed** (0 warnings) | **Passed** (0 warnings) | Clippy clean |
-| `cargo test --release --no-fail-fast` | **62 targets, 422 passed, 0 failed, 22 ignored** | **62 targets, 421 passed, 0 failed, 22 ignored** | **0 failures repository-wide!** |
+| `cargo test --release --no-fail-fast` | **62 targets, 422 passed, 0 failed, 22 ignored** | **62 targets, 421 passed, 0 failed, 22 ignored** | 0 failed on `4445888` (before Task D); on `3ec9b2e`, 1 failed in `test_opt.rs` (see A3 and Round 3) |
 | `./target/release/aipl test aipl_src/test_suite.aipl` | **37 groups passed** | **37 groups passed** | All language & stdlib groups passed |
 | `python3 tools/fuzz.py --cases 3000 --seed 1` | **3,000 cases: 0 failing** | **3,000 cases: 0 failing** | Differential toolchain fuzzer |
 | `python3 tools/run_fuzz.py --cases 500 --seed 1` | **500 cases: 0 failing** | **500 cases: 0 failing** | VM vs compiled fuzzer |
@@ -68,7 +276,7 @@ This section records the initial Round 1 findings from 2026-10-25. Note that the
 - **Standalone Executables (Launcher Bundle)**: On macOS Darwin, `aipl compile --exe` produces a 14.2 MB Mach-O executable bundling `aipl-run` and compiled wasm bytecode. Because AMFI verifies ad-hoc code directory signatures at page-fault time and reads the appended program as data, the bundle is **not killed** by the macOS kernel ("Killed: 9"). It executes immediately at Cranelift JIT speed and supports both CLI programs and long-running `--listen` and `--serve` network workers.
 - **Clippy**: `cargo clippy --release --all-targets -- -D warnings` passes with 0 warnings.
 - **Docker Desktop Linux Containers**:
-  - `linux/arm64` runs at 100% native Apple Silicon hardware speed. `aipl compile --exe` creates native Linux aarch64 ELF executables that execute cleanly.
+  - `linux/arm64` runs at native Apple Silicon hardware speed. `aipl compile --exe` writes the launcher bundle (an aarch64 ELF holding `aipl-run` and the compiled wasm) that executes cleanly.
   - `linux/amd64` under QEMU user-mode emulation successfully compiles and executes the bootstrap seed (`bootstrap/aipl-linux-x86_64`) and produces a working stage-1 compiler.
 
 ### What Was Changed on `features/apple-silicon` (Commit by Commit)
@@ -79,8 +287,9 @@ This section records the initial Round 1 findings from 2026-10-25. Note that the
 3. **`a5572c8`**: *Update docs/APPLE_SILICON_REPORT.md with Task 1, 2, and 3 findings*
 4. **`75c0b90`**: *Add tools/container_test.sh helper for container verification*
 5. **`3d6fdb1`**: *Add Task 4/5 report documentation and propose docs/design/ARM64_PLAN.md*
-6. *(Upcoming Round 2 Commit)*: *Implement honest test gating across all targets and complete Round 2 verification*
-   - Gate `tests/test_serve.rs`, replace early returns with `cfg_attr(..., ignore = ...)`, update `container_test.sh`, and record Round 2 results.
+6. **`4445888`**: *Round 2: Gate test_serve, apply honest cfg_attr test ignoring, and update report*
+7. **`3ec9b2e`**: *Task D: Map first PT_LOAD segment at file offset 0 for Rosetta 2 compatibility* (reverted on `features/apple-silicon` in `c9ddd1c`; kept on `features/elf-offset0`)
+8. **`83a71e6`**: *docs/APPLE_SILICON_REPORT.md: round 2 audit against the handoff*
 
 ---
 
@@ -487,7 +696,7 @@ Ran in a `linux/amd64` container (`--platform linux/amd64`):
   [AIPL Compiler] Successfully compiled 'aipl_src/aipl.aipl' -> '/tmp/aipl-stage1' (3704196 bytes)
   aipl 0.1.0
   ```
-  Under QEMU, the seed and the native binary it compiles execute 100% reliably.
+  Under QEMU, both commands above exited with status 0 and printed the expected version string.
 
 ### 4.3 Container Launcher Bundle Execution
 - Built `examples/word_count.aipl` as a standalone launcher bundle in the `linux/arm64` container:
@@ -521,7 +730,7 @@ The full implementation plan has been written to **`docs/design/ARM64_PLAN.md`**
    - Replaces `x64.aipl` (752 lines) with `arm64.aipl` (fixed 32-bit instruction encoder).
    - Updates `lower.aipl` -> `lower_arm64.aipl` to leverage AArch64's 31 64-bit general registers (`x0..x30`) and 32 FP registers (`v0..v31`).
    - Adapts runtime syscall numbers to standard Linux AArch64 conventions (`svc #0` with syscall in `x8`).
-   - Updates `elf.aipl` to align segments to 64 KiB and start the first load segment at file offset 0 (satisfying standard Linux and Rosetta 2).
+   - Keeps 4 KiB pages for x86-64 in `elf.aipl` while starting the first load segment at file offset 0; whether arm64 uses 64 KiB pages is an open question for the owner in `docs/design/ARM64_PLAN.md`.
 2. **Explicit Traps on ARM64**:
    - Hardware `sdiv`/`udiv` instructions on ARM64 do not trap on division by zero or signed overflow (`INT_MIN / -1`). The compiler emits explicit `cbz` checks before division and overflow tests for signed division, branching to the trap handler.
    - Linear memory bounds use 8 GiB virtual reservation with `PROT_NONE` and `mprotect` guard pages, trapped via `SIGSEGV` signal handler.

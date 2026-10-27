@@ -7,7 +7,6 @@
 //! and test program to the same bytes as the Rust one, with the same errors,
 //! and gives the same `aipl doc` output.
 //! Linux x86-64 only, as the seed is.
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -50,6 +49,8 @@ fn build_aipl(compiler: &Path, out: &Path) {
 }
 
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
 fn the_seed_builds_the_compiler_the_rust_toolchain_builds() {
     let dir = scratch("bootstrap_stages");
     let rust_built = dir.join("rust_built");
@@ -70,6 +71,8 @@ fn the_seed_builds_the_compiler_the_rust_toolchain_builds() {
 }
 
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
 fn the_aipl_command_matches_the_rust_command() {
     let dir = scratch("bootstrap_command");
     let aipl = dir.join("aipl");

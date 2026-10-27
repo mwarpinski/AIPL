@@ -31,7 +31,7 @@ case "$MODE" in
             rust:1 bash -c '
                 set -eu
                 rustup component add clippy
-                cp -r /repo /build && cd /build
+                mkdir -p /build && tar --exclude=./target -cf - -C /repo . | tar -xf - -C /build && cd /build
                 echo "Container OS / Arch:" && uname -a
                 echo "Rust version:" && rustc --version
                 echo "Building release:"
@@ -48,22 +48,24 @@ case "$MODE" in
                 python3 tools/run_fuzz.py --cases 500 --seed 1
                 echo "Running opt_diff.py:"
                 python3 tools/opt_diff.py
+                echo "Running opt_diff.py --fuzz (500 cases):"
+                python3 tools/opt_diff.py --fuzz 500 --seed 1
+                echo "Running harness.py selftest:"
+                python3 tools/harness/harness.py selftest
             '
         ;;
     amd64)
         echo "== Running in linux/amd64 container under Rosetta emulation..."
-        echo "NOTE: Rosetta 2 for Linux (ElfMapper.cpp:399) asserts on ELF binaries"
-        echo "whose first PT_LOAD segment starts at offset 0x1000 rather than offset 0."
         "$DOCKER" run --rm --platform linux/amd64 \
             -v "$ROOT":/repo:ro \
             rust:1 bash -c '
                 set -eu
-                cp -r /repo /build && cd /build
+                mkdir -p /build && tar --exclude=./target -cf - -C /repo . | tar -xf - -C /build && cd /build
                 echo "Container OS / Arch:" && uname -a
                 echo "Rust version:" && rustc --version
                 echo "Building:" && cargo build --release -q
                 echo "Running tests:"
-                cargo test --release --no-fail-fast || true
+                cargo test --release --no-fail-fast
             '
         ;;
     qemu)
@@ -73,7 +75,7 @@ case "$MODE" in
             rust:1 bash -c '
                 set -eu
                 apt-get update -qq && apt-get install -y -qq qemu-user-static > /dev/null
-                cp -r /repo /build && cd /build
+                mkdir -p /build && tar --exclude=./target -cf - -C /repo . | tar -xf - -C /build && cd /build
                 export AIPL_STD=/build/aipl_src/std/
                 echo "Testing seed binary (bootstrap/aipl-linux-x86_64):"
                 qemu-x86_64-static ./bootstrap/aipl-linux-x86_64 --version
