@@ -140,7 +140,7 @@ more than usual.
 
 - [x] **Compiled traps name their functions** (2026-10-06). Both compilers
   emit a wasm name section; `aipl-run` and native executables print the
-  call chain after the reason (`  at math.div`, `  at main`; at most 32,
+  call chain after the reason (`  at calc.div`, `  at main`; at most 32,
   then `  ... N more`), the same lines byte for byte, for traps, failed
   contracts, and bounds checks, in threads too. Native code walks its
   frame pointers through a table of function addresses and names.
@@ -148,7 +148,7 @@ more than usual.
   line table (`aipl.lines`, docs/design/LINES_PLAN.md): the position of
   every call and trapping instruction, byte for byte the same. `aipl-run`
   and native executables print it in the call chain,
-  `  at math.div (math.aipl:4:5)`, identically. Eight planted bugs
+  `  at calc.div (calc.aipl:4:5)`, identically. Eight planted bugs
   (compilers, native lowering and lookup, aipl-run) were each caught; the
   table adds about a fifth to a module's size.
 - [x] **The VM's runtime errors need positions too** (2026-10-08): `aipl

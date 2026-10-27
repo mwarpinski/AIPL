@@ -1,0 +1,216 @@
+;; std/math: the small arithmetic a program reaches for and the language does
+;; not spell: min, max, abs, clamp, the floor-rounding division and remainder
+;; of Python's // and %, gcd, integer powers and square roots, and floor, ceil,
+;; trunc, and round for f64. Integers: i32 as the plain names, i64 with an
+;; _i64 suffix; f64 with _f64 where the name would clash.
+;;
+;;   (call math.max 3 7)                 ;; 7
+;;   (call math.floor_div -7 2)          ;; -4 (the operator / gives -3)
+;;   (call math.floor_mod -7 2)          ;; 1 (the operator % gives -1)
+;;   (call math.gcd 12 18)               ;; 6
+;;   (call math.isqrt 99)                ;; 9
+;;   (call math.floor 2.7)               ;; 2.0
+;;
+;; Where a result cannot be represented the program stops, as the rest of the
+;; language does: abs of the smallest integer, pow past the range, a division
+;; by zero. Not here yet: exp, ln, the trigonometric functions, and a
+;; real-exponent pow (each is a port of a libm routine, with a test that it
+;; rounds as libm does); and gcd or pow on big numbers (std/bigint).
+(module math
+  (const PI:f64 3.141592653589793 (pub))
+  (const TAU:f64 6.283185307179586 (pub))
+
+  ;; ===== i32 =====
+
+  ;; The smaller of two numbers.
+  (fn min [a:i32 b:i32] -> i32 (pub) (if (lt a b) a b))
+
+  ;; The larger of two numbers.
+  (fn max [a:i32 b:i32] -> i32 (pub) (if (gt a b) a b))
+
+  ;; x without its sign. The smallest i32 has no positive twin, so it stops
+  ;; the program.
+  (fn abs [x:i32] -> i32 (pub)
+    (req (neq x -2147483648))
+    (if (lt x 0) (- 0 x) x))
+
+  ;; -1, 0, or 1: the sign of x.
+  (fn sign [x:i32] -> i32 (pub) (cond ((lt x 0) -1) ((gt x 0) 1) (else 0)))
+
+  ;; x, held between lo and hi.
+  (fn clamp [x:i32 lo:i32 hi:i32] -> i32 (pub)
+    (req (lte lo hi))
+    (if (lt x lo) lo (if (gt x hi) hi x)))
+
+  ;; a divided by b, rounded toward negative infinity, as Python's a // b:
+  ;; (floor_div -7 2) is -4, where (/ -7 2) is -3.
+  (fn floor_div [a:i32 b:i32] -> i32 (pub)
+    (req (neq b 0))
+    (let q:i32 (/ a b))
+    (if (and (neq (% a b) 0) (neq (lt a 0) (lt b 0))) (- q 1) q))
+
+  ;; What is left of a after floor_div: the sign of b (or 0), as Python's
+  ;; a % b: (floor_mod -7 2) is 1, where (% -7 2) is -1.
+  (fn floor_mod [a:i32 b:i32] -> i32 (pub)
+    (req (neq b 0))
+    (let r:i32 (% a b))
+    (if (and (neq r 0) (neq (lt r 0) (lt b 0))) (+ r b) r))
+
+  ;; The greatest common divisor, never negative; (gcd 0 0) is 0.
+  (fn gcd [a:i32 b:i32] -> i32 (pub)
+    (let x:i32 (call abs a))
+    (let y:i32 (call abs b))
+    (while (neq y 0)
+      (let t:i32 (% x y))
+      (set! x y)
+      (set! y t))
+    x)
+
+  ;; x to the power n, n not negative: (pow 3 4) is 81, (pow x 0) is 1.
+  ;; Stops the program when the answer does not fit.
+  (fn pow [x:i32 n:i32] -> i32 (pub)
+    (req (gte n 0))
+    (let result:i32 1)
+    (let base:i32 x)
+    (let k:i32 n)
+    (while (gt k 0)
+      (when (neq (bitand k 1) 0) (set! result (checked.mul result base)))
+      (set! k (shru k 1))
+      (when (gt k 0) (set! base (checked.mul base base))))
+    result)
+
+  ;; The whole part of the square root of x, x not negative: the largest r
+  ;; with r * r <= x, so (isqrt 99) is 9 and (isqrt 100) is 10.
+  (fn isqrt [x:i32] -> i32 (pub)
+    (req (gte x 0))
+    (let r:i32 (i32.trunc_f64_s (f64.sqrt (f64.convert_i32_s x))))
+    (while (gt (* r r) x) (set! r (- r 1)))
+    r)
+
+  ;; ===== i64 =====
+
+  ;; The smaller of two numbers.
+  (fn min_i64 [a:i64 b:i64] -> i64 (pub) (if (lt a b) a b))
+
+  ;; The larger of two numbers.
+  (fn max_i64 [a:i64 b:i64] -> i64 (pub) (if (gt a b) a b))
+
+  ;; x without its sign; the smallest i64 stops the program.
+  (fn abs_i64 [x:i64] -> i64 (pub)
+    (req (neq x -9223372036854775808i64))
+    (if (lt x 0i64) (- 0i64 x) x))
+
+  ;; x, held between lo and hi.
+  (fn clamp_i64 [x:i64 lo:i64 hi:i64] -> i64 (pub)
+    (req (lte lo hi))
+    (if (lt x lo) lo (if (gt x hi) hi x)))
+
+  ;; a // b as Python writes it, for i64.
+  (fn floor_div_i64 [a:i64 b:i64] -> i64 (pub)
+    (req (neq b 0i64))
+    (let q:i64 (/ a b))
+    (if (and (neq (% a b) 0i64) (neq (lt a 0i64) (lt b 0i64))) (- q 1i64) q))
+
+  ;; a % b as Python writes it, for i64.
+  (fn floor_mod_i64 [a:i64 b:i64] -> i64 (pub)
+    (req (neq b 0i64))
+    (let r:i64 (% a b))
+    (if (and (neq r 0i64) (neq (lt r 0i64) (lt b 0i64))) (+ r b) r))
+
+  ;; The greatest common divisor, never negative.
+  (fn gcd_i64 [a:i64 b:i64] -> i64 (pub)
+    (let x:i64 (call abs_i64 a))
+    (let y:i64 (call abs_i64 b))
+    (while (neq y 0i64)
+      (let t:i64 (% x y))
+      (set! x y)
+      (set! y t))
+    x)
+
+  ;; x to the power n, n not negative; stops the program when the answer
+  ;; does not fit.
+  (fn pow_i64 [x:i64 n:i32] -> i64 (pub)
+    (req (gte n 0))
+    (let result:i64 1i64)
+    (let base:i64 x)
+    (let k:i32 n)
+    (while (gt k 0)
+      (when (neq (bitand k 1) 0) (set! result (checked.mul result base)))
+      (set! k (shru k 1))
+      (when (gt k 0) (set! base (checked.mul base base))))
+    result)
+
+  ;; The whole part of the square root of x, x not negative.
+  (fn isqrt_i64 [x:i64] -> i64 (pub)
+    (req (gte x 0i64))
+    ;; 3037000499 is the largest r whose square fits in an i64
+    (let r:i64 (i64.trunc_f64_s (f64.sqrt (f64.convert_i64_s x))))
+    (when (gt r 3037000499i64) (set! r 3037000499i64))
+    (while (gt (* r r) x) (set! r (- r 1i64)))
+    (while (and (lt r 3037000499i64) (lte (* (+ r 1i64) (+ r 1i64)) x)) (set! r (+ r 1i64)))
+    r)
+
+  ;; ===== f64 =====
+
+  ;; Whether x is not a number.
+  (fn is_nan [x:f64] -> bool (pub) (neq x x))
+
+  ;; The smaller of two numbers; not a number when either is.
+  (fn min_f64 [a:f64 b:f64] -> f64 (pub)
+    (cond ((neq a a) a) ((neq b b) b) ((lt a b) a) (else b)))
+
+  ;; The larger of two numbers; not a number when either is.
+  (fn max_f64 [a:f64 b:f64] -> f64 (pub)
+    (cond ((neq a a) a) ((neq b b) b) ((gt a b) a) (else b)))
+
+  ;; x without its sign (including a negative zero's).
+  (fn abs_f64 [x:f64] -> f64 (pub)
+    (f64.reinterpret_i64 (bitand (i64.reinterpret_f64 x) 9223372036854775807i64)))
+
+  ;; Whether x has no fraction to drop: 2^52 and beyond, where every double is
+  ;; a whole number, or not a number at all (which stays as it is).
+  (fn whole [x:f64] -> bool
+    (or (neq x x) (gte x 4503599627370496.0) (lte x -4503599627370496.0)))
+
+  ;; x with its fraction dropped (rounded toward zero): (trunc -2.7) is -2.0.
+  ;; A zero result has no sign.
+  (fn trunc [x:f64] -> f64 (pub)
+    (if (call whole x) x (f64.convert_i64_s (i64.trunc_f64_s x))))
+
+  ;; The largest whole number not above x: (floor 2.7) is 2.0, (floor -2.7)
+  ;; is -3.0.
+  (fn floor [x:f64] -> f64 (pub)
+    (let t:f64 (call trunc x))
+    (if (and (not (call whole x)) (gt t x)) (- t 1.0) t))
+
+  ;; The smallest whole number not below x: (ceil 2.1) is 3.0, (ceil -2.1) is
+  ;; -2.0.
+  (fn ceil [x:f64] -> f64 (pub)
+    (let t:f64 (call trunc x))
+    (if (and (not (call whole x)) (lt t x)) (+ t 1.0) t))
+
+  ;; x to the nearest whole number, halves away from zero as C's round:
+  ;; (round 2.5) is 3.0, (round -2.5) is -3.0, (round 0.4999999999999999) is 0.0.
+  (fn round [x:f64] -> f64 (pub)
+    (let t:f64 (call trunc x))
+    (let d:f64 (- x t))
+    (cond
+      ((call whole x) x)
+      ((gte d 0.5) (+ t 1.0))
+      ((lte d -0.5) (- t 1.0))
+      (else t)))
+
+  ;; x to the power n, n a whole number, by repeated multiplication (a negative
+  ;; n divides): exact where every step is, otherwise within a few units of
+  ;; the last place, not always libm's last bit.
+  (fn powi [x:f64 n:i32] -> f64 (pub)
+    (req (neq n -2147483648))
+    (let result:f64 1.0)
+    (let base:f64 x)
+    (let k:i32 (call abs n))
+    (while (gt k 0)
+      (when (neq (bitand k 1) 0) (set! result (* result base)))
+      (set! k (shru k 1))
+      (when (gt k 0) (set! base (* base base))))
+    (if (lt n 0) (/ 1.0 result) result))
+)

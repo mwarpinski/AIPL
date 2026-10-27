@@ -265,6 +265,7 @@ module before naming anything in it.
 | a growable list; sort it | `vec.make`, `vec.push`, `vec.at`, `vec.len`, `vec.sort`, `vec.sort_by` |
 | a map or a set | `map.make`, `map.set`, `map.get_or`, `map.add`, `map.has`; `set.make`, `set.add`, `set.has` |
 | optional values | `option.Option`; `os.arg` and `os.env` return them |
+| min, max, abs, clamp, floor division, gcd, powers, square roots, rounding | `math` (`math.min`, `math.floor_div`, `math.gcd`, `math.isqrt`, `math.floor`, `math.round`, ...; `_i64` for i64, `_f64` where a name clashes) |
 | big integers; statistics; random | `bigint`, `stats`, `random` |
 | JSON, CSV | `json.parse`, `csv` |
 | command-line flags | `cli` |
@@ -312,8 +313,8 @@ a struct, enum, or union name, and `(fn [T ...] -> R)` for a function value.
 | logic | `and or not`; `and` and `or` take two or more and stop early |
 | numbers of another type | `i64.extend_s i64.extend_u i32.wrap f64.convert_i32_s f64.convert_i64_s i32.trunc_f64_s i64.trunc_f64_s f64.promote f32.demote`, and `f64.sqrt` |
 
-There is no `min`, `max`, `abs`, `floor`, or `pow`, as an operator or in the
-library: write what you need with `if` and a loop.
+`min`, `max`, `abs`, `floor`, `pow`, and the like are not operators: they are
+in `(import math)` (section 6). There is no `exp`, `ln`, or trigonometry yet.
 
 ```lisp
 (module bits_demo

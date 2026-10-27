@@ -224,7 +224,8 @@ ways to start, where the compiler finds the library, and why.
   statistics (Python's, to the bit), regular expressions (linear-time, as
   Python's `re` matches), hashes (CRC-32, MD5, SHA-1, SHA-256, SHA-512,
   HMAC), DEFLATE, zlib, and gzip, URLs and HTTP messages, big integers, UTC
-  dates, vectors, hash maps, sets, command-line options, and more
+  dates, vectors, hash maps, sets, command-line options, small math (min,
+  max, floor division, gcd, rounding), and more
   (`aipl doc --find` searches it). Memory you free comes from an allocator
   you pass explicitly, as in Zig: a general-purpose heap that stops the
   program on a double free, an arena, or one you write.
@@ -274,7 +275,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **457 Rust tests** and an AIPL test suite, run on every push by CI.
+- **459 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500

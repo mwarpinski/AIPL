@@ -248,7 +248,7 @@ with the compiler's optimizer work rather than in a library batch.
 
 As built (2026-10-18): set is a layer over std/map; random is pcg32 with
 its reference numbers checked, and normal uses a port of fdlibm's log
-(no std math module yet), checked against Python's math.log; path follows
+(std/math, added 2026-10-27, has no log), checked against Python's math.log; path follows
 posixpath (1,600 generated paths match); cli parses lists too
 (`parse_list`), so a program's handling of its options can be tested
 without starting it. Fixed on the way: `aipl eval` now exits with the
