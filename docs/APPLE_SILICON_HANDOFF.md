@@ -355,3 +355,137 @@ src/selfhost.rs, src/main.rs, aipl_src/aipl.aipl, aipl_src/driver.aipl,
 aipl_src/doc.aipl, aipl_src/resolver.aipl, install.sh, tools/make_kit.sh.
 If a fix needs one of them, describe it in your report instead.
 
+
+## 7. Round 3 (2026-10-26)
+
+Written by Claude (Opus 5.5) after reading round 2, the audit in the
+report's section A, and running Task D's change through the full CI on
+real x86-64 hardware. You are on a Mac mini with an M4 now, so everything
+you run is bare metal: that is what this round is for.
+
+Round 2 was useful: the gating is honest, test_serve.rs's "address in
+use" check reads the OS's own wording (Darwin's 48, Linux's 98), and the
+Rosetta finding was real and well traced. One thing to fix in how you
+report (7.5): several statements were not measured.
+
+### 7.1 What changed since round 2
+
+- **This branch is up to date with `development`.** Claude merged it in
+  (commit "Merge development into features/apple-silicon ... (for round
+  3)"). `git pull` on `features/apple-silicon` before you start. Do not
+  rebase.
+- **The language changed** (docs/design/LANGUAGE_DECISIONS.md items 1-8).
+  You will read programs written this way:
+  - a struct is made with its fields named, each once, in order:
+    `(new S a [x:1 y:2])`, `(make V [x:1 y:2])`; a field that starts empty
+    is given `(zero T)`. The zeroed `(new S a)` and a value struct's
+    positional `make` are errors now;
+  - a name's scope is its block or match arm (siblings may reuse a name);
+  - printing is the format forms only, `(println "n = {n}")`: std/io's
+    `println_int` and its kind are gone;
+  - `(arr.of T a x y ...)` is the array literal; every module a file names,
+    it imports; a missing value is an `option.Option`.
+- **The seed was refreshed** (bootstrap/README.md) for the named fields.
+- **Robustness fixes:** "Out of memory: the limit is N MiB" at the memory
+  limit; the self-hosted compiler's tables grow; sugar works inside a
+  formatting placeholder; a full standard output is an error, not a panic;
+  a fresh-mode answer over 64 MiB says why it was a 500; `aipl serve
+  --fresh` becomes the aipl-run it starts (exec).
+- **New tests:** tests/test_scopes.rs, and more in test_sugar.rs,
+  test_memory.rs, test_selfhost.rs, test_serve.rs
+  (`ending_aipl_serve_ends_the_server`), and test_exit.rs
+  (`a_full_standard_output_is_an_error_not_a_panic`, ignored on macOS,
+  which has no /dev/full).
+- **The A/B harness** (tools/harness/README.md): 26 tasks that models
+  write in AIPL, Python, and Rust. `harness.py selftest` is part of CI;
+  run it. **Do not attempt the tasks themselves**: you have read this
+  repository, so your results would not measure what the harness is for.
+  The owner runs other models, in fresh contexts.
+- **`openat2` (audit A5) is pinned by the owner.** Native executables
+  cannot open files on Linux before 5.6 nor under Rosetta 2; that is now
+  said in the spec (6.6), the FAQ, and ROADMAP, and the fix is planned in
+  docs/HANDOFF.md. Do not implement it.
+
+### 7.2 Task D: Claude has it from here
+
+The change on `features/elf-offset0` (only its elf.aipl and
+test_native_elf.rs diff, applied to current `development`) passed the full
+CI on a native Linux x86-64 machine: 453 tests passed, 0 failed; the seed
+bootstrap reached its fixed point; the built compiler's first `PT_LOAD` is
+at file offset 0. What is left needs x86-64 hardware or the owner (a
+read-only segment for the headers, which are writable now; the merge; a
+seed refresh so the bootstrap runs under Rosetta), so Claude keeps it.
+Leave `features/elf-offset0` and aipl_src/native/elf.aipl alone.
+
+### 7.3 The tasks, in order
+
+**Task A: the full verification on the M4.** After pulling:
+`cargo build --release`; `cargo clippy --release --all-targets -- -D
+warnings`; `cargo test --release --no-fail-fast`;
+`./target/release/aipl test aipl_src/test_suite.aipl`;
+`python3 tools/fuzz.py --cases 3000 --seed 1`;
+`python3 tools/run_fuzz.py --cases 500 --seed 1`; `python3 tools/opt_diff.py`
+and `python3 tools/opt_diff.py --fuzz 500 --seed 1`;
+`python3 tools/harness/harness.py selftest`. Report `cargo test` as a table
+of **every** target with its passed, failed, and ignored counts (not only
+the exceptions), and each other command's last line.
+
+**Task B: the audit's open items.**
+1. **The `test_opt.rs` flake (A3).** Make `trap()`'s assertion message
+   show the whole exit status, including the signal on Unix
+   (`std::os::unix::process::ExitStatusExt::signal`). Change the message
+   only, not what is asserted. Then run the test 50 times
+   (`for i in $(seq 50); do cargo test --release --test test_opt; done`)
+   and report how many failed and with which signal. If it reproduces, find
+   out which process got the signal (the bundle or aipl-run) and why; a
+   macOS kill of a freshly written executable shows as signal 9.
+2. **The two silent skips (A4).** In test_native_elf.rs,
+   `readelf_accepts_the_executable_when_installed` returns early without
+   `readelf`: make it
+   `#[cfg_attr(target_os = "macos", ignore = "needs readelf (binutils), which macOS lacks")]`
+   and remove the early return, so on Linux it requires readelf (CI and
+   your containers have binutils; check). In test_bootstrap.rs, replace the
+   file-wide `#![cfg(...)]` with the 6.2 attribute on each test, so they
+   are counted as ignored on the Mac.
+3. **The stale statements (A7).** Correct the report's lines that A7
+   lists, and tools/container_test.sh: its amd64 note, and the
+   `cargo test ... || true` that hides failures (the script should end with
+   the tests' status).
+
+**Task C: the `linux/arm64` container.** Rerun everything in Task A there
+(`sh tools/container_test.sh arm64`) and report per target, as for the
+Mac.
+
+**Task D: bare metal on its own.** Run tests/test_serve.rs and
+tests/test_net.rs 5 times each on the Mac and report every result; note
+any test whose time differs much from the Linux CI times (test_serve
+about 40 s, test_selfhost about 4 min, test_stats about 3 min).
+
+Then commit by explicit path, push `features/apple-silicon`, and **stop
+and hand back**. Do not merge anything.
+
+### 7.4 Files
+
+Yours this round: tests/*.rs, for the gating and test_opt's message only;
+tools/container_test.sh; docs/APPLE_SILICON_REPORT.md. Stay out of:
+aipl_src/, src/, bootstrap/, tools/harness/ (run its selftest only),
+install.sh, tools/make_kit.sh, AIPL_SPEC.md, PROMPT_GUIDE_FOR_AIS.md. If a
+fix needs one of them, describe it in your report instead.
+
+Not now: the ARM64 backend (docs/design/ARM64_PLAN.md stays a proposal
+until the owner approves it; post-launch), the `openat2` fallback, a seed
+refresh, and anything in elf.aipl.
+
+### 7.5 How to report
+
+- **Only what you measured.** Every finding comes with the command that
+  produced it and its output (or the relevant lines). A cause is stated as
+  a cause only if you showed it; otherwise write "unexplained" and what you
+  tried. Round 2's "100% reliability", the futex explanation, and "stage 1
+  has the new layout" were not measured (audit A5).
+- **Name things exactly.** On `linux/arm64`, `aipl compile --exe` writes
+  the launcher bundle (an aarch64 ELF holding aipl-run and the wasm), not a
+  native executable: AIPL's native backend writes x86-64 only.
+- **Open with what is broken and what to do next**, as section 5 asks,
+  then the counts, then the details. Keep round 2 and the audit as they
+  are, below a new "Round 3" section.
