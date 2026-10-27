@@ -12,6 +12,9 @@ use std::process::{Command, Stdio};
 
 const RUNNER: &str = env!("CARGO_BIN_EXE_aipl-run");
 
+/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
@@ -49,13 +52,16 @@ fn every_benchmark_prints_its_expected_output() {
         std::fs::create_dir_all(&scratch).unwrap();
         let wasm_path = scratch.join(format!("{name}.wasm"));
         std::fs::write(&wasm_path, &wasm).unwrap();
-        let exe = scratch.join(&name);
-        std::fs::write(&exe, aipl_core::native::executable(&wasm, false).unwrap_or_else(|e| panic!("{name}: {e}"))).unwrap();
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        for (way, out) in [
+        let mut ways = vec![
             ("wasm", run(Command::new(RUNNER).arg(&wasm_path).args(&args).current_dir(&dir), &stdin)),
-            ("native", run(Command::new(&exe).args(&args).current_dir(&dir), &stdin)),
-        ] {
+        ];
+        if NATIVE {
+            let exe = scratch.join(&name);
+            std::fs::write(&exe, aipl_core::native::executable(&wasm, false).unwrap_or_else(|e| panic!("{name}: {e}"))).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            ways.push(("native", run(Command::new(&exe).args(&args).current_dir(&dir), &stdin)));
+        }
+        for (way, out) in ways {
             assert_eq!(out.0, Some(0), "{name} ({way}): {}", out.2);
             assert!(out.1 == expected, "{name} ({way}): output differs from expected.txt:\n{}", String::from_utf8_lossy(&out.1));
         }

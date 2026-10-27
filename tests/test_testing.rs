@@ -12,6 +12,9 @@ use std::process::{Command, Output};
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const ROWS: &str = "tests/aipl/testing/rows.aipl";
 
+/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -34,7 +37,12 @@ fn stdout(o: &Output) -> String {
 #[test]
 fn each_test_runs_alone_and_reports_alike_in_every_backend() {
     let want = std::fs::read_to_string(root().join("tests/aipl/testing/rows.expected")).unwrap();
-    for backend in [None, Some("--vm"), Some("--native"), Some("--all-backends")] {
+    let backends: &[Option<&str>] = if NATIVE {
+        &[None, Some("--vm"), Some("--native"), Some("--all-backends")]
+    } else {
+        &[None, Some("--vm")]
+    };
+    for backend in backends {
         let mut args = vec!["test"];
         args.extend(backend);
         args.push(ROWS);

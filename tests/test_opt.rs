@@ -35,7 +35,20 @@ fn compile(args: &[&str], src: &Path, out: &Path, cache: Option<&Path>) {
 /// The trap's message and call chain, the file name before it left out.
 fn trap(cmd: &mut Command) -> String {
     let o = cmd.output().unwrap();
-    assert_eq!(o.status.code(), Some(134));
+    #[cfg(unix)]
+    let sig = std::os::unix::process::ExitStatusExt::signal(&o.status);
+    #[cfg(not(unix))]
+    let sig: Option<i32> = None;
+    assert_eq!(
+        o.status.code(),
+        Some(134),
+        "command {:?}: expected status 134, got {:?} (signal: {:?}), stdout: {:?}, stderr: {:?}",
+        cmd,
+        o.status,
+        sig,
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
     let err = String::from_utf8_lossy(&o.stderr).into_owned();
     err.split_once(": ").unwrap().1.to_string()
 }

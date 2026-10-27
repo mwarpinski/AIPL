@@ -375,6 +375,9 @@ fn once_answers_a_piped_request_alike_everywhere() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
 /// A fresh instance per connection, from each host: `aipl serve --fresh`
 /// (aipl-run), a native executable built with `--serve`, which forks a copy
 /// of itself per connection, and the launcher bundle built with it. A
@@ -394,7 +397,12 @@ fn a_fresh_instance_per_request_isolates_a_crash() {
         ("/big", failed),
         ("/", text_response("200 OK", "hello\n")),
     ];
-    for host in ["aipl serve --fresh", "native", "bundle"] {
+    let hosts: &[&str] = if NATIVE {
+        &["aipl serve --fresh", "native", "bundle"]
+    } else {
+        &["aipl serve --fresh", "bundle"]
+    };
+    for &host in hosts {
         let at = format!("127.0.0.1:{}", free_port("127.0.0.1"));
         let mut cmd = match host {
             "native" | "bundle" => {
@@ -442,13 +450,22 @@ fn a_fresh_server_that_cannot_listen_says_so() {
     // a port held busy here: no gap in which another socket could take it
     let busy = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = busy.local_addr().unwrap().to_string();
-    let why = format!(": cannot listen on {at}: Address already in use (os error 98)\n");
+    let err = TcpListener::bind(&at).unwrap_err();
+    let why = format!(": cannot listen on {at}: {err}\n");
     let (native, bundle) = (dir.join("native"), dir.join("bundle"));
-    compile(&src, &native, &["--exe", "--target", "native", "--serve", &at]);
+    if NATIVE {
+        compile(&src, &native, &["--exe", "--target", "native", "--serve", &at]);
+    }
     compile(&src, &bundle, &["--exe", "--target", "wasm", "--serve", &at]);
     let mut serve = Command::new(AIPL);
     serve.args(["serve", "--fresh", "--listen", &at]).arg(&src);
-    for (name, mut cmd) in [(native.display().to_string(), Command::new(&native)), (bundle.display().to_string(), Command::new(&bundle)), (src.display().to_string(), serve)] {
+    let mut targets: Vec<(String, Command)> = Vec::new();
+    if NATIVE {
+        targets.push((native.display().to_string(), Command::new(&native)));
+    }
+    targets.push((bundle.display().to_string(), Command::new(&bundle)));
+    targets.push((src.display().to_string(), serve));
+    for (name, mut cmd) in targets {
         let o = cmd.output().unwrap();
         assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stderr).to_string()), (Some(1), format!("{name}{why}")));
     }
@@ -461,7 +478,8 @@ fn a_fresh_server_that_cannot_listen_says_so() {
     // leaving no file, and by aipl serve
     let par = root().join("examples/spectralnorm_par.aipl");
     let threaded = "a threaded module cannot be served a fresh instance per connection yet";
-    for target in ["native", "wasm"] {
+    let targets: &[&str] = if NATIVE { &["native", "wasm"] } else { &["wasm"] };
+    for target in targets {
         let out = dir.join(format!("par_{target}"));
         let o = Command::new(AIPL).args(["compile", "--exe", "--target", target, "--serve", "127.0.0.1:1"]).arg(&par).arg("-o").arg(&out).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&o.stderr).trim(), format!("Error: {threaded}"), "{target}");

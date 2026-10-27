@@ -385,6 +385,8 @@ fn call_exports(wasm: &[u8], calls: &[(&str, &[i32])]) -> Vec<wasmtime::Val> {
 /// NE7: the control-flow programs of tests/test_control_flow.rs and
 /// examples/math_core.aipl (the functions that allocate since NE9).
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn control_flow_programs_match_natively() {
     let flow_file = include_str!("test_control_flow.rs");
     assert_functions_match(
@@ -437,6 +439,8 @@ fn control_flow_programs_match_natively() {
 /// heap cursor): the single-threaded atomics program, the struct and array
 /// cases, and the quicksort and accounts examples.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn allocating_programs_match_natively() {
     assert_functions_match(
         "atomics",
@@ -478,6 +482,8 @@ fn allocating_programs_match_natively() {
 /// NE10: the WASI functions other than files. Every program prints, so its
 /// whole output is compared; the environment is fixed for both runs.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn wasi_programs_match_natively() {
     let env = |vars: &[(&str, &str)]| Some(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
     let big_input: Vec<u8> = (0..20000).map(|i| format!("word{i} ")).collect::<String>().into_bytes();
@@ -604,6 +610,8 @@ fn wasi_programs_match_natively() {
 /// unless sandboxed. After each run every file under the run's parent
 /// directory is compared, so an escape would show.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn file_programs_match_natively() {
     let input = include_bytes!("../examples/input.txt").to_vec();
     let file = |name: &str, bytes: &[u8]| (name.to_string(), bytes.to_vec());
@@ -773,6 +781,8 @@ fn file_programs_match_natively() {
 /// run 20 times natively to shake out races (the expected values are those
 /// tests' results; aipl-run must give them too).
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn thread_programs_match_natively() {
     let threads = program_from(include_str!("test_threads.rs"), "const THREADS");
     for round in 0..20 {
@@ -1003,6 +1013,8 @@ fn spawn_reads_global() -> Vec<u8> {
 
 /// NE14: function references (the table and call_indirect).
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn function_reference_programs_match_natively() {
     assert_functions_match(
         "refs",
@@ -1113,6 +1125,8 @@ fn table_module(index: i32, call_type: u32, elem_offset: i32) -> Vec<u8> {
 /// NE13: floats. f64 results are compared by their bits (NaN payloads and
 /// -0.0 included).
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn float_programs_match_natively() {
     assert_functions_match(
         "f64_cases",
@@ -1376,6 +1390,8 @@ fn check_result_f32(want: f32) -> Vec<wasm_encoder::Instruction<'static>> {
 
 /// NE12: i64. The cases of tests/test_i64.rs, function by function.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn i64_programs_match_natively() {
     assert_functions_match(
         "i64_cases",
@@ -1933,6 +1949,8 @@ fn assert_wasm_native_matches_with(name: &str, wasm: &[u8], io: &Io) {
 }
 
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn every_program_matches_natively() {
     for (name, src) in PROGRAMS {
         assert_native_matches(name, src);
@@ -1943,6 +1961,8 @@ fn every_program_matches_natively() {
 }
 
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn every_i32_operator_matches_natively() {
     let dir = scratch("i32_expected");
     for (name, wasm) in i32_operator_programs() {
@@ -1957,6 +1977,8 @@ fn every_i32_operator_matches_natively() {
 /// Guards against a harness that passes vacuously: the programs must not all
 /// exit 0, and a deliberately different program must be told apart.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn the_harness_tells_programs_apart() {
     let dir = scratch("apart");
     let statuses: Vec<Option<i32>> =
@@ -1992,6 +2014,8 @@ fn the_harness_tells_programs_apart() {
 /// and call chain (the functions the trap happened in, innermost first),
 /// and exit with 134. The exit-status error is not a trap: one line.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn traps_print_their_line_and_call_chain() {
     let dir = scratch("traps");
     let prog = dir.join("prog").display().to_string();
@@ -2057,6 +2081,8 @@ fn without_positions(s: &str) -> String {
 /// same under aipl-run and natively: the trapping expression, then each
 /// call (docs/design/LINES_PLAN.md). The columns were checked by hand.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn traps_name_their_source_positions() {
     let dir = scratch("positions");
     for (name, chain) in [
@@ -2107,6 +2133,8 @@ fn traps_name_their_source_positions() {
 /// spawned thread). Found by tools/run_fuzz.py: native executables died
 /// with SIGSEGV and no message.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn running_out_of_stack_traps() {
     let dir = scratch("stack");
     let prog = dir.join("prog").display().to_string();
@@ -2191,6 +2219,8 @@ fn unsupported_instructions_and_imports_are_named() {
 /// with value parameters in registers and on the stack, natively as under
 /// wasmtime.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn value_struct_programs_match_natively() {
     for (name, path) in [("values", "tests/aipl/values.aipl"), ("values_flow", "tests/aipl/values_flow.aipl"), ("unions_by_value", "tests/aipl/unions_by_value.aipl"), ("results_by_value", "tests/aipl/results_by_value.aipl")] {
         let m = aipl_core::resolver::Resolver::resolve(&root().join(path)).unwrap();
@@ -2221,6 +2251,8 @@ fn the_vm_builds_the_same_executable() {
 /// itself to its own wasm (the fixpoint, with no Rust or wasmtime in the
 /// second build), and building it natively twice must give the same file.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn the_compiler_runs_natively() {
     let driver = WasmCompiler::compile(&Resolver::resolve(&root().join("aipl_src/driver.aipl")).unwrap()).unwrap();
     let aiplc = to_native(&driver).unwrap();
@@ -2276,6 +2308,8 @@ fn the_compiler_runs_natively() {
 /// Checked arithmetic natively: the same values as under aipl-run, and an
 /// overflow traps with "integer overflow" (exit 134) in both.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn checked_arithmetic_matches_natively() {
     let dir = scratch("checked");
     let prog = dir.join("prog").display().to_string();
@@ -2319,6 +2353,8 @@ fn checked_arithmetic_matches_natively() {
 /// end), a subdirectory, file information, and a missing path. aipl-run
 /// (wasmtime), the native executable, and the VM print the same.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn directories_and_file_information_match_natively() {
     let src = r#"(module m
   (import fs)
@@ -2375,6 +2411,8 @@ fn directories_and_file_information_match_natively() {
 /// caller's must survive callees that use the same registers for their own
 /// (and recursion), and float values on the stack across calls.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn float_locals_survive_calls_natively() {
     let src = "(module m (import io)
       (fn inner [x:f64 n:i32] -> f64
@@ -2404,6 +2442,8 @@ fn float_locals_survive_calls_natively() {
 /// scratch (atomics, memory.grow) and calls to imports (printing), in this
 /// function and in its callers.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn register_locals_survive_atomics_grow_and_imports_natively() {
     let src = "(module m (import io)
       (fn busy [w:i32] -> i32 (unsafe)
@@ -2432,6 +2472,8 @@ fn register_locals_survive_atomics_grow_and_imports_natively() {
 /// references; arguments whose registers must be swapped (computed in one
 /// order, wanted in another); recursion.
 #[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native backend)")]
 fn calling_convention_matches_natively() {
     let src = "(module m (import io)
       (fn zero [] -> i32 7)

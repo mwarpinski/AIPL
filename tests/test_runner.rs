@@ -7,6 +7,9 @@ use std::process::{Command, Output, Stdio};
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const RUNNER: &str = env!("CARGO_BIN_EXE_aipl-run");
 
+/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
@@ -173,14 +176,19 @@ fn threads_run_under_the_runner() {
 /// x86-64) and the launcher bundle (`--target wasm`).
 #[test]
 fn standalone_executables() {
-    for target in ["native", "wasm"] {
+    let targets: &[&str] = if NATIVE {
+        &["native", "wasm"]
+    } else {
+        &["wasm"]
+    };
+    for target in targets {
         standalone_executables_for(target);
     }
     // the default: native code on Linux x86-64, the launcher bundle elsewhere
     let dir = scratch("exe_default");
     let wc = dir.join("word_count");
     compile(&root().join("examples/word_count.aipl"), &wc, &["--exe"]);
-    assert_kind(&wc, if cfg!(all(target_os = "linux", target_arch = "x86_64")) { "native" } else { "wasm" });
+    assert_kind(&wc, if NATIVE { "native" } else { "wasm" });
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -188,7 +196,17 @@ fn standalone_executables() {
 /// inside), or the launcher with a module appended.
 fn assert_kind(path: &Path, target: &str) {
     let bytes = std::fs::read(path).unwrap();
-    assert!(bytes.starts_with(b"\x7fELF"), "{}: not an executable", path.display());
+    if cfg!(target_os = "macos") {
+        assert!(
+            bytes.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+                || bytes.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
+                || bytes.starts_with(&[0xca, 0xfe, 0xba, 0xbe]),
+            "{}: not a Mach-O executable",
+            path.display()
+        );
+    } else {
+        assert!(bytes.starts_with(b"\x7fELF"), "{}: not an executable", path.display());
+    }
     match target {
         "native" => {
             assert!(!bytes.ends_with(b"AIPLEXE2"), "{}: a launcher bundle, not native code", path.display());
@@ -268,12 +286,40 @@ fn target_needs_exe_and_a_known_name() {
 fn value_structs_build_for_both_targets() {
     let dir = scratch("exe_values");
     let src = root().join("tests/aipl/values_flow.aipl");
-    let targets: &[&str] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) { &["wasm", "native"] } else { &["wasm"] };
+    let targets: &[&str] = if NATIVE { &["wasm", "native"] } else { &["wasm"] };
     for target in targets {
         let exe = dir.join(format!("flow_{target}"));
         compile(&src, &exe, &["--exe", &format!("--target={target}")]);
         assert_kind(&exe, target);
         assert_eq!(run_in(&dir, &exe, &[], "").status.code(), Some(0), "{target}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// On Apple Silicon (macOS), standalone executables are launcher bundles
+/// (aipl-run with wasm and an AIPLEXE2 trailer appended). This test checks
+/// that the bundle executes on macOS, passes arguments, and exits cleanly.
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_launcher_bundle_executes_and_preserves_behavior() {
+    let dir = scratch("macos_bundle");
+    let src = dir.join("prog.aipl");
+    std::fs::write(
+        &src,
+        r#"(module prog
+  (import io) (import os) (import str) (import option)
+  (fn main [] -> i32
+    (println "args: {(call os.arg_count)}")
+    (let f:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (println "arg1 len: {(get f str.Bytes.len)}")
+    0))"#,
+    )
+    .unwrap();
+    let exe = dir.join("bundle_test");
+    compile(&src, &exe, &["--exe"]);
+    assert_kind(&exe, "wasm");
+    let o = run_in(&dir, &exe, &["hello"], "");
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(stdout(&o), "args: 2\narg1 len: 5\n");
     let _ = std::fs::remove_dir_all(&dir);
 }

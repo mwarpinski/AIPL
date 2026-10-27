@@ -9,6 +9,9 @@ use std::process::{Command, Output};
 
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 
+/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -55,7 +58,12 @@ fn values_print_with_their_types_in_every_backend() {
         (Some(ROWS), "(let r:(ptr Row) (call make_row 2))\n(get r Row.n)", "2 : i32\n"),
         (Some(ROWS), "(call shade 1)", "dark : Shade\n"),
     ];
-    for backend in ["", "--wasm", "--native"] {
+    let backends: &[&str] = if NATIVE {
+        &["", "--wasm", "--native"]
+    } else {
+        &["", "--wasm"]
+    };
+    for backend in backends {
         for (with, exprs, want) in cases {
             let o = eval(backend, *with, exprs);
             assert_eq!(o.status.code(), Some(0), "{backend} {exprs}: {}", stderr(&o));
@@ -79,7 +87,13 @@ fn errors_are_at_the_expressions_own_lines_and_columns() {
     let o = eval("", Some(ROWS), "(call parse_row 5)");
     assert_eq!(stderr(&o), "Error: -e:1:1: Arg 0 of 'parse_row' expects str, got i32\n");
     // a trap: its call chain, without the generated printer
-    for (backend, code, prefix) in [("", 1, "Error: "), ("--wasm", 134, "-e: "), ("--native", 134, "-e: ")] {
+    let trap_cases: &[(&str, i32, &str)] = if NATIVE {
+        &[("", 1, "Error: "), ("--wasm", 134, "-e: "), ("--native", 134, "-e: ")]
+    } else {
+        &[("", 1, "Error: "), ("--wasm", 134, "-e: ")]
+    };
+    for (backend, code, prefix) in trap_cases {
+        let (backend, code, prefix) = (*backend, *code, *prefix);
         let o = eval(backend, None, "(arr.get i32 (arr.new i32 (call alloc.forever) 2) 5)");
         assert_eq!(o.status.code(), Some(code), "{backend}");
         assert_eq!(stderr(&o), format!("{prefix}Array index out of bounds: index 5 for array of length 2\n  at __eval (-e:1:1)\n"), "{backend}");
