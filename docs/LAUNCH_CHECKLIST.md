@@ -24,7 +24,7 @@ What is left, in the order to do it. Each item below points at its section.
 | 1 | A showcase program (section 4) | Claude | Done 2026-10-27: `examples/jsonpp.aipl`, and the self-compile figures |
 | 2 | The evidence: run the A/B harness with other models, in fresh contexts (section 5; tools/harness/README.md), then publish the tasks, prompts, transcripts, and numbers, including where AIPL loses | Owner runs; Claude helps read the results | Harness built; no runs yet |
 | 3 | The README for newcomers (sections 4 and 7: "Later") | Claude | Done 2026-10-27: status up front, a first program run three ways, the detail moved to the docs it links; the cold read (item 5) is the real test |
-| 4 | Release mechanics: one last seed refresh, then merge `development` into `main` | Owner approves both | Waiting on items 1-3 |
+| 4 | Release mechanics: one last seed refresh, then merge `development` into `main` | Owner approves both | The seed is rebuilt on `features/seed-refresh` (2026-10-27, from 29416a9; a fixed point; sha256 in bootstrap/README.md); its CI, then the merges, are left; a prebuilt linux-amd64 binary needs an older-glibc build, license notices, and the owner's choices (version, tag, release) |
 | 5 | The final checks (section 8): every box ticked or given a reason; tests, the AIPL suite, both fuzzers, and the benchmarks on a fresh clone from the README alone; the documentation's numbers rerun; a cold read by someone who has never seen the project; the post itself | Both | After 1-4 |
 
 **Small, soon**

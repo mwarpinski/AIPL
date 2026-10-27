@@ -63,22 +63,28 @@ program to the same bytes as the Rust command, with the same errors.
 
 ## Where this seed came from
 
-Built 2026-10-26 by the Rust toolchain, from the source of commit
-bb8c35f, so that the compiler's own source can give a struct's fields by
-name, `(new S a [x:1 y:2])` and `(make V [x:1 y:2])`, and write a zero as
-`(zero T)` (docs/design/LANGUAGE_DECISIONS.md item 4), and use what came
-since the last seed: `arr.of`, std/option's missing values:
+Built 2026-10-27 by the Rust toolchain, from the source of commit
+29416a9, for the release: the executables the compiler writes (this seed
+among them) now map the ELF headers as their own read-only first segment,
+at file offset 0, which Rosetta 2 requires (Task D, so the bootstrap can run
+under it), and the source has changed in many small ways since the last
+seed (the scope pass, one print form, the robustness work):
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `ebc67e10ca127d78e4a03dc7c735ee7a4e48c853af8baa2511f9c49f92b4d5c5`.
+sha256 `840060d9a7d52bd6a6ca402b5881f791110fa68f9a8386306ef70c52cbe6a0bc`.
 Building that commit's source with the seed gives the same bytes (stage
 2 is the seed), so for now the seed is its own stage 2.
 
-Earlier seeds: the one built 2026-10-20 from 59e3286 (sha256
+Earlier seeds: the one built 2026-10-26 from bb8c35f (sha256
+`ebc67e10ca127d78e4a03dc7c735ee7a4e48c853af8baa2511f9c49f92b4d5c5`), so
+that the compiler's own source can give a struct's fields by name,
+`(new S a [x:1 y:2])` and `(make V [x:1 y:2])`, and write a zero as
+`(zero T)` (docs/design/LANGUAGE_DECISIONS.md item 4); the one built
+2026-10-20 from 59e3286 (sha256
 `65b27359549178d8d2faec8cecc42f945fde1e241ed46b55b1c18d294e46d01a`), so
 that the compiler's imports can write `(no_leak)` in a function type; the
 one built 2026-10-19 from 7a55d99 (sha256
