@@ -50,7 +50,7 @@ fn std_math_gives_pythons_answers() {
     for seed in ["1", "2"] {
         vectors(&dir, seed);
         let input = std::fs::read(dir.join("cases.txt")).unwrap();
-        let o = with_input(&mut Command::new(RUNNER).arg(&wasm), &input);
+        let o = with_input(Command::new(RUNNER).arg(&wasm), &input);
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         check(&dir, &o.stdout, "wasm");
         let o = with_input(&mut Command::new(&exe), &input);
