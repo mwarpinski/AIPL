@@ -50,6 +50,7 @@ const EXPECTED: &[(&str, i32, &str)] = &[
     // docs/USING_AIPL.md (empty input here; the next test gives them the input the page states)
     ("use_lines", 0, ""),
     ("word_tally", 0, ""),
+    ("bits_demo", 0, "8 14 6 16 -4 15 -3 -1\n"),
     // docs/TOUR.md
     ("tour_hello", 0, "7 squared is 49\n3 squared plus 4 squared is 25\n"),
     ("tour_types", 0, "the average of 40 and 3 is 21.5\n"),

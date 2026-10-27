@@ -3,8 +3,8 @@
 How to write, build, run, and test a program with the `aipl` command, and
 how to read what it tells you. The language's forms and the mistakes models
 make most are in [PROMPT_GUIDE_FOR_AIS.md](../PROMPT_GUIDE_FOR_AIS.md); read that
-first. This page is the workflow and the library map. It leaves out how the
-compiler works.
+first. This page is the workflow, the library map, and the spelling of the
+operators (section 8). It leaves out how the compiler works.
 
 ## 1. The loop
 
@@ -282,3 +282,44 @@ signature. Name an imported item with its module: `(call util.double 21)`,
 `(ptr util.Node)`. Every module whose name you write needs its own `(import
 ...)`, even when an import already imports it. A task of this size is one
 file.
+
+## 8. Syntax and operators at a glance
+
+The spelling of what the guide's rules use, in one place.
+
+**Text.** A comment is `;;` to the end of the line. Tokens are separated by
+spaces, tabs, and newlines. An integer is decimal: `42`, `-7` (an `i32`,
+which must fit in 32 bits), `42i64` (an `i64`). There are no hex, binary, or
+underscore forms: write 255 for 0xFF, or `(shl 1 8)`. A float needs a dot and
+a digit: `1.0`, `.5`, `1.5e3` (an `f64`), `1.5f32` (an `f32`). A string is
+double-quoted with the escapes `\n \t \r \0 \\ \"` and no others; inside
+it `{x}` and `{(expression)}` print a value, and `{{` and `}}` are braces.
+Booleans are `true` and `false`.
+
+**A file** is `(module name (import m)... item...)`, where an item is
+`(struct ...)`, `(enum ...)`, `(union ...)`, `(const ...)`, `(fn ...)`, or
+`(test ...)` (also `(interface ...)` and `(impl ...)`, for generics). Types
+are `i32 i64 f32 f64 bool str void`, `(result T E)`, `(ptr S)`, `(arr T)`,
+a struct, enum, or union name, and `(fn [T ...] -> R)` for a function value.
+
+**Operators**, all written first, `(op a b)`:
+
+| Kind | Operators |
+|---|---|
+| arithmetic | `+ - * / %`; `/` and `%` round toward zero (`(/ -7 2)` is -3, `(% -7 2)` is -1); `divu remu` divide as unsigned; `checked.add checked.sub checked.mul` stop on overflow |
+| bits (`i32` and `i64`) | `bitand bitor ^` (xor) `shl shr shru`; `shr` keeps the sign, `shru` fills with zeros (`(shru -16 28)` is 15); both operands have one type, so an `i64` shifts by an `i64`. There is no `&`, `\|`, `<<`, or `~` |
+| compare (give `bool`) | `eq neq lt lte gt gte`, signed; `ltu lteu gtu gteu`, unsigned |
+| logic | `and or not`; `and` and `or` take two or more and stop early |
+| numbers of another type | `i64.extend_s i64.extend_u i32.wrap f64.convert_i32_s f64.convert_i64_s i32.trunc_f64_s i64.trunc_f64_s f64.promote f32.demote`, and `f64.sqrt` |
+
+There is no `min`, `max`, `abs`, `floor`, or `pow`, as an operator or in the
+library: write what you need with `if` and a loop.
+
+```lisp
+(module bits_demo
+  (fn main [] -> i32
+    (println "{(bitand 12 10)} {(bitor 12 10)} {(^ 12 10)} {(shl 1 4)} {(shr -16 2)} {(shru -16 28)} {(/ -7 2)} {(% -7 2)}")
+    0))
+```
+
+It prints `8 14 6 16 -4 15 -3 -1`.
