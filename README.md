@@ -128,6 +128,35 @@ aipl compile --exe examples/word_count.aipl -o wc
 ./wc README.md                                  # a native executable
 ```
 
+## A real program
+
+`examples/jsonpp.aipl` is a JSON pretty-printer: 211 lines, 56 of them its
+own tests, with the standard library doing the parsing, the options, and
+the output. An AI agent wrote it, with the guide, `aipl doc`, and the other
+examples to hand; that is not a cold run (the A/B harness in
+`tools/harness/` measures that). It checks out against Python's
+`json.dumps` on generated documents (`tests/test_showcase.rs`).
+
+```bash
+aipl test examples/jsonpp.aipl                        # its tests
+aipl compile --exe examples/jsonpp.aipl -o jsonpp     # 0.3 s, a 319 KB executable
+echo '{"b":[1,2,{}],"a":null}' | ./jsonpp --sort
+```
+
+```
+{
+  "a": null,
+  "b": [
+    1,
+    2,
+    {}
+  ]
+}
+```
+
+`--indent N`, `--compact`, and `--query PATH` (as in `a.b[2].c`) are there
+too; a document that is not JSON is reported as `FILE:LINE:COLUMN: what`.
+
 ## Build AIPL with AIPL
 
 The compiler is written in AIPL, and on Linux x86-64 it builds itself as a
@@ -143,7 +172,7 @@ cargo build --release
 
 **Without Rust**, start from the seed in `bootstrap/`. The script builds
 the compiler with the seed, builds it again with the result, and checks
-that a third build is identical (about 3 seconds):
+that a third build is identical (about 8 seconds):
 
 ```bash
 sh bootstrap/build.sh               # the result is target/bootstrap/aipl

@@ -21,7 +21,7 @@ What is left, in the order to do it. Each item below points at its section.
 
 | # | Item | Who | State |
 |---|---|---|---|
-| 1 | A showcase program (section 4) | Claude | In progress: `examples/jsonpp.aipl` |
+| 1 | A showcase program (section 4) | Claude | Done 2026-10-27: `examples/jsonpp.aipl`, and the self-compile figures |
 | 2 | The evidence: run the A/B harness with other models, in fresh contexts (section 5; tools/harness/README.md), then publish the tasks, prompts, transcripts, and numbers, including where AIPL loses | Owner runs; Claude helps read the results | Harness built; no runs yet |
 | 3 | The README for newcomers (sections 4 and 7: "Later") | Claude | Not started; its examples are current |
 | 4 | Release mechanics: one last seed refresh, then merge `development` into `main` | Owner approves both | Waiting on items 1-3 |
@@ -234,7 +234,8 @@ more than usual.
 - [x] **Re-run the documentation check** (2026-10-15; section 8 repeats it
   on the day of posting): every number in the README (sizes, test counts,
   timings) must be current. Corrected: test counts (340), `word_count`'s
-  size (64 KB), the self-compile time (0.57 s), the README's lists (value
+  size (64 KB), the self-compile time (0.57 s, as of that day; 2.7 s on
+  2026-10-27, see the showcase item), the README's lists (value
   structs, JSON, installation done), the spec's test-file list, ROADMAP's
   visibility and native-speed lines, and the suite's expected output.
 
@@ -281,10 +282,26 @@ more than usual.
   ROADMAP.md, DEVELOPING.md, and the build files.
 - [x] **`cargo clippy` is clean** (2026-10-06, all targets; CI fails on any
   new warning).
-- [ ] **A showcase.** One program a reader would want to run: the compiler
-  compiling itself natively in 0.57 s is a good one; a small, real tool
-  (a JSON pretty-printer, a `wc`/`grep` clone, a Markdown-to-HTML
-  converter) would be better, written the way an agent would write it.
+- [x] **A showcase** (done 2026-10-27). One program a reader would want to
+  run: the compiler compiling itself natively is a good one; a small, real
+  tool would be better, written the way an agent would write it.
+  `examples/jsonpp.aipl` is the tool: a JSON pretty-printer with `--sort`,
+  `--indent`, `--compact`, and `--query PATH`: 211 lines, 56 of them its own
+  tests; 0.27 s to compile to a native executable (319 KB). Written by
+  Claude with the guide, `aipl doc`, and the other examples to hand, which
+  is not a cold run (the harness, section 5, measures that); it type-checked
+  on the first try, and the two surprises (rows 68 and 69) are in
+  docs/design/AGENT_FRICTION.md. tests/test_showcase.rs checks it against
+  Python's `json.dumps` on forty generated documents, in three layouts, as
+  wasm and as an executable, and pins its options and every failure
+  message. The second exhibit, measured 2026-10-27 on a 2022 laptop (Core
+  i9-12900H): the compiler, 40,000 lines of AIPL, compiles itself with no
+  Rust in 2.7 s (2.1 s with `--no-opt`), to a 3.9 MB executable identical
+  to the one that built it; the whole bootstrap from the checked-in seed
+  to a fixed point takes 7.9 s. (The 0.57 s this item and the README's
+  "about 3 seconds" once gave were measured on 2026-10-15, before the
+  native backend joined the compiler and the optimizer came on by
+  default.)
 - [x] **A ten-minute tour** (docs/TOUR.md, 2026-10-08; its examples are run by
   tests/test_doc_examples.rs) for humans: the spec is 1,350 lines and the
   prompt guide is written for models. One page that walks through a

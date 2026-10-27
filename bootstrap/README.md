@@ -8,7 +8,7 @@ statically linked, needs nothing but the Linux kernel, and builds the next
 version of itself:
 
 ```bash
-sh bootstrap/build.sh            # about 3 seconds; the result is target/bootstrap/aipl
+sh bootstrap/build.sh            # about 8 seconds; the result is target/bootstrap/aipl
 ```
 
 The script has the seed build the current source (stage 1), stage 1 build
