@@ -141,7 +141,7 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
     }
     // (zero T) is written out here, so a program with one takes the whole walk
     if templates.is_empty() && ifaces.defs.is_empty() && !work.iter().any(|(i, _)| has_zero(&i.sx)) {
-        return Ok(Some(regroup(prog.name, files, work)));
+        return Ok(Some(regroup(prog.name, files, scoped(work))));
     }
     // the placeholders, and the functions each template's where clauses grant
     let mut apps = Vec::new();
@@ -200,7 +200,16 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
         }
         i += 1;
     }
-    Ok(Some(regroup(prog.name, files, work)))
+    Ok(Some(regroup(prog.name, files, scoped(work))))
+}
+
+/// Each function with its locals renamed where a name is declared again in
+/// another scope (scopes.rs; generics.aipl scope_fn).
+fn scoped(mut work: Vec<(Item, Kind)>) -> Vec<(Item, Kind)> {
+    for (item, _) in work.iter_mut().filter(|(i, _)| i.sx.head() == Some("fn")) {
+        crate::scopes::rename_locals(&mut item.sx);
+    }
+    work
 }
 
 /// Instances made so far, and which of them are structs.

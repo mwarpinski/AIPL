@@ -38,7 +38,6 @@
              enums:(ptr (map.Map str.Bytes (ptr ast.EnumDef)))
              unions:(ptr (map.Map str.Bytes (ptr ast.UnionDef)))
              fns:(ptr (map.Map str.Bytes (ptr Sig)))
-             declared:(ptr (map.Map str.Bytes ast.Type))
              loop_depth:i32
              ret:ast.MaybeType
              err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool
@@ -218,18 +217,6 @@
 
   (fn has [e:(ptr Env) name:str.Bytes] -> bool (gte (call find e name) 0))
   (fn type_of [e:(ptr Env) name:str.Bytes] -> ast.Type (call (vec.at ast.Type) (get e Env.types) (call find e name)))
-
-  ;; src/checker.rs declare: a name keeps one type per function.
-  (fn declare [c:(ptr C) name:str.Bytes t:ast.Type at:i32] -> void
-    (let d:(ptr (map.Map str.Bytes ast.Type)) (get c C.declared))
-    (if (and (call (map.has str.Bytes ast.Type) d name) (not (call teq (call (map.get_or str.Bytes ast.Type) d name t) t)))
-        (block
-          (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "'") (call by b name) (call s b "' is ") (call ty b t) (call s b " here but ")
-          (call ty b (call (map.get_or str.Bytes ast.Type) d name t))
-          (call s b " elsewhere in this function; a name keeps one type per function (rename one)")
-          (call fail c b))
-        (call (map.set str.Bytes ast.Type) d name t)))
 
   ;; ===== Definitions =====
 
@@ -881,13 +868,11 @@
     (put c C.in_unsafe_fn (get f ast.FnDef.unsafe_))
     (put c C.unsafe_depth 0)
     (let env:(ptr Env) (call new_env))
-    (put c C.declared (call (map.make str.Bytes ast.Type) (call alloc.default) 32))
     (let at:i32 (get f ast.FnDef.at))
     (let fname:str.Bytes (get f ast.FnDef.name))
     (let ps:(arr (ptr ast.Param)) (get f ast.FnDef.params))
     (for k 0 (arr.len ps)
       (let prm:(ptr ast.Param) (arr.get (ptr ast.Param) ps k))
-      (call (map.set str.Bytes ast.Type) (get c C.declared) (get prm ast.Param.name) (get prm ast.Param.ty))
       (let b:(ptr buf.Buf) (call validate c (get prm ast.Param.ty) at))
       (when (neq b (ptr.null buf.Buf))
             (call s b " (parameter '") (call by b (get prm ast.Param.name)) (call s b "' of '") (call by b (call names.shown fname)) (call s b "')")
@@ -1216,7 +1201,7 @@
   (fn infer_let [c:(ptr C) env:(ptr Env) at:i32 name:str.Bytes lty:ast.Type val:ast.Expr] -> ast.Type
     (when (call has env name)
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "Cannot shadow existing variable '") (call by b name) (call s b "'")
+          (call s b "Cannot shadow existing variable '") (call by b (call names.shown name)) (call s b "'")
           (call fail c b) (return (call void_t)))
     (call validate_or_fail c lty at)
     (when (get c C.failed) (return (call void_t)))
@@ -1227,7 +1212,6 @@
           (call s b "Type mismatch in 'let': expected ") (call ty b lty) (call s b ", got ") (call ty b vt)
           (call fit_why c b vt lty val)
           (call fail c b) (return (call void_t)))
-    (call declare c name lty at)
     (when (get c C.failed) (return (call void_t)))
     (call bind env name lty)
     (call void_t))
@@ -1280,10 +1264,9 @@
     (when (not (and (call is_i32 st) (and (call is_i32 et) (call is_i32 pt)))) (call fail_str c at "Loop bounds and step must be i32") (return (call void_t)))
     (when (call has env var)
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "Cannot shadow existing variable '") (call by b var) (call s b "' in loop")
+          (call s b "Cannot shadow existing variable '") (call by b (call names.shown var)) (call s b "' in loop")
           (call fail c b) (return (call void_t)))
     (let m:i32 (call mark env))
-    (call declare c var (call i32_t) at)
     (when (get c C.failed) (return (call void_t)))
     (call bind env var (call i32_t))
     (call check_loop_body c body env)
@@ -1381,10 +1364,9 @@
        (return (call void_t))))
     (when (call has env ok_var)
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "Cannot shadow existing variable '") (call by b ok_var) (call s b "' in match_result ok arm")
+          (call s b "Cannot shadow existing variable '") (call by b (call names.shown ok_var)) (call s b "' in match_result ok arm")
           (call fail c b) (return (call void_t)))
     (let m:i32 (call mark env))
-    (call declare c ok_var okt at)
     (when (get c C.failed) (return (call void_t)))
     (call bind env ok_var okt)
     (let last_ok:ast.Type (call infer_seq c ok_body env))
@@ -1392,9 +1374,8 @@
     (when (get c C.failed) (return (call void_t)))
     (when (call has env err_var)
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "Cannot shadow existing variable '") (call by b err_var) (call s b "' in match_result err arm")
+          (call s b "Cannot shadow existing variable '") (call by b (call names.shown err_var)) (call s b "' in match_result err arm")
           (call fail c b) (return (call void_t)))
-    (call declare c err_var errt at)
     (when (get c C.failed) (return (call void_t)))
     (call bind env err_var errt)
     (let last_err:ast.Type (call infer_seq c err_body env))
@@ -1821,10 +1802,9 @@
       (when (and (not (get c C.failed)) (not (call lit n "_")))
             (when (call has env n)
                   (let b:(ptr buf.Buf) (call msg c aat))
-                  (call s b "Cannot shadow existing variable '") (call by b n) (call s b "' in the ")
+                  (call s b "Cannot shadow existing variable '") (call by b (call names.shown n)) (call s b "' in the ")
                   (call by b tname) (call s b ".") (call by b member) (call s b " arm")
                   (call fail c b) (return))
-            (call declare c n (get f ast.Field.ty) aat)
             (when (get c C.failed) (return))
             (call bind env n (get f ast.Field.ty)))))
 
@@ -2546,7 +2526,6 @@
                                                 enums:(call (map.make str.Bytes (ptr ast.EnumDef)) (call alloc.default) 16)
                                                 unions:(call (map.make str.Bytes (ptr ast.UnionDef)) (call alloc.default) 16)
                                                 fns:(call (map.make str.Bytes (ptr Sig)) (call alloc.default) 256)
-                                                declared:(call (map.make str.Bytes ast.Type) (call alloc.default) 32)
                                                 loop_depth:0
                                                 ret:(make ast.MaybeType.none)
                                                 err:(ptr.null buf.Buf)
