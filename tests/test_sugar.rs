@@ -92,6 +92,9 @@ fn both_toolchains_rewrite_alike_with_the_same_errors() {
         ("(fn g [] -> i32 (arr.len (arr.of (arr i32) 7)))", false, "3:28: arr.of takes the allocator to make it from"),
         // the forms inside a struct's named fields are read like any others
         ("(struct P [xs:(arr i32)]) (fn g [a:alloc.Allocator] -> (ptr P) (new P a [xs:(arr.new i32 a)]))", false, "3:79: arr.new takes the allocator to make it from"),
+        // the forms in a formatting placeholder's code are rewritten too
+        ("(struct P [x:i32]) (fn g [a:alloc.Allocator] -> void (println \"{(arr.len (arr.new i32 a 3))} {(arr.len (arr.of i32 a 1 2))} {(get (new P a [x:7]) P.x)} {(and true true false)} {(zero f64)}\"))", false, ""),
+        ("(fn g [] -> void (println \"{(arr.len (arr.new i32 3))}\"))", false, "arr.new takes the allocator to make it from"),
         // (zero T): the zero of any type that has one, written out with generics (generics.rs zero_of)
         ("(fn (d T) [] -> T (zero T)) (fn g [] -> f64 (call (d f64)))", false, ""),
         ("(union U [(a) (b x:i32)]) (fn g [] -> void (let u:U (zero U)))", false, "3:55: U is a union, which has no zero: write the variant you mean with make"),

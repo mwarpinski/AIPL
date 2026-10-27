@@ -106,7 +106,8 @@ fn a_no_leak_handler_reads_and_writes_through_streams() {
 
 /// `--max-memory` (docs/LAUNCH_CHECKLIST.md section 6): the limit is in the
 /// module, so the VM, aipl-run, native executables, and the launcher bundle
-/// stop at the same place, having printed the same; without it the program
+/// stop at the same place, the mem.alloc memory cannot grow to hold ("Out of
+/// memory: the limit is 4 MiB"), having printed the same; without it the program
 /// runs to the end. Both toolchains write the same module with the limit,
 /// and the AIPL command the same executable as the Rust one; a size that is
 /// not one is refused alike by both.
@@ -131,7 +132,9 @@ fn max_memory_stops_every_backend_at_the_same_place() {
     ] {
         assert!(!o.status.success(), "{backend}: should stop at 4 MiB");
         assert_eq!(printed(&o), want, "{backend}");
-        assert!(String::from_utf8_lossy(&o.stderr).contains("at heap.raw"), "{backend}: {}", String::from_utf8_lossy(&o.stderr));
+        // stopped where memory could not grow, at the mem.alloc, saying why
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains("Out of memory: the limit is 4 MiB\n  at heap.carve") && err.contains("at heap.raw"), "{backend}: {err}");
     }
     // without a limit it runs to the end
     let o = Command::new(AIPL).arg("eval").arg(&src).output().unwrap();

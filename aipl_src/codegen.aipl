@@ -140,13 +140,13 @@
 
   (fn new_cg [src:i32] -> (ptr Cg)
     (let cg:(ptr Cg) (new Cg (call alloc.forever) [src:src
-                                                   locals:(arr.new (ptr Local) (call alloc.forever) 1024)
+                                                   locals:(arr.new (ptr Local) (call alloc.forever) 64)
                                                    nlocals:0
-                                                   fns:(arr.new (ptr FnInfo) (call alloc.forever) MAX_FNS)
+                                                   fns:(arr.new (ptr FnInfo) (call alloc.forever) 64)
                                                    nfns:0
-                                                   structs:(arr.new (ptr StructInfo) (call alloc.forever) 255)
+                                                   structs:(arr.new (ptr StructInfo) (call alloc.forever) 16)
                                                    nstructs:0
-                                                   unions:(arr.new (ptr UnionInfo) (call alloc.forever) 255)
+                                                   unions:(arr.new (ptr UnionInfo) (call alloc.forever) 16)
                                                    nunions:0
                                                    wasi:(arr.new i32 (call alloc.forever) NWASI)
                                                    nimports:(zero i32)
@@ -181,7 +181,7 @@
     (put cg Cg.checks_base 0)
     (put cg Cg.ens_block false)
     (put cg Cg.src_len 0)
-    (put cg Cg.sigs (arr.new (ptr Sig) (call alloc.forever) 31))
+    (put cg Cg.sigs (arr.new (ptr Sig) (call alloc.forever) 8))
     (put cg Cg.nsigs 0)
     (put cg Cg.strs (arr.new (ptr StrLit) (call alloc.forever) 256))
     (put cg Cg.nstrs 0)
@@ -192,7 +192,7 @@
     (put cg Cg.has_values false)
     (put cg Cg.results (call (vec.make (ptr StructInfo)) (call alloc.default) 8))
     (put cg Cg.groups (call (vec.make (ptr Group)) (call alloc.default) 16))
-    (put cg Cg.may_free (arr.new bool (call alloc.forever) MAX_FNS))
+    (put cg Cg.may_free (arr.new bool (call alloc.forever) 1))
     (put cg Cg.proven (call (vec.make (ptr compiler.Node)) (call alloc.default) 8))
     (put cg Cg.versioning true)
     cg)
@@ -604,7 +604,6 @@
       (when (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.fn))
             (let fname_node:(ptr compiler.Node) (call nth_child child 1))
             (let params_node:(ptr compiler.Node) (call nth_child child 2))
-            (if (gte count MAX_FNS) (call set_compile_error CgErr.too_many_functions) 0)
             (let f:(ptr FnInfo) (new FnInfo (call alloc.forever) [name_pos:(call node_a fname_node)
                                                                   name_len:(call node_b fname_node)
                                                                   nparams:(zero i32)
@@ -616,20 +615,24 @@
                                                                   pvs:(zero (arr (ptr StructInfo)))]))
             (put f FnInfo.index count)
             (put f FnInfo.node child)
-            (put f FnInfo.params (arr.new Ty (call alloc.forever) 16))
-            (put f FnInfo.pvs (arr.new (ptr StructInfo) (call alloc.forever) 16))
+            ;; room for every parameter: name : type, three items each
+            (let np:i32 1)
+            (let pc:(ptr compiler.Node) (call first_child params_node))
+            (while (neq pc (ptr.null compiler.Node)) (set! np (+ np 1)) (set! pc (call node_next pc)))
+            (put f FnInfo.params (arr.new Ty (call alloc.forever) np))
+            (put f FnInfo.pvs (arr.new (ptr StructInfo) (call alloc.forever) np))
             (let pcount:i32 0)
             (let pchild:(ptr compiler.Node) (call first_child params_node))
             (while (neq pchild (ptr.null compiler.Node))
               (let ptype_node:(ptr compiler.Node) (call node_next (call node_next pchild)))
-              (if (gte pcount 16) (call set_compile_error CgErr.too_many_functions) 0)
-              (arr.set Ty (get f FnInfo.params) (if (gte pcount 16) 15 pcount) (call type_node_id cg ptype_node))
-              (arr.set (ptr StructInfo) (get f FnInfo.pvs) (if (gte pcount 16) 15 pcount) (call type_node_struct cg ptype_node))
+              (arr.set Ty (get f FnInfo.params) pcount (call type_node_id cg ptype_node))
+              (arr.set (ptr StructInfo) (get f FnInfo.pvs) pcount (call type_node_struct cg ptype_node))
               (set! pcount (+ pcount 1))
               (set! pchild (call node_next ptype_node)))
             (put f FnInfo.nparams pcount)
-            (arr.set (ptr FnInfo) (get cg Cg.fns) (if (gte count MAX_FNS) (- MAX_FNS 1) count) f)
-            (when (lt count MAX_FNS) (set! count (+ count 1))))
+            (put cg Cg.fns (call (room (ptr FnInfo)) (get cg Cg.fns) count))
+            (arr.set (ptr FnInfo) (get cg Cg.fns) count f)
+            (set! count (+ count 1)))
       (set! child (call node_next child)))
     count)
 
@@ -652,11 +655,9 @@
           (return i)))
     -1)
 
-  ;; Appends a local (the 1024th and later overwrite the last, after compile
-  ;; error 93).
+  ;; Appends a local.
   (fn add_local [cg:(ptr Cg) name_ptr:i32 name_len:i32 ty:Ty vs:(ptr StructInfo)] -> void
     (let count:i32 (get cg Cg.nlocals))
-    (if (gte count 1024) (call set_compile_error CgErr.too_many_locals) 0)
     (let l:(ptr Local) (new Local (call alloc.forever) [name_pos:name_ptr
                                                         name_len:name_len
                                                         ty:ty
@@ -664,8 +665,9 @@
                                                         bound:(zero bool)
                                                         vs:vs
                                                         slot:(zero i32)]))
-    (arr.set (ptr Local) (get cg Cg.locals) (if (gte count 1024) 1023 count) l)
-    (put cg Cg.nlocals (if (gte count 1024) 1024 (+ count 1))))
+    (put cg Cg.locals (call (room (ptr Local)) (get cg Cg.locals) count))
+    (arr.set (ptr Local) (get cg Cg.locals) count l)
+    (put cg Cg.nlocals (+ count 1)))
 
   (fn add_local_if_new [cg:(ptr Cg) name_ptr:i32 name_len:i32 ty:Ty vs:(ptr StructInfo)] -> i32
     (when (eq (call find_local cg name_ptr name_len) -1) (call add_local cg name_ptr name_len ty vs))
@@ -929,7 +931,13 @@
   ;; still a non-negative i32 (vm.rs MAX_PAGES).
   (const MAX_PAGES:i32 32768)
   ;; The most functions a module may have (compile error 92 past it).
-  (const MAX_FNS:i32 8192)
+  ;; xs, or a copy of it twice as long when index n does not fit: the
+  ;; compiler's tables grow as wasm.rs's vectors do.
+  (fn (room T) [xs:(arr T) n:i32] -> (arr T)
+    (when (lt n (arr.len xs)) (return xs))
+    (let bigger:(arr T) (arr.new T (call alloc.forever) (* 2 (+ n 1))))
+    (for i 0 (arr.len xs) (arr.set T bigger i (arr.get T xs i)))
+    bigger)
   (const OP_UNREACHABLE:i32 0)
   (const OP_BLOCK:i32 2)
   (const OP_LOOP:i32 3)
@@ -1333,6 +1341,35 @@
 
 
 
+  ;; emit_grow_to_cursor for mem.alloc, which calls $aipl_oom (index oom)
+  ;; when memory cannot grow to hold the block (wasm.rs emit_grow_or_stop).
+  (fn emit_grow_or_stop [o:(ptr Out) oom:i32] -> void
+    (call emit_i32_const o 0)
+    (call emit_memop o OP_I32_LOAD 2)
+    (call emit_size_bytes o)
+    (call put_op o OP_I32_GT_U)
+    (call put_op o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call emit_i32_const o 0)
+    (call emit_memop o OP_I32_LOAD 2)
+    (call emit_size_bytes o)
+    (call put_op o OP_I32_SUB)
+    (call emit_i32_const o 65535)
+    (call put_op o OP_I32_ADD)
+    (call emit_i32_const o 16)
+    (call put_op o OP_I32_SHR_U)
+    (call put_op o OP_MEMORY_GROW)
+    (call put_byte o 0)
+    (call emit_i32_const o -1)
+    (call put_op o OP_I32_EQ)
+    (call put_op o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call put_op o OP_CALL)
+    (call put_u32 o oom)
+    (call put_op o OP_UNREACHABLE)
+    (call put_op o OP_END)
+    (call put_op o OP_END))
+
   ;; memory.size; i32.const 16; i32.shl -> memory size in bytes
   (fn emit_size_bytes [o:(ptr Out)] -> void
     (call put_op o OP_MEMORY_SIZE)
@@ -1660,11 +1697,10 @@
     (while (neq child (ptr.null compiler.Node))
       (when (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.struct))
             (let sname_node:(ptr compiler.Node) (call nth_child child 1))
-            (if (gte scount 255) (call set_compile_error CgErr.table_full) 0)
             (let si:(ptr StructInfo) (new StructInfo (call alloc.forever) [name_pos:(call node_a sname_node)
                                                                            name_len:(call node_b sname_node)
                                                                            size:(zero i32)
-                                                                           fields:(arr.new (ptr Field) (call alloc.forever) 64)
+                                                                           fields:(arr.new (ptr Field) (call alloc.forever) 8)
                                                                            nfields:(zero i32)
                                                                            node:child
                                                                            value:(zero bool)
@@ -1682,8 +1718,9 @@
             (put si StructInfo.flat_ty (arr.new Ty (call alloc.forever) 8))
             (put si StructInfo.flat_off (arr.new i32 (call alloc.forever) 8))
             (when (get si StructInfo.value) (put cg Cg.has_values true))
-            (arr.set (ptr StructInfo) (get cg Cg.structs) (if (gte scount 255) 254 scount) si)
-            (when (lt scount 255) (set! scount (+ scount 1))))
+            (put cg Cg.structs (call (room (ptr StructInfo)) (get cg Cg.structs) scount))
+            (arr.set (ptr StructInfo) (get cg Cg.structs) scount si)
+            (set! scount (+ scount 1)))
       (set! child (call node_next child)))
     (put cg Cg.nstructs scount)
     scount)
@@ -1696,8 +1733,7 @@
 
   ;; A struct's layout (checker.rs type_size_and_align): fields in order,
   ;; each aligned to its alignment, the size rounded up to the largest. A
-  ;; value struct's scalars are flattened too. Past 64 fields: compile
-  ;; error 94.
+  ;; value struct's scalars are flattened too.
   (fn layout_struct [cg:(ptr Cg) si:(ptr StructInfo)] -> void
     (when (get si StructInfo.laid) (return))
     (put si StructInfo.laid true)
@@ -1708,7 +1744,6 @@
     (let fchild:(ptr compiler.Node) (call first_child (call nth_child (get si StructInfo.node) 2)))
     (while (neq fchild (ptr.null compiler.Node))
       (let type_node:(ptr compiler.Node) (call node_next (call node_next fchild)))
-      (if (gte fcount 64) (call set_compile_error CgErr.table_full) 0)
       (let f:(ptr Field) (call new_field cg fchild type_node))
       (let fsize:i32 (call ty_size (get f Field.ty) (get f Field.vs)))
       (let falign:i32 (call ty_align (get f Field.ty) (get f Field.vs)))
@@ -1717,9 +1752,10 @@
       (put f Field.offset cur_offset)
       (put f Field.slot nflat)
       (when (get si StructInfo.value) (set! nflat (call flatten_into si nflat f)))
-      (arr.set (ptr Field) (get si StructInfo.fields) (if (gte fcount 64) 63 fcount) f)
+      (put si StructInfo.fields (call (room (ptr Field)) (get si StructInfo.fields) fcount))
+      (arr.set (ptr Field) (get si StructInfo.fields) fcount f)
       (set! cur_offset (+ cur_offset fsize))
-      (when (lt fcount 64) (set! fcount (+ fcount 1)))
+      (set! fcount (+ fcount 1))
       (if (neq type_node (ptr.null compiler.Node))
           (set! fchild (call node_next type_node))
           (set! fchild (ptr.null compiler.Node))))
@@ -1780,34 +1816,32 @@
     (ptr.null Field))
 
   ;; Records every (union ...) of the module with its variants' layouts.
-  ;; Names first, so a field may have the type of any union. Past 255
-  ;; unions, 255 variants, or 64 fields: compile error 94.
+  ;; Names first, so a field may have the type of any union.
   (fn collect_unions [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
     (let ucount:i32 0)
     (let child:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
     (while (neq child (ptr.null compiler.Node))
       (when (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.union))
             (let name_node:(ptr compiler.Node) (call nth_child child 1))
-            (if (gte ucount 255) (call set_compile_error CgErr.table_full) 0)
             (let u:(ptr UnionInfo) (new UnionInfo (call alloc.forever) [name_pos:(call node_a name_node)
                                                                         name_len:(call node_b name_node)
-                                                                        variants:(arr.new (ptr VariantInfo) (call alloc.forever) 255)
+                                                                        variants:(arr.new (ptr VariantInfo) (call alloc.forever) 8)
                                                                         nvariants:0
                                                                         value:(zero bool)
                                                                         vs:(zero (ptr StructInfo))]))
-            (arr.set (ptr UnionInfo) (get cg Cg.unions) (if (gte ucount 255) 254 ucount) u)
-            (when (lt ucount 255) (set! ucount (+ ucount 1))))
+            (put cg Cg.unions (call (room (ptr UnionInfo)) (get cg Cg.unions) ucount))
+            (arr.set (ptr UnionInfo) (get cg Cg.unions) ucount u)
+            (set! ucount (+ ucount 1)))
       (set! child (call node_next child)))
     (put cg Cg.nunions ucount)
     (let ui:i32 0)
     (set! child (call node_next (call node_next (call first_child root))))
     (while (neq child (ptr.null compiler.Node))
       (when (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.union))
-            (let u:(ptr UnionInfo) (arr.get (ptr UnionInfo) (get cg Cg.unions) (if (gte ui 255) 254 ui)))
+            (let u:(ptr UnionInfo) (arr.get (ptr UnionInfo) (get cg Cg.unions) ui))
             (let vcount:i32 0)
             (let vnode:(ptr compiler.Node) (call first_child (call nth_child child 2)))
             (while (neq vnode (ptr.null compiler.Node))
-              (if (gte vcount 255) (call set_compile_error CgErr.table_full) 0)
               (let v:(ptr VariantInfo) (new VariantInfo (call alloc.forever) [name_pos:(call node_a (call first_child vnode))
                                                                               name_len:(call node_b (call first_child vnode))
                                                                               size:(zero i32)
@@ -1817,8 +1851,9 @@
                                                                               slots:(zero (arr i32))
                                                                               nslots:(zero i32)
                                                                               kinds:(zero (ptr (vec.Vec Ty)))]))
-              (arr.set (ptr VariantInfo) (get u UnionInfo.variants) (if (gte vcount 255) 254 vcount) v)
-              (when (lt vcount 255) (set! vcount (+ vcount 1)))
+              (put u UnionInfo.variants (call (room (ptr VariantInfo)) (get u UnionInfo.variants) vcount))
+              (arr.set (ptr VariantInfo) (get u UnionInfo.variants) vcount v)
+              (set! vcount (+ vcount 1))
               (set! vnode (call node_next vnode)))
             (put u UnionInfo.nvariants vcount)
             (set! ui (+ ui 1)))
@@ -1837,23 +1872,23 @@
   ;; up to the largest (at least 4, the tag's).
   (fn layout_variant [cg:(ptr Cg) v:(ptr VariantInfo)] -> void
     (let name_node:(ptr compiler.Node) (call first_child (get v VariantInfo.node)))
-    (put v VariantInfo.fields (arr.new (ptr Field) (call alloc.forever) 64))
+    (put v VariantInfo.fields (arr.new (ptr Field) (call alloc.forever) 8))
     (let cur_offset:i32 4)
     (let max_align:i32 4)
     (let fcount:i32 0)
     (let fchild:(ptr compiler.Node) (call node_next name_node))
     (while (neq fchild (ptr.null compiler.Node))
       (let type_node:(ptr compiler.Node) (call node_next (call node_next fchild)))
-      (if (gte fcount 64) (call set_compile_error CgErr.table_full) 0)
       (let f:(ptr Field) (call new_field cg fchild type_node))
       (let fsize:i32 (call ty_size (get f Field.ty) (get f Field.vs)))
       (let falign:i32 (call ty_align (get f Field.ty) (get f Field.vs)))
       (when (gt falign max_align) (set! max_align falign))
       (set! cur_offset (bitand (+ cur_offset (- falign 1)) (- 0 falign)))
       (put f Field.offset cur_offset)
-      (arr.set (ptr Field) (get v VariantInfo.fields) (if (gte fcount 64) 63 fcount) f)
+      (put v VariantInfo.fields (call (room (ptr Field)) (get v VariantInfo.fields) fcount))
+      (arr.set (ptr Field) (get v VariantInfo.fields) fcount f)
       (set! cur_offset (+ cur_offset fsize))
-      (when (lt fcount 64) (set! fcount (+ fcount 1)))
+      (set! fcount (+ fcount 1))
       (set! fchild (call node_next type_node)))
     (put v VariantInfo.size (bitand (+ cur_offset (- max_align 1)) (- 0 max_align)))
     (put v VariantInfo.nfields fcount))
@@ -2309,9 +2344,9 @@
   ;; so the values are fixed.
   (enum CgErr [(memory_cap 90)            ;; mem.grow refused: more than 32768 pages
                (output_full 91)           ;; output or a function body passed 4 * src_len + 64 KiB
-               (too_many_functions 92)    ;; more than MAX_FNS (8192) functions, or 16 parameters
-               (too_many_locals 93)       ;; more than 1024 locals in a function
-               (table_full 94)            ;; 255 structs, 64 fields, 31 call_ref signatures, or 8 scalars in a value
+               (too_many_functions 92)    ;; unused since 2026-10-26: the tables grow
+               (too_many_locals 93)       ;; unused since 2026-10-26: the tables grow
+               (table_full 94)            ;; more than 8 scalars in a value (the checker allows 8)
                (not_a_memory_type 95)     ;; a field or element type that is not a scalar
                (unknown_struct_or_field 96)
                (no_value_group 97)        ;; a value struct with no scratch group (a codegen bug)
@@ -2557,6 +2592,8 @@
             ((or (or (eq kw Kw.arr_get) (eq kw Kw.arr_set)) (or (eq kw Kw.req) (or (eq kw Kw.ens) (eq kw Kw.inv)))) (put cg Cg.uses_checks true) 0)
             ;; and a struct access or arr.len (the null check)
             ((or (eq kw Kw.get) (or (eq kw Kw.put) (eq kw Kw.arr_len))) (put cg Cg.uses_checks true) 0)
+            ;; and mem.alloc, which stops with $aipl_oom when memory cannot grow
+            ((eq kw Kw.mem_alloc) (put cg Cg.uses_checks true) 0)
             (else 0))
           (let child:(ptr compiler.Node) (call first_child node))
           (while (neq child (ptr.null compiler.Node)) (call walk_ast_for_wasi cg child) (set! child (call node_next child)))
@@ -2603,11 +2640,9 @@
   (fn sig_add_param [s:(ptr Sig) t:Ty vs:(ptr StructInfo)] -> void
     (for k 0 (call width t vs)
       (let n:i32 (get s Sig.nparams))
-      (if (lt n 128)
-          (block
-            (arr.set i32 (get s Sig.params) n (call scalar_valtype t vs k))
-            (put s Sig.nparams (+ n 1)))
-          (block (call set_compile_error CgErr.too_many_functions) (block)))))
+      (put s Sig.params (call (room i32) (get s Sig.params) n))
+      (arr.set i32 (get s Sig.params) n (call scalar_valtype t vs k))
+      (put s Sig.nparams (+ n 1))))
 
   ;; The result of type t (struct vs): none for void, else its value types.
   (fn sig_set_result [s:(ptr Sig) t:Ty vs:(ptr StructInfo)] -> void
@@ -2632,12 +2667,12 @@
     true)
 
   ;; The index of a signature among the module's call_ref signatures, adding
-  ;; it if new (past 31: compile error 94).
+  ;; it if new.
   (fn add_sig [cg:(ptr Cg) s:(ptr Sig)] -> i32
     (let count:i32 (get cg Cg.nsigs))
     (for i 0 count
       (when (call sig_eq (arr.get (ptr Sig) (get cg Cg.sigs) i) s) (return i)))
-    (when (gte count 31) (call set_compile_error CgErr.table_full) (return 30))
+    (put cg Cg.sigs (call (room (ptr Sig)) (get cg Cg.sigs) count))
     (arr.set (ptr Sig) (get cg Cg.sigs) count s)
     (put cg Cg.nsigs (+ count 1))
     count)
@@ -4019,7 +4054,7 @@
           (call compile_expr cg (call nth_child node 1) o)
           (call emit_round8 o)
           (call emit_rmw_add o)
-          (call emit_grow_to_cursor o)
+          (call emit_grow_or_stop o (+ (get cg Cg.checks_base) 7))
           (set! done true))
     (when (eq op_id Kw.mem_grow)
           (call compile_expr cg (call nth_child node 1) o)
@@ -4820,7 +4855,7 @@
   (fn param_slot [f:(ptr FnInfo) k:i32] -> i32
     (let n:i32 0)
     (for p 0 k
-      (when (lt p 16) (set! n (+ n (call width (arr.get Ty (get f FnInfo.params) p) (arr.get (ptr StructInfo) (get f FnInfo.pvs) p))))))
+      (set! n (+ n (call width (arr.get Ty (get f FnInfo.params) p) (arr.get (ptr StructInfo) (get f FnInfo.pvs) p)))))
     n)
 
   ;; How the VM shows a value of type t, if compiled code can show it the
@@ -4903,7 +4938,7 @@
     (let pchild:(ptr compiler.Node) (call first_child (call nth_child (get entry FnInfo.node) 2)))
     (let k:i32 0)
     (while (neq pchild (ptr.null compiler.Node))
-      (let kind:ItemKind (call shown_as (arr.get Ty (get entry FnInfo.params) (if (gte k 16) 15 k))))
+      (let kind:ItemKind (call shown_as (arr.get Ty (get entry FnInfo.params) k)))
       (when (neq kind ItemKind.text)
           (call add_value cg m (+ src (call node_a pchild)) (call node_b pchild) kind (call param_slot entry k)))
       (set! k (+ k 1))
@@ -5066,7 +5101,7 @@
   ;; The wasm type of a module function.
   (fn fn_sig [f:(ptr FnInfo)] -> (ptr Sig)
     (let s:(ptr Sig) (call new_sig))
-    (for p 0 (if (gt (get f FnInfo.nparams) 16) 16 (get f FnInfo.nparams))
+    (for p 0 (get f FnInfo.nparams)
       (call sig_add_param s (arr.get Ty (get f FnInfo.params) p) (arr.get (ptr StructInfo) (get f FnInfo.pvs) p)))
     (call sig_set_result s (get f FnInfo.ret) (get f FnInfo.ret_vs))
     s)
@@ -5180,12 +5215,12 @@
     ;; generated functions after the module's: a threaded module's start
     ;; function and wasi_thread_start, then _start
     (let extra_fns:i32 (if threaded 2 0))
-    ;; then, in a module with compiled checks, the six check helpers
+    ;; then, in a module with compiled checks, the eight check helpers
     ;; (wasm.rs check_functions)
     (let uses_checks:bool (get cg Cg.uses_checks))
     (let before_checks:i32 (+ extra_fns (if auto_start 1 0)))
     (put cg Cg.checks_base (+ imports (+ nfns before_checks)))
-    (let n_fns:i32 (+ nfns (+ before_checks (if uses_checks 7 0))))
+    (let n_fns:i32 (+ nfns (+ before_checks (if uses_checks 8 0))))
     ;; the contract messages go into the literals after the program's own
     (call intern_contract_texts cg)
     (if (gt (call heap_start cg) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
@@ -5202,7 +5237,7 @@
     ;; Type (1): the WASI imports' types, the functions', the call_ref
     ;; signatures, a threaded module's two, and _start's
     (let sec:(ptr Out) (call out_at scratch))
-    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 7 0))))))
+    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 8 0))))))
     (for w 0 NWASI
       (when (neq (call get_wasi_index cg (enum.cast Wasi w)) -1) (call emit_func_type sec (call wasi_sig (enum.cast Wasi w)))))
     (for f 0 nfns (call emit_func_type sec (call fn_sig (call func_entry_ptr cg f))))
@@ -5218,7 +5253,8 @@
           (call emit_func_type sec (call sig_from "iii" 127))   ;; $aipl_begin: [i32 i32 i32] -> [i32]
           (call emit_func_type sec (call sig_from "i" 0))       ;; $aipl_end: [i32] -> []
           (call emit_func_type sec (call sig_from "" 0))        ;; $aipl_null: [] -> []
-          (call emit_func_type sec (call sig_from "" 0)))
+          (call emit_func_type sec (call sig_from "" 0))        ;; $aipl_uaf: [] -> []
+          (call emit_func_type sec (call sig_from "" 0)))       ;; $aipl_oom: [] -> []
     (call emit_section o 1 sec)
 
     ;; Import (2): the WASI functions used, in the fixed order; a threaded
@@ -5252,7 +5288,7 @@
     (when threaded (call put_u32 sec generated_types) (call put_u32 sec (+ generated_types 1)))
     (when auto_start (call put_u32 sec (+ generated_types extra_fns)))
     (when uses_checks
-        (for k 0 7 (call put_u32 sec (+ generated_types (+ before_checks k)))))
+        (for k 0 8 (call put_u32 sec (+ generated_types (+ before_checks k)))))
     (call emit_section o 3 sec)
 
     ;; Table (4), only with function refs: one funcref table holding every
@@ -5409,9 +5445,9 @@
           (call put_op fc OP_END)
           (call emit_sized sec fc))
     (when uses_checks
-        (for k 0 7
+        (for k 0 8
           (let fc:(ptr Out) (call out_at fcode_scratch))
-          (call check_body fc k (get cg Cg.checks_base))
+          (call check_body fc k (get cg Cg.checks_base) (get cg Cg.max_pages))
           (call emit_sized sec fc)))
     (call emit_section o 10 sec)
 
@@ -5437,7 +5473,7 @@
     ;; Name (custom section 0, last): every function's name, so a trap can
     ;; say where it happened (wasm.rs); the generated ones as wasm.rs names them
     (let fnames:(ptr Out) (call out_at fcode_scratch))
-    (call put_u32 fnames (+ nfns (+ extra_fns (+ (if auto_start 1 0) (if uses_checks 7 0)))))
+    (call put_u32 fnames (+ nfns (+ extra_fns (+ (if auto_start 1 0) (if uses_checks 8 0)))))
     (for f 0 nfns
       (let fentry:(ptr FnInfo) (call func_entry_ptr cg f))
       (call put_u32 fnames (+ imports f))
@@ -5456,7 +5492,8 @@
           (call put_u32 fnames (+ cb 3)) (call emit_name fnames "aipl.begin")
           (call put_u32 fnames (+ cb 4)) (call emit_name fnames "aipl.end")
           (call put_u32 fnames (+ cb 5)) (call emit_name fnames "aipl.null")
-          (call put_u32 fnames (+ cb 6)) (call emit_name fnames "aipl.uaf"))
+          (call put_u32 fnames (+ cb 6)) (call emit_name fnames "aipl.uaf")
+          (call put_u32 fnames (+ cb 7)) (call emit_name fnames "aipl.oom"))
     (set! sec (call out_at scratch))
     (call emit_name sec "name")
     (call put_byte sec 1)
@@ -5617,8 +5654,8 @@
       (call put_u32 o k)
       (set! k (+ k 8)))))
 
-  ;; Check helper k of the seven (wasm.rs check_functions); base is $aipl_dec's index.
-  (fn check_body [o:(ptr Out) k:i32 base:i32] -> void
+  ;; Check helper k of the eight (wasm.rs check_functions); base is $aipl_dec's index.
+  (fn check_body [o:(ptr Out) k:i32 base:i32 max_pages:i32] -> void
     (cond
       ((eq k 0) (call dec_body o))
       ((eq k 1) (call oob_body o base))
@@ -5626,10 +5663,21 @@
       ((eq k 3) (call begin_body o (+ base 2)))
       ((eq k 4) (call end_body o))
       ((eq k 5) (call fixed_text_body o "Null pointer dereference"))
-      (else (call fixed_text_body o "Use after free"))))
+      ((eq k 6) (call fixed_text_body o "Use after free"))
+      (else (call fixed_text_body o (call oom_text max_pages)))))
 
-  ;; $aipl_null() / $aipl_uaf(): the text at RT_FAIL_TEXT, its address and
-  ;; length in cells 92 and 96, then a trap (wasm.rs NULL_TEXT, UAF_TEXT).
+  ;; What a program says when memory cannot grow to hold a mem.alloc, its
+  ;; limit in MiB (wasm.rs oom_text).
+  (fn oom_text [max_pages:i32] -> str
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 48))
+    (call buf.push_str b "Out of memory: the limit is ")
+    (call buf.push_int b (/ (if (gt max_pages 32768) 32768 max_pages) 16))
+    (call buf.push_str b " MiB")
+    (call buf.to_str b))
+
+  ;; $aipl_null() / $aipl_uaf() / $aipl_oom(): the text at RT_FAIL_TEXT, its
+  ;; address and length in cells 92 and 96, then a trap (wasm.rs NULL_TEXT,
+  ;; UAF_TEXT, oom_text).
   (fn fixed_text_body [o:(ptr Out) text:str] -> void
     (call put_u32 o 0)
     (call emit_text_store o -1 RT_FAIL_TEXT text)

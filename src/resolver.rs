@@ -354,23 +354,29 @@ fn read_module(src: &str, file: &str, tests: bool) -> Result<ModuleSx, String> {
             format!("{}:{}: {}", l, c, msg)
         })?;
     }
-    if uses_new && name != "alloc" && !imports.iter().any(|(m, _)| module_name(m) == "alloc") {
-        imports.push(("alloc".to_string(), None));
-    }
     // the formatting forms become std/show calls (formats.rs): a module that
     // uses one imports it, after its own imports; their strings are split
     // here, before names are qualified, so a placeholder's names are renamed
-    // like the rest of the module's
-    if crate::formats::uses_formats(&items) {
-        if !imports.iter().any(|(m, _)| module_name(m) == "show") {
-            imports.push(("show".to_string(), None));
-        }
+    // like the rest of the module's, and its sugar rewritten (a second pass,
+    // which changes nothing already rewritten), as resolver.aipl does
+    let formats = crate::formats::uses_formats(&items);
+    if formats {
         for item in items.iter_mut() {
             crate::formats::split(item, src, file, &|sx, msg| {
                 let (l, c) = sx.position();
                 format!("{}:{}: {}", l, c, msg)
             })?;
+            crate::sugar::rewrite(item, &alloc, &mut uses_new, &|sx, msg| {
+                let (l, c) = sx.position();
+                format!("{}:{}: {}", l, c, msg)
+            })?;
         }
+    }
+    if uses_new && name != "alloc" && !imports.iter().any(|(m, _)| module_name(m) == "alloc") {
+        imports.push(("alloc".to_string(), None));
+    }
+    if formats && !imports.iter().any(|(m, _)| module_name(m) == "show") {
+        imports.push(("show".to_string(), None));
     }
     Ok(ModuleSx { name: name.to_string(), imports, uses, generated_start, items, tests: infos })
 }

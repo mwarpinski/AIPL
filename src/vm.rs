@@ -1457,7 +1457,15 @@ impl VM {
                 // The cursor lives IN linear memory at address 0 (not in a Rust
                 // field), so VM code, compiled wasm, and self-hosted AIPL all
                 // share one allocator state.
-                Ok(Value::Int(self.alloc_bytes(size) as i64))
+                let at = self.alloc_bytes(size);
+                // memory could not grow to hold the block: stop here, as
+                // compiled code does ($aipl_oom), not at the first access past the end
+                let mem = self.shared.lock().unwrap();
+                let cur = u32::from_le_bytes(mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap());
+                if cur as usize > mem.bytes.len() {
+                    return Err(crate::compiler::wasm::oom_text(mem.max_pages as u32));
+                }
+                Ok(Value::Int(at as i64))
             }
             OpCode::MemGrow => {
                 let pages = match self.eval_expr(&args[0], scope)? {
