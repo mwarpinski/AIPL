@@ -28,7 +28,7 @@ model has to remember that the compiler could check.
 | 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Decided yes: fields by name, zeros written with `(zero T)`; done 2026-10-26** |
 | 5 | A name's scope is its block or match arm | No (it allows more) | Medium | **Decided yes, done 2026-10-26** |
 | 6 | One way to print: the format forms | Yes (~230 call sites) | Medium, by a tool | **Decided yes, done 2026-10-26** |
-| 7 | An address-sized integer type | No, if not done | None now | **No: say why in the FAQ** (strong) |
+| 7 | An address-sized integer type | No, if not done | None now | **Decided no; the FAQ says why (2026-10-26)** |
 | 8 | `(= x 1)` says to write `eq` (today it suggests `(call = ...)`) | No (a message) | Tiny | **Decided yes, done 2026-10-26** |
 
 Already done, so not proposed: `str.Bytes` as a value struct (the
@@ -408,6 +408,9 @@ compiler change type for a target that does not exist yet, and add a
 type models must learn and convert to and from.
 
 **Recommendation: no, strongly**, with the FAQ saying exactly this.
+
+**Decided (2026-10-26): no.** docs/FAQ.md, "Why are addresses `i32`? Is
+there a `usize`?", says why.
 
 ## 8. `(= x 1)` says to write `eq`
 

@@ -151,6 +151,20 @@ be changed either, are held by value without being declared so whenever
 they fit (they do not contain themselves and need at most eight numbers),
 so returning an `(option.Option i32)` allocates nothing.
 
+### Why are addresses `i32`? Is there a `usize`?
+
+Addresses are `i32` because AIPL compiles to 32-bit WebAssembly, whose
+addresses are 32 bits, and there is no address-sized type like Rust's
+`usize` or C's `size_t`. A program rarely sees an address: it uses typed
+pointers, `(ptr Node)`, and arrays, `(arr i32)`, which never turn into
+numbers. Raw addresses (`ptr.addr`, `mem.load32`, `mem.alloc`) appear only
+inside `(unsafe ...)`, in a few places in the standard library and the
+compiler. So if AIPL gains a 64-bit target, the type comes with it, and
+only that marked unsafe code changes; adding it now would change the type
+of every address computation for a target that does not exist yet, and
+give models one more type to convert to and from
+([docs/design/LANGUAGE_DECISIONS.md](design/LANGUAGE_DECISIONS.md), item 7).
+
 ### How fast is it?
 
 Between C and Python. On the eight benchmarks, native executables take
