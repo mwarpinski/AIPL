@@ -489,3 +489,121 @@ refresh, and anything in elf.aipl.
 - **Open with what is broken and what to do next**, as section 5 asks,
   then the counts, then the details. Keep round 2 and the audit as they
   are, below a new "Round 3" section.
+
+## 8. Round 4 (2026-10-27): the Rosetta check
+
+Written by Claude (Sonnet 5.5). One job this round, and it needs your Mac:
+find out whether AIPL's Linux x86-64 executables, and the bootstrap that
+builds the compiler with one, now work under Rosetta 2, and whether the
+overwrite bug you found in round 3 is gone on macOS. Claude has tested the
+Linux half with a stand-in for Rosetta (a seccomp filter that makes
+`openat2` fail); you have the real thing. That is the whole reason for this
+round: **report what you see, and do not fix anything you find.**
+
+### 8.1 What changed since round 3
+
+`git pull` on `features/apple-silicon` first (Claude merged `development`
+into it; do not rebase). Since round 3:
+
+- **Your `test_opt.rs` finding (A3) is fixed in `src/main.rs`.** `aipl
+  compile -o OUT` now writes a temporary file and renames it over OUT, so it
+  never opens an executable that was run for writing. On Linux the same bug
+  was reproduced deterministically (`Text file busy`) by compiling over a
+  running executable; `tests/test_opt.rs` has
+  `compiling_over_a_running_executable_replaces_it`. Whether that also cures
+  the macOS `SIGKILL (Code Signature Invalid)` is what you can measure.
+- **Task D is done** (the read-only first `PT_LOAD` at file offset 0), and
+  the seed was refreshed twice (bootstrap/README.md). Under Rosetta the
+  seed `--version` already ran, from the owner's check.
+- **The `openat2` fallback is in** (docs/HANDOFF.md, "The openat2
+  fallback"): a native executable built without `--sandbox` that finds
+  `openat2` failing (ENOSYS, or EPERM from a seccomp profile) opens files
+  with plain `openat`; one built with `--sandbox` prints `this program was
+  built with --sandbox, which needs the openat2 system call (Linux 5.6 or
+  newer, and not Rosetta 2)` and exits 1. The seed (sha256
+  `ae30b56410a1f5254422ff280e48b22a50334328d9ff04b434f341d086a6b4be`) has
+  it, so the bootstrap should now finish under Rosetta.
+- **New tools:** `tools/mac_check.sh` (what to run on a Mac, section 8.2,
+  Task B) and `tools/without_openat2.py` (Linux x86-64 only: do not run it
+  on the Mac).
+- **Also new, nothing for you to do:** `std/math`, the agent workspace
+  (`harness.py workspace`), `docs/USING_AIPL.md`.
+
+### 8.2 The tasks, in order
+
+**Task A: the seed is the one Claude built.** `shasum -a 256
+bootstrap/aipl-linux-x86_64` must print the hash above. If it does not,
+stop and report that.
+
+**Task B: the Mac itself.** On the M4, from a clean checkout of this branch:
+`sh tools/mac_check.sh --quick`, then `sh tools/mac_check.sh` (about 10
+minutes), then `sh tools/mac_check.sh --install development` (it installs
+from GitHub into a scratch directory; it needs the network). Report every
+`PASS`/`FAIL` line. Then the flake, as in round 3: `for i in $(seq 50); do
+cargo test --release --test test_opt; done`, and report how many runs failed
+and with what signal. Round 3 got 1 in 50 (signal 9). If it is 0 in 50, say
+that, and that it proves little: one in fifty may need more runs, so also run
+it 150 more times and report all 200.
+
+**Task C: Rosetta.** In Docker Desktop turn on "Use Rosetta for x86_64/amd64
+emulation" (Settings, General). **Show how you know a container ran under
+Rosetta and not QEMU** (Docker's setting file, `docker info`, an entry under
+`/proc/sys/fs/binfmt_misc` inside the container: whatever you can show); if
+you cannot tell, say so, and say which you believe and why. Then, with the
+repository mounted read-only at `/repo`:
+
+1. `docker run --rm --platform linux/amd64 -v "$PWD":/repo:ro
+   debian:stable-slim /repo/bootstrap/aipl-linux-x86_64 --version`
+   (it printed `aipl 0.1.0` for the owner).
+2. Compile and run a program that opens a file:
+   ```
+   docker run --rm --platform linux/amd64 -v "$PWD":/repo:ro debian:stable-slim sh -c '
+     cd /repo/examples &&
+     AIPL_STD=/repo/aipl_src/std/ /repo/bootstrap/aipl-linux-x86_64 compile --exe jsonpp.aipl -o /tmp/j &&
+     echo "{\"b\":[1,2],\"a\":null}" | /tmp/j --sort &&
+     echo "{\"x\":1}" > /tmp/in.json && /tmp/j /tmp/in.json'
+   ```
+   Before the fallback this stopped at `Error: cannot read entry file:
+   jsonpp.aipl`. Claude expects a pretty-printed document, then `{ "x": 1 }`
+   laid out on three lines. Report the output exactly.
+3. The real finish line, the whole bootstrap under Rosetta, in a copy (the
+   script writes `target/`):
+   ```
+   docker run --rm --platform linux/amd64 -v "$PWD":/repo:ro debian:stable-slim sh -c '
+     mkdir -p /build && cd /repo && tar --exclude=./target -cf - . | tar -xf - -C /build &&
+     cd /build && time sh bootstrap/build.sh &&
+     sha256sum bootstrap/aipl-linux-x86_64 target/bootstrap/aipl'
+   ```
+   Claude expects `stage 3: identical to stage 2 (a fixed point)` and two
+   identical hashes, `ae30b564...`: the compiler built under Rosetta is byte
+   for byte the one built on Linux x86-64. Report the time too (it is about
+   8 seconds on a Linux laptop).
+4. A `--sandbox` program, which needs `openat2`: in the same kind of
+   container, build `examples/word_count.aipl` with `compile --exe
+   --sandbox` and run it on a small file. Two results are possible: the
+   message quoted in 8.1 and exit status 1 (Rosetta lacks `openat2`, as your
+   round 2 report says), or normal output (this macOS version's Rosetta has
+   it). Either is fine; report which, with the exact output and exit status.
+5. `sh tools/container_test.sh amd64`, now that it ends with the tests'
+   status. Report `cargo test` per target as in round 3. Claude expects some
+   failures (test_openat_fallback and the tests that run a seccomp filter
+   may not work inside Rosetta; a few native tests may depend on the Linux
+   kernel). For **each** failing test give its name and the first lines of
+   its message, and say whether the cause is Rosetta, the container, or
+   AIPL. Do not fix any of them.
+
+### 8.3 Files
+
+Yours this round: docs/APPLE_SILICON_REPORT.md only (add a "Round 4"
+section above round 3's). Stay out of everything else, as in 7.4: if a
+failure needs a change in aipl_src/, src/, bootstrap/, or a test, describe
+it in the report. Do not merge, refresh the seed, or touch `main`.
+
+### 8.4 How to report
+
+As in 7.5: **only what you measured**, each finding with its command and its
+output; a cause is a cause only if you showed it, otherwise "unexplained"
+and what you tried. Open with a table: for Tasks A, B, and C1-C5, the
+command, **PASS** or **FAIL**, and one line on what happened. Then what is
+broken and what to do next, then the details. Commit by explicit path, push
+`features/apple-silicon`, and **stop and hand back**.
