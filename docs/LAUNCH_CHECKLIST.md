@@ -31,14 +31,11 @@ What is left, in the order to do it. Each item below points at its section.
 
 | # | Item | Who | State |
 |---|---|---|---|
-| 6 | Task D, so native executables load under Rosetta 2: the ELF headers are their own read-only first segment at file offset 0 (`features/elf-headers`, merged 2026-10-27 with the refreshed seed; it replaces Gemini's `features/elf-offset0`, which made the headers writable). Loading is all it fixes: under Rosetta they still cannot open files (`openat2`, item 7's note below), so the bootstrap cannot finish there until the fallback | Claude; the Rosetta run is on the owner's Mac | Merged and tested on x86-64 (readelf layout, self-tests, a built jsonpp runs); seen loading under Rosetta 2026-10-27 (the owner, Mac mini M4, Docker's Rosetta on): the seed runs and, asked to compile a file, prints its own `cannot read entry file` error, the `openat2` gap; `sh tools/mac_check.sh` passed on macOS (the owner's report) |
+| 6 | Task D and the `openat2` fallback, so native executables load and open files under Rosetta 2 and on Linux before 5.6: the ELF headers are their own read-only first segment at file offset 0 (`features/elf-headers`, merged with the refreshed seed 2026-10-27; it replaces Gemini's `features/elf-offset0`), and a program without `--sandbox` opens with `openat` when `openat2` fails (a `--sandbox` program says it needs it and exits 1) | Claude; the Rosetta run is on the owner's Mac; the seed refresh is the owner's | Seen loading under Rosetta (the owner, Mac mini M4, 2026-10-27); the fallback is written and tested with `openat2` refused by a seccomp filter (`tools/without_openat2.py`, in CI), not yet under Rosetta itself; the checked-in seed gets it at the next refresh |
 | 7 | Gemini's round 3 on the Mac mini (docs/APPLE_SILICON_HANDOFF.md, section 7): review its report, then merge its macOS test gating into `development`, so a Mac user's `cargo test` is honest | Claude reviews; the owner merges | Round 3 pushed 2026-10-26, reviewed 2026-10-27 (tests and docs only; found the in-place overwrite bug, fixed on `features/replace-output`); `sh tools/mac_check.sh` is what to run on a Mac to confirm the fix and the README's paths; when it merges, README and the FAQ say macOS on Apple Silicon is tested (both say only Linux is, now) |
 
 **After launch** (each already stated in ROADMAP.md or docs/HANDOFF.md)
 
-- the `openat2` fallback, so native executables open files on Linux before
-  5.6 and under Rosetta 2 (pinned by the owner 2026-10-26; the plan is in
-  docs/HANDOFF.md, "Open problems");
 - the rest of the way off Rust (ROADMAP.md, "Next" 3): `verify` in the
   self-hosted command, the execute bit, an AIPL way to start a process (so
   `eval`, `run`, `test`, and `watch` can be self-hosted, and the test

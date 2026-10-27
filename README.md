@@ -217,8 +217,10 @@ ways to start, where the compiler finds the library, and why.
 - **Three ways to run a program,** which must agree: an interpreter for
   quick runs, WebAssembly with WASI (files, stdio, the command line, the
   environment, clocks, threads), and native Linux x86-64 executables with no
-  runtime (`word_count` is 94 KB). Native executables need Linux 5.6 or
-  newer to open files, so not yet on older kernels, nor under Rosetta 2.
+  runtime (`word_count` is 94 KB). Native executables run on any kernel since
+  3.17; where `openat2` is missing (before Linux 5.6, Rosetta 2) a program
+  opens files with `openat`, and one built with `--sandbox`, which needs
+  `openat2` to stay confined, says so at start and exits.
 - **A standard library** with printing and file I/O, `"x = {x}"` formatting
   (built into the language), strings and UTF-8 text, streams, JSON, CSV,
   statistics (Python's, to the bit), regular expressions (linear-time, as
@@ -275,7 +277,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **459 Rust tests** and an AIPL test suite, run on every push by CI.
+- **461 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500
