@@ -386,7 +386,7 @@ in FORMS and in tests/test_selfhost.rs `self_hosted_bytes_match_when`.
 - codegen_opt.aipl does not know `when` (it is not wired into any
   pipeline; when `--opt` is built, it must).
 - `aipl serve --fresh` should exec aipl-run instead of starting it as a
-  child (below).
+  child (below). Done 2026-10-26.
 - tools/when_rewrite.py rewrote prose inside the guide's fenced
   system-prompt block (it reads every fenced block as code); rules 6 and 7
   were fixed by hand. A later rewrite tool should skip fences that are
@@ -397,7 +397,8 @@ Found on the way, not part of the step: `aipl serve --fresh` starts
 process id leaves the server running and listening (Ctrl-C reaches both,
 as a process group). It should exec aipl-run instead. Tests that fail
 mid-loop leave such servers behind (two were found still listening, hours
-later, on 2026-10-21).
+later, on 2026-10-21). Done 2026-10-26: it execs aipl-run, which removes
+its temporary module once read (`--temporary`).
 
 ## 5. An array literal
 

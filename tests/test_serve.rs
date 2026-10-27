@@ -480,3 +480,23 @@ fn both_toolchains_compile_the_fresh_server_alike() {
     let rust = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
     assert_eq!(aipl_core::selfhost::compile_with_aipl(&src).unwrap(), rust);
 }
+
+/// `aipl serve --fresh` becomes the aipl-run that serves (it does not start
+/// one and wait), so ending it by its process id ends the server: nothing
+/// is left listening, and its temporary module is gone.
+#[test]
+fn ending_aipl_serve_ends_the_server() {
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let at = format!("127.0.0.1:{}", free_port("127.0.0.1"));
+    let mut server = Command::new(AIPL).args(["serve", "--fresh", "--listen", &at]).arg(&src).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let pid = server.id();
+    let start = std::time::Instant::now();
+    while std::net::TcpStream::connect(&at).is_err() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(60), "the server never listened");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    server.kill().unwrap();
+    server.wait().unwrap();
+    assert!(std::net::TcpStream::connect(&at).is_err(), "something is still listening on {at}");
+    assert!(!std::env::temp_dir().join(format!("aipl_serve_{pid}")).exists());
+}

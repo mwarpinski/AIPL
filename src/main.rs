@@ -525,14 +525,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             fs::create_dir_all(&dir)?;
             let module_path = dir.join("program.wasm");
             fs::write(&module_path, &wasm)?;
+            // this process becomes aipl-run, so ending it (by its id) ends the
+            // server: no child is left serving; aipl-run removes the module
+            // once it has read it
             let mut cmd = std::process::Command::new(runner_path()?);
-            cmd.args(["--serve-fresh", &listen]);
+            cmd.args(["--serve-fresh", &listen, "--temporary"]);
             if let Some(n) = requests {
                 cmd.args(["--requests", &n.to_string()]);
             }
-            let status = cmd.arg("--name").arg(&file).arg(&module_path).args(&args).status()?;
+            cmd.arg("--name").arg(&file).arg(&module_path).args(&args);
+            use std::os::unix::process::CommandExt;
+            let e = cmd.exec();
             let _ = fs::remove_dir_all(&dir);
-            std::process::exit(status.code().unwrap_or(1));
+            return Err(format!("cannot start aipl-run: {e}").into());
         }
         Commands::Run { file, sandbox, listen, args } => {
             if file.ends_with(".aipl") {

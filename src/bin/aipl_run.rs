@@ -92,6 +92,7 @@ fn embedded(args: &[String]) -> Option<Program> {
 fn from_command_line(args: &[String]) -> Result<Program, String> {
     let mut rest = &args[1.min(args.len())..];
     let (mut sandbox, mut listen, mut fresh, mut requests, mut name) = (false, Vec::new(), None, None, None);
+    let mut temporary = false;
     loop {
         match rest.first().map(String::as_str) {
             Some("--serve-fresh") => {
@@ -114,6 +115,12 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
                 sandbox = true;
                 rest = &rest[1..];
             }
+            // the module is a temporary copy (aipl serve's): removed once
+            // read, with its directory if that is then empty
+            Some("--temporary") => {
+                temporary = true;
+                rest = &rest[1..];
+            }
             Some("--listen") => {
                 let g = rest.get(1).ok_or("--listen needs ADDR:PORT")?;
                 listen.push(aipl_core::net::Net::parse_grant(g)?);
@@ -124,6 +131,12 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
     }
     let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... [--name NAME] PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] [--name NAME] PROGRAM.wasm [ARGS...]")?;
     let wasm = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+    if temporary {
+        let _ = std::fs::remove_file(file);
+        if let Some(dir) = std::path::Path::new(file).parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
     if requests.is_some() && fresh.is_none() {
         return Err("--requests goes with --serve-fresh".into());
     }
