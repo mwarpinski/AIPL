@@ -87,6 +87,41 @@ A local model's context must hold the AIPL guide: the AIPL prompt is about
 38,000 characters (roughly 10,000 tokens), against about 1,000 for Python
 and Rust.
 
+## Running it with an agent that has a shell (the workspace)
+
+The two ways above give a model nothing but a prompt. To test an agent that
+works in a folder (a coding agent, a local model with tools) on the limited
+instructions it would have in the field, build it a workspace:
+
+    harness.py workspace /path/to/ws                 # the guide and the spec
+    harness.py workspace /path/to/ws --docs guide    # the guide alone
+
+The folder holds the documents named (`docs/`), `bin/aipl` and
+`bin/aipl-run`, the task texts (`tasks/NN_name.md`), a `README.md` telling
+the agent what to do, and an empty `solutions/`. It holds no reference
+solution, no tests, no example programs, and no git history, and `selftest`
+checks that. Point the agent at that folder and nothing else; it writes
+`solutions/NN_name.aipl`, and it can compile and run what it writes on the
+example in each task, as an agent would. When it is done:
+
+    harness.py score-workspace /path/to/ws --model NAME-workspace
+
+scores every solution on the hidden tests (a task with no solution file
+counts as failed) and records the results like the other ways do. Put the
+mode and the documents in the model name (`qwen-32b-guide-only`), so the
+report keeps the runs apart. There are no feedback rounds here: the agent's
+own compile errors are its only feedback, and the hidden tests tell it
+nothing.
+
+What the workspace cannot keep from an agent that can read the whole disk:
+the `aipl` binary carries the standard library and the toolchain's sources
+and writes them to its module cache (`$AIPL_CACHE`, else
+`~/.cache/aipl`) when it first runs, and `aipl doc` prints the library's
+documentation. The second is part of the language's tools, and a real user
+has it; the first is a leak if the agent goes looking. Run the agent in a
+sandbox that sees only the workspace (a container, or a user with no access
+to the cache), and say in the write-up which you did.
+
 ## Results
 
     python3 tools/harness/harness.py report

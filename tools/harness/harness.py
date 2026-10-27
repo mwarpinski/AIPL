@@ -14,7 +14,14 @@ Python, and Rust, scored the same way.
                                                 stdout), with up to R rounds of feedback each
     harness.py report [RESULTS.jsonl...]        summarize recorded results
     harness.py selftest                         each ref.py passes its own tests, and the AIPL,
-                                                Python, and Rust paths compile and run a program
+                                                Python, and Rust paths compile and run a program,
+                                                and the workspace holds only what an agent may see
+    harness.py workspace DIR [--docs guide,spec]
+                                                a folder for an agent with a shell: those documents,
+                                                bin/aipl and bin/aipl-run, the task texts, and an
+                                                empty solutions/ (no tests, references, or examples)
+    harness.py score-workspace DIR --model NAME [--attempt A]
+                                                score DIR/solutions/NN_name.aipl on the hidden tests
 
 LANG is aipl, python, or rust. Results go to results/MODEL.jsonl, one line
 per program scored.
@@ -322,6 +329,108 @@ SELFTEST_PROGRAMS = {
 }
 
 
+# ----- the agent workspace -----
+
+WORKSPACE_DOCS = {"guide": "PROMPT_GUIDE_FOR_AIS.md", "spec": "AIPL_SPEC.md"}
+
+WORKSPACE_README = """# AIPL workspace
+
+You are to write programs in AIPL, a programming language you may not have
+seen. Everything you need is in this folder:
+
+{docs}- `bin/aipl` and `bin/aipl-run`: the compiler and the runner.
+- `tasks/`: one `NN_name.md` per task. Each describes a program that reads
+  standard input and writes standard output, with one example.
+- `solutions/`: where your programs go.
+
+For every task, write `solutions/NN_name.aipl`: one file, one module, that
+solves the task. Check a program the way it will be run:
+
+    bin/aipl verify solutions/NN_name.aipl                       # type-check it
+    bin/aipl compile solutions/NN_name.aipl -o /tmp/p.wasm       # build it
+    bin/aipl-run /tmp/p.wasm < input.txt                         # run it
+
+`bin/aipl doc --find WORD` searches the standard library, and
+`bin/aipl doc MODULE` lists a module's functions.
+
+Your programs are tested afterwards on inputs you cannot see: edge cases
+and large inputs, each with 10 seconds. The output must match exactly.
+Use nothing outside this folder: no other files, no network.
+"""
+
+
+def cmd_workspace(args):
+    """A folder for an agent with a shell: the documents it is allowed, the binaries, the task
+    texts, and nothing else (no reference solutions, no tests, no examples, no git history)."""
+    d = args.dir
+    if os.path.exists(d) and os.listdir(d):
+        sys.exit(f"harness: {d} is not empty")
+    names = [n for n in args.docs.split(",") if n]
+    for n in names:
+        if n not in WORKSPACE_DOCS:
+            sys.exit(f"harness: no document '{n}' (choose from {', '.join(WORKSPACE_DOCS)})")
+    for sub in ("bin", "tasks", "solutions") + (("docs",) if names else ()):
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+    for n in names:
+        shutil.copy(os.path.join(ROOT, WORKSPACE_DOCS[n]), os.path.join(d, "docs", WORKSPACE_DOCS[n]))
+    for b in ("aipl", "aipl-run"):
+        shutil.copy(tool(b), os.path.join(d, "bin", b))
+        os.chmod(os.path.join(d, "bin", b), 0o755)
+    for t in task_names():
+        shutil.copy(os.path.join(TASKS, t, "task.md"), os.path.join(d, "tasks", t + ".md"))
+    docs = "".join(f"- `docs/{WORKSPACE_DOCS[n]}`: {'read this first: a guide to writing AIPL' if n == 'guide' else 'the full reference'}.\n" for n in names)
+    open(os.path.join(d, "README.md"), "w").write(WORKSPACE_README.format(docs=docs))
+    open(os.path.join(d, "VERSION"), "w").write(aipl_version() + "\n")
+    print(f"workspace in {d}: {len(task_names())} tasks, documents: {', '.join(names) or 'none'}. Point the agent at it, and nothing else; "
+          f"afterwards: harness.py score-workspace {d} --model NAME")
+
+
+def workspace_files(d):
+    return sorted(os.path.relpath(os.path.join(r, f), d) for r, _, fs in os.walk(d) for f in fs)
+
+
+def cmd_score_workspace(args):
+    """Scores DIR/solutions/NN_name.aipl on the hidden tests; a task without a solution counts as failed."""
+    docs = sum(len(open(os.path.join(args.dir, "docs", f)).read()) for f in os.listdir(os.path.join(args.dir, "docs"))) if os.path.isdir(os.path.join(args.dir, "docs")) else 0
+    scored = failed = 0
+    for t in task_names():
+        path = os.path.join(args.dir, "solutions", t + ".aipl")
+        code = open(path).read() if os.path.exists(path) else ""
+        if os.path.exists(path):
+            result = check_code(t, "aipl", code)
+        else:
+            result = {"compiled": False, "compile_error": "no solution file", "tests": len(tests(t)), "passed": 0, "failure": None}
+        record(args.model, t, "aipl", args.attempt, 1, code, result, docs + len(open(os.path.join(TASKS, t, "task.md")).read()), len(code))
+        print(f"{t}: {verdict(result)}")
+        scored += 1
+        failed += not result["compiled"] or result["failure"] is not None
+    print(f"{scored} tasks scored, {failed} failing.")
+
+
+def workspace_selftest():
+    """The workspace holds what an agent may see and nothing else, and its compiler works from it."""
+    with tempfile.TemporaryDirectory(prefix="harness_ws_") as tmp:
+        d = os.path.join(tmp, "ws")
+        cmd_workspace(argparse.Namespace(dir=d, docs=",".join(WORKSPACE_DOCS)))
+        want = sorted(["README.md", "VERSION", "bin/aipl", "bin/aipl-run"] + [f"docs/{f}" for f in WORKSPACE_DOCS.values()]
+                      + [f"tasks/{t}.md" for t in task_names()])
+        got = workspace_files(d)
+        if got != want:
+            return f"the workspace holds {sorted(set(got) ^ set(want))} beyond or short of what it should"
+        if os.listdir(os.path.join(d, "solutions")):
+            return "the solutions folder starts out empty"
+        src = os.path.join(d, "solutions", "t.aipl")
+        open(src, "w").write(SELFTEST_PROGRAMS["aipl"])
+        wasm = os.path.join(tmp, "t.wasm")
+        r = subprocess.run([os.path.join(d, "bin", "aipl"), "compile", src, "-o", wasm], capture_output=True, text=True, cwd=d)
+        if r.returncode:
+            return "the workspace's compiler does not compile: " + r.stderr.strip()
+        out = subprocess.run([os.path.join(d, "bin", "aipl-run"), wasm], input=b"hi", capture_output=True, cwd=d).stdout
+        if out != b"hi\n":
+            return f"the workspace's runner printed {out!r}"
+    return None
+
+
 def cmd_selftest(args):
     bad = 0
     for t in task_names():
@@ -337,6 +446,10 @@ def cmd_selftest(args):
             if out != b"hi\n":
                 bad += 1
                 print(f"{lang}: the toolchain path does not work: {err.strip() or out!r}")
+    why = workspace_selftest()
+    if why:
+        bad += 1
+        print(f"workspace: {why}")
     print(f"selftest: {len(task_names())} references and {len(SELFTEST_PROGRAMS)} toolchains, {bad} failing")
     sys.exit(1 if bad else 0)
 
@@ -354,9 +467,12 @@ def main():
     s.add_argument("--rounds", type=int, default=3); s.add_argument("--attempts", type=int, default=1); s.add_argument("--tasks")
     s = sub.add_parser("report"); s.add_argument("files", nargs="*")
     sub.add_parser("selftest")
+    s = sub.add_parser("workspace"); s.add_argument("dir"); s.add_argument("--docs", default=",".join(WORKSPACE_DOCS))
+    s = sub.add_parser("score-workspace"); s.add_argument("dir"); s.add_argument("--model", required=True); s.add_argument("--attempt", type=int, default=1)
     args = p.parse_args()
     {"gen": cmd_gen, "prompt": cmd_prompt, "prompts": cmd_prompts, "check": cmd_check, "score": cmd_score,
-     "run": cmd_run, "report": cmd_report, "selftest": cmd_selftest}[args.cmd](args)
+     "run": cmd_run, "report": cmd_report, "selftest": cmd_selftest, "workspace": cmd_workspace,
+     "score-workspace": cmd_score_workspace}[args.cmd](args)
 
 
 if __name__ == "__main__":
