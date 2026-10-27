@@ -1569,8 +1569,31 @@
               (when (and (get p fmtsplit.Piece.value) (call code_has_dbg (call slice raw (get p fmtsplit.Piece.a) (get p fmtsplit.Piece.n))))
                     (let b:(ptr buf.Buf) (call at_token src toks last ""))
                     (call buf.push_str b "a placeholder cannot hold a dbg; bind the value with let and dbg it there")
-                    (return b)))))
+                    (return b))
+              ;; its sugar's shapes, reported at the string (resolver.rs
+              ;; rewrites a placeholder's sugar after formats::split)
+              (when (get p fmtsplit.Piece.value)
+                    (let se2:(ptr buf.Buf) (call code_sugar_error (call slice raw (get p fmtsplit.Piece.a) (get p fmtsplit.Piece.n))))
+                    (when (neq se2 (ptr.null buf.Buf))
+                          (let b:(ptr buf.Buf) (call at_token src toks last ""))
+                          (call buf.push_bytes b (call after_position (call buf.bytes se2)))
+                          (return b))))))
     (ptr.null buf.Buf)))
+
+  ;; sugar_error over a placeholder's code alone, or null.
+  (fn code_sugar_error [code:str.Bytes] -> (ptr buf.Buf)
+    (unsafe (let n:i32 (get code str.Bytes.len))
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (call str.addr code) n) 1))))
+    (let count:i32 (call compiler.tokenize (call str.addr code) n toks))
+    (call sugar_error (call str.addr code) toks count (arr.new bool (call alloc.default) (+ count 1)))))
+
+  ;; A message "L:C: text" without its "L:C: ".
+  (fn after_position [m:str.Bytes] -> str.Bytes
+    (for k 0 (- (get m str.Bytes.len) 1)
+      (when (and (eq (call str.byte_at m k) 58) (eq (call str.byte_at m (+ k 1)) 32))
+            (when (and (gt k 0) (and (gte (call str.byte_at m (- k 1)) 48) (lte (call str.byte_at m (- k 1)) 57)))
+                  (return (call str.slice m (+ k 2) (- (get m str.Bytes.len) (+ k 2)))))))
+    m)
 
   ;; Whether a placeholder's code closes a bracket with the other kind ([
   ;; closed by ), or ( by ]); if so, its line and column in the code and
