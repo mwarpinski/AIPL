@@ -147,6 +147,23 @@ impl Resolver {
             .map_err(|_| "the resolver thread panicked".to_string())?
     }
 
+    /// `resolve_flat`, its formatting forms left split, not lowered to
+    /// std/show calls (formats.rs step 3, which needs the checked types):
+    /// the program aipl_src/expand.aipl gives, for comparing the two.
+    pub fn expand_flat(flat: &str, entry_path: &Path) -> Result<Module, String> {
+        let (src, path) = (flat.to_string(), entry_path.to_path_buf());
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                READING_FLAT.with(|f| f.set(true));
+                KEEP_FORMATS.with(|f| f.set(true));
+                Self::resolve_on_this_thread(&src, &path)
+            })
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the resolver thread panicked".to_string())?
+    }
+
     /// A test build of the file at `entry_path` (AIPL_SPEC.md 4.L): its
     /// tests are the functions `__test_0`, `__test_1`, ..., and its `_start`
     /// runs the one its first argument names and exits with that test's
@@ -183,7 +200,9 @@ impl Resolver {
         }
         let flat = crate::generics::expand(flat)?;
         let mut module = Self::parse_flat(crate::consts::expand(flat)?)?;
-        crate::formats::lower(&mut module);
+        if !KEEP_FORMATS.with(|f| f.get()) {
+            crate::formats::lower(&mut module);
+        }
         Ok(module)
     }
 
@@ -721,6 +740,8 @@ thread_local! {
     /// Set on the thread of Resolver::resolve_flat, which reads a resolver's
     /// output: forms only the resolvers write are accepted there.
     static READING_FLAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set on the thread of Resolver::expand_flat: formatting forms stay split.
+    static KEEP_FORMATS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The renaming rules (resolver.aipl `rename` and `child_role`). Roles: 0
