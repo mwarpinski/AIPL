@@ -29,10 +29,11 @@ line does without tracing types across the file.
 They are good languages, and models write them well. AIPL is a bet that a
 language designed around how models fail can do better on correctness:
 smaller, more regular, with contracts and bounds checks everywhere, and
-errors that point at the exact expression. The bet is not proven. The next
-major step is an experiment where agents write the same set of tasks in
-AIPL and in other languages, measured on how often the result works
-([ROADMAP.md](../ROADMAP.md)). If AIPL loses, the write-up will say so.
+errors that point at the exact expression. The bet is not proven. The
+experiment is built, with 26 tasks that models write in AIPL, Python, and
+Rust, scored the same way on how often the result works
+([tools/harness/](../tools/harness/README.md)); its results are not in yet.
+If AIPL loses, the write-up will say so.
 
 ### Why compile to WebAssembly?
 

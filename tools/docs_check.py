@@ -42,7 +42,7 @@ STALE = [
     (r"len -1 (if|when|for) (unset|missing)|returns? len -1 for a missing", "os.env and os.arg give an Option now"),
 ]
 # looks like module.name, is not: a placeholder, a typo shown on purpose, a generated name
-NOT_NAMES = {("io", "something"), ("show", "debug"), ("text", "splt"), ("vec", "psh"),
+NOT_NAMES = {("io", "something"), ("alloc", "something"), ("show", "debug"), ("text", "splt"), ("vec", "psh"),
              ("http", "fetch")}  # planned: NET_PLAN.md step 5
 HISTORY_HINT = re.compile(r"\b(was|were|used to|until|since|before|formerly|retired|gone|removed|renamed|replaced|old|once|historical|2026-)\b", re.I)
 
