@@ -1333,6 +1333,35 @@
 
 
 
+  ;; emit_grow_to_cursor for mem.alloc, which calls $aipl_oom (index oom)
+  ;; when memory cannot grow to hold the block (wasm.rs emit_grow_or_stop).
+  (fn emit_grow_or_stop [o:(ptr Out) oom:i32] -> void
+    (call emit_i32_const o 0)
+    (call emit_memop o OP_I32_LOAD 2)
+    (call emit_size_bytes o)
+    (call put_op o OP_I32_GT_U)
+    (call put_op o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call emit_i32_const o 0)
+    (call emit_memop o OP_I32_LOAD 2)
+    (call emit_size_bytes o)
+    (call put_op o OP_I32_SUB)
+    (call emit_i32_const o 65535)
+    (call put_op o OP_I32_ADD)
+    (call emit_i32_const o 16)
+    (call put_op o OP_I32_SHR_U)
+    (call put_op o OP_MEMORY_GROW)
+    (call put_byte o 0)
+    (call emit_i32_const o -1)
+    (call put_op o OP_I32_EQ)
+    (call put_op o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call put_op o OP_CALL)
+    (call put_u32 o oom)
+    (call put_op o OP_UNREACHABLE)
+    (call put_op o OP_END)
+    (call put_op o OP_END))
+
   ;; memory.size; i32.const 16; i32.shl -> memory size in bytes
   (fn emit_size_bytes [o:(ptr Out)] -> void
     (call put_op o OP_MEMORY_SIZE)
@@ -2557,6 +2586,8 @@
             ((or (or (eq kw Kw.arr_get) (eq kw Kw.arr_set)) (or (eq kw Kw.req) (or (eq kw Kw.ens) (eq kw Kw.inv)))) (put cg Cg.uses_checks true) 0)
             ;; and a struct access or arr.len (the null check)
             ((or (eq kw Kw.get) (or (eq kw Kw.put) (eq kw Kw.arr_len))) (put cg Cg.uses_checks true) 0)
+            ;; and mem.alloc, which stops with $aipl_oom when memory cannot grow
+            ((eq kw Kw.mem_alloc) (put cg Cg.uses_checks true) 0)
             (else 0))
           (let child:(ptr compiler.Node) (call first_child node))
           (while (neq child (ptr.null compiler.Node)) (call walk_ast_for_wasi cg child) (set! child (call node_next child)))
@@ -4019,7 +4050,7 @@
           (call compile_expr cg (call nth_child node 1) o)
           (call emit_round8 o)
           (call emit_rmw_add o)
-          (call emit_grow_to_cursor o)
+          (call emit_grow_or_stop o (+ (get cg Cg.checks_base) 7))
           (set! done true))
     (when (eq op_id Kw.mem_grow)
           (call compile_expr cg (call nth_child node 1) o)
@@ -5180,12 +5211,12 @@
     ;; generated functions after the module's: a threaded module's start
     ;; function and wasi_thread_start, then _start
     (let extra_fns:i32 (if threaded 2 0))
-    ;; then, in a module with compiled checks, the six check helpers
+    ;; then, in a module with compiled checks, the eight check helpers
     ;; (wasm.rs check_functions)
     (let uses_checks:bool (get cg Cg.uses_checks))
     (let before_checks:i32 (+ extra_fns (if auto_start 1 0)))
     (put cg Cg.checks_base (+ imports (+ nfns before_checks)))
-    (let n_fns:i32 (+ nfns (+ before_checks (if uses_checks 7 0))))
+    (let n_fns:i32 (+ nfns (+ before_checks (if uses_checks 8 0))))
     ;; the contract messages go into the literals after the program's own
     (call intern_contract_texts cg)
     (if (gt (call heap_start cg) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
@@ -5202,7 +5233,7 @@
     ;; Type (1): the WASI imports' types, the functions', the call_ref
     ;; signatures, a threaded module's two, and _start's
     (let sec:(ptr Out) (call out_at scratch))
-    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 7 0))))))
+    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 8 0))))))
     (for w 0 NWASI
       (when (neq (call get_wasi_index cg (enum.cast Wasi w)) -1) (call emit_func_type sec (call wasi_sig (enum.cast Wasi w)))))
     (for f 0 nfns (call emit_func_type sec (call fn_sig (call func_entry_ptr cg f))))
@@ -5218,7 +5249,8 @@
           (call emit_func_type sec (call sig_from "iii" 127))   ;; $aipl_begin: [i32 i32 i32] -> [i32]
           (call emit_func_type sec (call sig_from "i" 0))       ;; $aipl_end: [i32] -> []
           (call emit_func_type sec (call sig_from "" 0))        ;; $aipl_null: [] -> []
-          (call emit_func_type sec (call sig_from "" 0)))
+          (call emit_func_type sec (call sig_from "" 0))        ;; $aipl_uaf: [] -> []
+          (call emit_func_type sec (call sig_from "" 0)))       ;; $aipl_oom: [] -> []
     (call emit_section o 1 sec)
 
     ;; Import (2): the WASI functions used, in the fixed order; a threaded
@@ -5252,7 +5284,7 @@
     (when threaded (call put_u32 sec generated_types) (call put_u32 sec (+ generated_types 1)))
     (when auto_start (call put_u32 sec (+ generated_types extra_fns)))
     (when uses_checks
-        (for k 0 7 (call put_u32 sec (+ generated_types (+ before_checks k)))))
+        (for k 0 8 (call put_u32 sec (+ generated_types (+ before_checks k)))))
     (call emit_section o 3 sec)
 
     ;; Table (4), only with function refs: one funcref table holding every
@@ -5409,9 +5441,9 @@
           (call put_op fc OP_END)
           (call emit_sized sec fc))
     (when uses_checks
-        (for k 0 7
+        (for k 0 8
           (let fc:(ptr Out) (call out_at fcode_scratch))
-          (call check_body fc k (get cg Cg.checks_base))
+          (call check_body fc k (get cg Cg.checks_base) (get cg Cg.max_pages))
           (call emit_sized sec fc)))
     (call emit_section o 10 sec)
 
@@ -5437,7 +5469,7 @@
     ;; Name (custom section 0, last): every function's name, so a trap can
     ;; say where it happened (wasm.rs); the generated ones as wasm.rs names them
     (let fnames:(ptr Out) (call out_at fcode_scratch))
-    (call put_u32 fnames (+ nfns (+ extra_fns (+ (if auto_start 1 0) (if uses_checks 7 0)))))
+    (call put_u32 fnames (+ nfns (+ extra_fns (+ (if auto_start 1 0) (if uses_checks 8 0)))))
     (for f 0 nfns
       (let fentry:(ptr FnInfo) (call func_entry_ptr cg f))
       (call put_u32 fnames (+ imports f))
@@ -5456,7 +5488,8 @@
           (call put_u32 fnames (+ cb 3)) (call emit_name fnames "aipl.begin")
           (call put_u32 fnames (+ cb 4)) (call emit_name fnames "aipl.end")
           (call put_u32 fnames (+ cb 5)) (call emit_name fnames "aipl.null")
-          (call put_u32 fnames (+ cb 6)) (call emit_name fnames "aipl.uaf"))
+          (call put_u32 fnames (+ cb 6)) (call emit_name fnames "aipl.uaf")
+          (call put_u32 fnames (+ cb 7)) (call emit_name fnames "aipl.oom"))
     (set! sec (call out_at scratch))
     (call emit_name sec "name")
     (call put_byte sec 1)
@@ -5617,8 +5650,8 @@
       (call put_u32 o k)
       (set! k (+ k 8)))))
 
-  ;; Check helper k of the seven (wasm.rs check_functions); base is $aipl_dec's index.
-  (fn check_body [o:(ptr Out) k:i32 base:i32] -> void
+  ;; Check helper k of the eight (wasm.rs check_functions); base is $aipl_dec's index.
+  (fn check_body [o:(ptr Out) k:i32 base:i32 max_pages:i32] -> void
     (cond
       ((eq k 0) (call dec_body o))
       ((eq k 1) (call oob_body o base))
@@ -5626,10 +5659,21 @@
       ((eq k 3) (call begin_body o (+ base 2)))
       ((eq k 4) (call end_body o))
       ((eq k 5) (call fixed_text_body o "Null pointer dereference"))
-      (else (call fixed_text_body o "Use after free"))))
+      ((eq k 6) (call fixed_text_body o "Use after free"))
+      (else (call fixed_text_body o (call oom_text max_pages)))))
 
-  ;; $aipl_null() / $aipl_uaf(): the text at RT_FAIL_TEXT, its address and
-  ;; length in cells 92 and 96, then a trap (wasm.rs NULL_TEXT, UAF_TEXT).
+  ;; What a program says when memory cannot grow to hold a mem.alloc, its
+  ;; limit in MiB (wasm.rs oom_text).
+  (fn oom_text [max_pages:i32] -> str
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 48))
+    (call buf.push_str b "Out of memory: the limit is ")
+    (call buf.push_int b (/ (if (gt max_pages 32768) 32768 max_pages) 16))
+    (call buf.push_str b " MiB")
+    (call buf.to_str b))
+
+  ;; $aipl_null() / $aipl_uaf() / $aipl_oom(): the text at RT_FAIL_TEXT, its
+  ;; address and length in cells 92 and 96, then a trap (wasm.rs NULL_TEXT,
+  ;; UAF_TEXT, oom_text).
   (fn fixed_text_body [o:(ptr Out) text:str] -> void
     (call put_u32 o 0)
     (call emit_text_store o -1 RT_FAIL_TEXT text)

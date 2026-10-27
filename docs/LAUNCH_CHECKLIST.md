@@ -281,18 +281,19 @@ FAQ or ROADMAP.md.
   the signed address comparisons in std and the compiler rely on. Wanted
   with the servers (MEMORY_PLAN.md M5): a runaway request fails cleanly
   instead of taking the machine.
-- [ ] **"Out of memory" said as such**: at the limit (2 GiB, or
+- [x] **"Out of memory" said as such**: at the limit (2 GiB, or
   `--max-memory`'s) `mem.alloc` does not fail, so the program stops at its
   first access past the end, with "Memory store out of bounds" (VM) or
   "wasm trap: out of bounds memory access" (compiled) and a call chain into
   std/heap. A failed grow should stop at `mem.alloc` with "out of memory:
-  the limit is N MiB", alike in every backend and both toolchains.
-- [ ] **An address-sized integer, decided on purpose** (before launch):
+  the limit is N MiB", alike in every backend and both toolchains. Done 2026-10-26: `mem.alloc` stops with "Out of memory: the limit is N MiB" in every backend and both toolchains ($aipl_oom in wasm.rs and codegen.aipl, vm.rs MemAlloc); tests/test_memory.rs.
+
+- [x] **An address-sized integer, decided on purpose** (before launch):
   `ptr.addr`, `mem.*`, and `mem.alloc` use `i32` addresses, a promise to
   users' (unsafe) code. A 64-bit target (ROADMAP.md, after launch) wants
   an address-sized type such as Rust's `usize`; adding it later breaks
   only unsafe code. Decide whether to add it now or say in the FAQ why
-  not.
+  not. Decided 2026-10-26: not now; docs/FAQ.md says why (LANGUAGE_DECISIONS.md item 7).
 
 - [x] **Option types / generic unions** (done 2026-10-12): generic unions
   (`(union (Tree T) ...)`), `std/option`'s `(option.Option T)`, and
@@ -361,14 +362,15 @@ FAQ or ROADMAP.md.
   (tests/aipl/memory/request_paths.aipl), as did two programs inside Rust
   tests, tools/run_fuzz.py's generated ones, and the kit's test program. AIPL_SPEC.md 11,
   tests/test_visibility.rs.
-- [ ] **Making a heap struct in one form** (noted 2026-10-18, from
+- [x] **Making a heap struct in one form** (noted 2026-10-18, from
   docs/notes/painpoints.md item 4; a language change, for approval).
   Today it is `(new S)` and a `put` per field (std/regex's Regex: 20), and
   nothing notices a field left out: a new field means finding every place
   that makes one. Proposed: `(new S v1 v2 ...)` with every field, in
   order, as `make` already does for value structs, so a missing or extra
   field is a compile error. The compiler's own source can use it only
-  after the seed refresh below.
+  after the seed refresh below. Decided and done 2026-10-26: fields by name, `(zero T)` for a field that starts empty (LANGUAGE_DECISIONS.md item 4).
+
 - [x] **Refresh the stage-0 seed** (done 2026-10-19, for MEMORY_PLAN.md's checked views, which need `(arr u8)`; bootstrap/README.md has the new hash; noted 2026-10-18).
   The compiler's source may use only what bootstrap/aipl-linux-x86_64
   knows, and that seed (2026-10-16) predates `when`, `for`, variadic
