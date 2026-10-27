@@ -13,7 +13,8 @@ section 8: "the documentation check is rerun").
    the documents a reader meets first.
 3. The numbers that can be counted are the numbers written: the test files
    and the standard library's modules.
-4. Every `module.name` the documents write is exported by that module (asked
+4. bootstrap/README.md's seed hash is the checked-in seed's.
+5. Every `module.name` the documents write is exported by that module (asked
    of `aipl doc`), every `--flag` in the spec's command table is one a command
    takes, every form is in the spec, every "section N.X" and "AIPL_SPEC.md
    N.X" names a heading, and the library's own comments use no gone form.
@@ -135,6 +136,18 @@ def check_names(files, docs, show_all):
             if w and re.match(r"^[a-z_][a-z0-9_]*\s*\[", tok) and w.group(1) not in mods[mod] and w.group(1) not in ("alloc_fn", "free_fn"):
                 findings.append(f"AIPL_SPEC.md:{n}: the std/{mod} row names {w.group(1)}, which std/{mod} does not export")
     return findings
+
+
+def check_seed():
+    """bootstrap/README.md's current seed hash is the checked-in seed's."""
+    import hashlib
+    seed = os.path.join(ROOT, "bootstrap", "aipl-linux-x86_64")
+    readme = open(os.path.join(ROOT, "bootstrap", "README.md"), encoding="utf-8").read()
+    m = re.search(r"sha256 `([0-9a-f]{64})`", readme)
+    if not m or not os.path.exists(seed):
+        return ["bootstrap/README.md: no seed hash to check"]
+    actual = hashlib.sha256(open(seed, "rb").read()).hexdigest()
+    return [] if actual == m.group(1) else [f"bootstrap/README.md: says the seed is sha256 {m.group(1)[:12]}..., it is {actual[:12]}..."]
 
 
 def check_comments(files):
@@ -271,6 +284,7 @@ def main():
     for mod in std:
         if not re.search(r"\|\s*`%s`\s*\|" % re.escape(mod), spec):
             findings.append(f"AIPL_SPEC.md: the standard library table lacks std/{mod}")
+    findings += check_seed()
     findings += check_comments(files)
     findings += check_names(files, docs, show_all)
     findings += check_sections(files)

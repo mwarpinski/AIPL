@@ -480,7 +480,7 @@ FAQ or ROADMAP.md.
 - [ ] `cargo test`, the AIPL suite, both fuzzers (an hour each), and the
   benchmarks run clean on a fresh clone, from the README's instructions
   alone.
-- [ ] The documentation check is rerun; the numbers are today's.
+- [ ] The documentation check is rerun (`python3 tools/docs_check.py`, also in CI: files, functions, flags, forms, sections, the seed's hash, the test and module lists); the numbers it cannot count are today's (benchmark times, sizes, compile times: re-measure, as on 2026-10-27).
 - [ ] Someone who has never seen the project follows the README cold and
   reports where they got stuck.
 - [ ] The post says what AIPL is, what is unfinished, and how it was built,
