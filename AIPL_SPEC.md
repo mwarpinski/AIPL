@@ -1007,9 +1007,8 @@ Buffers are sized from the input: tokens exactly (`compiler.count_tokens` first,
 |---|---|
 | 90 | `mem.grow` refused: the compile needs more than 32768 pages |
 | 91 | output or a function body exceeded `4 * src_len + 64 KiB` |
-| 92 | more than 8192 functions, or a function with more than 16 parameters |
-| 93 | more than 1024 locals in one function |
-| 94 | more than 255 structs or unions, more than 255 variants in a union, more than 64 fields in a struct or variant, or more than 31 distinct `call_ref` signatures |
+| 92, 93 | not given since 2026-10-26: the tables of functions, parameters, and locals grow, as the Rust code generator's vectors do (they were 8192 functions, 16 parameters, 1024 locals) |
+| 94 | more than 8 scalars in a value struct (which the checker refuses first); the tables of structs, unions, variants, fields, and `call_ref` signatures grow since 2026-10-26 |
 | 95 | a struct field, array element, or `sizeof` type that cannot be stored in memory (`void`, a result) |
 | 96 | unknown struct or field in `new`/`get`/`put`/`sizeof` |
 | 98 | a type the backend cannot lower (an unknown type name, or `void` where a value is needed) |

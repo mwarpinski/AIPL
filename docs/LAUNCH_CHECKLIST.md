@@ -343,7 +343,7 @@ FAQ or ROADMAP.md.
 - [x] **Results by value** (done 2026-10-15, VALUES_PLAN.md V5): every
   `ok`/`err` names its other side, `(ok:E v)`; a result without a `str`
   side that fits in 8 slots allocates nothing. AIPL_SPEC.md 4.F.
-- [ ] **The self-hosted compiler's fixed tables** (found 2026-10-19). It
+- [x] **The self-hosted compiler's fixed tables** (found 2026-10-19). It
   refuses, as numbered compile errors, programs the Rust compiler
   accepts: more than 16 parameters (92), 255 structs, unions, or
   variants, 64 fields, or 31 `call_ref` signatures (94), 1,024 locals
@@ -352,7 +352,8 @@ FAQ or ROADMAP.md.
   as wasm.rs's vectors do (as the label stack now does: at 255 nested
   blocks it crashed instead of giving error 100), and a refusal should
   say what it refuses, not "compile error 94 (AIPL_SPEC.md 6.4)". Until
-  then the two compilers agree only below those sizes.
+  then the two compilers agree only below those sizes. Done 2026-10-26: the tables of functions, parameters, locals, structs, unions, variants, fields, and `call_ref` signatures grow (codegen.aipl `room`); error 94 is left for more than 8 scalars in a value; tests/test_selfhost.rs compiles a program past each old size to the Rust code generator's bytes.
+
 - [x] **Using a module without importing it** (decided and done
   2026-10-26, docs/design/LANGUAGE_DECISIONS.md item 1). `m.x` needs
   `(import m)` in that file, checked by both resolvers with one message

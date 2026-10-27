@@ -1029,6 +1029,37 @@ fn self_hosted_bytes_match_void_and_scoping() {
     assert_self_hosted_matches_rust("void_scope", src);
 }
 
+/// Past the self-hosted code generator's old fixed tables (16 parameters,
+/// 255 structs, unions, and variants, 64 fields, 1,024 locals, 31 call_ref
+/// signatures, 8,192 functions): they grow now, and the bytes are the Rust
+/// code generator's (docs/LAUNCH_CHECKLIST.md).
+#[test]
+fn self_hosted_bytes_match_past_the_old_table_sizes() {
+    let list = |n: usize, f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<Vec<_>>().join(" ");
+    let mut sigs = Vec::new();
+    let mut calls = Vec::new();
+    for i in 0..40 {
+        let kinds: Vec<&str> = (0..6).map(|b| if (i >> b) & 1 == 1 { "i32" } else { "f64" }).collect();
+        let params = kinds.iter().enumerate().map(|(k, t)| format!("a{k}:{t}")).collect::<Vec<_>>().join(" ");
+        let args = kinds.iter().map(|t| if *t == "i32" { "1" } else { "1.0" }).collect::<Vec<_>>().join(" ");
+        sigs.push(format!("(fn g{i} [{params}] -> i32 {i})"));
+        calls.push(format!("(set! t (+ t (call_ref (fn [{}] -> i32) (ref g{i}) {args})))", kinds.join(" ")));
+    }
+    let cases = [
+        ("params130", format!("(module m (fn f [{}] -> i32 (+ p0 p129)) (fn main [] -> i32 (call f {})))", list(130, &|i| format!("p{i}:i32")), list(130, &|i| (i % 100).to_string()))),
+        ("structs300", format!("(module m {} (fn main [] -> i32 (sizeof S299)))", list(300, &|i| format!("(struct S{i} [x:i32])")))),
+        ("fields70", format!("(module m (struct W [{}]) (fn main [] -> i32 (sizeof W)))", list(70, &|i| format!("f{i}:i32")))),
+        ("unions300", format!("(module m {} (fn main [] -> i32 (match (make U299.b 4) (U299.a 0) (U299.b [x] x))))", list(300, &|i| format!("(union U{i} [(a) (b x:i32)])")))),
+        ("variants300", format!("(module m (union V [{}]) (fn main [] -> i32 (match (make V.v299 5) (V.v299 [x] x) (else 0))))", list(300, &|i| format!("(v{i} x:i32)")))),
+        ("locals1100", format!("(module m (fn main [] -> i32 {} l1099))", list(1100, &|i| format!("(let l{i}:i32 {})", i % 7)))),
+        ("sigs40", format!("(module m {} (fn main [] -> i32 (let t:i32 0) {} t))", sigs.join(" "), calls.join(" "))),
+        ("fns9000", format!("(module m {} (fn main [] -> i32 (call h8999)))", list(9000, &|i| format!("(fn h{i} [] -> i32 {})", i % 5)))),
+    ];
+    for (name, src) in cases {
+        assert_self_hosted_matches_rust(name, &src);
+    }
+}
+
 /// Runs the self-hosted output under wasmtime with a WASI context and a
 /// preopened directory (as tests/test_wasi.rs does for the Rust backend).
 #[test]
