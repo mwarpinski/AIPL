@@ -79,3 +79,30 @@ fn a_damaged_module_cache_is_compiled_again() {
     compile(&[], &src, &uncached, Some(Path::new("")));
     assert_eq!(std::fs::read(&first).unwrap(), std::fs::read(&uncached).unwrap());
 }
+
+/// `aipl compile -o` over an executable that is running (or was just run)
+/// writes a new file, never the old one in place: opened for writing, a
+/// running executable fails with "Text file busy" on Linux, and a binary
+/// rewritten in place after a run is killed on macOS (a stale code
+/// signature). The running copy goes on with the old file.
+#[test]
+fn compiling_over_a_running_executable_replaces_it() {
+    use std::process::Stdio;
+    let dir = scratch("replace");
+    let src = dir.join("p.aipl");
+    // waits for standard input to end, then exits with `status`
+    let program = |status: i32| format!("(module p (import io) (fn main [] -> i32 (match_result (call io.read_stdin) (ok b {status}) (err e 1))))");
+    let exe = dir.join("p");
+    std::fs::write(&src, program(3)).unwrap();
+    compile(&["--exe"], &src, &exe, None);
+    let mut running = Command::new(&exe).stdin(Stdio::piped()).stdout(Stdio::null()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    std::fs::write(&src, program(4)).unwrap();
+    compile(&["--exe"], &src, &exe, None);
+    drop(running.stdin.take());
+    assert_eq!(running.wait().unwrap().code(), Some(3), "the running copy is the old file");
+    assert_eq!(Command::new(&exe).stdin(Stdio::null()).status().unwrap().code(), Some(4), "the new file is the new program");
+    let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(left.len(), 2, "only the source and the executable are left: {left:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
