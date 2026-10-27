@@ -23,7 +23,7 @@ What is left, in the order to do it. Each item below points at its section.
 |---|---|---|---|
 | 1 | A showcase program (section 4) | Claude | Done 2026-10-27: `examples/jsonpp.aipl`, and the self-compile figures |
 | 2 | The evidence: run the A/B harness with other models, in fresh contexts (section 5; tools/harness/README.md), then publish the tasks, prompts, transcripts, and numbers, including where AIPL loses | Owner runs; Claude helps read the results | Harness built; no runs yet |
-| 3 | The README for newcomers (sections 4 and 7: "Later") | Claude | Not started; its examples are current |
+| 3 | The README for newcomers (sections 4 and 7: "Later") | Claude | Done 2026-10-27: status up front, a first program run three ways, the detail moved to the docs it links; the cold read (item 5) is the real test |
 | 4 | Release mechanics: one last seed refresh, then merge `development` into `main` | Owner approves both | Waiting on items 1-3 |
 | 5 | The final checks (section 8): every box ticked or given a reason; tests, the AIPL suite, both fuzzers, and the benchmarks on a fresh clone from the README alone; the documentation's numbers rerun; a cold read by someone who has never seen the project; the post itself | Both | After 1-4 |
 
@@ -471,8 +471,7 @@ FAQ or ROADMAP.md.
 | The five plans in `docs/` | `docs/design/`, each with its status at the top |
 | `docs/BENCHMARKS.md`, the spec, the prompt guide | Kept |
 
-- [ ] **Later:** split the spec into a reference and a ten-minute tour
-  (section 4); rewrite the README for newcomers (section 4).
+- [x] **Later** (the tour, 2026-10-08; the README for newcomers, 2026-10-27): the tour is docs/TOUR.md; the README now opens with what AIPL is and where it stands, and gives a first program before the tools, so a newcomer's first five minutes are install, hello, the tour.
 
 ## 8. Right before posting
 
