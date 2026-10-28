@@ -42,7 +42,8 @@ benchmarks against C and Python.
    toolchain, which stays as the referee. Left: a WebAssembly seed for
    other platforms, the execute bit (a host import), `verify` in the AIPL
    command, and an installer that builds from the seed (DEVELOPING.md,
-   "Direction").
+   "Direction"). The whole road, to a language that needs Rust only as the
+   referee, is docs/design/aipl_standalone.md.
 4. **Packages, after the launch:** a package registry with versioned
    packages, dependency resolution, and lock files (decided 2026-10-07;
    its command and name are open, e.g. folded into the `aipl` CLI as
