@@ -1358,6 +1358,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::FsWrite
             | OpCode::FsClose
             | OpCode::FsDelete
+            | OpCode::FsChmod
             | OpCode::FsOpendir
             | OpCode::FsReaddir
             | OpCode::FsStat
@@ -2132,6 +2133,24 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 for a in args {
                     compile_expr(a, ctx, func)?;
                 }
+                func.instruction(&Instruction::Call(host));
+            }
+            OpCode::FsChmod => {
+                // (fs.chmod ptr len mode) -> aipl_sys_v1's chmod(dirfd, ptr,
+                // len, mode), the directory chosen as fs.delete chooses it;
+                // the host gives the result itself (0, or minus an errno)
+                let host = wasi_index(ctx, Wasi::SysChmod)?;
+                let (io_a, io_b) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                compile_expr(&args[2], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_b)); // mode
+                func.instruction(&Instruction::LocalSet(io_a)); // len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
+                emit_path_dir(func, ctx.addr_scratch, io_a);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                func.instruction(&Instruction::LocalGet(io_b));
                 func.instruction(&Instruction::Call(host));
             }
             OpCode::SysExit => {
@@ -4218,6 +4237,9 @@ enum Wasi {
     NetRecv,
     NetSend,
     NetClose,
+    /// AIPL's own host interface, module "aipl_sys_v1" (docs/design/SYS_PLAN.md):
+    /// `chmod(dirfd, path, len, mode)`.
+    SysChmod,
 }
 
 impl Wasi {
@@ -4227,6 +4249,7 @@ impl Wasi {
         match self {
             Wasi::ThreadSpawn => "wasi",
             Wasi::NetListen | Wasi::NetAccept | Wasi::NetRecv | Wasi::NetSend | Wasi::NetClose => "aipl_net_v1",
+            Wasi::SysChmod => "aipl_sys_v1",
             _ => "wasi_snapshot_preview1",
         }
     }
@@ -4253,6 +4276,7 @@ impl Wasi {
             Wasi::NetRecv => "recv",
             Wasi::NetSend => "send",
             Wasi::NetClose => "close",
+            Wasi::SysChmod => "chmod",
         }
     }
 
@@ -4272,6 +4296,7 @@ impl Wasi {
             Wasi::FdReaddir => (vec![I32, I32, I32, I64, I32], vec![I32]),
             Wasi::PathFilestatGet => (vec![I32, I32, I32, I32, I32], vec![I32]),
             Wasi::NetListen | Wasi::NetRecv | Wasi::NetSend => (vec![I32, I32, I32], vec![I32]),
+            Wasi::SysChmod => (vec![I32, I32, I32, I32], vec![I32]),
             Wasi::NetAccept | Wasi::NetClose => (vec![I32], vec![I32]),
         }
     }
@@ -4299,6 +4324,7 @@ impl Wasi {
             OpCode::NetRecv => Some(Wasi::NetRecv),
             OpCode::NetSend => Some(Wasi::NetSend),
             OpCode::NetClose => Some(Wasi::NetClose),
+            OpCode::FsChmod => Some(Wasi::SysChmod),
             _ => None,
         }
     }

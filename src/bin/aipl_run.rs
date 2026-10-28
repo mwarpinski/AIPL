@@ -239,6 +239,22 @@ fn add_net(linker: &mut Linker<WasiP1Ctx>, net: &aipl_core::net::Net, shared: &O
     Ok(())
 }
 
+/// The `aipl_sys_v1` imports (src/sys.rs). A path or buffer outside the
+/// program's memory is minus EFAULT, a value and not a trap.
+fn add_sys(linker: &mut Linker<WasiP1Ctx>, shared: &Option<SharedMemory>, sandbox: bool) -> wasmtime::Result<()> {
+    let sh = shared.clone();
+    linker.func_wrap("aipl_sys_v1", "chmod", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, dirfd: i32, path: i32, len: i32, mode: i32| -> i32 {
+        if sandbox && dirfd == 4 {
+            return -8;
+        }
+        match read_mem(&mut c, &sh, path, len) {
+            Some(p) => aipl_core::sys::chmod_at(dirfd, &p, mode),
+            None => -21,
+        }
+    })?;
+    Ok(())
+}
+
 /// n bytes at `at` of a shared memory, or None past its end.
 fn read_shared(m: &SharedMemory, at: usize, n: usize) -> Option<Vec<u8>> {
     let cells = m.data().get(at..at.checked_add(n)?)?;
@@ -471,6 +487,9 @@ fn serve_fresh(p: Program) -> i32 {
     if let Err(e) = wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t) {
         return fail(e.to_string());
     }
+    if let Err(e) = add_sys(&mut linker, &None, p.sandbox) {
+        return fail(e.to_string());
+    }
     if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()), &None) {
         return fail(e.to_string());
     }
@@ -603,6 +622,9 @@ fn run(p: Program) -> i32 {
         if let Err(e) = spawn {
             return fail(e.to_string());
         }
+    }
+    if let Err(e) = add_sys(&mut linker, &shared, p.sandbox) {
+        return fail(e.to_string());
     }
     if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()), &shared) {
         return fail(e.to_string());

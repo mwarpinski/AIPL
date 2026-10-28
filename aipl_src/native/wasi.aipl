@@ -865,6 +865,151 @@
     (call patch_all c badf)
     (call emit_return_errno c 8))
 
+  ;; With a Linux result (-errno) in rax: returns minus the WASI errno, the
+  ;; way aipl_sys_v1's imports report an error.
+  (fn emit_negated_errno_return [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.mov_rr c 64 (call rcx) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call rax) (call rcx))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) 64)
+    (let unlisted:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call x64.mov_ri32 c (call rcx) (get w W.errno_table))
+    (call x64.load8u c (call rax) (call x64.mem_index (call rcx) (call rax) 1 0))
+    (let listed:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c unlisted (call buf.len c))
+    (call x64.mov_ri32 c (call rax) 29)
+    (call x64.patch_rel32 c listed (call buf.len c))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call rcx) (call rax))
+    (call x64.mov_rr c 64 (call rax) (call rcx))
+    (call x64.ret c))
+
+  ;; aipl_sys_v1's chmod(dirfd, path, path_len, mode) -> 0, or minus the WASI
+  ;; errno (docs/design/SYS_PLAN.md). A mode with a bit outside 0o777 is
+  ;; EINVAL (-28) and a descriptor that is not open is EBADF (-8), as in
+  ;; src/sys.rs. The file is opened beneath its directory as path_open opens
+  ;; one (so --sandbox confines it as every open is), read-only and without
+  ;; blocking, then given its mode by fchmod and closed: a file the program
+  ;; cannot open for reading cannot be given a mode this way.
+  (fn emit_sys_chmod [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (call arg c 32 4 1 (call r13))
+    (call arg c 32 4 2 (call r14))
+    ;; a path outside the program's memory is EFAULT (-21), a value and not a
+    ;; trap, as in src/sys.rs and aipl-run
+    (call x64.mov_rr c 64 (call r11) (call r13))
+    (call x64.alu_rr c 64 (call x64.op_add) (call r11) (call r14))
+    (call lower.load_mem_size l (call r10))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r11) (call r10))
+    (let in_bounds:i32 (call x64.jcc c (call x64.cc_be)))
+    (call emit_return_errno c -21)
+    (call x64.patch_rel32 c in_bounds (call buf.len c))
+    (call arg c 32 4 0 (call rbx))
+    (call emit_fd_lookup l w (call rbx) (call rbx) badf)
+    (call arg c 32 4 3 (call r8))
+    (call x64.test_ri c 32 (call r8) -512)
+    (let bad_mode:i32 (call x64.jcc c (call x64.cc_ne)))
+    (call emit_path_to_stack l w)
+    ;; fd = openat2(dir, path, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.mov_ri32 c (call rdx) 526592)
+    (call emit_openat2 c (not (get w W.sandbox)))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let opened:i32 (call x64.jcc c (call x64.cc_ns)))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -13)
+    (let unreadable:i32 (call x64.jcc c (call x64.cc_e)))
+    (let open_failed:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c opened (call buf.len c))
+    ;; fchmod(fd, mode), then close the descriptor
+    (call x64.mov_rr c 64 (call rbx) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call r8))
+    (call x64.mov_ri32 c (call rax) 91)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call r13) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rax) (call r13))
+    (let chmodded:i32 (call x64.jmp c))
+    ;; A file the program may not read (mode 0, say) cannot be opened to be
+    ;; given a mode, and the program must be able to give it one back. The
+    ;; parent directory is opened beneath the directory as path_unlink_file
+    ;; does, and fchmodat names the file in it: unless the file is a symbolic
+    ;; link, which fchmodat would follow out of the directory unchecked.
+    (call x64.patch_rel32 c unreadable (call buf.len c))
+    (call x64.mov_rr c 64 (call r9) (call r14))
+    (let top:i32 (call buf.len c))
+    (call x64.test_rr c 64 (call r9) (call r9))
+    (let no_slash:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call r9) 1)
+    (call x64.load8u c (call rax) (call x64.mem_index (call rsp) (call r9) 1 0))
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) 47)
+    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ne)) top)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store8 c (call x64.mem_index (call rsp) (call r9) 1 0) (call rax))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.lea c 64 (call r13) (call x64.mem_index (call rsp) (call r9) 1 1))
+    (let have_parent:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c no_slash (call buf.len c))
+    (call x64.mov_ri32 c (call rsi) (call lower.data_text l "."))
+    (call buf.push_byte (get l lower.L.data) 0)
+    (call x64.mov_rr c 64 (call r13) (call rsp))
+    (call x64.patch_rel32 c have_parent (call buf.len c))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rdx) 2752512)
+    (call emit_openat2 c (not (get w W.sandbox)))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let no_parent:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call rbx) (call rax))
+    ;; newfstatat(parent, base, &stat, AT_SYMLINK_NOFOLLOW): st_mode is at 24
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 160)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call r13))
+    (call x64.mov_rr c 64 (call rdx) (call rsp))
+    (call x64.mov_ri32 c (call r10) 256)
+    (call x64.mov_ri32 c (call rax) 262)
+    (call x64.syscall c)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let stat_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.load c 32 (call rax) (call x64.mem (call rsp) 24))
+    (call x64.alu_ri c 32 (call x64.op_and) (call rax) 61440)
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) 40960)
+    (let is_link:i32 (call x64.jcc c (call x64.cc_e)))
+    ;; fchmodat(parent, base, mode)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call r13))
+    (call x64.mov_rr c 64 (call rdx) (call r8))
+    (call x64.mov_ri32 c (call rax) 268)
+    (call x64.syscall c)
+    (let done:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c is_link (call buf.len c))
+    (call x64.mov_ri32 c (call rax) -13)
+    (call x64.patch_rel32 c stat_failed (call buf.len c))
+    (call x64.patch_rel32 c done (call buf.len c))
+    ;; close the parent, keeping the result
+    (call x64.mov_rr c 64 (call r14) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rax) (call r14))
+    (call x64.patch_rel32 c no_parent (call buf.len c))
+    (call x64.patch_rel32 c open_failed (call buf.len c))
+    (call x64.patch_rel32 c chmodded (call buf.len c))
+    (call x64.mov_rr c 64 (call rsp) (call r12))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_negated_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c -8)
+    (call x64.patch_rel32 c bad_mode (call buf.len c))
+    (call emit_return_errno c -28))
+
   ;; Start-up: opens the preopened directories, fd 3 = "." and fd 4 = "/"
   ;; (skipped with sandbox), as O_PATH directory descriptors.
   (fn emit_preopens [l:(ptr lower.L) w:(ptr W) sandbox:bool] -> void (pub)
@@ -952,6 +1097,13 @@
       ((call is name "path_unlink_file") (call emit_path_unlink l w) true)
       ((call is name "fd_readdir") (call emit_fd_readdir l w) true)
       ((call is name "path_filestat_get") (call emit_path_filestat l w) true)
+      (else false)))
+
+  ;; Emits the routine for the aipl_sys_v1 import `name`; false if it is not
+  ;; one of these.
+  (fn emit_sys_import [l:(ptr lower.L) w:(ptr W) name:str.Bytes] -> bool (pub)
+    (cond
+      ((call is name "chmod") (call emit_sys_chmod l w) true)
       (else false)))
 
   (fn is [name:str.Bytes want:str] -> bool

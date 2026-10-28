@@ -165,6 +165,10 @@ pub enum OpCode {
     FsReaddir,
     /// `(fs.stat ptr len out)`: a file's WASI filestat (64 bytes at `out`).
     FsStat,
+    /// `(fs.chmod ptr len mode)`: sets the permission bits (0 to 0o777) of
+    /// the file at the path: 0, or minus a WASI errno (docs/design/SYS_PLAN.md,
+    /// `aipl_sys_v1`).
+    FsChmod,
     /// `(net.listen addr len port)`: a listening TCP socket on the address
     /// whose `len` (4 or 16) bytes are at `addr`; its handle, -1, or -2 if
     /// not granted (docs/design/NET_PLAN.md, `aipl_net_v1`).

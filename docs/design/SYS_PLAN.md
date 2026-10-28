@@ -1,6 +1,6 @@
 # System host imports: `chmod` and processes (S1 of aipl_standalone.md)
 
-**Status: proposed (2026-10-28).** Step 1 (`fs.chmod`) is started; the
+**Status: proposed (2026-10-28).** Step 1 (`fs.chmod`) is built; the
 grant model (D2) and the process interface (D3-D7) are the owner's to
 confirm before step 2. Written in the style of NET_PLAN.md, whose
 `aipl_net_v1` this copies in shape: AIPL's own import module beside
@@ -12,9 +12,9 @@ command line and fixed in an executable when it is compiled.
 
 | Step | What | Status |
 |---|---|---|
-| 1 | `fs.chmod`: the execute bit, in every backend and both toolchains | In progress |
+| 1 | `fs.chmod`: the execute bit, in every backend and both toolchains | **Done** 2026-10-28 (section 6) |
 | 2 | The process operations `proc.*` and `--allow-run`, in every backend and both toolchains | Not started |
-| 3 | `std/proc`: the safe interface (run a program and capture its output; a `Child` with pipes) | Not started |
+| 3 | `std/proc`: the safe interface (run a program and capture its output; a `Child` with pipes), and `fs.chmod` in `std/fs` | Not started |
 | 4 | A seed refresh, so the self-hosted `aipl` can use them (S2 of aipl_standalone.md) | Owner approves |
 
 ## 1. Why a new import module
@@ -129,3 +129,47 @@ with setuid, a path outside `--sandbox`); a child that echoes its input,
 one that exits with a status, one killed by a signal, one that does not
 exist; the descriptors the program holds are the same before and after
 (no leaked pipes); `fs.chmod` on a file the program wrote, then run.
+
+## 6. Step 1, as built (2026-10-28)
+
+`(fs.chmod ptr len mode)`, an operation usable only in `unsafe`, in both
+toolchains (src/ and aipl_src/: parser, printer, checker, code generators),
+the VM, aipl-run, and native executables.
+
+- **The import is `aipl_sys_v1.chmod(dirfd, path, len, mode)`,** not
+  (path, len, mode): the compiled code chooses the directory as `fs.delete`
+  does (3, the working directory, or 4, `/`, the path then without its
+  first slash), so every host sees what the WASI file operations see and
+  `--sandbox` means one thing. D1's rule is therefore: a relative path may
+  never leave the working directory (`..`, or a symbolic link out of it:
+  `-63`), `--sandbox` or not, as wasmtime's preopens refuse it; an absolute
+  path is unconfined unless the program was built with `--sandbox`, which
+  gives it no `/` (`-8`). The VM's paths are ordinary, as they are for every
+  `fs.*` operation.
+- **Results** are 0 or minus the WASI errno; a mode with a bit outside 0o777
+  is -28; a path whose length runs past memory is -21, a value and not a
+  trap (the host checks it; the compiled prelude has already read the
+  path's first byte, so a path that *starts* outside memory traps there, as
+  `fs.delete` does).
+- **Natively** (aipl_src/native/wasi.aipl, `emit_sys_chmod`): the file is
+  opened beneath its directory by the same `openat2` (or plain `openat`
+  where that is refused: Rosetta 2, Linux before 5.6), read-only and
+  without blocking, then `fchmod` and `close`. A file that cannot be read
+  (mode 0) cannot be opened, so then the parent directory is opened and
+  `fchmodat` names the file in it, unless a `newfstatat` says it is a
+  symbolic link (EACCES). aipl-run and the VM use `chmod(2)` on the path
+  (src/sys.rs), confined by a lexical check and `canonicalize` against the
+  working directory: a check, then a use, where the native open is the
+  kernel's own, so a program racing another process for the same directory
+  is confined less tightly under aipl-run than natively.
+- **Not yet: the std wrapper.** `std/fs` would hold `fs.chmod [path mode] ->
+  (result i32 io.Error)`, but the compiler imports `std/fs`, and the
+  checked-in seed cannot read the new operation, so `bootstrap/build.sh`
+  would stop. It lands with the seed refresh (step 4). Until then a program
+  uses the operation inside `unsafe`.
+- A path with a NUL byte in it ends there natively (as every native path
+  operation does) and is an error in the VM and aipl-run.
+- Tests: tests/test_sys.rs (seven runs of one program, in the VM, aipl-run,
+  native, and the bundle, with and without `--sandbox`; native where
+  `openat2` is refused; both toolchains' bytes), and the operation in
+  tests/test_opcode_conformance.rs.

@@ -1697,6 +1697,18 @@ fn fits(got: &Type, want: &Type) -> bool {
                     }
                     Ok(Type::I32)
                 }
+                OpCode::FsChmod => {
+                    if args.len() != 3 {
+                        return Err(format!("{}:{}: fs.chmod requires 3 arguments (path_ptr, path_len, mode)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: fs.chmod argument {} must be i32 (pointer, length, mode), got {}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
                 OpCode::FsOpendir => {
                     self.expect_operands("fs.opendir", "(fs.opendir ptr len)", args, &[Type::I32, Type::I32], env, (l, c))?;
                     Ok(Type::I32)
@@ -2388,7 +2400,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
         MemLoad8 | MemLoad32 | MemLoad64 | MemStore8 | MemStore32 | MemStore64 | MemLoad8S | MemLoad16U | MemLoad16S | MemStore16
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
-            | FsOpen | FsRead | FsWrite | FsDelete | FsOpendir | FsReaddir | FsStat
+            | FsOpen | FsRead | FsWrite | FsDelete | FsChmod | FsOpendir | FsReaddir | FsStat
             | NetListen | NetAccept | NetRecv | NetSend | NetClose
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom

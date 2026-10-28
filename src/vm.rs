@@ -2102,6 +2102,18 @@ impl VM {
                 let sizes = matches!(op, OpCode::ArgsSizes | OpCode::EnvSizes);
                 Ok(self.wasi_strings(&items, sizes, addr[0], addr[1]))
             }
+            OpCode::FsChmod => {
+                let path_ptr = self.int_operand(&args[0], scope, "fs.chmod")? as u32 as usize;
+                let path_len = self.int_operand(&args[1], scope, "fs.chmod")? as u32 as usize;
+                let mode = self.int_operand(&args[2], scope, "fs.chmod")? as i32;
+                // a path outside the program's memory is minus EFAULT, a value and not a trap
+                let size = self.shared.lock().unwrap().bytes.len();
+                if path_ptr.checked_add(path_len).is_none_or(|end| end > size) {
+                    return Ok(Value::Int(-21));
+                }
+                let path = self.read_bytes(path_ptr, path_len);
+                Ok(Value::Int(crate::sys::chmod(&path, mode, false) as i64))
+            }
             OpCode::FsDelete => {
                 let path_ptr = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as usize,
@@ -2533,7 +2545,7 @@ fn wasi_filetype(t: &std::fs::FileType) -> u8 {
 /// A failed fs.* operation's result, as wasmtime and native executables
 /// give it: minus the WASI errno for the OS error, through the table
 /// aipl_src/native/wasi.aipl uses (anything unlisted is EIO, 29).
-fn wasi_errno(e: &std::io::Error) -> i64 {
+pub(crate) fn wasi_errno(e: &std::io::Error) -> i64 {
     let wasi = match e.raw_os_error() {
         Some(0) => 0,
         Some(1) => 63,

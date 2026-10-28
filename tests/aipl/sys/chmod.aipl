@@ -1,0 +1,25 @@
+;; fs.chmod (docs/design/SYS_PLAN.md): the program test_sys.rs runs in a
+;; directory it has set up (a.txt, dir, link and ../outside.txt, inside_link
+;; and a.txt, and an absolute path substituted for @ABS@), once for each
+;; backend; each case prints its label and what fs.chmod gave.
+(module chmod_cases
+  (fn chmod [path:str mode:i32] -> i32
+    (unsafe (fs.chmod (str.ptr path) (str.len path) mode)))
+
+  (fn show [label:str got:i32] -> void
+    (println "{label} {got}"))
+
+  (fn main [] -> i32
+    (call show "plain" (call chmod "a.txt" 493))
+    (call show "setuid" (call chmod "a.txt" 2541))
+    (call show "negative" (call chmod "a.txt" -1))
+    (call show "missing" (call chmod "missing" 420))
+    (call show "directory" (call chmod "dir" 448))
+    (call show "dotdot" (call chmod "../outside.txt" 384))
+    (call show "link" (call chmod "link" 384))
+    (call show "inside_link" (call chmod "inside_link" 420))
+    (call show "absolute" (call chmod "@ABS@" 416))
+    (call show "zero" (call chmod "a.txt" 0))
+    (call show "restore" (call chmod "a.txt" 420))
+    (call show "too_long" (unsafe (fs.chmod 1024 2000000000 420)))
+    0))
