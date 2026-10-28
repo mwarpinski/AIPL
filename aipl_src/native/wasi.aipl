@@ -868,6 +868,15 @@
   ;; With a Linux result (-errno) in rax: returns minus the WASI errno, the
   ;; way aipl_sys_v1's imports report an error.
   (fn emit_negated_errno_return [l:(ptr lower.L) w:(ptr W)] -> void
+    (call emit_negated_errno l w)
+    (call x64.ret (get l lower.L.code)))
+
+  ;; The cell holding the host address of the environment the process started with.
+  (fn env_cell [w:(ptr W)] -> i32 (pub) (get w W.envp_cell))
+
+  ;; With a Linux result (-errno) in rax: leaves minus the WASI errno there.
+  ;; Clobbers rcx.
+  (fn emit_negated_errno [l:(ptr lower.L) w:(ptr W)] -> void (pub)
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (call x64.mov_rr c 64 (call rcx) (call rax))
     (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
@@ -882,8 +891,7 @@
     (call x64.patch_rel32 c listed (call buf.len c))
     (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
     (call x64.alu_rr c 64 (call x64.op_sub) (call rcx) (call rax))
-    (call x64.mov_rr c 64 (call rax) (call rcx))
-    (call x64.ret c))
+    (call x64.mov_rr c 64 (call rax) (call rcx)))
 
   ;; aipl_sys_v1's chmod(dirfd, path, path_len, mode) -> 0, or minus the WASI
   ;; errno (docs/design/SYS_PLAN.md). A mode with a bit outside 0o777 is

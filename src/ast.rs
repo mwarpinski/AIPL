@@ -182,6 +182,25 @@ pub enum OpCode {
     NetSend,
     /// `(net.close h)`: closes a socket; 0, or -1.
     NetClose,
+    /// `(proc.spawn path len args args_len stdio)`: starts the program at the
+    /// path (docs/design/SYS_PLAN.md, `aipl_sys_v1`); its process handle, or
+    /// minus an errno (-76: not granted by `--allow-run`).
+    ProcSpawn,
+    /// `(proc.stream p which)`: the pipe to process p's input (0), output
+    /// (1), or error (2); -1 if that stream is not a pipe.
+    ProcStream,
+    /// `(proc.read h buf max)`: bytes read from a pipe; 0 at the end, or minus an errno.
+    ProcRead,
+    /// `(proc.write h buf len)`: bytes written to a pipe, or minus an errno.
+    ProcWrite,
+    /// `(proc.close h)`: closes a pipe, or lets go of a process; 0, or minus an errno.
+    ProcClose,
+    /// `(proc.wait p)`: waits for the program to end; its exit status, or
+    /// 256 plus the signal that ended it.
+    ProcWait,
+    /// `(proc.exec path len args args_len)`: replaces this process with the
+    /// program; returns only minus an errno.
+    ProcExec,
     /// `(args.sizes count_ptr size_ptr)`: WASI `args_sizes_get`. Writes the
     /// argument count and the total bytes of the NUL-terminated arguments;
     /// returns 0, or -1 on failure. std/os wraps the four args/env ops.

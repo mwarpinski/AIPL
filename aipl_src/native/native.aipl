@@ -41,6 +41,7 @@
   (import lower)
   (import wasi)
   (import sockets)
+  (import procs)
   (import fresh)
   (import ip)
   (import option)
@@ -95,7 +96,7 @@
   ;; with "call stack exhausted" instead of faulting.
   (fn stack_margin [] -> i32 262144)
 
-  (fn import_stub [l:(ptr lower.L) wr:(ptr wasi.W) sk:(ptr sockets.N) th:(ptr Threads) imp:(ptr wasm_reader.Import)] -> void
+  (fn import_stub [l:(ptr lower.L) wr:(ptr wasi.W) sk:(ptr sockets.N) pr:(ptr procs.N) th:(ptr Threads) imp:(ptr wasm_reader.Import)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let name:str.Bytes (get imp wasm_reader.Import.name))
     (cond
@@ -114,6 +115,9 @@
        (call x64.ud2 c))
       ((and (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_net_v1"))
             (call sockets.emit_import l sk name))
+       (block))
+      ((and (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_sys_v1"))
+            (call procs.emit_import l pr wr name))
        (block))
       ((and (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_sys_v1"))
             (call wasi.emit_sys_import l wr name))
@@ -234,6 +238,17 @@
       (when (call str.bytes_eq (get imp wasm_reader.Import.name) (call str.from_str "thread-spawn")) (return true)))
     false)
 
+  ;; Whether the module imports one of aipl_sys_v1's process operations (not
+  ;; chmod): only then does the executable carry procs.aipl's tables, so a
+  ;; program that starts nothing is the bytes it was before they existed.
+  (fn imports_procs [l:(ptr lower.L)] -> bool
+    (for i 0 (call lower.n_fimports l)
+      (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i))
+      (when (and (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_sys_v1"))
+                 (not (call str.bytes_eq (get imp wasm_reader.Import.name) (call str.from_str "chmod"))))
+            (return true)))
+    false)
+
   ;; The module's memory: its own, or the one it imports; null if none.
   (fn memory_limits [w:(ptr wasm_reader.Wasm)] -> (ptr wasm_reader.Limits)
     (let mems:(ptr (vec.Vec (ptr wasm_reader.Limits))) (get w wasm_reader.Wasm.memories))
@@ -336,10 +351,40 @@
   (fn compile [wasm:str.Bytes] -> (ptr Output)
     (call compile_with wasm false (call str.from_str "") (call str.from_str "")))
 
+  ;; The longest path an --allow-run grant may hold (procs.max_grant), for aipl.aipl's early check.
+  (fn max_run_grant [] -> i32 (pub) (call procs.max_grant))
+
   ;; Whether `g` is a grant: ADDR:PORT, as std/ip reads it (src/net.rs
   ;; parse_grant reads the same).
   (fn valid_grant [g:str.Bytes] -> bool (pub)
     (call (option.is_some ip.Endpoint) (call ip.parse_endpoint g)))
+
+  ;; Splits the grants in `text`, a line each, into the programs of the
+  ;; `run:PROGRAM` lines (--allow-run), added to `runs`, and the rest, added
+  ;; to `others` with their newlines; `problem` gets a message for a program
+  ;; whose path is longer than procs.max_grant.
+  (fn split_grants [text:str.Bytes runs:(ptr (vec.Vec str.Bytes)) others:(ptr buf.Buf) problem:(ptr buf.Buf)] -> void
+    (let start:i32 0)
+    (let n:i32 (get text str.Bytes.len))
+    (for i 0 (+ n 1)
+      (when (or (eq i n) (eq (call str.byte_at text i) 10))
+        (let line:str.Bytes (call str.slice text start (- i start)))
+        (set! start (+ i 1))
+        (let len:i32 (get line str.Bytes.len))
+        (if (and (gte len 4)
+                 (and (and (eq (call str.byte_at line 0) 114) (eq (call str.byte_at line 1) 117))
+                      (and (eq (call str.byte_at line 2) 110) (eq (call str.byte_at line 3) 58))))
+            (block
+              (let program:str.Bytes (call str.slice line 4 (- len 4)))
+              (if (gt (get program str.Bytes.len) (call procs.max_grant))
+                  (block
+                    (call buf.push_str problem "--allow-run ")
+                    (call buf.push_bytes problem program)
+                    (call buf.push_str problem ": the program's path is longer than 256 bytes, the most a native executable's grant holds"))
+                  (call (vec.push str.Bytes) runs program)))
+            (when (gt len 0)
+              (call buf.push_bytes others line)
+              (call buf.push_byte others 10))))))
 
   ;; The grants in `text`, one ADDR:PORT a line (`flag`: `--listen` or
   ;; `--serve`; std/ip's parse_endpoint); null, with the message in
@@ -377,7 +422,12 @@
   ;; connection (`--serve`, fresh.aipl).
   (fn compile_with [wasm:str.Bytes sandbox:bool listen:str.Bytes serve:str.Bytes] -> (ptr Output) (pub)
     (let problem:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (let granted:(ptr (vec.Vec sockets.Grant)) (call grants "--listen" listen problem))
+    ;; the grants text holds `run:PROGRAM` lines (--allow-run) among the addresses
+    (let runs:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
+    (let addresses:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call split_grants listen runs addresses problem)
+    (when (gt (call buf.len problem) 0) (return (call failure (call buf.bytes problem))))
+    (let granted:(ptr (vec.Vec sockets.Grant)) (call grants "--listen" (call buf.bytes addresses) problem))
     (when (eq granted (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))))
     (let served:(ptr (vec.Vec sockets.Grant)) (call grants "--serve" serve problem))
     (when (eq served (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))))
@@ -437,6 +487,7 @@
     (let nl:i32 (call lower.data_text l "\n"))
     (let wr:(ptr wasi.W) (call wasi.make l sandbox))
     (let sk:(ptr sockets.N) (call sockets.make l granted))
+    (let pr:(ptr procs.N) (if (call imports_procs l) (call procs.make l runs) (ptr.null procs.N)))
     (let table_problem:str (call reserve_table l w))
     (when (gt (str.len table_problem) 0) (return (call failure (call str.from_str table_problem))))
     (let texts:(ptr runtime.RegionTexts) (call region_texts l))
@@ -490,7 +541,7 @@
     (call runtime.emit_exit c 0)
     (for i 0 nimports
       (call (vec.push i32) starts (call buf.len c))
-      (call import_stub l wr sk th (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i)))
+      (call import_stub l wr sk pr th (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i)))
     (for i nimports nfuncs
       (when (get l lower.L.failed) (break))
       (call (vec.push i32) starts (call buf.len c))

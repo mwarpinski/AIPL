@@ -155,3 +155,105 @@ fn fs_chmod_works_where_openat2_is_refused() {
     }
     let _ = std::fs::remove_dir_all(&top);
 }
+
+// ===== Processes =====
+
+const PROGRAMS: &str = "--allow-run /bin/sh --allow-run /bin/cat --allow-run /no/such/program";
+
+const PROC_ANSWERS: &str = "stderr_not_a_pipe -1\nsent 6\nclosed_input 0\nhello\nread 6\nstatus 0\nstatus_again 0\nwrong_way -8\nclosed_output 0\nread_closed -8\nreleased 0\nwait_released -8\nno_stream -1\nexit_7 7\nkilled 265\nout\nerr\nmerged 8\nmerged_status 2\nnull_status 3\nA-B env=hello\nargs 14\nargs_status 0\nmissing -44\nnot_granted -76\nbad_stdio -28\nbad_stdio_high -28\nbad_handle_wait -8\nbad_handle_read -8\nbad_handle_write -8\nbad_handle_close -8\nbad_handle_stream -8\ntoo_long -21\n";
+
+const EXEC_ANSWERS: &str = "before\nnot_granted -76\nmissing -44\ntoo_long -21\nreplaced A-B env=hello\n";
+
+/// The compile flags for the grants in PROGRAMS (or the ones given).
+fn grants(programs: &str) -> Vec<String> {
+    programs.split_whitespace().map(str::to_string).collect()
+}
+
+/// Compiles `src` (a test program) with the given grants, as wasm, a native
+/// executable, and the launcher bundle; the ways to run it, with its name.
+fn processes(top: &Path, src: &Path, programs: &str) -> Vec<(&'static str, Command)> {
+    let flags = grants(programs);
+    // a plain module carries no grants (aipl-run is given them); an executable has them fixed
+    let compile_with = |name: &str, extra: &[&str]| -> PathBuf {
+        let args: Vec<String> = extra.iter().map(|s| s.to_string()).chain(if extra.is_empty() { vec![] } else { flags.clone() }).collect();
+        let out = top.join(name);
+        let o = Command::new(AIPL).arg("compile").args(&args).arg(src).arg("-o").arg(&out).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        out
+    };
+    let wasm = compile_with("q.wasm", &[]);
+    let exe = compile_with("q", &["--exe"]);
+    let bundle = compile_with("q_bundle", &["--exe", "--target", "wasm"]);
+    let mut vm = Command::new(AIPL);
+    vm.arg("eval").args(&flags).arg(src);
+    let mut run = Command::new(RUNNER);
+    run.args(&flags).arg(&wasm);
+    vec![("VM", vm), ("aipl-run", run), ("native", Command::new(exe)), ("bundle", Command::new(bundle))]
+}
+
+#[test]
+fn processes_are_the_same_in_every_backend() {
+    let top = scratch("procs");
+    let src = root().join("tests/aipl/sys/proc.aipl");
+    for (how, mut command) in processes(&top, &src, PROGRAMS) {
+        let o = command.env("AIPL_PROC_TEST", "hello").current_dir(&top).output().unwrap();
+        assert_eq!(answers(&o), PROC_ANSWERS, "{how}");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}
+
+#[test]
+fn exec_replaces_the_program_in_every_backend() {
+    let top = scratch("exec");
+    let src = root().join("tests/aipl/sys/proc_exec.aipl");
+    for (how, mut command) in processes(&top, &src, "--allow-run /bin/sh --allow-run /no/such/program") {
+        let o = command.env("AIPL_PROC_TEST", "hello").current_dir(&top).output().unwrap();
+        // the status is the program's: sh's exit 3
+        assert_eq!(o.status.code(), Some(3), "{how}: {}", String::from_utf8_lossy(&o.stderr));
+        let got: String = String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect();
+        assert_eq!(got, EXEC_ANSWERS, "{how}");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}
+
+/// Without a grant nothing starts, and `*` grants any program; a native
+/// executable's grants are fixed in it, a bundle's in its trailer.
+#[test]
+fn a_program_starts_only_what_it_was_granted() {
+    let top = scratch("grants");
+    let src = top.join("g.aipl");
+    std::fs::write(&src, r#"(module g
+  (fn go [path:str] -> i32
+    (unsafe (proc.spawn (str.ptr path) (str.len path) (str.ptr "sh") 2 8)))
+  (fn show [label:str n:i32] -> void
+    (if (gte n 0) (println "{label} ok") (println "{label} {n}")))
+  (fn main [] -> i32
+    (call show "sh" (call go "/bin/sh"))
+    (call show "cat" (call go "/bin/cat"))
+    0))
+"#).unwrap();
+    for (programs, want) in [
+        ("", "sh -76\ncat -76\n"),
+        ("--allow-run /bin/sh", "sh ok\ncat -76\n"),
+        ("--allow-run /bin/cat --allow-run /bin/sh", "sh ok\ncat ok\n"),
+        ("--allow-run *", "sh ok\ncat ok\n"),
+    ] {
+        for (how, mut command) in processes(&top, &src, programs) {
+            let o = command.current_dir(&top).output().unwrap();
+            assert_eq!(answers(&o), want, "{how}, grants {programs:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}
+
+#[test]
+fn both_toolchains_compile_the_process_operations_to_the_same_bytes() {
+    let top = scratch("procbytes");
+    for name in ["proc.aipl", "proc_exec.aipl"] {
+        let src = root().join("tests/aipl/sys").join(name);
+        let o = Command::new(AIPL).args(["compile", "--self", "--no-opt"]).arg(&src).arg("-o").arg(top.join("s.wasm")).output().unwrap();
+        assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(String::from_utf8_lossy(&o.stdout).contains("BIT-FOR-BIT IDENTICAL"), "{name}: {}", String::from_utf8_lossy(&o.stdout));
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}

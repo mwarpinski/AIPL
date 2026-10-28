@@ -42,6 +42,10 @@ enum Commands {
         /// or [::1]:8080 (repeatable; none by default)
         #[arg(long = "listen", value_name = "ADDR:PORT")]
         listen: Vec<String>,
+        /// A program the program may start with proc.spawn or proc.exec, as
+        /// /bin/sh, or * for any (repeatable; none by default)
+        #[arg(long = "allow-run", value_name = "PROGRAM")]
+        allow_run: Vec<String>,
         /// The most memory the program may use, from 1M to 2G (the default) in
         /// whole 64K pages, as 512M (what `aipl compile --max-memory` records)
         #[arg(long = "max-memory", value_name = "SIZE")]
@@ -77,6 +81,11 @@ enum Commands {
         /// executable (repeatable; none by default)
         #[arg(long = "listen", value_name = "ADDR:PORT", requires = "exe")]
         listen: Vec<String>,
+        /// With --exe: a program the program may start with proc.spawn or
+        /// proc.exec, as /bin/sh, or * for any, fixed in the executable
+        /// (repeatable; none by default)
+        #[arg(long = "allow-run", value_name = "PROGRAM", requires = "exe")]
+        allow_run: Vec<String>,
         /// With --exe: serve on this address a fresh copy of the program per connection,
         /// its standard input the connection and its output the answer (std/serve's once);
         /// a trap answers 500 and the next connection is served (docs/design/NET_PLAN.md mode B)
@@ -123,6 +132,9 @@ enum Commands {
         /// An address and port the program may listen on (repeatable)
         #[arg(long = "listen", value_name = "ADDR:PORT")]
         listen: Vec<String>,
+        /// A program the program may start (repeatable; * for any)
+        #[arg(long = "allow-run", value_name = "PROGRAM")]
+        allow_run: Vec<String>,
         #[arg(last = true)]
         args: Vec<String>,
     },
@@ -346,7 +358,8 @@ fn exit_with(program: &str, n: i64) -> ! {
 }
 
 /// A standalone executable (AIPL_SPEC.md 6.5): the launcher, then the module,
-/// then the --listen grants (one ADDR:PORT a line), then a 20-byte trailer
+/// then the grants (one a line: --listen's ADDR:PORT, or `run:PROGRAM` for each
+/// --allow-run), then a 20-byte trailer
 /// [flags u32 LE][grants length u32 LE][module length u32 LE]["AIPLEXE2"].
 /// Flags: bit 0 sandbox, bit 1 --serve, whose address is then the grants'
 /// first line. Rust only because WASI cannot set the executable bit; the
@@ -367,7 +380,7 @@ fn write_executable(output: &str, wasm: &[u8], sandbox: bool, listen: &[String],
     if bytes.ends_with(b"AIPLEXE1") || bytes.ends_with(b"AIPLEXE2") {
         return Err("the aipl-run launcher already has a program appended".into());
     }
-    for g in listen {
+    for g in listen.iter().filter(|g| !g.starts_with("run:")) {
         aipl_core::net::Net::parse_grant(g)?;
     }
     // refused when compiled, as the native backend refuses it
@@ -397,7 +410,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Eval { file, func, expr, with, wasm, native, listen, max_memory, args } => {
+        Commands::Eval { file, func, expr, with, wasm, native, listen, allow_run, max_memory, args } => {
             if let Some(exprs) = expr {
                 use aipl_core::evalexpr::{run, Backend};
                 let backend = if wasm { Backend::Wasm } else if native { Backend::Native } else { Backend::Vm };
@@ -412,6 +425,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut vm = VM::new();
             vm.set_args(std::iter::once(file.clone()).chain(args).collect());
             vm.set_listen(listen.iter().map(|g| aipl_core::net::Net::parse_grant(g)).collect::<Result<_, _>>()?);
+            vm.set_allow_run(allow_run);
             if let Some(m) = &max_memory {
                 vm.set_max_pages(aipl_core::compiler::memory_pages(m)? as usize);
             }
@@ -448,11 +462,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Compile { file, output, no_opt, self_flag, exe, sandbox, listen, serve, max_memory, target, tests } => {
+        Commands::Compile { file, output, no_opt, self_flag, exe, sandbox, listen, allow_run, serve, max_memory, target, tests } => {
             // a grant is checked before anything is compiled (aipl.aipl does the same)
             for g in &listen {
                 aipl_core::net::Net::parse_grant(g)?;
             }
+            // the grants an executable carries: addresses, then `run:PROGRAM` for each program
+            let listen: Vec<String> = listen.into_iter().chain(allow_run.into_iter().map(|p| format!("run:{p}"))).collect();
             if let Some(s) = &serve {
                 aipl_core::net::Net::parse_address("--serve", s)?;
             }
@@ -504,6 +520,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None => aipl_core::native::supported(),
                 };
                 if native {
+                    // a native executable keeps each program's path in 256 bytes (aipl_src/native/procs.aipl)
+                    if let Some(g) = listen.iter().filter_map(|g| g.strip_prefix("run:")).find(|p| p.len() > 256) {
+                        return Err(format!("--allow-run {g}: the program's path is longer than 256 bytes, the most a native executable's grant holds").into());
+                    }
                     // on failure, no module is left where the executable was asked for
                     let exe_bytes = aipl_core::native::executable_with(&wasm, sandbox, &listen, serve.as_deref()).inspect_err(|_| {
                         let _ = fs::remove_file(&output);
@@ -550,7 +570,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let _ = fs::remove_dir_all(&dir);
             return Err(format!("cannot start aipl-run: {e}").into());
         }
-        Commands::Run { file, sandbox, listen, args } => {
+        Commands::Run { file, sandbox, listen, allow_run, args } => {
             if file.ends_with(".aipl") {
                 return Err(format!(
                     "aipl run takes a compiled .wasm file, not source: run {file} with `aipl eval {file}`, or compile it first with `aipl compile {file} -o out.wasm`"
@@ -563,6 +583,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             for g in &listen {
                 cmd.arg("--listen").arg(g);
+            }
+            for p in &allow_run {
+                cmd.arg("--allow-run").arg(p);
             }
             let status = cmd.arg(&file).args(&args).status()?;
             std::process::exit(status.code().unwrap_or(1));

@@ -1,8 +1,7 @@
 # System host imports: `chmod` and processes (S1 of aipl_standalone.md)
 
-**Status: proposed (2026-10-28).** Step 1 (`fs.chmod`) is built; the
-grant model (D2) and the process interface (D3-D7) are the owner's to
-confirm before step 2. Written in the style of NET_PLAN.md, whose
+**Status: proposed (2026-10-28), D1-D7 approved by the owner the same day.
+Steps 1 and 2 are built;** steps 3 and 4 are not. Written in the style of NET_PLAN.md, whose
 `aipl_net_v1` this copies in shape: AIPL's own import module beside
 WASI preview 1, provided by the VM and aipl-run in Rust, lowered to Linux
 system calls by the native backend (written in AIPL), granted on the
@@ -13,7 +12,7 @@ command line and fixed in an executable when it is compiled.
 | Step | What | Status |
 |---|---|---|
 | 1 | `fs.chmod`: the execute bit, in every backend and both toolchains | **Done** 2026-10-28 (section 6) |
-| 2 | The process operations `proc.*` and `--allow-run`, in every backend and both toolchains | Not started |
+| 2 | The process operations `proc.*` and `--allow-run`, in every backend and both toolchains | **Done** 2026-10-28 (section 7) |
 | 3 | `std/proc`: the safe interface (run a program and capture its output; a `Child` with pipes), and `fs.chmod` in `std/fs` | Not started |
 | 4 | A seed refresh, so the self-hosted `aipl` can use them (S2 of aipl_standalone.md) | Owner approves |
 
@@ -172,4 +171,44 @@ the VM, aipl-run, and native executables.
 - Tests: tests/test_sys.rs (seven runs of one program, in the VM, aipl-run,
   native, and the bundle, with and without `--sandbox`; native where
   `openat2` is refused; both toolchains' bytes), and the operation in
+  tests/test_opcode_conformance.rs.
+
+## 7. Step 2, as built (2026-10-28)
+
+The seven operations `proc.spawn`, `proc.stream`, `proc.read`, `proc.write`,
+`proc.close`, `proc.wait`, and `proc.exec` (usable only in `unsafe`), as D3
+has them, in both toolchains, the VM, aipl-run, and native executables, with
+the grant `--allow-run PROGRAM` (`*` for any) on `aipl eval`, `aipl run`,
+`aipl-run`, and `aipl compile --exe` (the Rust command and the self-hosted
+one); an executable carries its grants (a native one in its data, a bundle
+in its trailer, as `run:PROGRAM` lines beside the `--listen` addresses).
+
+- **Rust hosts** (src/sys.rs, `Procs`): `std::process::Command` with our own
+  pipes (`std::io::pipe`), a table of processes and one of pipes, each handle
+  counting up (pipes from 3, processes from 1024), and blocking calls outside
+  the table's lock. The VM, aipl-run, and its threads share one table.
+- **Natively** (aipl_src/native/procs.aipl): `fork` and `execve`, with a pipe
+  that closes on exec so the parent learns why a program did not start
+  (a missing program is -44 everywhere, as under Rust's `Command`); pipes are
+  descriptors checked against a table of the ones this program opened; a
+  process is a slot in a table of 64 (a 65th live process is -33); `wait4`
+  with the status decoded as D3 says and kept for a second wait; a write
+  ignores SIGPIPE for the call.
+- **Limits that differ,** all refusals with a value and not a trap: path and
+  arguments together over 65,536 bytes is -1 in every backend; a native
+  executable holds each granted path to 256 bytes (the compile says so) and
+  at most 64 live processes; the Rust hosts keep no such cap on processes.
+- **What a program sees is its parent's:** working directory and environment.
+  `--sandbox` confines the program's own files, not a program it starts.
+- **Not built (D7):** a signal to a program, waiting on several, a different
+  directory or environment for the child, reading two pipes without blocking
+  on one. `--allow-run` is not on `aipl eval -e`, `aipl serve`, or `aipl
+  watch` yet. The tables are not locked natively (as sockets' are not): two
+  threads starting programs at once may race for a slot.
+- **Tests:** tests/test_sys.rs: one program through `cat` and `sh` (a pipe
+  each way, an exit status, a signal, output and error through one pipe, a
+  null stream, arguments with and without a final zero byte, the environment,
+  every refusal) and one that `exec`s, identical from the VM, aipl-run, a
+  native executable, and the bundle; the grants (none, one, two, `*`) in each;
+  both toolchains' bytes; and the seven operations in
   tests/test_opcode_conformance.rs.

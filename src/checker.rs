@@ -1741,6 +1741,34 @@ fn fits(got: &Type, want: &Type) -> bool {
                     self.expect_operands("net.close", "(net.close h)", args, &[Type::I32], env, (l, c))?;
                     Ok(Type::I32)
                 }
+                OpCode::ProcSpawn => {
+                    self.expect_operands("proc.spawn", "(proc.spawn path len args args_len stdio)", args, &[Type::I32, Type::I32, Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcStream => {
+                    self.expect_operands("proc.stream", "(proc.stream p which)", args, &[Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcRead => {
+                    self.expect_operands("proc.read", "(proc.read h buf max)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcWrite => {
+                    self.expect_operands("proc.write", "(proc.write h buf len)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcClose => {
+                    self.expect_operands("proc.close", "(proc.close h)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcWait => {
+                    self.expect_operands("proc.wait", "(proc.wait p)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcExec => {
+                    self.expect_operands("proc.exec", "(proc.exec path len args args_len)", args, &[Type::I32, Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
                 OpCode::ThreadSpawn => {
                     // (thread.spawn (ref worker) arg): the worker takes the i32 arg.
                     if args.len() != 2 {
@@ -2402,6 +2430,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
             | ThreadSpawn | ThreadJoin
             | FsOpen | FsRead | FsWrite | FsDelete | FsChmod | FsOpendir | FsReaddir | FsStat
             | NetListen | NetAccept | NetRecv | NetSend | NetClose
+            | ProcSpawn | ProcStream | ProcRead | ProcWrite | ProcClose | ProcWait | ProcExec
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom
     )

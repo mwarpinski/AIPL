@@ -1837,12 +1837,17 @@
     (or (or (or (eq o ast.Op.fs_open) (eq o ast.Op.fs_read)) (or (eq o ast.Op.fs_write) (eq o ast.Op.fs_delete)))
     (or (or (or (eq o ast.Op.args_sizes) (eq o ast.Op.args_get)) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get)))
         (or (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat))))
-            (or (call is_net_op o) (eq o ast.Op.fs_chmod))))))))))
+            (or (call is_net_op o) (or (call is_proc_op o) (eq o ast.Op.fs_chmod)))))))))))
 
   ;; The aipl_net_v1 operations (docs/design/NET_PLAN.md section 3).
   (fn is_net_op [o:ast.Op] -> bool
     (or (or (eq o ast.Op.net_listen) (eq o ast.Op.net_accept))
         (or (or (eq o ast.Op.net_recv) (eq o ast.Op.net_send)) (eq o ast.Op.net_close))))
+
+  ;; The aipl_sys_v1 process operations (docs/design/SYS_PLAN.md D3).
+  (fn is_proc_op [o:ast.Op] -> bool
+    (or (or (or (eq o ast.Op.proc_spawn) (eq o ast.Op.proc_stream)) (or (eq o ast.Op.proc_read) (eq o ast.Op.proc_write)))
+        (or (or (eq o ast.Op.proc_close) (eq o ast.Op.proc_wait)) (eq o ast.Op.proc_exec))))
 
   (fn infer_op [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
     (when (call is_unchecked_op o) (call require_unsafe c at (call op_debug o)))
@@ -1890,6 +1895,13 @@
       ((eq o ast.Op.net_recv) (call operands c env at "net.recv" "(net.recv h buf max)" args 3) (call i32_t))
       ((eq o ast.Op.net_send) (call operands c env at "net.send" "(net.send h buf len)" args 3) (call i32_t))
       ((eq o ast.Op.net_close) (call operands c env at "net.close" "(net.close h)" args 1) (call i32_t))
+      ((eq o ast.Op.proc_spawn) (call operands c env at "proc.spawn" "(proc.spawn path len args args_len stdio)" args 5) (call i32_t))
+      ((eq o ast.Op.proc_stream) (call operands c env at "proc.stream" "(proc.stream p which)" args 2) (call i32_t))
+      ((eq o ast.Op.proc_read) (call operands c env at "proc.read" "(proc.read h buf max)" args 3) (call i32_t))
+      ((eq o ast.Op.proc_write) (call operands c env at "proc.write" "(proc.write h buf len)" args 3) (call i32_t))
+      ((eq o ast.Op.proc_close) (call operands c env at "proc.close" "(proc.close h)" args 1) (call i32_t))
+      ((eq o ast.Op.proc_wait) (call operands c env at "proc.wait" "(proc.wait p)" args 1) (call i32_t))
+      ((eq o ast.Op.proc_exec) (call operands c env at "proc.exec" "(proc.exec path len args args_len)" args 4) (call i32_t))
       ((eq o ast.Op.fs_readdir) (call readdir_operands c env at args) (call i32_t))
       ((eq o ast.Op.atomic_cas) (call operands c env at "atomic.cas" "(atomic.cas p expected new)" args 3) (call bool_t))
       ((eq o ast.Op.atomic_lock) (call operands c env at "atomic.lock" "(atomic.lock p)" args 1) (call void_t))

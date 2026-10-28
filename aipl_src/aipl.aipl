@@ -5,7 +5,7 @@
 ;; builds the next version of itself with no Rust involved.
 ;;
 ;;   aipl compile FILE.aipl -o OUT.wasm
-;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... FILE.aipl -o OUT
+;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... FILE.aipl -o OUT
 ;;   aipl compile [--exe] --max-memory SIZE FILE.aipl -o OUT   (memory's limit, 1M to 2G)
 ;;   aipl compile --no-opt ...   (without the optimizer, codegen_opt.aipl; it runs by default)
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
@@ -31,7 +31,7 @@
   (import alloc)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] [--no-opt] FILE.aipl -o OUT")
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] [--no-opt] FILE.aipl -o OUT")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -103,6 +103,20 @@
                (call buf.push_bytes m (call arg (+ i 1)))
                (call buf.push_str m ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
                (return (call fail_bytes "" (call buf.bytes m))))
+         (call buf.push_bytes listen (call arg (+ i 1)))
+         (call buf.push_byte listen 10)
+         (set! i (+ i 1)))
+        ((call str.is a "--allow-run")
+         (when (gte (+ i 1) n) (return (call usage)))
+         ;; a program the executable may start, a `run:PROGRAM` line among the grants;
+         ;; checked before anything is compiled, as native.compile_with does too
+         (when (gt (get (call arg (+ i 1)) str.Bytes.len) (call native.max_run_grant))
+               (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+               (call buf.push_str m "--allow-run ")
+               (call buf.push_bytes m (call arg (+ i 1)))
+               (call buf.push_str m ": the program's path is longer than 256 bytes, the most a native executable's grant holds")
+               (return (call fail_bytes "" (call buf.bytes m))))
+         (call buf.push_str listen "run:")
          (call buf.push_bytes listen (call arg (+ i 1)))
          (call buf.push_byte listen 10)
          (set! i (+ i 1)))

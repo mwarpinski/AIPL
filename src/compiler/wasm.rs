@@ -1367,6 +1367,13 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::NetRecv
             | OpCode::NetSend
             | OpCode::NetClose
+            | OpCode::ProcSpawn
+            | OpCode::ProcStream
+            | OpCode::ProcRead
+            | OpCode::ProcWrite
+            | OpCode::ProcClose
+            | OpCode::ProcWait
+            | OpCode::ProcExec
             | OpCode::ArgsSizes
             | OpCode::ArgsGet
             | OpCode::EnvSizes
@@ -2126,8 +2133,19 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::Call(host));
                 emit_errno_to_result(func, ctx, None);
             }
-            OpCode::NetListen | OpCode::NetAccept | OpCode::NetRecv | OpCode::NetSend | OpCode::NetClose => {
-                // aipl_net_v1 returns the result itself (a handle, a count, or
+            OpCode::NetListen
+            | OpCode::NetAccept
+            | OpCode::NetRecv
+            | OpCode::NetSend
+            | OpCode::NetClose
+            | OpCode::ProcSpawn
+            | OpCode::ProcStream
+            | OpCode::ProcRead
+            | OpCode::ProcWrite
+            | OpCode::ProcClose
+            | OpCode::ProcWait
+            | OpCode::ProcExec => {
+                // aipl_net_v1 and aipl_sys_v1's process operations return the result itself (a handle, a count, or
                 // -1/-2), so the call is the whole operation
                 let host = wasi_index(ctx, Wasi::for_op(op).expect("a net op has an import"))?;
                 for a in args {
@@ -4240,6 +4258,14 @@ enum Wasi {
     /// AIPL's own host interface, module "aipl_sys_v1" (docs/design/SYS_PLAN.md):
     /// `chmod(dirfd, path, len, mode)`.
     SysChmod,
+    /// The process operations of "aipl_sys_v1" (docs/design/SYS_PLAN.md D3).
+    ProcSpawn,
+    ProcStream,
+    ProcRead,
+    ProcWrite,
+    ProcClose,
+    ProcWait,
+    ProcExec,
 }
 
 impl Wasi {
@@ -4249,7 +4275,7 @@ impl Wasi {
         match self {
             Wasi::ThreadSpawn => "wasi",
             Wasi::NetListen | Wasi::NetAccept | Wasi::NetRecv | Wasi::NetSend | Wasi::NetClose => "aipl_net_v1",
-            Wasi::SysChmod => "aipl_sys_v1",
+            Wasi::SysChmod | Wasi::ProcSpawn | Wasi::ProcStream | Wasi::ProcRead | Wasi::ProcWrite | Wasi::ProcClose | Wasi::ProcWait | Wasi::ProcExec => "aipl_sys_v1",
             _ => "wasi_snapshot_preview1",
         }
     }
@@ -4277,6 +4303,13 @@ impl Wasi {
             Wasi::NetSend => "send",
             Wasi::NetClose => "close",
             Wasi::SysChmod => "chmod",
+            Wasi::ProcSpawn => "spawn",
+            Wasi::ProcStream => "stream",
+            Wasi::ProcRead => "read",
+            Wasi::ProcWrite => "write",
+            Wasi::ProcClose => "close",
+            Wasi::ProcWait => "wait",
+            Wasi::ProcExec => "exec",
         }
     }
 
@@ -4296,7 +4329,11 @@ impl Wasi {
             Wasi::FdReaddir => (vec![I32, I32, I32, I64, I32], vec![I32]),
             Wasi::PathFilestatGet => (vec![I32, I32, I32, I32, I32], vec![I32]),
             Wasi::NetListen | Wasi::NetRecv | Wasi::NetSend => (vec![I32, I32, I32], vec![I32]),
-            Wasi::SysChmod => (vec![I32, I32, I32, I32], vec![I32]),
+            Wasi::SysChmod | Wasi::ProcExec => (vec![I32, I32, I32, I32], vec![I32]),
+            Wasi::ProcSpawn => (vec![I32, I32, I32, I32, I32], vec![I32]),
+            Wasi::ProcRead | Wasi::ProcWrite => (vec![I32, I32, I32], vec![I32]),
+            Wasi::ProcStream => (vec![I32, I32], vec![I32]),
+            Wasi::ProcClose | Wasi::ProcWait => (vec![I32], vec![I32]),
             Wasi::NetAccept | Wasi::NetClose => (vec![I32], vec![I32]),
         }
     }
@@ -4325,6 +4362,13 @@ impl Wasi {
             OpCode::NetSend => Some(Wasi::NetSend),
             OpCode::NetClose => Some(Wasi::NetClose),
             OpCode::FsChmod => Some(Wasi::SysChmod),
+            OpCode::ProcSpawn => Some(Wasi::ProcSpawn),
+            OpCode::ProcStream => Some(Wasi::ProcStream),
+            OpCode::ProcRead => Some(Wasi::ProcRead),
+            OpCode::ProcWrite => Some(Wasi::ProcWrite),
+            OpCode::ProcClose => Some(Wasi::ProcClose),
+            OpCode::ProcWait => Some(Wasi::ProcWait),
+            OpCode::ProcExec => Some(Wasi::ProcExec),
             _ => None,
         }
     }

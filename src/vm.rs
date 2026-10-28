@@ -109,6 +109,8 @@ pub struct VM {
     /// Sockets (aipl_net_v1) and the grants they need, shared by every
     /// thread of the program.
     net: crate::net::Net,
+    /// The processes the program started (aipl_sys_v1), and what it may start
+    procs: crate::sys::Procs,
     thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
     /// String literal -> address of its interned bytes, laid out exactly as
     /// the wasm backend's data segment (wasm::string_layout).
@@ -168,6 +170,7 @@ impl VM {
             dirs: HashMap::new(),
             next_fd: 3,
             net: crate::net::Net::new(Vec::new()),
+            procs: crate::sys::Procs::new(Vec::new()),
             thread_handles: HashMap::new(),
             strings: Arc::new(HashMap::new()),
             heap_start: HEAP_START,
@@ -199,6 +202,7 @@ impl VM {
             dirs: HashMap::new(),
             next_fd: 3,
             net: self.net.clone(),
+            procs: self.procs.clone(),
             thread_handles: HashMap::new(),
             strings: Arc::clone(&self.strings),
             heap_start: self.heap_start,
@@ -225,6 +229,12 @@ impl VM {
     /// The addresses `net.listen` may use (`--listen`); none by default.
     pub fn set_listen(&mut self, grants: Vec<std::net::SocketAddr>) {
         self.net = crate::net::Net::new(grants);
+    }
+
+    /// The programs `proc.spawn` and `proc.exec` may start (`--allow-run`);
+    /// none by default. "*" is any.
+    pub fn set_allow_run(&mut self, programs: Vec<String>) {
+        self.procs = crate::sys::Procs::new(programs);
     }
 
     /// What `fs.read` on fd 0 returns, instead of the process's stdin.
@@ -2014,6 +2024,58 @@ impl VM {
             OpCode::NetClose => {
                 let h = self.int_operand(&args[0], scope, "net.close")? as i32;
                 Ok(Value::Int(self.net.close(h) as i64))
+            }
+            // aipl_sys_v1's process operations (src/sys.rs); a range outside
+            // memory is minus EFAULT, a value and not a trap
+            OpCode::ProcSpawn | OpCode::ProcExec => {
+                let name = if matches!(op, OpCode::ProcSpawn) { "proc.spawn" } else { "proc.exec" };
+                let path = self.int_operand(&args[0], scope, name)? as u32 as usize;
+                let len = self.int_operand(&args[1], scope, name)? as u32 as usize;
+                let argv = self.int_operand(&args[2], scope, name)? as u32 as usize;
+                let argv_len = self.int_operand(&args[3], scope, name)? as u32 as usize;
+                let stdio = if matches!(op, OpCode::ProcSpawn) { self.int_operand(&args[4], scope, name)? as i32 } else { 0 };
+                if !self.in_memory(path, len) || !self.in_memory(argv, argv_len) {
+                    return Ok(Value::Int(-21));
+                }
+                let (path, argv) = (self.read_bytes(path, len), self.read_bytes(argv, argv_len));
+                Ok(Value::Int(if matches!(op, OpCode::ProcSpawn) { self.procs.spawn(&path, &argv, stdio) } else { self.procs.exec(&path, &argv) } as i64))
+            }
+            OpCode::ProcStream => {
+                let (p, which) = (self.int_operand(&args[0], scope, "proc.stream")? as i32, self.int_operand(&args[1], scope, "proc.stream")? as i32);
+                Ok(Value::Int(self.procs.stream(p, which) as i64))
+            }
+            OpCode::ProcRead => {
+                let h = self.int_operand(&args[0], scope, "proc.read")? as i32;
+                let buf = self.int_operand(&args[1], scope, "proc.read")? as u32 as usize;
+                let max = self.int_operand(&args[2], scope, "proc.read")? as u32 as usize;
+                if !self.in_memory(buf, max) {
+                    return Ok(Value::Int(-21));
+                }
+                match self.procs.read(h, max) {
+                    Ok(bytes) => {
+                        self.write_bytes(buf, &bytes);
+                        Ok(Value::Int(bytes.len() as i64))
+                    }
+                    Err(e) => Ok(Value::Int(e as i64)),
+                }
+            }
+            OpCode::ProcWrite => {
+                let h = self.int_operand(&args[0], scope, "proc.write")? as i32;
+                let buf = self.int_operand(&args[1], scope, "proc.write")? as u32 as usize;
+                let len = self.int_operand(&args[2], scope, "proc.write")? as u32 as usize;
+                if !self.in_memory(buf, len) {
+                    return Ok(Value::Int(-21));
+                }
+                let bytes = self.read_bytes(buf, len);
+                Ok(Value::Int(self.procs.write(h, &bytes) as i64))
+            }
+            OpCode::ProcClose => {
+                let h = self.int_operand(&args[0], scope, "proc.close")? as i32;
+                Ok(Value::Int(self.procs.close(h) as i64))
+            }
+            OpCode::ProcWait => {
+                let p = self.int_operand(&args[0], scope, "proc.wait")? as i32;
+                Ok(Value::Int(self.procs.wait(p) as i64))
             }
             OpCode::FsOpendir => {
                 let (ptr, len) = (self.int_operand(&args[0], scope, "fs.opendir")?, self.int_operand(&args[1], scope, "fs.opendir")?);
