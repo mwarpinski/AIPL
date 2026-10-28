@@ -189,15 +189,15 @@ fn the_aipl_command_matches_the_rust_command() {
     // long for a native executable refused with the same message and status
     for args in [&["compile", "--exe", "--allow-run", "/bin/sh", "--allow-run", "/bin/cat"][..], &["compile", "--exe", "--allow-run", "*", "--listen", "127.0.0.1:8080"]] {
         let (want, got) = (dir.join("want"), dir.join("got"));
-        let r = run(Command::new(AIPL).args(args).arg("tests/aipl/sys/proc.aipl").arg("-o").arg(&want));
-        let a = run(Command::new(&aipl).args(args).arg("tests/aipl/sys/proc.aipl").arg("-o").arg(&got));
+        let r = run(Command::new(AIPL).args(args).arg("tests/aipl/sys/spawn_ops.aipl").arg("-o").arg(&want));
+        let a = run(Command::new(&aipl).args(args).arg("tests/aipl/sys/spawn_ops.aipl").arg("-o").arg(&got));
         assert!(r.status.success() && a.status.success(), "{args:?}: {}", String::from_utf8_lossy(&a.stderr));
         assert!(std::fs::read(&want).unwrap() == std::fs::read(&got).unwrap(), "{args:?}: different bytes");
     }
     let long = "/".repeat(300);
     let args = ["compile", "--exe", "--allow-run", long.as_str()];
-    let r = run(Command::new(AIPL).args(args).arg("tests/aipl/sys/proc.aipl").arg("-o").arg(dir.join("x")));
-    let a = run(Command::new(&aipl).args(args).arg("tests/aipl/sys/proc.aipl").arg("-o").arg(dir.join("x")));
+    let r = run(Command::new(AIPL).args(args).arg("tests/aipl/sys/spawn_ops.aipl").arg("-o").arg(dir.join("x")));
+    let a = run(Command::new(&aipl).args(args).arg("tests/aipl/sys/spawn_ops.aipl").arg("-o").arg(dir.join("x")));
     assert_eq!(r.status.code(), Some(1));
     assert_eq!((a.status.code(), String::from_utf8_lossy(&a.stderr).to_string()), (r.status.code(), String::from_utf8_lossy(&r.stderr).to_string()));
 

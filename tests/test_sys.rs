@@ -194,7 +194,7 @@ fn processes(top: &Path, src: &Path, programs: &str) -> Vec<(&'static str, Comma
 #[test]
 fn processes_are_the_same_in_every_backend() {
     let top = scratch("procs");
-    let src = root().join("tests/aipl/sys/proc.aipl");
+    let src = root().join("tests/aipl/sys/spawn_ops.aipl");
     for (how, mut command) in processes(&top, &src, PROGRAMS) {
         let o = command.env("AIPL_PROC_TEST", "hello").current_dir(&top).output().unwrap();
         assert_eq!(answers(&o), PROC_ANSWERS, "{how}");
@@ -205,7 +205,7 @@ fn processes_are_the_same_in_every_backend() {
 #[test]
 fn exec_replaces_the_program_in_every_backend() {
     let top = scratch("exec");
-    let src = root().join("tests/aipl/sys/proc_exec.aipl");
+    let src = root().join("tests/aipl/sys/spawn_exec.aipl");
     for (how, mut command) in processes(&top, &src, "--allow-run /bin/sh --allow-run /no/such/program") {
         let o = command.env("AIPL_PROC_TEST", "hello").current_dir(&top).output().unwrap();
         // the status is the program's: sh's exit 3
@@ -249,11 +249,44 @@ fn a_program_starts_only_what_it_was_granted() {
 #[test]
 fn both_toolchains_compile_the_process_operations_to_the_same_bytes() {
     let top = scratch("procbytes");
-    for name in ["proc.aipl", "proc_exec.aipl"] {
+    for name in ["spawn_ops.aipl", "spawn_exec.aipl", "std_proc.aipl", "std_proc_exec.aipl"] {
         let src = root().join("tests/aipl/sys").join(name);
         let o = Command::new(AIPL).args(["compile", "--self", "--no-opt"]).arg(&src).arg("-o").arg(top.join("s.wasm")).output().unwrap();
         assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
         assert!(String::from_utf8_lossy(&o.stdout).contains("BIT-FOR-BIT IDENTICAL"), "{name}: {}", String::from_utf8_lossy(&o.stdout));
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}
+
+// ===== std/proc =====
+
+const STD_PROC_ANSWERS: &str = "hello status 3 exited true signal 0\nhello\ninput status 0 exited true signal 0\nping\nkilled status 265 exited false signal 9\nmerged status 0 exited true signal 0\nout\nerr\nargs status 0 exited true signal 0\na b  c\nzero\nnot_granted error: not granted: run the program with --allow-run PROGRAM\nnot_found error: no such program\nwrote true read 2 wrote true read 2\nend 0 status 0 again 0\na\nb\nafter close false\noutput 2 error 2\no\ne\nstatus 0\nfind sh true ends with /sh true\nfind nothing false with a slash true missing false\n";
+
+const STD_PROC_EXEC_ANSWERS: &str = "before\nnot granted: not granted: run the program with --allow-run PROGRAM\nmissing: no such program\nreplaced zero\n";
+
+/// std/proc: running a program, a conversation through pipes, the error on a
+/// pipe of its own, looking a name up in the PATH, and every refusal, alike
+/// from the VM, aipl-run, a native executable, and the launcher bundle.
+#[test]
+fn std_proc_is_the_same_in_every_backend() {
+    let top = scratch("stdproc");
+    let src = root().join("tests/aipl/sys/std_proc.aipl");
+    for (how, mut command) in processes(&top, &src, PROGRAMS) {
+        let o = command.current_dir(&top).output().unwrap();
+        assert_eq!(answers(&o), STD_PROC_ANSWERS, "{how}");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}
+
+#[test]
+fn std_proc_exec_replaces_the_program_in_every_backend() {
+    let top = scratch("stdexec");
+    let src = root().join("tests/aipl/sys/std_proc_exec.aipl");
+    for (how, mut command) in processes(&top, &src, "--allow-run /bin/sh --allow-run /no/such/program") {
+        let o = command.current_dir(&top).output().unwrap();
+        assert_eq!(o.status.code(), Some(4), "{how}: {}", String::from_utf8_lossy(&o.stderr));
+        let got: String = String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect();
+        assert_eq!(got, STD_PROC_EXEC_ANSWERS, "{how}");
     }
     let _ = std::fs::remove_dir_all(&top);
 }

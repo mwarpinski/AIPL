@@ -1,0 +1,23 @@
+;; proc.exec in std/proc: tests/test_sys.rs runs this with `--allow-run /bin/sh
+;; --allow-run /no/such/program`. A refused or failed exec comes back as an Error;
+;; one that works never does: the program becomes `sh`, whose status ends the run.
+(module std_proc_exec_cases
+  (import alloc)
+  (import proc)
+
+  (fn why [e:proc.Error] -> str
+    (call proc.message e))
+
+  (fn main [] -> i32
+    (println "before")
+    (let granted:str (call why (call proc.exec (call proc.command (call alloc.default) "/bin/false"))))
+    (println "not granted: {granted}")
+    (let missing:str (call why (call proc.exec (call proc.command (call alloc.default) "/no/such/program"))))
+    (println "missing: {missing}")
+    (let c:(ptr proc.Command) (call proc.command (call alloc.default) "/bin/sh"))
+    (call proc.arg c "-c")
+    (call proc.arg c "echo replaced $0; exit 4")
+    (call proc.arg c "zero")
+    (let failed:str (call why (call proc.exec c)))
+    (println "exec: {failed}")
+    0))

@@ -1,7 +1,7 @@
 # System host imports: `chmod` and processes (S1 of aipl_standalone.md)
 
 **Status: proposed (2026-10-28), D1-D7 approved by the owner the same day.
-Steps 1 and 2 are built;** steps 3 and 4 are not. Written in the style of NET_PLAN.md, whose
+Steps 1, 2, and 3 are built;** step 4 is not. Written in the style of NET_PLAN.md, whose
 `aipl_net_v1` this copies in shape: AIPL's own import module beside
 WASI preview 1, provided by the VM and aipl-run in Rust, lowered to Linux
 system calls by the native backend (written in AIPL), granted on the
@@ -13,7 +13,7 @@ command line and fixed in an executable when it is compiled.
 |---|---|---|
 | 1 | `fs.chmod`: the execute bit, in every backend and both toolchains | **Done** 2026-10-28 (section 6) |
 | 2 | The process operations `proc.*` and `--allow-run`, in every backend and both toolchains | **Done** 2026-10-28 (section 7) |
-| 3 | `std/proc`: the safe interface (run a program and capture its output; a `Child` with pipes), and `fs.chmod` in `std/fs` | Not started |
+| 3 | `std/proc`: the safe interface (run a program and capture its output; a `Child` with pipes) | **Done** 2026-10-28 (section 8); `fs.chmod` in `std/fs` waits for step 4 |
 | 4 | A seed refresh, so the self-hosted `aipl` can use them (S2 of aipl_standalone.md) | Owner approves |
 
 ## 1. Why a new import module
@@ -212,3 +212,39 @@ in its trailer, as `run:PROGRAM` lines beside the `--listen` addresses).
   native executable, and the bundle; the grants (none, one, two, `*`) in each;
   both toolchains' bytes; and the seven operations in
   tests/test_opcode_conformance.rs.
+
+## 8. Step 3, as built (2026-10-28)
+
+`std/proc` (aipl_src/std/proc.aipl), the safe interface over step 2, with no
+`unsafe` for a caller:
+
+- `Command` (`command`, `command_path`, `arg`, `arg_bytes`, `free_command`):
+  the path (also the program's own name) and the arguments as the host takes
+  them, one block, each followed by a zero byte; its memory is the
+  allocator's.
+- `run c input out` to the end: its status in `(result i32 proc.Error)`, with
+  everything it wrote, its error too, added to `out`; an empty input is the
+  null device. `spawn c` for a conversation (a pipe each way, the error
+  merged into the output) or `spawn_with` for any of `Stream.inherit`,
+  `pipe`, `null`, `merged`; on the `Child`: `write`, `close_input`, `read`,
+  `read_error`, `wait`, `close`. `exec c` replaces the program and returns only
+  the `Error` it failed with. `exited` and `signal` read a status.
+- `find name out` looks a name up in the PATH (a name with a slash is a path
+  already); it finds a file, as `fs.info` sees it, and leaves whether it may
+  be run to the system.
+- `Error` is `not_granted` (-76), `not_found` (-44, -54), `denied` (-2, -63),
+  or `other`, with `message`.
+- Not here: a timeout or a signal (D7), reading output and error as two
+  pipes without blocking on one (read one in a thread), a program's working
+  directory or environment.
+- **Found on the way, not fixed:** the two toolchains print an enum constant
+  inside a `req` differently in the contract's failure message (the Rust one
+  `(enum.cast proc.Stream 3)`, the self-hosted `3`), and the self-hosted
+  printer drops `enum.ord` there too, so std/proc keeps enum values out of its
+  contracts. A local file named like a standard module (a test program called
+  `proc.aipl`) shadows it: the tests' programs are `spawn_ops.aipl` and
+  `spawn_exec.aipl`.
+- **Step 4 (the owner's)** is the seed refresh that lets the compiler use these
+  operations (`aipl_src/aipl.aipl` starting programs in S2), and adds
+  `fs.chmod [path:str mode:i32] -> (result i32 io.Error)` to `std/fs`, which the
+  compiler imports and the current seed cannot read.
