@@ -1,8 +1,8 @@
 # AIPL standalone: nothing Rust can do that AIPL cannot
 
 **Status: proposed (2026-10-27).** A roadmap, not a design: each step below
-gets its own plan before code, as NET_PLAN.md did for sockets. The grant
-model (step S1) waits for the owner's word.
+gets its own plan before code, as NET_PLAN.md did for sockets (S1's is
+SYS_PLAN.md). Its grant model waits for the owner's word.
 
 ## The goal
 
@@ -60,11 +60,11 @@ std module.
   captured;
 - replace this process with another (`exec`), for `run`.
 
-**Decision for the owner (recommended below):** starting a process breaks a
-sandbox, so, like sockets, it needs a grant fixed at compile time
-(`--allow-run`, with `chmod` under a grant too). A program built without
-the grant has no such imports at all. The `aipl` command itself is built
-with it.
+The design is SYS_PLAN.md. **Decision for the owner:** starting a process
+breaks a sandbox, so, like sockets, it needs a grant fixed at compile time
+(`--allow-run PROGRAM`, `*` for any); `chmod` needs none, being confined
+like the other file operations (SYS_PLAN.md, D1 and D2). The `aipl` command
+itself is built with `*`.
 
 Done when: the seed builds itself with no shell `chmod`; a test program
 starts a child, feeds it input, reads its output and status, under the
