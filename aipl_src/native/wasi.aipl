@@ -442,6 +442,12 @@
   (fn emit_path_to_stack [l:(ptr lower.L) w:(ptr W)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (call x64.mov_rr c 64 (call r12) (call rsp))
+    (call emit_copy_path l w))
+
+  ;; emit_path_to_stack without saving rsp: for a second path, copied below
+  ;; the first, with r12 already holding the routine's own rsp.
+  (fn emit_copy_path [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
     ;; room for the path, its NUL, and alignment: (len + 16) & ~15
     (call x64.lea c 64 (call rcx) (call x64.mem (call r14) 16))
     (call x64.alu_ri c 64 (call x64.op_and) (call rcx) -16)
@@ -805,6 +811,33 @@
     (call x64.alu_ri c 32 (call x64.op_or) (call r8) linux)
     (call x64.patch_rel32 c off (call buf.len c)))
 
+  ;; With the path's copy at rsp (emit_path_to_stack; r14 its length): rsi =
+  ;; the directory part (the copy cut at its last '/', or "." when it has
+  ;; none) and r13 = the last component, for the calls that cannot resolve a
+  ;; path beneath a directory themselves (unlinkat, fchmodat, renameat), whose
+  ;; parent is opened that way instead. `tmp` is a scratch register; rax too.
+  (fn emit_split_parent [l:(ptr lower.L) tmp:i32] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.mov_rr c 64 tmp (call r14))
+    (let top:i32 (call buf.len c))
+    (call x64.test_rr c 64 tmp tmp)
+    (let no_slash:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 64 (call x64.op_sub) tmp 1)
+    (call x64.load8u c (call rax) (call x64.mem_index (call rsp) tmp 1 0))
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) 47)
+    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ne)) top)
+    ;; parent = the copy cut at the slash, base after it
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store8 c (call x64.mem_index (call rsp) tmp 1 0) (call rax))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.lea c 64 (call r13) (call x64.mem_index (call rsp) tmp 1 1))
+    (let have_parent:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c no_slash (call buf.len c))
+    (call x64.mov_ri32 c (call rsi) (call lower.data_text l "."))
+    (call buf.push_byte (get l lower.L.data) 0)
+    (call x64.mov_rr c 64 (call r13) (call rsp))
+    (call x64.patch_rel32 c have_parent (call buf.len c)))
+
   ;; path_unlink_file(dirfd, path, path_len) -> errno. unlinkat cannot
   ;; resolve beneath a directory, so the parent directory is opened that
   ;; way (O_PATH) and the last component removed inside it.
@@ -817,26 +850,7 @@
     (call arg c 32 3 2 (call r14))
     (call emit_guest_check l w (call r13) (call r14) 1)
     (call emit_path_to_stack l w)
-    ;; r9 = the last '/' in the copy, or none: parent ".", base = the path
-    (call x64.mov_rr c 64 (call r9) (call r14))
-    (let top:i32 (call buf.len c))
-    (call x64.test_rr c 64 (call r9) (call r9))
-    (let no_slash:i32 (call x64.jcc c (call x64.cc_e)))
-    (call x64.alu_ri c 64 (call x64.op_sub) (call r9) 1)
-    (call x64.load8u c (call rax) (call x64.mem_index (call rsp) (call r9) 1 0))
-    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) 47)
-    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ne)) top)
-    ;; parent = the copy cut at the slash, base after it
-    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
-    (call x64.store8 c (call x64.mem_index (call rsp) (call r9) 1 0) (call rax))
-    (call x64.mov_rr c 64 (call rsi) (call rsp))
-    (call x64.lea c 64 (call r13) (call x64.mem_index (call rsp) (call r9) 1 1))
-    (let have_parent:i32 (call x64.jmp c))
-    (call x64.patch_rel32 c no_slash (call buf.len c))
-    (call x64.mov_ri32 c (call rsi) (call lower.data_text l "."))
-    (call buf.push_byte (get l lower.L.data) 0)
-    (call x64.mov_rr c 64 (call r13) (call rsp))
-    (call x64.patch_rel32 c have_parent (call buf.len c))
+    (call emit_split_parent l (call r9))
     ;; parent fd = openat2(dir, parent, O_PATH | O_DIRECTORY | O_CLOEXEC)
     (call x64.mov_rr c 64 (call rdi) (call rbx))
     (call x64.mov_ri32 c (call rdx) 2752512)
@@ -864,6 +878,87 @@
     (call emit_errno_return l w)
     (call patch_all c badf)
     (call emit_return_errno c 8))
+
+  ;; path_rename(old_fd, old_path, old_len, new_fd, new_path, new_len) ->
+  ;; errno. renameat cannot resolve beneath a directory either, so each
+  ;; path's parent is opened that way (O_PATH, as path_unlink_file does) and
+  ;; renameat moves the last component between the two. The new path is
+  ;; handled first, its parent's descriptor and last component kept in r8
+  ;; and r9 while the old path is copied below it; rbx holds the old
+  ;; directory until its parent is open.
+  (fn emit_path_rename [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (call x64.mov_rr c 64 (call r12) (call rsp))
+    (call saved_arg c 32 6 0 (call rbx))
+    (call emit_fd_lookup l w (call rbx) (call rbx) badf)
+    (call saved_arg c 32 6 3 (call r8))
+    (call emit_fd_lookup l w (call r8) (call r8) badf)
+    (call saved_arg c 32 6 1 (call r13))
+    (call saved_arg c 32 6 2 (call r14))
+    (call emit_guest_check l w (call r13) (call r14) 1)
+    (call saved_arg c 32 6 4 (call r13))
+    (call saved_arg c 32 6 5 (call r14))
+    (call emit_guest_check l w (call r13) (call r14) 1)
+    ;; the new path: its parent's descriptor (r8) and last component (r9)
+    (call emit_copy_path l w)
+    (call emit_split_parent l (call r9))
+    (call x64.mov_rr c 64 (call r9) (call r13))
+    (call x64.mov_rr c 64 (call rdi) (call r8))
+    (call x64.mov_ri32 c (call rdx) 2752512)
+    (call emit_openat2 c (not (get w W.sandbox)))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let new_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call r8) (call rax))
+    ;; the old path, below it
+    (call saved_arg c 32 6 1 (call r13))
+    (call saved_arg c 32 6 2 (call r14))
+    (call emit_copy_path l w)
+    (call emit_split_parent l (call r10))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rdx) 2752512)
+    (call emit_openat2 c (not (get w W.sandbox)))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let old_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call rbx) (call rax))
+    ;; renameat(old parent, old name, new parent, new name), then close both
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call r13))
+    (call x64.mov_rr c 64 (call rdx) (call r8))
+    (call x64.mov_rr c 64 (call r10) (call r9))
+    (call x64.mov_ri32 c (call rax) 264)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call r13) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rdi) (call r8))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rax) (call r13))
+    (let finish:i32 (call x64.jmp c))
+    ;; the old parent did not open: close the new one, keeping the error
+    (call x64.patch_rel32 c old_failed (call buf.len c))
+    (call x64.mov_rr c 64 (call rbx) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call r8))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rax) (call rbx))
+    (call x64.patch_rel32 c finish (call buf.len c))
+    (call x64.patch_rel32 c new_failed (call buf.len c))
+    (call x64.mov_rr c 64 (call rsp) (call r12))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c 8))
+
+  ;; reg = argument i (of n) of a routine whose entry rsp is saved in r12,
+  ;; for after rsp has moved (arg reads from rsp itself).
+  (fn saved_arg [c:(ptr buf.Buf) sz:i32 n:i32 i:i32 reg:i32] -> void
+    (call x64.load c sz reg (call x64.mem (call r12) (+ 8 (* 8 (- (- n 1) i))))))
 
   ;; With a Linux result (-errno) in rax: returns minus the WASI errno, the
   ;; way aipl_sys_v1's imports report an error.
@@ -949,24 +1044,7 @@
     ;; does, and fchmodat names the file in it: unless the file is a symbolic
     ;; link, which fchmodat would follow out of the directory unchecked.
     (call x64.patch_rel32 c unreadable (call buf.len c))
-    (call x64.mov_rr c 64 (call r9) (call r14))
-    (let top:i32 (call buf.len c))
-    (call x64.test_rr c 64 (call r9) (call r9))
-    (let no_slash:i32 (call x64.jcc c (call x64.cc_e)))
-    (call x64.alu_ri c 64 (call x64.op_sub) (call r9) 1)
-    (call x64.load8u c (call rax) (call x64.mem_index (call rsp) (call r9) 1 0))
-    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) 47)
-    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ne)) top)
-    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
-    (call x64.store8 c (call x64.mem_index (call rsp) (call r9) 1 0) (call rax))
-    (call x64.mov_rr c 64 (call rsi) (call rsp))
-    (call x64.lea c 64 (call r13) (call x64.mem_index (call rsp) (call r9) 1 1))
-    (let have_parent:i32 (call x64.jmp c))
-    (call x64.patch_rel32 c no_slash (call buf.len c))
-    (call x64.mov_ri32 c (call rsi) (call lower.data_text l "."))
-    (call buf.push_byte (get l lower.L.data) 0)
-    (call x64.mov_rr c 64 (call r13) (call rsp))
-    (call x64.patch_rel32 c have_parent (call buf.len c))
+    (call emit_split_parent l (call r9))
     (call x64.mov_rr c 64 (call rdi) (call rbx))
     (call x64.mov_ri32 c (call rdx) 2752512)
     (call emit_openat2 c (not (get w W.sandbox)))
@@ -1103,6 +1181,7 @@
       ((call is name "random_get") (call emit_random_get l w) true)
       ((call is name "path_open") (call emit_path_open l w) true)
       ((call is name "path_unlink_file") (call emit_path_unlink l w) true)
+      ((call is name "path_rename") (call emit_path_rename l w) true)
       ((call is name "fd_readdir") (call emit_fd_readdir l w) true)
       ((call is name "path_filestat_get") (call emit_path_filestat l w) true)
       (else false)))

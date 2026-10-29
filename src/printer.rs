@@ -215,6 +215,7 @@ pub fn op_name(op: &OpCode) -> &'static str {
         FsClose => "fs.close",
         FsDelete => "fs.delete",
         FsChmod => "fs.chmod",
+        FsRename => "fs.rename",
         FsOpendir => "fs.opendir",
         FsReaddir => "fs.readdir",
         FsStat => "fs.stat",

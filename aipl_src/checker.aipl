@@ -1837,7 +1837,7 @@
     (or (or (or (eq o ast.Op.fs_open) (eq o ast.Op.fs_read)) (or (eq o ast.Op.fs_write) (eq o ast.Op.fs_delete)))
     (or (or (or (eq o ast.Op.args_sizes) (eq o ast.Op.args_get)) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get)))
         (or (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat))))
-            (or (call is_net_op o) (or (call is_proc_op o) (eq o ast.Op.fs_chmod)))))))))))
+            (or (call is_net_op o) (or (call is_proc_op o) (or (eq o ast.Op.fs_chmod) (eq o ast.Op.fs_rename))))))))))))
 
   ;; The aipl_net_v1 operations (docs/design/NET_PLAN.md section 3).
   (fn is_net_op [o:ast.Op] -> bool
@@ -1977,6 +1977,9 @@
        (call i32_t))
       ((eq o ast.Op.fs_chmod)
        (call all_i32 c env at args 3 o false "fs.chmod requires 3 arguments (path_ptr, path_len, mode)" "fs.chmod argument " " must be i32 (pointer, length, mode), got ")
+       (call i32_t))
+      ((eq o ast.Op.fs_rename)
+       (call all_i32 c env at args 4 o false "fs.rename requires 4 arguments (old_ptr, old_len, new_ptr, new_len)" "fs.rename argument " " must be i32 (pointer/length), got ")
        (call i32_t))
       ((eq o ast.Op.thread_spawn) (call infer_spawn c env at args))
       ((eq o ast.Op.thread_join)

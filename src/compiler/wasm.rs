@@ -1359,6 +1359,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::FsClose
             | OpCode::FsDelete
             | OpCode::FsChmod
+            | OpCode::FsRename
             | OpCode::FsOpendir
             | OpCode::FsReaddir
             | OpCode::FsStat
@@ -2170,6 +2171,28 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::LocalGet(io_a));
                 func.instruction(&Instruction::LocalGet(io_b));
                 func.instruction(&Instruction::Call(host));
+            }
+            OpCode::FsRename => {
+                // (fs.rename old_ptr old_len new_ptr new_len) -> path_rename
+                // (old_fd, old_ptr, old_len, new_fd, new_ptr, new_len), each
+                // path's directory chosen as fs.delete chooses it
+                let rename = wasi_index(ctx, Wasi::PathRename)?;
+                let (io_a, io_b) = io_locals(ctx)?;
+                for a in args {
+                    compile_expr(a, ctx, func)?;
+                }
+                func.instruction(&Instruction::LocalSet(ctx.index_scratch)); // new len
+                func.instruction(&Instruction::LocalSet(io_b)); // new ptr
+                func.instruction(&Instruction::LocalSet(io_a)); // old len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // old ptr
+                emit_path_dir(func, ctx.addr_scratch, io_a);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                emit_path_dir(func, io_b, ctx.index_scratch);
+                func.instruction(&Instruction::LocalGet(io_b));
+                func.instruction(&Instruction::LocalGet(ctx.index_scratch));
+                func.instruction(&Instruction::Call(rename));
+                emit_errno_to_result(func, ctx, None);
             }
             OpCode::SysExit => {
                 let proc_exit = wasi_index(ctx, Wasi::ProcExit)?;
@@ -4266,6 +4289,8 @@ enum Wasi {
     ProcClose,
     ProcWait,
     ProcExec,
+    /// `path_rename`, last so that every other import keeps its place.
+    PathRename,
 }
 
 impl Wasi {
@@ -4309,6 +4334,7 @@ impl Wasi {
             Wasi::ProcWrite => "write",
             Wasi::ProcClose => "close",
             Wasi::ProcWait => "wait",
+            Wasi::PathRename => "path_rename",
             Wasi::ProcExec => "exec",
         }
     }
@@ -4334,6 +4360,7 @@ impl Wasi {
             Wasi::ProcRead | Wasi::ProcWrite => (vec![I32, I32, I32], vec![I32]),
             Wasi::ProcStream => (vec![I32, I32], vec![I32]),
             Wasi::ProcClose | Wasi::ProcWait => (vec![I32], vec![I32]),
+            Wasi::PathRename => (vec![I32; 6], vec![I32]),
             Wasi::NetAccept | Wasi::NetClose => (vec![I32], vec![I32]),
         }
     }
@@ -4346,6 +4373,7 @@ impl Wasi {
             OpCode::FsClose => Some(Wasi::FdClose),
             OpCode::SysExit => Some(Wasi::ProcExit),
             OpCode::FsDelete => Some(Wasi::PathUnlinkFile),
+            OpCode::FsRename => Some(Wasi::PathRename),
             OpCode::FsOpendir => Some(Wasi::PathOpen),
             OpCode::FsReaddir => Some(Wasi::FdReaddir),
             OpCode::FsStat => Some(Wasi::PathFilestatGet),

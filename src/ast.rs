@@ -169,6 +169,10 @@ pub enum OpCode {
     /// the file at the path: 0, or minus a WASI errno (docs/design/SYS_PLAN.md,
     /// `aipl_sys_v1`).
     FsChmod,
+    /// `(fs.rename old_ptr old_len new_ptr new_len)`: moves the file or
+    /// directory at the old path to the new one, replacing a file there:
+    /// 0, or minus a WASI errno (`path_rename`).
+    FsRename,
     /// `(net.listen addr len port)`: a listening TCP socket on the address
     /// whose `len` (4 or 16) bytes are at `addr`; its handle, -1, or -2 if
     /// not granted (docs/design/NET_PLAN.md, `aipl_net_v1`).

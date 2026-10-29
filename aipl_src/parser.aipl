@@ -1131,7 +1131,7 @@
     (call op m "fs.open" ast.Op.fs_open) (call op m "fs.read" ast.Op.fs_read) (call op m "fs.write" ast.Op.fs_write)
     (call op m "fs.close" ast.Op.fs_close) (call op m "fs.delete" ast.Op.fs_delete)
     (call op m "fs.opendir" ast.Op.fs_opendir) (call op m "fs.readdir" ast.Op.fs_readdir) (call op m "fs.stat" ast.Op.fs_stat)
-    (call op m "fs.chmod" ast.Op.fs_chmod)
+    (call op m "fs.chmod" ast.Op.fs_chmod) (call op m "fs.rename" ast.Op.fs_rename)
     (call op m "net.listen" ast.Op.net_listen) (call op m "net.accept" ast.Op.net_accept) (call op m "net.recv" ast.Op.net_recv)
     (call op m "net.send" ast.Op.net_send) (call op m "net.close" ast.Op.net_close)
     (call op m "proc.spawn" ast.Op.proc_spawn) (call op m "proc.stream" ast.Op.proc_stream) (call op m "proc.read" ast.Op.proc_read)

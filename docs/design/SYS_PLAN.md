@@ -272,3 +272,33 @@ The owner approved the seed refresh the same day. In order:
   writes a new file and renames it (a program replacing the very executable
   running it would stop with "text file busy"). AIPL has no rename operation
   yet; it belongs to S2's `run` and `watch`, which write and start.
+
+## 10. `fs.rename` (2026-10-29)
+
+Asked for by the owner right after step 4, because writing a file and renaming
+it into place is how a program replaces another safely (the Rust command does
+it; `run` and `watch` will need it).
+
+- **`(fs.rename old_ptr old_len new_ptr new_len)`**, `0` or minus a WASI errno,
+  is WASI's own `path_rename` (no `aipl_sys_v1` import, so `aipl-run` and
+  any WASI host give it as they give `fs.delete`, with each path's directory
+  chosen the same way: fd 3, or 4 for a path from `/`). It needs no grant, and
+  is confined like the other file operations.
+- **Natively**, each path's parent directory is opened beneath its directory
+  (the way `path_unlink_file` does, shared now as `emit_split_parent`) and
+  `renameat` moves the last component between the two parents. The VM uses
+  `std::fs::rename`.
+- **The same answers everywhere**, which the test checks against all seven
+  runs (VM, aipl-run, native, bundle, each with `--sandbox`) and the files left:
+  a file replaced, a directory moved, a link moved itself, a directory onto a
+  non-empty one `-55`, a directory onto a file `-54`, a file onto a directory
+  `-31`, a `..` out of the directory `-63`, no `/` under `--sandbox` `-8`.
+- **`path_rename` is the last import**, after `exec`, so no existing program's
+  import order or bytes change (the test that the seed's own build is
+  unchanged is test_bootstrap).
+- **Not yet: the std wrapper.** `fs.rename [from:str to:str] -> (result i32
+  io.Error)` belongs in `std/fs`, which the compiler imports; the seed cannot
+  read the new operation, so it lands with the next seed refresh, together with
+  the self-hosted `compile` writing a new file and renaming it into place
+  (the Rust command's way, which does not stop when the output is the program
+  running).

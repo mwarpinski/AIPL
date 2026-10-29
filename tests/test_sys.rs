@@ -322,3 +322,127 @@ fn std_fs_chmod_is_the_same_in_every_backend() {
     }
     let _ = std::fs::remove_dir_all(&top);
 }
+
+/// What `rename.aipl` prints, for the VM (paths ordinary), for compiled
+/// programs (a relative path stays in the working directory), and under
+/// `--sandbox` (there is no absolute path to name).
+const RENAME_ORDINARY: &str = "plain 0\nreplace 0\nmissing -44\ninto_dir 0\nmissing_dir -44\nsame 0\ndirectory 0\ndir_onto_full -55\nfile_onto_dir -31\ndir_onto_file -54\nlink 0\ndotdot_from 0\ndotdot_to 0\nabsolute 0\nabs_to_rel 0\nrel_to_abs 0\nempty -44\n";
+const RENAME_CONFINED: &str = "plain 0\nreplace 0\nmissing -44\ninto_dir 0\nmissing_dir -44\nsame 0\ndirectory 0\ndir_onto_full -55\nfile_onto_dir -31\ndir_onto_file -54\nlink 0\ndotdot_from -63\ndotdot_to -63\nabsolute 0\nabs_to_rel 0\nrel_to_abs 0\nempty -44\n";
+const RENAME_SANDBOXED: &str = "plain 0\nreplace 0\nmissing -44\ninto_dir 0\nmissing_dir -44\nsame 0\ndirectory 0\ndir_onto_full -55\nfile_onto_dir -31\ndir_onto_file -54\nlink 0\ndotdot_from -63\ndotdot_to -63\nabsolute -8\nabs_to_rel -8\nrel_to_abs -8\nempty -44\n";
+
+/// The tree each leaves (directories end in `/`, a link shows its target).
+const TREE_ORDINARY: &str = "abs/\nabs/q2.txt=Q\nabs/r.txt=P\nmoved.txt=F\nwork/\nwork/dir2/\nwork/full/\nwork/link2->a.txt\nwork/o2.txt=O\nwork/sub/\nwork/sub/c.txt=B\n";
+const TREE_CONFINED: &str = "abs/\nabs/q2.txt=Q\nabs/r.txt=P\noutside.txt=O\nwork/\nwork/dir2/\nwork/full/\nwork/full/f.txt=F\nwork/link2->a.txt\nwork/sub/\nwork/sub/c.txt=B\n";
+const TREE_SANDBOXED: &str = "abs/\nabs/p.txt=P\nabs/q.txt=Q\noutside.txt=O\nwork/\nwork/dir2/\nwork/full/\nwork/full/f.txt=F\nwork/link2->a.txt\nwork/sub/\nwork/sub/c.txt=B\n";
+
+/// `top/work` to run in, beside `top/outside.txt` and `top/abs/{p,q}.txt`.
+fn rename_setup(top: &Path) -> PathBuf {
+    let work = top.join("work");
+    let _ = std::fs::remove_dir_all(&work);
+    let _ = std::fs::remove_dir_all(top.join("abs"));
+    for d in ["dir", "full", "sub"] {
+        std::fs::create_dir_all(work.join(d)).unwrap();
+    }
+    std::fs::create_dir_all(top.join("abs")).unwrap();
+    for (f, text) in [("work/a.txt", "A"), ("work/b.txt", "B"), ("work/full/f.txt", "F"), ("outside.txt", "O"), ("abs/p.txt", "P"), ("abs/q.txt", "Q")] {
+        let _ = std::fs::remove_file(top.join(f));
+        std::fs::write(top.join(f), text).unwrap();
+    }
+    let _ = std::fs::remove_file(top.join("moved.txt"));
+    let _ = std::fs::remove_file(work.join("link"));
+    symlink("a.txt", work.join("link")).unwrap();
+    work
+}
+
+fn tree(top: &Path, at: &Path, out: &mut Vec<String>) {
+    let mut names: Vec<_> = std::fs::read_dir(at).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    for p in names {
+        let rel = p.strip_prefix(top).unwrap().to_str().unwrap().to_string();
+        let meta = std::fs::symlink_metadata(&p).unwrap();
+        if meta.file_type().is_symlink() {
+            out.push(format!("{rel}->{}", std::fs::read_link(&p).unwrap().display()));
+        } else if meta.is_dir() {
+            out.push(format!("{rel}/"));
+            tree(top, &p, out);
+        } else {
+            out.push(format!("{rel}={}", std::fs::read_to_string(&p).unwrap()));
+        }
+    }
+}
+
+/// `fs.rename` gives the same results, and leaves the same files, from the
+/// VM, aipl-run, a native executable, and the launcher bundle (SYS_PLAN.md):
+/// a file replaced, a directory moved, a link moved itself, the errors of a
+/// directory onto a file and a file onto a directory, and what the working
+/// directory and `--sandbox` confine.
+#[test]
+fn fs_rename_is_the_same_in_every_backend() {
+    let (top, bins) = (scratch("rename"), scratch("rename_bins"));
+    let abs = top.join("abs");
+    let src = bins.join("rename.aipl");
+    std::fs::write(&src, std::fs::read_to_string(root().join("tests/aipl/sys/rename.aipl")).unwrap().replace("@ABS@", abs.to_str().unwrap())).unwrap();
+    let wasm = compile(&bins, &src, "p.wasm", &[]);
+    let exe = compile(&bins, &src, "p", &["--exe"]);
+    let bundle = compile(&bins, &src, "p_bundle", &["--exe", "--target", "wasm"]);
+    let sandboxed_exe = compile(&bins, &src, "ps", &["--exe", "--sandbox"]);
+    let sandboxed_bundle = compile(&bins, &src, "ps_bundle", &["--exe", "--target", "wasm", "--sandbox"]);
+    let runs: Vec<Run> = vec![
+        ("VM", Box::new(|| { let mut c = Command::new(AIPL); c.arg("eval").arg(&src); c }), 0),
+        ("aipl-run", Box::new(|| { let mut c = Command::new(RUNNER); c.arg(&wasm); c }), 1),
+        ("native", Box::new(|| Command::new(&exe)), 1),
+        ("bundle", Box::new(|| Command::new(&bundle)), 1),
+        ("aipl-run --sandbox", Box::new(|| { let mut c = Command::new(RUNNER); c.arg("--sandbox").arg(&wasm); c }), 2),
+        ("native --sandbox", Box::new(|| Command::new(&sandboxed_exe)), 2),
+        ("bundle --sandbox", Box::new(|| Command::new(&sandboxed_bundle)), 2),
+    ];
+    for (how, command, kind) in runs {
+        let work = rename_setup(&top);
+        let o = command().current_dir(&work).output().unwrap();
+        assert_eq!(answers(&o), [RENAME_ORDINARY, RENAME_CONFINED, RENAME_SANDBOXED][kind as usize], "{how}");
+        let mut got = Vec::new();
+        tree(&top, &top, &mut got);
+        let got: String = got.iter().map(|l| format!("{l}\n")).collect();
+        assert_eq!(got, [TREE_ORDINARY, TREE_CONFINED, TREE_SANDBOXED][kind as usize], "{how}: the files left");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+    let _ = std::fs::remove_dir_all(&bins);
+}
+
+/// Where `openat2` is refused (tools/without_openat2.py), `fs.rename` still
+/// works, opening both parent directories with plain `openat` and giving up
+/// the confinement as every open does: the same answers as the VM's.
+#[test]
+fn fs_rename_works_where_openat2_is_refused() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let (top, bins) = (scratch("rename_fallback"), scratch("rename_fallback_bins"));
+    let abs = top.join("abs");
+    let src = bins.join("rename.aipl");
+    std::fs::write(&src, std::fs::read_to_string(root().join("tests/aipl/sys/rename.aipl")).unwrap().replace("@ABS@", abs.to_str().unwrap())).unwrap();
+    let exe = compile(&bins, &src, "p", &["--exe"]);
+    for flag in [&[][..], &["--eperm"][..]] {
+        let work = rename_setup(&top);
+        let o = Command::new("python3").arg(root().join("tools/without_openat2.py")).args(flag).arg(&exe).current_dir(&work).output().unwrap();
+        assert_eq!(answers(&o), RENAME_ORDINARY, "{flag:?}");
+        let mut got = Vec::new();
+        tree(&top, &top, &mut got);
+        let got: String = got.iter().map(|l| format!("{l}\n")).collect();
+        assert_eq!(got, TREE_ORDINARY, "{flag:?}: the files left");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+    let _ = std::fs::remove_dir_all(&bins);
+}
+
+/// Both toolchains compile the program to the same bytes.
+#[test]
+fn both_toolchains_compile_fs_rename_to_the_same_bytes() {
+    let top = scratch("rename_bytes");
+    let src = top.join("rename.aipl");
+    std::fs::write(&src, std::fs::read_to_string(root().join("tests/aipl/sys/rename.aipl")).unwrap().replace("@ABS@", "/tmp/abs")).unwrap();
+    let o = Command::new(AIPL).arg("compile").arg("--self").arg(&src).arg("-o").arg(top.join("s.wasm")).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("BIT-FOR-BIT IDENTICAL"), "{}", String::from_utf8_lossy(&o.stdout));
+    let _ = std::fs::remove_dir_all(&top);
+}

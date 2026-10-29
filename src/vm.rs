@@ -2195,6 +2195,24 @@ impl VM {
                     Err(e) => Ok(Value::Int(wasi_errno(&e))),
                 }
             }
+            OpCode::FsRename => {
+                let old_ptr = self.int_operand(&args[0], scope, "fs.rename")? as u32 as usize;
+                let old_len = self.int_operand(&args[1], scope, "fs.rename")? as u32 as usize;
+                let new_ptr = self.int_operand(&args[2], scope, "fs.rename")? as u32 as usize;
+                let new_len = self.int_operand(&args[3], scope, "fs.rename")? as u32 as usize;
+                let size = self.shared.lock().unwrap().bytes.len();
+                if [(old_ptr, old_len), (new_ptr, new_len)].iter().any(|&(p, n)| p.checked_add(n).is_none_or(|end| end > size)) {
+                    return Ok(Value::Int(-21));
+                }
+                let (old, new) = (self.read_bytes(old_ptr, old_len), self.read_bytes(new_ptr, new_len));
+                match (std::str::from_utf8(&old), std::str::from_utf8(&new)) {
+                    (Ok(o), Ok(n)) => match std::fs::rename(o, n) {
+                        Ok(_) => Ok(Value::Int(0)),
+                        Err(e) => Ok(Value::Int(wasi_errno(&e))),
+                    },
+                    _ => Ok(Value::Int(WASI_EILSEQ)),
+                }
+            }
             // Real OS thread spawn: the worker is a function reference (its
             // index into the shared function order), run on a real std::thread
             // with a fresh child VM that shares `self.shared` linear memory.
