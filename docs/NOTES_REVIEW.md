@@ -64,7 +64,7 @@ not about this repository), **unchecked** (with why).
 | The Rust CLI hardcodes `CARGO_MANIFEST_DIR/aipl_src/std` | true | src/resolver.rs, `find_module_file` (line 994 now; the note says 880). It also ignores `AIPL_STD`. **Fixed 2026-10-26**: the binary carries its library (src/library.rs) and honours `AIPL_STD`; launch checklist section 4, "A binary that works wherever it is" (a copied binary runs every command: tests/test_portable.rs). |
 | The self-hosted CLI falls back to `./aipl_src/std/` | true | aipl.aipl:76, driver.aipl:155, doc.aipl:618. Same item. |
 | The self-hosted CLI has only `compile` and `--version` | partly | It has `doc` too since 2026-10-18; `verify` and `test` are missing. Same item. |
-| `--exe` output needs `chmod +x` | partly | Only from the self-hosted CLI (WASI cannot set file modes; aipl.aipl:16 says so); the Rust CLI sets 0755 (src/main.rs:294). |
+| `--exe` output needs `chmod +x` | wrong now | Both commands set the execute bit (the self-hosted one with `fs.chmod`, 2026-10-29; the Rust one 0755). |
 | `-o` is required | true | A convenience, not a defect. |
 | The standard library is 115 KB in 19 files | true then | 460 KB in 37 files on 2026-10-18. |
 

@@ -40,12 +40,19 @@ fn run(cmd: &mut Command) -> Output {
     panic!("{cmd:?}: executable stayed busy");
 }
 
-/// `compiler` builds the aipl command into `out`, which is made executable.
+/// `compiler` builds the aipl command into `out`, which it makes executable
+/// itself (the self-hosted compiler with `fs.chmod`).
 fn build_aipl(compiler: &Path, out: &Path) {
     let r = run(Command::new(compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(out));
     assert_eq!(r.status.code(), Some(0), "{}: {}", compiler.display(), String::from_utf8_lossy(&r.stderr));
+    assert_executable(out, compiler);
+}
+
+/// `out` has mode 0755, whatever the umask: the compiler set it.
+fn assert_executable(out: &Path, compiler: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mode = std::fs::metadata(out).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o755, "{} wrote {} without its execute bit", compiler.display(), out.display());
 }
 
 #[test]
@@ -86,8 +93,7 @@ fn the_bootstrap_finishes_where_openat2_is_refused() {
     let build = |how: &[&str], compiler: &Path, out: &Path| {
         let r = run(Command::new("python3").arg(&helper).args(how).arg(compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(out));
         assert_eq!(r.status.code(), Some(0), "{how:?} {}: {}", compiler.display(), String::from_utf8_lossy(&r.stderr));
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_executable(out, compiler);
     };
     let (enosys, eperm, again) = (dir.join("enosys"), dir.join("eperm"), dir.join("again"));
     build(&[], &seed, &enosys);

@@ -44,7 +44,6 @@ rm -rf "$KIT"
 mkdir -p "$KIT/bin" "$KIT/share/aipl" "$KIT/docs"
 cp "$WORK/target/release/aipl" "$WORK/target/release/aipl-run" "$KIT/bin/"
 cp "$WORK/target/bootstrap/aipl" "$KIT/bin/aipl-native"
-chmod +x "$KIT/bin/aipl-native"
 cp -r "$WORK/aipl_src/std" "$KIT/share/aipl/std"
 # Each doc starts with the line `aipl --version` prints, so a copy that is
 # older than the toolchain beside it shows itself.
@@ -74,7 +73,7 @@ bin/aipl needs glibc 2.39 or newer (Ubuntu 24.04+, Debian 13, Fedora
 writes it, once, to ~/.cache/aipl (or \$AIPL_CACHE). bin/aipl-native is
 fully static and runs on any x86-64 Linux: it compiles (\`aipl-native
 compile [--exe] FILE -o OUT\`) but does not run or test, reading
-share/aipl/std/; \`chmod +x\` an executable it writes.
+share/aipl/std/; an executable it writes is runnable as it is.
 
 Read first: docs/PROMPT_GUIDE_FOR_AIS.md (the rules, for an AI writing
 AIPL), then docs/AIPL_SPEC.md (the full language) and docs/TOUR.md. The

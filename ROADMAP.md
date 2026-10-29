@@ -40,7 +40,7 @@ benchmarks against C and Python.
    bootstrap/README.md): a checked-in native `aipl` builds the compiler on
    Linux x86-64 with no Rust, checked byte for byte against the Rust
    toolchain, which stays as the referee. Left: a WebAssembly seed for
-   other platforms, the execute bit (a host import), `verify` in the AIPL
+   other platforms, `verify` in the AIPL
    command, and an installer that builds from the seed (DEVELOPING.md,
    "Direction"). The whole road, to a language that needs Rust only as the
    referee, is docs/design/aipl_standalone.md.
@@ -58,7 +58,7 @@ versioning (once packages exist).
 ### Toolchain
 
 - **Rust is needed to bootstrap off Linux x86-64.** The self-hosted compiler (`aipl_src/aipl.aipl`: driver.aipl's resolver, generics, checker, and code generator, plus the native backend) compiles every program to the Rust toolchain's bytes, itself included. On Linux x86-64 it builds from the checked-in seed (`bootstrap/`); elsewhere the first build takes the Rust toolchain ("Next" 3). The `aipl` CLI's `verify`, `eval`, and `test` use the Rust front end.
-- **WASI cannot set the execute bit.** The AIPL `aipl compile --exe` writes the executable, but `chmod +x` is left to the caller (`bootstrap/build.sh` does it); the Rust CLI sets it, and builds the launcher bundle for platforms without a native backend. The planned fix is a host-provided import. Native executables exist only for Linux x86-64; elsewhere the bundle is about 18 MB (wasmtime) and built for the host's OS and CPU.
+- **The execute bit** is set by the AIPL `aipl compile --exe` itself, through `fs.chmod` (an `aipl_sys_v1` import that WASI lacks; docs/design/SYS_PLAN.md). The Rust CLI builds the launcher bundle for platforms without a native backend. Native executables exist only for Linux x86-64; elsewhere the bundle is about 18 MB (wasmtime) and built for the host's OS and CPU.
 - **Two of everything in the front end.** Resolver, generics, constants, parser, and checker exist in Rust (`src/`, used by the `aipl` CLI and the VM) and in AIPL (`aipl_src/`, used by the self-hosted compiler); tests hold each pair equal, message for message (AIPL_SPEC.md 6.4, 11). The Rust copies go when the CLI runs the AIPL ones.
 - **Two copies drift unless held equal.** The fuzzer (`tools/fuzz.py`) checks the two front ends against each other on mutated programs; it finds no differences on 50,000 cases (2026-10-06), and CI runs 3,000 on every push. Only tests and the fuzzer hold the two equal, so a change to one copy must be made to the other.
 - **The VM is slow.** It is a tree-walker: every variable lookup is a string-keyed hash lookup and every block clones its scope. Calls no longer copy the function body (audit B13), but the self-hosted compiler still takes seconds in the VM for work the same compiler compiled to wasm does in milliseconds. Use the compiled toolchain for anything large.

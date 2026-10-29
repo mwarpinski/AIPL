@@ -81,7 +81,6 @@ case "$MODE" in
                 qemu-x86_64-static ./bootstrap/aipl-linux-x86_64 --version
                 echo "Compiling stage 1 with seed:"
                 qemu-x86_64-static ./bootstrap/aipl-linux-x86_64 compile --exe aipl_src/aipl.aipl -o /tmp/aipl-stage1
-                chmod +x /tmp/aipl-stage1
                 echo "Testing generated stage 1 binary:"
                 qemu-x86_64-static /tmp/aipl-stage1 --version
                 echo "Success: seed and generated native binary execute cleanly under QEMU."

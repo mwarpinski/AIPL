@@ -24,16 +24,15 @@ target/bootstrap/aipl compile --exe [--sandbox] FILE.aipl -o OUT
 It finds the standard library at `$AIPL_STD`, else `share/aipl/std/`
 beside its folder (an install or a kit, `<prefix>/bin/aipl` with
 `<prefix>/share/aipl/std/`), else `aipl_src/std/` under the working
-directory (aipl_src/stdpath.aipl). WASI has no way to set a file's execute bit, so an
-executable it writes needs `chmod +x` (the script does this).
+directory (aipl_src/stdpath.aipl). An executable it writes is executable: it
+sets the bit itself (`fs.chmod`, over `aipl_sys_v1`; WASI has no call for it),
+so no `chmod +x` is needed.
 
 **By hand**, each executable builds the next:
 
 ```bash
 ./bootstrap/aipl-linux-x86_64 compile --exe aipl_src/aipl.aipl -o target/aipl1
-chmod +x target/aipl1
 ./target/aipl1 compile --exe aipl_src/aipl.aipl -o target/aipl2
-chmod +x target/aipl2
 cmp target/aipl1 target/aipl2       # no output: the compiler reproduces itself
 ```
 

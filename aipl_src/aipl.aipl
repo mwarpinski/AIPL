@@ -15,8 +15,8 @@
 ;; the executable's folder, else aipl_src/std/ below the working directory
 ;; (stdpath.aipl). Exit status 0 on success, 1 on a resolve,
 ;; type, compile, or write error (reported on stderr as "Error: ..."), 2 on
-;; bad usage. WASI cannot set the execute bit, so a written executable
-;; still needs `chmod +x`.
+;; bad usage. An executable it writes (--exe) has its execute bit set, by
+;; fs.chmod (aipl_sys_v1; WASI has no call for it).
 (module aipl
   (import driver)
   (import option)
@@ -24,6 +24,7 @@
   (import native/native)
   (import os)
   (import io)
+  (import fs)
   (import str)
   (import fmt)
   (import doc)
@@ -166,6 +167,9 @@
           (set! bytes (get o native.Output.exe)))
     (when (match_result (call io.write_path out bytes) (ok wrote (neq wrote (get bytes str.Bytes.len))) (err e true))
         (return (call fail_bytes "cannot write " out)))
+    ;; an executable is one: the execute bit, as the Rust command sets it
+    (when (and exe (match_result (call fs.chmod_path out fs.PROGRAM) (ok done false) (err e true)))
+        (return (call fail_bytes "cannot make executable " out)))
     (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
     (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
     (call io.write_str 1 "' -> '")

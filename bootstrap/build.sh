@@ -30,11 +30,10 @@ mkdir -p "$out"
 cd "$root"
 export AIPL_STD="$root/aipl_src/std/"
 
-# stage COMPILER OUTPUT: COMPILER builds the aipl command into OUTPUT.
-# WASI cannot set the execute bit, so this does.
+# stage COMPILER OUTPUT: COMPILER builds the aipl command into OUTPUT
+# (executable: the compiler sets the bit, with fs.chmod).
 stage() {
     "$1" compile --exe aipl_src/aipl.aipl -o "$2" >/dev/null || err "$(basename "$1") could not build $2"
-    chmod +x "$2"
 }
 
 stage "$seed" "$out/aipl-stage1"
