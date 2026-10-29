@@ -43,7 +43,7 @@ fn run(cmd: &mut Command) -> Output {
 /// `compiler` builds the aipl command into `out`, which it makes executable
 /// itself (the self-hosted compiler with `fs.chmod`).
 fn build_aipl(compiler: &Path, out: &Path) {
-    let r = run(Command::new(compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(out));
+    let r = run(Command::new(compiler).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(out));
     assert_eq!(r.status.code(), Some(0), "{}: {}", compiler.display(), String::from_utf8_lossy(&r.stderr));
     assert_executable(out, compiler);
 }
@@ -88,7 +88,7 @@ fn a_compiler_replaces_the_file_it_is_running_from() {
     let compiler = dir.join("aipl");
     build_aipl(Path::new(AIPL), &compiler);
     let before = std::fs::read(&compiler).unwrap();
-    let r = run(Command::new(&compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(&compiler));
+    let r = run(Command::new(&compiler).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(&compiler));
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
     assert_executable(&compiler, &compiler);
     assert!(std::fs::read(&compiler).unwrap() == before, "the replacement differs from the Rust-built compiler");
@@ -98,12 +98,74 @@ fn a_compiler_replaces_the_file_it_is_running_from() {
     // no temporary file either
     let into = dir.join("into");
     std::fs::create_dir(&into).unwrap();
-    let r = run(Command::new(&compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(&into));
+    let r = run(Command::new(&compiler).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(&into));
     assert_eq!(r.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&r.stderr).contains("cannot write"), "{}", String::from_utf8_lossy(&r.stderr));
     let mut left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
     left.sort();
     assert_eq!(left, ["aipl", "into"], "files left beside the output");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `aipl run FILE.aipl ARGS`: the program is built into a temporary file,
+/// started with the arguments and this command's own standard input, and
+/// removed; its exit status is the command's (SYS_PLAN.md; aipl_standalone.md,
+/// S2). Only an `aipl` built with `--allow-run '*'` can start it.
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn aipl_run_builds_starts_and_removes_a_program() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let dir = scratch("bootstrap_run");
+    let aipl = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &aipl);
+    let tmp = dir.join("tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let target = "tests/aipl/sys/run_target.aipl";
+    let run_with = |args: &[&str], input: &str| {
+        let mut child = Command::new(&aipl).arg("run").args(args).env("TMPDIR", &tmp).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
+    let nothing_left = || assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0, "a temporary file was left");
+
+    // arguments and standard input reach the program; its output is ours
+    let o = run_with(&[target, "a", "b c"], "hello");
+    assert_eq!((o.status.code(), text(&o.stdout)), (Some(0), "args 3\narg a\narg b c\nstdin hello\n".to_string()), "{}", text(&o.stderr));
+    nothing_left();
+
+    // its exit status is ours
+    let o = run_with(&[target, "seven"], "");
+    assert_eq!(o.status.code(), Some(7), "{}", text(&o.stderr));
+    nothing_left();
+
+    // flags before the file are the compiler's; after it, the program's
+    let o = run_with(&["--sandbox", "--no-opt", target, "--sandbox"], "");
+    assert_eq!((o.status.code(), text(&o.stdout)), (Some(0), "args 2\narg --sandbox\nstdin \n".to_string()), "{}", text(&o.stderr));
+    nothing_left();
+
+    // a program that does not compile: the compile error and status 1, nothing started
+    let bad = dir.join("bad.aipl");
+    std::fs::write(&bad, "(module bad\n  (fn f [x:i32] -> i32 x)\n  (fn main [] -> i32 (call f true)))\n").unwrap();
+    let want = run(Command::new(AIPL).arg("compile").arg(&bad).arg("-o").arg(dir.join("x.wasm")));
+    let o = run_with(&[bad.to_str().unwrap()], "");
+    assert_eq!((o.status.code(), text(&o.stdout), text(&o.stderr)), (Some(1), String::new(), text(&want.stderr)));
+    nothing_left();
+
+    // usage: no file, or the compile command's -o, which run has no use for
+    assert_eq!(run_with(&[], "").status.code(), Some(2));
+    assert_eq!(run_with(&["-o", "x", target], "").status.code(), Some(2));
+
+    // built without the grant, the command says so (and exits 1)
+    let plain = dir.join("plain");
+    let r = run(Command::new(AIPL).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(&plain));
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    let o = run(Command::new(&plain).args(["run", target]).env("TMPDIR", &tmp));
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("built without --allow-run"), "{}", text(&o.stderr));
+    nothing_left();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -121,7 +183,7 @@ fn the_bootstrap_finishes_where_openat2_is_refused() {
     build_aipl(&seed, &plain);
     let helper = root().join("tools/without_openat2.py");
     let build = |how: &[&str], compiler: &Path, out: &Path| {
-        let r = run(Command::new("python3").arg(&helper).args(how).arg(compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(out));
+        let r = run(Command::new("python3").arg(&helper).args(how).arg(compiler).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(out));
         assert_eq!(r.status.code(), Some(0), "{how:?} {}: {}", compiler.display(), String::from_utf8_lossy(&r.stderr));
         assert_executable(out, compiler);
     };

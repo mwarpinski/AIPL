@@ -84,8 +84,14 @@ In this order, smallest first; each lands in aipl_src/aipl.aipl and a test
 runs it against the Rust command:
 
 1. `verify` (the AIPL front end exists; no new import) **done 2026-10-29**: `driver.verify_file` stops after the checks, and tests/test_bootstrap.rs compares its output, errors, and status with the Rust command's on every example, benchmark, and test program;
-2. `run`: compile to a native executable and exec it (`.wasm` input waits
-   for S3);
+2. `run`: compile to a native executable and run it (`.wasm` input waits
+   for S3). **Done 2026-10-29** for source files: `aipl run [FLAGS] FILE.aipl
+   [ARGS]` builds into `$TMPDIR/aipl-run-<time>` (else `/tmp`), starts it on
+   its own standard streams with ARGS, removes it, and exits with its status
+   (128 plus the signal if a signal ended it). It starts the program and waits
+   rather than `exec`ing it, so it can clean up. Because the command starts a
+   program, it is built with `--allow-run '*'` (build.sh, tests, the kit);
+   the Rust command's `run` takes only a `.wasm` file;
 3. `test`: build the test executable, start it once per test, compare
    output. It loses the VM column; the fuzzers and the test suite keep the
    VM cross-check;

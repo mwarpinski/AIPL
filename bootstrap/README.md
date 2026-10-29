@@ -14,13 +14,20 @@ sh bootstrap/build.sh            # about 8 seconds; the result is target/bootstr
 The script has the seed build the current source (stage 1), stage 1 build
 it again (stage 2), and stage 2 build itself once more, which must give
 the same bytes (a fixed point). No Rust is involved. The resulting `aipl`
-does what `aipl compile` and `aipl verify` do in the Rust command:
+does what `aipl compile` and `aipl verify` do in the Rust command, and has
+`aipl run`, which the Rust command has only for a `.wasm` file:
 
 ```bash
 target/bootstrap/aipl compile FILE.aipl -o OUT.wasm
 target/bootstrap/aipl compile --exe [--sandbox] FILE.aipl -o OUT
 target/bootstrap/aipl verify FILE.aipl    # resolve and type-check, compile nothing
+target/bootstrap/aipl run [FLAGS] FILE.aipl [ARGS]...   # build into a temporary file, run it, remove it
 ```
+
+The command is built with `--allow-run '*'` (every stage does, and so does
+the by-hand build below): a native executable may start only the programs it
+was granted, and `run` starts whatever it has just built. A build without the
+grant works as before, and its `run` says why it cannot start anything.
 
 It finds the standard library at `$AIPL_STD`, else `share/aipl/std/`
 beside its folder (an install or a kit, `<prefix>/bin/aipl` with
@@ -32,16 +39,16 @@ so no `chmod +x` is needed.
 **By hand**, each executable builds the next:
 
 ```bash
-./bootstrap/aipl-linux-x86_64 compile --exe aipl_src/aipl.aipl -o target/aipl1
-./target/aipl1 compile --exe aipl_src/aipl.aipl -o target/aipl2
+./bootstrap/aipl-linux-x86_64 compile --exe --allow-run '*' aipl_src/aipl.aipl -o target/aipl1
+./target/aipl1 compile --exe --allow-run '*' aipl_src/aipl.aipl -o target/aipl2
 cmp target/aipl1 target/aipl2       # no output: the compiler reproduces itself
 ```
 
 **The first executable** of all was built by the Rust toolchain, which is how
 the seed was made (`cargo build --release`, then
-`./target/release/aipl compile --exe aipl_src/aipl.aipl -o target/aipl0`).
+`./target/release/aipl compile --exe --allow-run '*' aipl_src/aipl.aipl -o target/aipl0`).
 
-The rest of the Rust command (`eval`, `test`, `run`, `watch`, `serve`) is not here: the
+The rest of the Rust command (`eval`, `test`, `watch`, `serve`, and `run` of a `.wasm` file) is not here: the
 interpreter is Rust, and running WebAssembly takes wasmtime. Native
 executables run directly.
 

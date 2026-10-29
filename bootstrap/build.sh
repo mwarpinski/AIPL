@@ -33,7 +33,7 @@ export AIPL_STD="$root/aipl_src/std/"
 # stage COMPILER OUTPUT: COMPILER builds the aipl command into OUTPUT
 # (executable: the compiler sets the bit, with fs.chmod).
 stage() {
-    "$1" compile --exe aipl_src/aipl.aipl -o "$2" >/dev/null || err "$(basename "$1") could not build $2"
+    "$1" compile --exe --allow-run "*" aipl_src/aipl.aipl -o "$2" >/dev/null || err "$(basename "$1") could not build $2"
 }
 
 stage "$seed" "$out/aipl-stage1"
