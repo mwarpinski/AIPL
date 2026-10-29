@@ -1,0 +1,21 @@
+;; std/fs's rename (docs/design/SYS_PLAN.md, section 10): test_sys.rs runs it in
+;; a directory holding a.txt and b.txt, once for each backend; each case prints
+;; its label and what fs.rename gave, as a number or a word.
+(module std_fs_rename
+  (import fs)
+  (import io)
+  (import str)
+
+  (fn show [label:str r:(result i32 io.Error)] -> void
+    (match_result r
+      (ok n (println "{label} ok {n}"))
+      (err e (let why:str (call io.message e))
+        (println "{label} {why}"))))
+
+  (fn main [] -> i32
+    (call show "plain" (call fs.rename "a.txt" "c.txt"))
+    (call show "replace" (call fs.rename "c.txt" "b.txt"))
+    (call show "bytes" (call fs.rename_path (call str.from_str "b.txt") (call str.from_str "d.txt")))
+    (call show "missing" (call fs.rename "no/such/file" "e.txt"))
+    (call show "dotdot" (call fs.rename "d.txt" "../outside.txt"))
+    0))

@@ -77,6 +77,26 @@ fn the_seed_builds_the_compiler_the_rust_toolchain_builds() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A compiler writes its output beside it and renames it into place, so it can
+/// replace the very file that is running (an in-place write is "Text file
+/// busy" on Linux), and leaves nothing behind (SYS_PLAN.md section 10).
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn a_compiler_replaces_the_file_it_is_running_from() {
+    let dir = scratch("bootstrap_replace");
+    let compiler = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &compiler);
+    let before = std::fs::read(&compiler).unwrap();
+    let r = run(Command::new(&compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(&compiler));
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_executable(&compiler, &compiler);
+    assert!(std::fs::read(&compiler).unwrap() == before, "the replacement differs from the Rust-built compiler");
+    let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(left.len(), 1, "files left beside the output: {left:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The bootstrap where openat2 is refused (Linux before 5.6, Rosetta 2, an old
 /// container profile: tools/without_openat2.py): the seed, and the compiler it
 /// builds, open the source files with openat, and build the same bytes as

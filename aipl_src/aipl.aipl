@@ -165,11 +165,20 @@
           (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen) (call buf.bytes serve)))
           (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
           (set! bytes (get o native.Output.exe)))
-    (when (match_result (call io.write_path out bytes) (ok wrote (neq wrote (get bytes str.Bytes.len))) (err e true))
+    ;; Written beside the output and renamed into place, as the Rust command
+    ;; does: a file that was run is never opened for writing again (Linux can
+    ;; refuse with "Text file busy"; macOS kills a binary rewritten in place).
+    (let tmp_buf:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes tmp_buf out)
+    (call buf.push_str tmp_buf ".aipl-tmp")
+    (let tmp:str.Bytes (call buf.bytes tmp_buf))
+    (when (match_result (call io.write_path tmp bytes) (ok wrote (neq wrote (get bytes str.Bytes.len))) (err e true))
         (return (call fail_bytes "cannot write " out)))
     ;; an executable is one: the execute bit, as the Rust command sets it
-    (when (and exe (match_result (call fs.chmod_path out fs.PROGRAM) (ok done false) (err e true)))
+    (when (and exe (match_result (call fs.chmod_path tmp fs.PROGRAM) (ok done false) (err e true)))
         (return (call fail_bytes "cannot make executable " out)))
+    (when (match_result (call fs.rename_path tmp out) (ok done false) (err e true))
+        (return (call fail_bytes "cannot write " out)))
     (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
     (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
     (call io.write_str 1 "' -> '")

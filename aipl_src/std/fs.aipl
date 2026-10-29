@@ -142,6 +142,27 @@
     (let r:i32 (fs.chmod addr len mode))
     (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
 
+  ;; ===== Rename =====
+
+  ;; Moves `from` to `to`, replacing what is there: a file replaces a file, a
+  ;; directory replaces only an empty directory. A link is moved itself, not
+  ;; what it names. Needs no grant: both paths are ones the program could open,
+  ;; confined as fs.open is. The result is 0, or why not (a missing `from`
+  ;; not_found, a path out of reach denied, a directory onto a file or a file
+  ;; onto a directory other).
+  (fn rename [from:str to:str] -> (result i32 io.Error) (pub)
+    (unsafe (call rename_at (str.ptr from) (str.len from) (str.ptr to) (str.len to))))
+
+  ;; rename for paths held as bytes.
+  (fn rename_path [from:str.Bytes to:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call rename_at (call str.addr from) (get from str.Bytes.len)
+                            (call str.addr to) (get to str.Bytes.len))))
+
+  ;; The operation, on paths in memory.
+  (fn rename_at [oa:i32 ol:i32 na:i32 nl:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.rename oa ol na nl))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
   ;; ===== Tests =====
 
   ;; Pass count; test_suite.aipl expects 4. Run from the repository root.
