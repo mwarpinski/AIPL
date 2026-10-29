@@ -52,6 +52,8 @@ operations in every backend and both toolchains, `std/proc`, and a seed that
 sets the execute bit itself. `fs.rename` (section 10) and `std/fs`'s `rename`
 followed, and the self-hosted `compile` now writes its output beside it and
 renames it into place, so a compiler can replace the file it is running from.
+`remove`, `mkdir`, and `rmdir` (sections 10 and 11) complete the file operations
+a program needs to manage the files it writes.
 The text below is the plan as it was.
 
 The one missing piece under most of the table. A host import module in the

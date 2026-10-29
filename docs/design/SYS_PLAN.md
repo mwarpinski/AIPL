@@ -340,7 +340,13 @@ call the operating system (`rmdir`, or `unlinkat` with `AT_REMOVEDIR`).
   `-20`; a missing parent `-44`; a file as the parent `-54`; the rest as for
   `fs.rmdir`. `path_create_directory` is the last import, after
   `path_remove_directory`. There is no `mkdir -p`: that is a loop over this.
-- **Not yet: the std wrappers.** `fs.rmdir` and `fs.mkdir`, each `[path:str]
-  -> (result i32 io.Error)`, belong in `std/fs`, which the compiler imports;
-  the seed cannot read the new operations, so they land with the next seed
-  refresh.
+- **The std wrappers** came with the third seed refresh (the owner approved
+  2026-10-29): `fs.mkdir`, `fs.mkdir_path`, `fs.rmdir`, and `fs.rmdir_path` in
+  `std/fs`, each `[path:str] -> (result i32 io.Error)`, and a seed built from
+  0ca006e (sha256 in bootstrap/README.md): a fixed point again. `io.Error`
+  has no kind for "exists" (-20) or "not empty" (-55): both are `other`, since
+  the owner fixed its four kinds (LANGUAGE_DECISIONS.md, so that no exhaustive
+  match breaks). A program that must tell "exists" apart looks first, with
+  `fs.stat`. **Question for the owner:** add `exists` and `not_empty` to
+  `io.Error` (Rust's `AlreadyExists` and `DirectoryNotEmpty`), accepting that
+  a `match` on it must then name them?
