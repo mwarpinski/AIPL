@@ -1,7 +1,7 @@
 # System host imports: `chmod` and processes (S1 of aipl_standalone.md)
 
 **Status: proposed (2026-10-28), D1-D7 approved by the owner the same day.
-Steps 1, 2, and 3 are built;** step 4 is not. Written in the style of NET_PLAN.md, whose
+All four steps are built.** Written in the style of NET_PLAN.md, whose
 `aipl_net_v1` this copies in shape: AIPL's own import module beside
 WASI preview 1, provided by the VM and aipl-run in Rust, lowered to Linux
 system calls by the native backend (written in AIPL), granted on the
@@ -14,7 +14,7 @@ command line and fixed in an executable when it is compiled.
 | 1 | `fs.chmod`: the execute bit, in every backend and both toolchains | **Done** 2026-10-28 (section 6) |
 | 2 | The process operations `proc.*` and `--allow-run`, in every backend and both toolchains | **Done** 2026-10-28 (section 7) |
 | 3 | `std/proc`: the safe interface (run a program and capture its output; a `Child` with pipes) | **Done** 2026-10-28 (section 8) |
-| 4 | A seed refresh, so the self-hosted `aipl` can use them (S2 of aipl_standalone.md) | Owner approves |
+| 4 | A seed refresh, so the self-hosted `aipl` can use them (S2 of aipl_standalone.md) | **Done** 2026-10-29 (section 9) |
 
 ## 1. Why a new import module
 
@@ -243,7 +243,32 @@ in its trailer, as `run:PROGRAM` lines beside the `--listen` addresses).
   contracts. A local file named like a standard module (a test program called
   `proc.aipl`) shadows it: the tests' programs are `spawn_ops.aipl` and
   `spawn_exec.aipl`.
-- **Step 4 (the owner's)** is the seed refresh that lets the compiler use these
-  operations (`aipl_src/aipl.aipl` starting programs in S2), and adds
-  `fs.chmod [path:str mode:i32] -> (result i32 io.Error)` to `std/fs`, which the
-  compiler imports and the current seed cannot read.
+
+## 9. Step 4, as built (2026-10-29)
+
+The owner approved the seed refresh the same day. In order:
+
+- **`std/fs` has `chmod` and `chmod_path`** (`(result i32 io.Error)`, with
+  `fs.FILE` 0o644 and `fs.PROGRAM` 0o755). The compiler imports `std/fs`, so
+  from this commit the seed has to read `fs.chmod`.
+- **The toolchain's own wasmtime hosts define `aipl_sys_v1.chmod`**
+  (`sys::add_chmod`, in src/selfhost.rs, src/native.rs, src/tools.rs): the Rust
+  `aipl` runs the self-hosted compiler (the optimized build) and the native
+  backend under wasmtime, and a module that names an import must find it to
+  start. Found when the first `aipl compile` after the `std/fs` change stopped at
+  "unknown import `aipl_sys_v1::chmod`". Process operations need no such
+  stub yet: no module the Rust `aipl` runs this way imports `std/proc`.
+- **The self-hosted `compile --exe` makes its output executable**
+  (aipl_src/aipl.aipl), as the Rust command does (mode 0755 whatever the
+  umask, an existing file included). `bootstrap/build.sh`, `tools/make_kit.sh`,
+  and `tools/container_test.sh` lost their `chmod +x`; `test_bootstrap` asserts
+  the mode of every executable the seed and its stages write.
+- **The seed** was rebuilt by the Rust toolchain from 20888dd (sha256 in
+  bootstrap/README.md): a fixed point, byte for byte its own stage 2 and 3.
+  It is the first seed that sets the execute bit, and its source can name every
+  `aipl_sys_v1` operation, so the S2 commands can start programs.
+- **Not done, and found on the way:** the self-hosted command still writes its
+  output in place (`io.write_path` truncates and writes), where the Rust one
+  writes a new file and renames it (a program replacing the very executable
+  running it would stop with "text file busy"). AIPL has no rename operation
+  yet; it belongs to S2's `run` and `watch`, which write and start.

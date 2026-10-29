@@ -62,27 +62,27 @@ program to the same bytes as the Rust command, with the same errors.
 
 ## Where this seed came from
 
-Built 2026-10-27 by the Rust toolchain, from the source of commit
-01bc216, for the release: the executables the compiler writes (this seed
-among them) open files with plain `openat` where `openat2` fails (Linux
-before 5.6, Rosetta 2, a container profile that refuses it; a `--sandbox`
-program says it needs `openat2` and stops at start), so the bootstrap
-finishes there (`tests/test_bootstrap.rs`, with `tools/without_openat2.py`);
-the previous seed stopped at its first file with `cannot read entry file`.
-The earlier seed's change, the ELF headers as their own read-only first
-segment at file offset 0, which Rosetta 2 requires to load an executable
-(Task D), is in this one too:
+Built 2026-10-29 by the Rust toolchain, from the source of commit
+20888dd, so that the compiler can use the system operations
+(docs/design/SYS_PLAN.md, `aipl_sys_v1`): `std/fs` has `chmod`, which the
+compiler imports, and `compile --exe` makes its output executable with it,
+so building the compiler from the seed needs no `chmod +x`. The seed itself
+is the first to do so, and the compiler can now start programs, for the
+commands that follow (docs/design/aipl_standalone.md, S2):
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `ae30b56410a1f5254422ff280e48b22a50334328d9ff04b434f341d086a6b4be`.
+sha256 `1ba9a19ebfc1bda2614f205a783ce95bb6c612e91ff700b25e4d995f2f251e9b`.
 Building that commit's source with the seed gives the same bytes (stage
 2 is the seed), so for now the seed is its own stage 2.
 
-Earlier seeds: the one built 2026-10-27 from 29416a9 (sha256
+Earlier seeds: the one built 2026-10-27 from 01bc216 (sha256
+`ae30b56410a1f5254422ff280e48b22a50334328d9ff04b434f341d086a6b4be`), for
+the `openat` fallback where `openat2` fails (Linux before 5.6, Rosetta 2, a
+container profile that refuses it); the one built 2026-10-27 from 29416a9 (sha256
 `840060d9a7d52bd6a6ca402b5881f791110fa68f9a8386306ef70c52cbe6a0bc`), for
 Task D's read-only first segment; the one built 2026-10-26 from bb8c35f (sha256
 `ebc67e10ca127d78e4a03dc7c735ee7a4e48c853af8baa2511f9c49f92b4d5c5`), so

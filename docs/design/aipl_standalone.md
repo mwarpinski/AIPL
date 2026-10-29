@@ -1,8 +1,8 @@
 # AIPL standalone: nothing Rust can do that AIPL cannot
 
-**Status: proposed (2026-10-27).** A roadmap, not a design: each step below
+**Status: proposed (2026-10-27); S1 done 2026-10-29.** A roadmap, not a design: each step below
 gets its own plan before code, as NET_PLAN.md did for sockets (S1's is
-SYS_PLAN.md). Its grant model waits for the owner's word.
+SYS_PLAN.md, whose grant model the owner approved).
 
 ## The goal
 
@@ -29,7 +29,6 @@ to run the referee tests.
 |---|---|---|
 | Compile to `.wasm`, to a native executable (`--sandbox`, `--listen`, `--max-memory`, `--no-opt`), `doc`, `--version` | the self-hosted command (aipl_src/aipl.aipl) | |
 | The front end (resolve, generics, check) | aipl_src/ | the same, kept equal by tests and the fuzzer |
-| Setting a written file's execute bit | | `src/main.rs`; WASI has no call for it |
 | `verify` | | the Rust front end |
 | `run` (a `.wasm` or a source file) | | `aipl-run` (wasmtime) and the VM |
 | `test` | | `src/testrun.rs`: builds a native test executable, starts it once per test, compares VM, wasm, and native |
@@ -47,6 +46,10 @@ Rust stays the referee throughout: every AIPL command is tested against
 the Rust one on the same inputs.
 
 ### S1. The system host imports (`aipl_sys_v1`)
+
+**Done 2026-10-29** (SYS_PLAN.md, sections 6-9): `fs.chmod` and the process
+operations in every backend and both toolchains, `std/proc`, and a seed that
+sets the execute bit itself. The text below is the plan as it was.
 
 The one missing piece under most of the table. A host import module in the
 style of `aipl_net_v1`: lowered to system calls by the native backend
