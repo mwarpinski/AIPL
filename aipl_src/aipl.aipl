@@ -15,6 +15,7 @@
 ;;   aipl test FILE|DIR [-k TEXT] [--native]   (each (test ...) in a fresh process; aipl_src/testcmd.aipl)
 ;;   aipl watch FILE [--test] [-- ARGS...]   (run again when a file it reads changes; aipl_src/watchcmd.aipl)
 ;;   aipl serve --fresh FILE --listen ADDR:PORT [--requests N] [-- ARGS...]   (aipl_src/servecmd.aipl)
+;;   aipl eval FILE [-- ARGS]   (as aipl run); aipl eval -e EXPRS [--with FILE] ...   (aipl_src/evalcmd.aipl)
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
@@ -38,6 +39,7 @@
   (import testcmd)
   (import watchcmd)
   (import servecmd)
+  (import evalcmd)
   (import buf)
   (import alloc)
   (import proc)
@@ -49,6 +51,7 @@
     (call io.eprintln "       aipl test FILE|DIR [-k TEXT] [--native]")
     (call io.eprintln "       aipl watch FILE [--test] [-- ARGS...]")
     (call io.eprintln "       aipl serve --fresh FILE --listen ADDR:PORT [--requests N] [-- ARGS...]")
+    (call io.eprintln "       aipl eval FILE [-- ARGS...] | -e EXPRS [--with FILE] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [-- ARGS...]")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -89,6 +92,15 @@
     (call io.println "' type-checks. Contracts are type-checked, not proven; req/ens run on every call, in the VM and in compiled code.")
     0)
 
+  ;; aipl eval: -e EXPRS is evalcmd's; FILE is run natively, as aipl run does
+  ;; (the Rust command runs it in the VM and prints its result line).
+  (fn eval [n:i32] -> i32
+    (for i 2 n
+      (let a:str.Bytes (call arg i))
+      (when (or (call str.is a "-e") (call str.is a "--expr")) (return (call evalcmd.command 2)))
+      (when (call str.is a "--") (return (call compile_command n true))))
+    (call compile_command n true))
+
   (fn write_int [fd:i32 n:i32] -> void
     (unsafe (let digits:i32 (mem.alloc 11))
     (fs.write fd digits (call fmt.int_to_bytes n digits))))
@@ -103,6 +115,7 @@
     (when (call str.is cmd "test") (return (call testcmd.command 2)))
     (when (call str.is cmd "watch") (return (call watchcmd.command 2)))
     (when (call str.is cmd "serve") (return (call servecmd.command 2)))
+    (when (call str.is cmd "eval") (return (call eval n)))
     (when (call str.is cmd "run") (return (call compile_command n true)))
     (when (not (call str.is cmd "compile")) (return (call usage)))
     (call compile_command n false))
@@ -159,6 +172,16 @@
       (cond
         ((call str.is a "--exe") (set! exe true))
         ((call str.is a "--tests") (when run_mode (return (call usage))) (set! tests true))
+        ;; what aipl eval takes that run has no need of: --native is what it does;
+        ;; a function other than main, and wasm, need the Rust command's VM and aipl-run
+        ((and run_mode (call str.is a "--native")) (block))
+        ((and run_mode (call str.is a "--wasm"))
+         (return (call fail_bytes "this aipl evaluates natively only: for --wasm use the Rust aipl: " a)))
+        ((and run_mode (or (call str.is a "-f") (call str.is a "--func")))
+         (when (gte (+ i 1) n) (return (call usage)))
+         (when (not (call str.is (call arg (+ i 1)) "main"))
+               (return (call fail_bytes "this aipl evaluates a program's main only: for another function (-f) use the Rust aipl, which runs it in the VM: " (call arg (+ i 1)))))
+         (set! i (+ i 1)))
         ((call str.is a "--no-opt") (set! opt false))
         ((call str.is a "--sandbox") (set! sandbox true))
         ((call str.is a "--max-memory")
@@ -255,7 +278,11 @@
         (return (call fail_removing tmp "cannot make executable " out)))
     (when (match_result (call fs.rename_path tmp out) (ok done false) (err e true))
         (return (call fail_removing tmp "cannot write " out)))
-    (when run_mode (return (call run_built out (+ in_i 1) n)))
+    ;; the program's arguments follow the file (after a `--`, if one separates them)
+    (when run_mode
+          (let first_arg:i32 (+ in_i 1))
+          (when (and (lt first_arg n) (call str.is (call arg first_arg) "--")) (set! first_arg (+ first_arg 1)))
+          (return (call run_built out first_arg n)))
     (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
     (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
     (call io.write_str 1 "' -> '")

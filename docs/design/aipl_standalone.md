@@ -29,11 +29,9 @@ to run the referee tests.
 |---|---|---|
 | Compile to `.wasm`, to a native executable (`--sandbox`, `--listen`, `--max-memory`, `--no-opt`), `verify`, `doc`, `--version` | the self-hosted command (aipl_src/aipl.aipl) | |
 | The front end (resolve, generics, check) | aipl_src/ | the same, kept equal by tests and the fuzzer |
-| `run` (a `.wasm` or a source file) | | `aipl-run` (wasmtime) and the VM |
-| `test` | | `src/testrun.rs`: builds a native test executable, starts it once per test, compares VM, wasm, and native |
-| `watch` | | `src/watch.rs`: polls modification times, re-runs |
-| `serve` | | `src/main.rs`: starts a fresh program per connection with its stdin and stdout on the socket |
-| `eval` | | the VM (`src/vm.rs`, a tree-walking interpreter) |
+| `run` of a source file, `test` (natively), `watch`, `serve --fresh`, `eval` (natively) | the self-hosted command (S2, done 2026-10-29; tested against the Rust command's output) | |
+| `run` of a `.wasm` file | | `aipl-run` (wasmtime) |
+| `test --vm`, `--all-backends`, and a file with no `(test ...)` (its entry function); `eval -f FUNC` and `--wasm`; `watch`'s VM runs | | the VM (`src/vm.rs`, a tree-walking interpreter) and `aipl-run` |
 | Executables off Linux x86-64 | | the launcher bundle (aipl-run, wasmtime, about 18 MB) |
 | Listening on TCP | std/net over `aipl_net_v1` | `aipl-run` supplies the same imports |
 | Connecting out, TLS | | not built anywhere (NET_PLAN.md, steps 5-7) |
@@ -117,11 +115,23 @@ runs it against the Rust command:
    and ` temporary` (not flags of `compile`): it stops after N connections, and
    removes its own file as it starts (aipl-run's `--requests` and `--temporary`);
 6. `eval`: compile and run; the VM's result line stays, or it is dropped
-   by decision (REPL_PLAN.md).
+   by decision (REPL_PLAN.md). **Done 2026-10-29, the line dropped (the owner chose
+   native evaluation)** (aipl_src/evalcmd.aipl): `aipl eval FILE [-- ARGS]` is `aipl
+   run`; `aipl eval -e EXPRS [--with FILE]` wraps the expressions in the module as
+   `__eval`, takes the type of the last one from the checker (`driver.eval_type`),
+   writes the module again with a printer and a `_start`, builds it natively, runs
+   it, and prints what the Rust command prints (`42 : i32`, errors at `-e:L:C`),
+   which the test checks case by case. `--wasm` and `-f FUNC` (another function
+   than main) need the Rust command. A status of 126 or more cannot be passed on
+   (WASI's `proc_exit` refuses it, as wasmtime does), so a trap, which exits 134,
+   gets one more line from the self-hosted command, saying so;
 
 Done when: every Rust command except `eval`'s VM-only output has an AIPL
 equivalent in the seed-built `aipl`, and `tools/ci.sh` runs the AIPL ones
-as the main path with the Rust ones as the check.
+as the main path with the Rust ones as the check. **Built 2026-10-29**; what is
+left of this is the second half, `tools/ci.sh` running the AIPL commands as its
+main path (it runs `aipl test aipl_src/test_suite.aipl` through the Rust command,
+which needs the VM until S4).
 
 ### S3. Running WebAssembly without wasmtime
 

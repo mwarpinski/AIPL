@@ -51,7 +51,10 @@
              ;; type of (ref f) (MEMORY_PLAN.md decision 9; null until known)
              leaks:(ptr leaks.Analysis)
              ;; the unions held by value, each with its slot counts (Slots)
-             by_value:(ptr (map.Map str.Bytes (arr i32)))])
+             by_value:(ptr (map.Map str.Bytes (arr i32)))
+             ;; aipl eval -e: where to write, as source writes it, the type of
+             ;; the last expression of the function __eval (null: not asked)
+             eval_type:(ptr buf.Buf)])
 
   ;; A formatting piece's value: where its string is (every piece of one
   ;; string is there), which value of that string it is (from 0), its type,
@@ -919,6 +922,8 @@
               (block (set! last (call infer c (arr.get ast.Expr body k) env)) (set! last_stmt k)))))
     (put c C.ret (make ast.MaybeType.none))
     (when (get c C.failed) (return))
+    (when (and (neq (get c C.eval_type) (ptr.null buf.Buf)) (call str.is fname "__eval"))
+          (call fmtdebug.source_type (get c C.eval_type) last))
     (let ends_in_return:bool
          (if (lt last_stmt 0)
              false
@@ -2548,6 +2553,15 @@
 
   ;; check, noting each formatting piece's type in `out` (when not null).
   (fn check_formats [src:i32 m:(ptr ast.Module) out:(ptr (vec.Vec (ptr Fmt)))] -> (ptr Problem) (pub)
+    (call check_with src m out (ptr.null buf.Buf)))
+
+  ;; check, writing in `eval_type` (when not null) the type of the last
+  ;; expression of the function __eval, as source writes a type (aipl eval -e,
+  ;; checker.rs body_type).
+  (fn check_eval [src:i32 m:(ptr ast.Module) eval_type:(ptr buf.Buf)] -> (ptr Problem) (pub)
+    (call check_with src m (ptr.null (vec.Vec (ptr Fmt))) eval_type))
+
+  (fn check_with [src:i32 m:(ptr ast.Module) out:(ptr (vec.Vec (ptr Fmt))) eval_type:(ptr buf.Buf)] -> (ptr Problem)
     (let c:(ptr C) (new C (call alloc.forever) [src:src
                                                 structs:(call (map.make str.Bytes (ptr ast.StructDef)) (call alloc.default) 64)
                                                 enums:(call (map.make str.Bytes (ptr ast.EnumDef)) (call alloc.default) 16)
@@ -2566,7 +2580,8 @@
                                                 fmts:out
                                                 in_defer:false
                                                 leaks:(ptr.null leaks.Analysis)
-                                                by_value:(call (map.make str.Bytes (arr i32)) (call alloc.default) 16)]))
+                                                by_value:(call (map.make str.Bytes (arr i32)) (call alloc.default) 16)
+                                                eval_type:eval_type]))
     (call check_module c m)
     (when (and (neq out (ptr.null (vec.Vec (ptr Fmt)))) (and (not (get c C.failed)) (eq (get c C.problems) (ptr.null Problem))))
         (call note_printers c out))

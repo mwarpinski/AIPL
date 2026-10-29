@@ -38,37 +38,48 @@
   ;; Compiles the program whose entry file is (path_addr, path_len), searching
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len false 32768 false false))
+    (call compile_as path_addr path_len dirs_addr dirs_len false 32768 false false (call str.from_str "") false))
 
   ;; compile_file with memory's maximum lowered to max_pages (--max-memory).
   (fn compile_file_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages false false))
+    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages false false (call str.from_str "") false))
 
   ;; compile_file_limited through the optimizer (codegen_opt.aipl), as `aipl
   ;; compile` builds by default (docs/design/OPT_PLAN.md); what the optimizer
   ;; makes must type-check, or the result is status 3 naming --no-opt.
   (fn compile_file_opt [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages true false))
+    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages true false (call str.from_str "") false))
 
   ;; compile_file for the file's test build (resolver.rs resolve_tests): its
   ;; (test ...) items as functions, and a _start running the one its first
   ;; argument names.
   (fn compile_tests [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len true 32768 false false))
+    (call compile_as path_addr path_len dirs_addr dirs_len true 32768 false false (call str.from_str "") false))
 
   ;; compile_tests with memory's maximum lowered to max_pages.
   (fn compile_tests_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages false false))
+    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages false false (call str.from_str "") false))
 
   ;; compile_tests_limited through the optimizer, as compile_file_opt.
   (fn compile_tests_opt [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages true false))
+    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages true false (call str.from_str "") false))
 
   ;; The front end alone, as `aipl verify`: resolve, type-check every template
   ;; and then the program, compile nothing. Status 0 puts the entry module's
   ;; name at (addr, len); 1 and 3 are as for compile_file.
   (fn verify_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len false 32768 false true))
+    (call compile_as path_addr path_len dirs_addr dirs_len false 32768 false true (call str.from_str "") false))
+
+  ;; aipl eval -e, in two steps over the expressions wrapped in a module (the
+  ;; text, as the file at `path`): eval_type gives the type of the last
+  ;; expression of its function __eval (status 0, the type at (addr, len) as
+  ;; source writes it; 1 and 3 as for compile_file); compile_text then compiles
+  ;; the wrapped module as it stands, without the optimizer.
+  (fn eval_type [path:str.Bytes text:str.Bytes dirs:str.Bytes] -> (ptr Out) (pub)
+    (call compile_as (call str.addr path) (get path str.Bytes.len) (call str.addr dirs) (get dirs str.Bytes.len) false 32768 false false text true))
+
+  (fn compile_text [path:str.Bytes text:str.Bytes dirs:str.Bytes max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as (call str.addr path) (get path str.Bytes.len) (call str.addr dirs) (get dirs str.Bytes.len) false max_pages false false text false))
 
   ;; `--max-memory SIZE` as wasm pages, or -1 (src/compiler/mod.rs
   ;; memory_pages): bytes, or K, M, or G of them (binary), a whole number of
@@ -94,7 +105,7 @@
     (let pages:i64 (shru bytes 16i64))
     (if (or (lt pages 16i64) (gt pages 32768i64)) -1 (i32.wrap pages)))
 
-  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool max_pages:i32 opt:bool verify_only:bool] -> (ptr Out)
+  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool max_pages:i32 opt:bool verify_only:bool entry_text:str.Bytes body:bool] -> (ptr Out)
     (unsafe (let res:(ptr Out) (new Out (call alloc.forever) [status:(zero i32)
                                                               addr:(zero i32)
                                                               len:(zero i32)]))
@@ -103,9 +114,10 @@
     (let orig:(ptr origins.Origins) (call origins.make))
     (let gen:(ptr origins.Origins) (call origins.make))
     (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-    (when (not (if tests
-                 (call resolver.flatten_tests_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig)
-                 (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig))) (call put_text res 1 err) (return res))
+    (when (not (cond
+                 (tests (call resolver.flatten_tests_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig))
+                 ((gt (get entry_text str.Bytes.len) 0) (call resolver.flatten_text_mapped (call str.bytes path_addr path_len) entry_text (call str.bytes dirs_addr dirs_len) pre err orig))
+                 (else (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig)))) (call put_text res 1 err) (return res))
     ;; every template checked once, at placeholders for its type parameters
     ;; (resolver.rs resolve); nothing is compiled from these
     (let arch:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
@@ -120,6 +132,13 @@
     (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
     (let problem:(ptr checker.Problem) (call front.check_formats (call str.addr flat) (get flat str.Bytes.len) fmts))
     (when (neq problem (ptr.null checker.Problem)) (call put_text res 3 (call locate orig gen problem (call str.bytes path_addr path_len))) (return res))
+    (when body
+          ;; aipl eval -e: the type of the last expression of __eval, as source writes it
+          (let tb:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+          (let bp:(ptr checker.Problem) (call front.check_eval (call str.addr flat) (get flat str.Bytes.len) tb))
+          (when (neq bp (ptr.null checker.Problem)) (call put_text res 3 (call locate orig gen bp (call str.bytes path_addr path_len))) (return res))
+          (call put_text res 0 tb)
+          (return res))
     (when verify_only
           ;; flat begins "(module NAME" and a newline
           (let name_end:i32 8)

@@ -109,6 +109,11 @@
   ;; (resolver.rs reads tests only then).
   (fn load [path:str.Bytes o:(ptr origins.Origins) tests:bool] -> (ptr Src)
     (let text:str.Bytes (match_result (call io.read_path path) (ok t t) (err e (return (ptr.null Src)))))
+    (call load_text path text o tests))
+
+  ;; load for text already in hand, as the file at `path` (aipl eval -e: the
+  ;; expressions wrapped in a module; its imports are looked for beside `path`).
+  (fn load_text [path:str.Bytes text:str.Bytes o:(ptr origins.Origins) tests:bool] -> (ptr Src)
     (let src:(ptr Src) (new Src (call alloc.forever) [text:(zero str.Bytes)
                                                       root:(zero (ptr compiler.Node))
                                                       file:(zero i32)
@@ -2179,7 +2184,13 @@
   ;; The flat program before generic expansion (resolver.rs flatten).
   (fn flatten_mapped [entry:str.Bytes std_dir:str.Bytes flat:(ptr buf.Buf) err:(ptr buf.Buf)
                       orig:(ptr origins.Origins)] -> bool (pub)
-    (call flatten_as entry std_dir flat err orig false))
+    (call flatten_as entry (call str.from_str "") std_dir flat err orig false))
+
+  ;; flatten_mapped for entry text in hand: a file at `entry` that is not read
+  ;; from the disk (aipl eval -e; its imports are looked for beside `entry`).
+  (fn flatten_text_mapped [entry:str.Bytes entry_text:str.Bytes std_dir:str.Bytes flat:(ptr buf.Buf) err:(ptr buf.Buf)
+                           orig:(ptr origins.Origins)] -> bool (pub)
+    (call flatten_as entry entry_text std_dir flat err orig false))
 
   ;; The files a program is read from, for aipl watch (src/watch.rs watched):
   ;; every file the resolver read for the entry file, sorted; the entry alone
@@ -2245,11 +2256,15 @@
   ;; tests are functions, with a _start running one.
   (fn flatten_tests_mapped [entry:str.Bytes std_dir:str.Bytes flat:(ptr buf.Buf) err:(ptr buf.Buf)
                             orig:(ptr origins.Origins)] -> bool (pub)
-    (call flatten_as entry std_dir flat err orig true))
+    (call flatten_as entry (call str.from_str "") std_dir flat err orig true))
 
-  (fn flatten_as [entry:str.Bytes std_dir:str.Bytes flat:(ptr buf.Buf) err:(ptr buf.Buf)
+  ;; entry_text: the entry file's text if it is not to be read from the disk
+  ;; (empty: read it).
+  (fn flatten_as [entry:str.Bytes entry_text:str.Bytes std_dir:str.Bytes flat:(ptr buf.Buf) err:(ptr buf.Buf)
                   orig:(ptr origins.Origins) tests:bool] -> bool
-    (let src:(ptr Src) (call load entry orig tests))
+    (let src:(ptr Src) (if (gt (get entry_text str.Bytes.len) 0)
+                           (call load_text entry entry_text orig tests)
+                           (call load entry orig tests)))
     ;; the entry file's name in compiled code's line table is its file name
     (call name_file src (call slice entry (+ (call last_index entry 47) 1) (- (get entry str.Bytes.len) (+ (call last_index entry 47) 1))))
     (let st:(ptr State) (new State (call alloc.forever) [entry_dir:(zero str.Bytes)
