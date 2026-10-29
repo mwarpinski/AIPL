@@ -344,9 +344,6 @@ call the operating system (`rmdir`, or `unlinkat` with `AT_REMOVEDIR`).
   2026-10-29): `fs.mkdir`, `fs.mkdir_path`, `fs.rmdir`, and `fs.rmdir_path` in
   `std/fs`, each `[path:str] -> (result i32 io.Error)`, and a seed built from
   0ca006e (sha256 in bootstrap/README.md): a fixed point again. `io.Error`
-  has no kind for "exists" (-20) or "not empty" (-55): both are `other`, since
-  the owner fixed its four kinds (LANGUAGE_DECISIONS.md, so that no exhaustive
-  match breaks). A program that must tell "exists" apart looks first, with
-  `fs.stat`. **Question for the owner:** add `exists` and `not_empty` to
-  `io.Error` (Rust's `AlreadyExists` and `DirectoryNotEmpty`), accepting that
-  a `match` on it must then name them?
+  got `exists` (-20) and `not_empty` (-55) right after (the owner agreed
+  2026-10-29: LANGUAGE_DECISIONS.md, item on io.Error, amended), so a program
+  can tell "already there" from a real failure with no `fs.stat` first.

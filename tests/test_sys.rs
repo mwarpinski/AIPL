@@ -400,7 +400,7 @@ fn std_fs_remove_is_the_same_in_every_backend() {
     let _ = std::fs::remove_dir_all(&top);
 }
 
-const STD_FS_DIRS_COMPILED: &str = "mkdir ok 0\nagain the file could not be read or written\nbytes ok 0\nmissing_parent no such file or directory\ndotdot permission denied\nrmdir ok 0\nrmdir_bytes ok 0\nnot_empty the file could not be read or written\nfile no such file or directory\nlink no such file or directory\nmissing no such file or directory\n";
+const STD_FS_DIRS_COMPILED: &str = "mkdir ok 0\nagain file exists\nbytes ok 0\nmissing_parent no such file or directory\ndotdot permission denied\nrmdir ok 0\nrmdir_bytes ok 0\nnot_empty directory not empty\nfile no such file or directory\nlink no such file or directory\nmissing no such file or directory\n";
 
 /// std/fs's `mkdir`, `mkdir_path`, `rmdir`, and `rmdir_path` make and remove
 /// directories and give an `io.Error` for each refusal, in every backend; the

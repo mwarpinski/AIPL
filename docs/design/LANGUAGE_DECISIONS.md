@@ -150,6 +150,15 @@ the writes (`write_file`, `write_path`) take the same shape; and
 `stream.open`'s error up) give `io.Error` too, one type for one kind of
 failure.
 
+**Amended (owner, 2026-10-29):** two kinds are added, `exists` (EEXIST) and
+`not_empty` (ENOTEMPTY): `(enum io.Error [not_found denied is_directory other
+exists not_empty])`, with the words "file exists" and "directory not empty".
+`fs.mkdir` and `fs.rmdir` need them (a program must tell "already there" from
+a real failure without looking first and racing), and the language is
+unreleased, so a `match` that named the four kinds breaks at no one's cost.
+The four were fixed so that no member would be added after a release; none
+will be after this.
+
 **Done 2026-10-26** on branch features/missing-values:
 - `os.arg` and `os.env` return `(option.Option str.Bytes)`.
 - Every WASI-backed op (`fs.*`, `sys.random`, `args.*`, `env.*`) fails
