@@ -37,6 +37,7 @@ pub fn executable_with(wasm: &[u8], sandbox: bool, listen: &[String], serve: Opt
 fn run_backend((engine, module): &(Engine, Module), wasm: &[u8], sandbox: bool, listen: &[String], serve: Option<&str>) -> Result<Vec<u8>, String> {
     let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).map_err(|e| e.to_string())?;
+    crate::sys::add_chmod(&mut linker)?;
     let mut store = Store::new(engine, WasiCtxBuilder::new().inherit_stderr().build_p1());
     let inst = linker.instantiate(&mut store, module).map_err(|e| e.to_string())?;
     let alloc = inst.get_typed_func::<i32, i32>(&mut store, "host_alloc").map_err(|e| e.to_string())?;

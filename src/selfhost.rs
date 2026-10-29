@@ -126,6 +126,7 @@ fn call_toolchain(t: &(Engine, WasmModule), entry: &str, path: &str, extra: Opti
     let (engine, module) = t;
     let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |c: &mut WasiP1Ctx| c).map_err(|e| e.to_string())?;
+    crate::sys::add_chmod(&mut linker)?;
     let mut b = WasiCtxBuilder::new();
     b.inherit_stderr().inherit_env();
     b.preopened_dir(".", ".", FsPerms::ReadWrite).map_err(|e| e.to_string())?;

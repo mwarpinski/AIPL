@@ -1,5 +1,5 @@
 ;; std/fs: directories and file information (AIPL_SPEC.md 4.C), over
-;; fs.opendir, fs.readdir, and fs.stat:
+;; fs.opendir, fs.readdir, fs.stat, and fs.chmod:
 ;;
 ;;   (match (call fs.list (call alloc.default) "data")
 ;;     ((option.Option (ptr (vec.Vec str.Bytes))) some [names] ...)
@@ -7,6 +7,7 @@
 ;;   (match (call fs.info "data/a.txt")
 ;;     ((option.Option fs.Info) some [i] (get i fs.Info.size))
 ;;     ((option.Option fs.Info) none -1i64))
+;;   (call fs.chmod "build/tool" fs.PROGRAM)    ;; (result i32 io.Error)
 ;;
 ;; A directory's names come sorted bytewise, without "." and "..", so a
 ;; listing is the same in every backend and on every file system (the order
@@ -17,6 +18,7 @@
   (import str)
   (import vec)
   (import option)
+  (import io)
 
   ;; What a path names, after following symbolic links.
   (enum Kind [file directory other] (pub))
@@ -111,6 +113,34 @@
                             modified:(mem.load64 (+ st 48))]))
     (call alloc.free_raw a st 64)
     (if (lt r 0) (make (option.Option Info) none) (make (option.Option Info) some i)))
+
+  ;; ===== Permissions =====
+
+  ;; Mode bits for chmod: owner read and write, everyone else read (0o644), the
+  ;; mode of an ordinary file.
+  (const FILE:i32 420 (pub))
+
+  ;; Owner read, write, and execute; everyone else read and execute (0o755), the
+  ;; mode of a program.
+  (const PROGRAM:i32 493 (pub))
+
+  ;; Sets the permission bits of `path`: `mode` is 0 to 0o777 (setuid, setgid,
+  ;; and sticky are refused). Needs no grant: the path is one the program could
+  ;; open, confined as fs.open is (a relative path stays in the working
+  ;; directory; under --sandbox, nothing outside it). The result is 0, or why
+  ;; not (a missing path not_found, a path out of reach denied, a bad mode
+  ;; other).
+  (fn chmod [path:str mode:i32] -> (result i32 io.Error) (pub)
+    (unsafe (call chmod_at (str.ptr path) (str.len path) mode)))
+
+  ;; chmod for a path held as bytes.
+  (fn chmod_path [path:str.Bytes mode:i32] -> (result i32 io.Error) (pub)
+    (unsafe (call chmod_at (call str.addr path) (get path str.Bytes.len) mode)))
+
+  ;; The operation, on a path in memory.
+  (fn chmod_at [addr:i32 len:i32 mode:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.chmod addr len mode))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
 
   ;; ===== Tests =====
 

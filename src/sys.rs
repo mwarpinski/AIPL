@@ -13,6 +13,25 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path};
 
+/// `chmod` for the hosts that run the toolchain's own modules and the tools
+/// under wasmtime (src/selfhost.rs, src/native.rs, src/tools.rs): the
+/// compiler imports std/fs, whose `chmod` names the import, so a module must
+/// find it to start. The program has the working directory and `/`, as
+/// aipl-run gives them; a path outside its memory is -21, as there.
+pub fn add_chmod(linker: &mut wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx>) -> Result<(), String> {
+    linker
+        .func_wrap("aipl_sys_v1", "chmod", |mut c: wasmtime::Caller<'_, wasmtime_wasi::p1::WasiP1Ctx>, dirfd: i32, path: i32, len: i32, mode: i32| -> i32 {
+            let (at, n) = (path as u32 as usize, len as u32 as usize);
+            let bytes = c.get_export("memory").and_then(|e| e.into_memory()).and_then(|m| m.data(&c).get(at..at.checked_add(n)?).map(|b| b.to_vec()));
+            match bytes {
+                Some(p) => chmod_at(dirfd, &p, mode),
+                None => -21,
+            }
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// WASI's EBADF, EINVAL, and EPERM, negated as the file operations' results are.
 const EBADF: i32 = -8;
 const EINVAL: i32 = -28;

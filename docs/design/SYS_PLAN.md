@@ -13,7 +13,7 @@ command line and fixed in an executable when it is compiled.
 |---|---|---|
 | 1 | `fs.chmod`: the execute bit, in every backend and both toolchains | **Done** 2026-10-28 (section 6) |
 | 2 | The process operations `proc.*` and `--allow-run`, in every backend and both toolchains | **Done** 2026-10-28 (section 7) |
-| 3 | `std/proc`: the safe interface (run a program and capture its output; a `Child` with pipes) | **Done** 2026-10-28 (section 8); `fs.chmod` in `std/fs` waits for step 4 |
+| 3 | `std/proc`: the safe interface (run a program and capture its output; a `Child` with pipes) | **Done** 2026-10-28 (section 8) |
 | 4 | A seed refresh, so the self-hosted `aipl` can use them (S2 of aipl_standalone.md) | Owner approves |
 
 ## 1. Why a new import module
@@ -161,11 +161,10 @@ the VM, aipl-run, and native executables.
   working directory: a check, then a use, where the native open is the
   kernel's own, so a program racing another process for the same directory
   is confined less tightly under aipl-run than natively.
-- **Not yet: the std wrapper.** `std/fs` would hold `fs.chmod [path mode] ->
-  (result i32 io.Error)`, but the compiler imports `std/fs`, and the
-  checked-in seed cannot read the new operation, so `bootstrap/build.sh`
-  would stop. It lands with the seed refresh (step 4). Until then a program
-  uses the operation inside `unsafe`.
+- **The std wrapper** (added in step 4): `fs.chmod [path:str mode:i32] ->
+  (result i32 io.Error)` and `chmod_path` in `std/fs`, with `fs.FILE` (0o644)
+  and `fs.PROGRAM` (0o755). It waited for the seed refresh, since the compiler
+  imports `std/fs` and the earlier seed could not read the operation.
 - A path with a NUL byte in it ends there natively (as every native path
   operation does) and is an error in the VM and aipl-run.
 - Tests: tests/test_sys.rs (seven runs of one program, in the VM, aipl-run,

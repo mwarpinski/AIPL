@@ -290,3 +290,34 @@ fn std_proc_exec_replaces_the_program_in_every_backend() {
     }
     let _ = std::fs::remove_dir_all(&top);
 }
+
+const STD_FS_CHMOD_COMPILED: &str = "program ok 0\nfile ok 0\nbytes ok 0\nsetuid the file could not be read or written\nmissing no such file or directory\ndotdot permission denied\n";
+
+/// std/fs's `chmod` and `chmod_path` give an `io.Error` for each refusal
+/// and leave the modes the program set, in every backend; the VM's paths are
+/// ordinary, so its `..` is followed (SYS_PLAN.md step 4).
+#[test]
+fn std_fs_chmod_is_the_same_in_every_backend() {
+    let top = scratch("stdfs");
+    let src = root().join("tests/aipl/sys/std_fs_chmod.aipl");
+    let wasm = compile(&top, &src, "p.wasm", &[]);
+    let exe = compile(&top, &src, "p", &["--exe"]);
+    let bundle = compile(&top, &src, "p_bundle", &["--exe", "--target", "wasm"]);
+    let sandboxed = compile(&top, &src, "ps", &["--exe", "--sandbox"]);
+    let runs: Vec<(&str, Box<dyn Fn() -> Command + '_>, bool)> = vec![
+        ("VM", Box::new(|| { let mut c = Command::new(AIPL); c.arg("eval").arg(&src); c }), true),
+        ("aipl-run", Box::new(|| { let mut c = Command::new(RUNNER); c.arg(&wasm); c }), false),
+        ("native", Box::new(|| Command::new(&exe)), false),
+        ("bundle", Box::new(|| Command::new(&bundle)), false),
+        ("native --sandbox", Box::new(|| Command::new(&sandboxed)), false),
+    ];
+    for (how, command, ordinary) in runs {
+        let (work, outside, _) = setup(&top);
+        let o = command().current_dir(&work).output().unwrap();
+        let want = if ordinary { STD_FS_CHMOD_COMPILED.replace("dotdot permission denied", "dotdot ok 0") } else { STD_FS_CHMOD_COMPILED.to_string() };
+        assert_eq!(answers(&o), want, "{how}");
+        assert_eq!(mode(&work.join("a.txt")), 0o600, "{how}: a.txt");
+        assert_eq!(mode(&outside), if ordinary { 0o600 } else { 0o644 }, "{how}: outside.txt");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}
