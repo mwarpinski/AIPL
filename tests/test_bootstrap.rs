@@ -79,7 +79,7 @@ fn the_seed_builds_the_compiler_the_rust_toolchain_builds() {
 
 /// A compiler writes its output beside it and renames it into place, so it can
 /// replace the very file that is running (an in-place write is "Text file
-/// busy" on Linux), and leaves nothing behind (SYS_PLAN.md section 10).
+/// busy" on Linux), and leaves nothing behind, a failure included (SYS_PLAN.md section 10).
 #[test]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native seed)")]
@@ -94,6 +94,16 @@ fn a_compiler_replaces_the_file_it_is_running_from() {
     assert!(std::fs::read(&compiler).unwrap() == before, "the replacement differs from the Rust-built compiler");
     let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert_eq!(left.len(), 1, "files left beside the output: {left:?}");
+    // an output that cannot be replaced (a directory) is an error that leaves
+    // no temporary file either
+    let into = dir.join("into");
+    std::fs::create_dir(&into).unwrap();
+    let r = run(Command::new(&compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(&into));
+    assert_eq!(r.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("cannot write"), "{}", String::from_utf8_lossy(&r.stderr));
+    let mut left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    left.sort();
+    assert_eq!(left, ["aipl", "into"], "files left beside the output");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

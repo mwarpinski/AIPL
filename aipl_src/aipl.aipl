@@ -53,6 +53,12 @@
     (call io.eprintln "")
     1)
 
+  ;; fail_bytes, after removing the temporary file that was being written
+  ;; (there may be none: what is left of a failed write is no use).
+  (fn fail_removing [tmp:str.Bytes prefix:str b:str.Bytes] -> i32
+    (let _gone:bool (match_result (call fs.remove_path tmp) (ok done true) (err e false)))
+    (call fail_bytes prefix b))
+
   (fn write_int [fd:i32 n:i32] -> void
     (unsafe (let digits:i32 (mem.alloc 11))
     (fs.write fd digits (call fmt.int_to_bytes n digits))))
@@ -173,12 +179,12 @@
     (call buf.push_str tmp_buf ".aipl-tmp")
     (let tmp:str.Bytes (call buf.bytes tmp_buf))
     (when (match_result (call io.write_path tmp bytes) (ok wrote (neq wrote (get bytes str.Bytes.len))) (err e true))
-        (return (call fail_bytes "cannot write " out)))
+        (return (call fail_removing tmp "cannot write " out)))
     ;; an executable is one: the execute bit, as the Rust command sets it
     (when (and exe (match_result (call fs.chmod_path tmp fs.PROGRAM) (ok done false) (err e true)))
-        (return (call fail_bytes "cannot make executable " out)))
+        (return (call fail_removing tmp "cannot make executable " out)))
     (when (match_result (call fs.rename_path tmp out) (ok done false) (err e true))
-        (return (call fail_bytes "cannot write " out)))
+        (return (call fail_removing tmp "cannot write " out)))
     (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
     (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
     (call io.write_str 1 "' -> '")

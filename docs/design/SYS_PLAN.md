@@ -301,6 +301,12 @@ it; `run` and `watch` will need it).
   `compile` writes `OUT.aipl-tmp`, makes it executable, and renames it onto
   `OUT`, so it can replace the compiler that is running it. The seed was built
   by the Rust toolchain from 49ec350 (sha256 in bootstrap/README.md): a fixed
-  point again. Left: AIPL has no operation to remove a file that a failed
-  compile leaves behind (the Rust command removes its temporary file), so a
-  failed write or rename leaves `OUT.aipl-tmp` beside the output.
+  point again.
+- **Removing a file** was the gap that was left: the operation was there all
+  along (`fs.delete`, WASI's `path_unlink_file`), the std module had no wrapper.
+  `std/fs` now has `remove [path:str] -> (result i32 io.Error)` and
+  `remove_path`, and `compile` removes its temporary file when the write, the
+  `chmod`, or the rename fails, as the Rust command does. The seed already read
+  `fs.delete`, so this needed no refresh. A directory is refused ("is a
+  directory"); AIPL still has no operation to remove one (`path_remove_directory`)
+  or to make one (`path_create_directory`).

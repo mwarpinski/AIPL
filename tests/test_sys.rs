@@ -364,6 +364,42 @@ fn std_fs_rename_is_the_same_in_every_backend() {
     let _ = std::fs::remove_dir_all(&top);
 }
 
+const STD_FS_REMOVE_COMPILED: &str = "plain ok 0\nagain no such file or directory\nbytes ok 0\ndirectory is a directory\nlink ok 0\nmissing no such file or directory\ndotdot permission denied\n";
+
+/// std/fs's `remove` and `remove_path` delete a file or a link (itself, not
+/// its target) and give an `io.Error` for each refusal, in every backend; the
+/// VM's paths are ordinary, so its `..` is followed (SYS_PLAN.md section 10).
+#[test]
+fn std_fs_remove_is_the_same_in_every_backend() {
+    let top = scratch("stdfs_remove");
+    let src = root().join("tests/aipl/sys/std_fs_remove.aipl");
+    let wasm = compile(&top, &src, "p.wasm", &[]);
+    let exe = compile(&top, &src, "p", &["--exe"]);
+    let bundle = compile(&top, &src, "p_bundle", &["--exe", "--target", "wasm"]);
+    let sandboxed = compile(&top, &src, "ps", &["--exe", "--sandbox"]);
+    let runs: Vec<Run> = vec![
+        ("VM", Box::new(|| { let mut c = Command::new(AIPL); c.arg("eval").arg(&src); c }), 0),
+        ("aipl-run", Box::new(|| { let mut c = Command::new(RUNNER); c.arg(&wasm); c }), 1),
+        ("native", Box::new(|| Command::new(&exe)), 1),
+        ("bundle", Box::new(|| Command::new(&bundle)), 1),
+        ("native --sandbox", Box::new(|| Command::new(&sandboxed)), 1),
+    ];
+    for (how, command, kind) in runs {
+        let ordinary = kind == 0;
+        let (work, outside, _) = setup(&top);
+        std::fs::write(work.join("b.txt"), "B").unwrap();
+        let o = command().current_dir(&work).output().unwrap();
+        let want = if ordinary { STD_FS_REMOVE_COMPILED.replace("dotdot permission denied", "dotdot ok 0") } else { STD_FS_REMOVE_COMPILED.to_string() };
+        assert_eq!(answers(&o), want, "{how}");
+        for gone in ["a.txt", "b.txt", "link"] {
+            assert!(work.join(gone).symlink_metadata().is_err(), "{how}: {gone} is still there");
+        }
+        assert!(work.join("dir").is_dir(), "{how}: dir");
+        assert_eq!(outside.exists(), !ordinary, "{how}: outside.txt (the link's target) or the file a `..` names");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}
+
 /// What `rename.aipl` prints, for the VM (paths ordinary), for compiled
 /// programs (a relative path stays in the working directory), and under
 /// `--sandbox` (there is no absolute path to name).

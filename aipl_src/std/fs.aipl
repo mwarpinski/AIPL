@@ -163,6 +163,24 @@
     (let r:i32 (fs.rename oa ol na nl))
     (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
 
+  ;; ===== Remove =====
+
+  ;; Deletes the file `path` (a link is deleted itself, not what it names; a
+  ;; directory is refused, "is a directory"). Needs no grant: the path is one the program
+  ;; could open, confined as fs.open is. The result is 0, or why not (a missing
+  ;; path not_found, a path out of reach denied).
+  (fn remove [path:str] -> (result i32 io.Error) (pub)
+    (unsafe (call remove_at (str.ptr path) (str.len path))))
+
+  ;; remove for a path held as bytes.
+  (fn remove_path [path:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call remove_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; The operation, on a path in memory.
+  (fn remove_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.delete addr len))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
   ;; ===== Tests =====
 
   ;; Pass count; test_suite.aipl expects 4. Run from the repository root.
