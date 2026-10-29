@@ -2195,6 +2195,33 @@ impl VM {
                     Err(e) => Ok(Value::Int(wasi_errno(&e))),
                 }
             }
+            OpCode::SysPoll => {
+                // poll_oneoff for one relative clock subscription: sleeps
+                let subs = self.int_operand(&args[0], scope, "sys.poll")? as u32 as usize;
+                let out = self.int_operand(&args[1], scope, "sys.poll")? as u32 as usize;
+                let n = self.int_operand(&args[2], scope, "sys.poll")? as u32 as usize;
+                let nevents = self.int_operand(&args[3], scope, "sys.poll")? as u32 as usize;
+                let size = self.shared.lock().unwrap().bytes.len();
+                let inside = |p: usize, len: usize| p.checked_add(len).is_some_and(|end| end <= size);
+                if n != 1 {
+                    return Ok(Value::Int(-28));
+                }
+                if !inside(subs, 48) || !inside(out, 32) || !inside(nevents, 4) {
+                    return Ok(Value::Int(-21));
+                }
+                let sub = self.read_bytes(subs, 48);
+                let (tag, flags) = (sub[8], u16::from_le_bytes([sub[40], sub[41]]));
+                if tag != 0 || flags != 0 {
+                    return Ok(Value::Int(-58));
+                }
+                let ns = u64::from_le_bytes(sub[24..32].try_into().unwrap());
+                std::thread::sleep(std::time::Duration::from_nanos(ns));
+                let mut event = [0u8; 32];
+                event[..8].copy_from_slice(&sub[..8]);
+                self.write_bytes(out, &event);
+                self.write_bytes(nevents, &1u32.to_le_bytes());
+                Ok(Value::Int(0))
+            }
             OpCode::FsMkdir => {
                 let path_ptr = self.int_operand(&args[0], scope, "fs.mkdir")? as u32 as usize;
                 let path_len = self.int_operand(&args[1], scope, "fs.mkdir")? as u32 as usize;

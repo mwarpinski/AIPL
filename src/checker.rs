@@ -1709,6 +1709,18 @@ fn fits(got: &Type, want: &Type) -> bool {
                     }
                     Ok(Type::I32)
                 }
+                OpCode::SysPoll => {
+                    if args.len() != 4 {
+                        return Err(format!("{}:{}: sys.poll requires 4 arguments (subs, out, n, nevents)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: sys.poll argument {} must be i32 (address or count), got {}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
                 OpCode::FsMkdir => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: fs.mkdir requires 2 arguments (path_ptr, path_len)", l, c));
@@ -2464,7 +2476,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
         MemLoad8 | MemLoad32 | MemLoad64 | MemStore8 | MemStore32 | MemStore64 | MemLoad8S | MemLoad16U | MemLoad16S | MemStore16
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
-            | FsOpen | FsRead | FsWrite | FsDelete | FsChmod | FsRename | FsRmdir | FsMkdir | FsOpendir | FsReaddir | FsStat
+            | FsOpen | FsRead | FsWrite | FsDelete | FsChmod | FsRename | FsRmdir | FsMkdir | SysPoll | FsOpendir | FsReaddir | FsStat
             | NetListen | NetAccept | NetRecv | NetSend | NetClose
             | ProcSpawn | ProcStream | ProcRead | ProcWrite | ProcClose | ProcWait | ProcExec
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet

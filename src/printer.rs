@@ -218,6 +218,7 @@ pub fn op_name(op: &OpCode) -> &'static str {
         FsRename => "fs.rename",
         FsRmdir => "fs.rmdir",
         FsMkdir => "fs.mkdir",
+        SysPoll => "sys.poll",
         FsOpendir => "fs.opendir",
         FsReaddir => "fs.readdir",
         FsStat => "fs.stat",

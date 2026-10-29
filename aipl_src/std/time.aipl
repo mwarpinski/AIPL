@@ -4,6 +4,7 @@
 ;;   (let t:i64 (call time.now))
 ;;   ... work ...
 ;;   (call time.report "sort" t)          ;; stderr: "sort: 12.345 ms"
+;;   (call time.sleep 250000000i64)       ;; waits a quarter of a second
 ;;
 ;; Durations print with three decimals in the largest fitting unit (ns, us,
 ;; ms, s), from integer arithmetic.
@@ -14,6 +15,24 @@
 
   ;; Now, in nanoseconds since an arbitrary start (only differences matter).
   (fn now [] -> i64 (pub) (sys.monotonic))
+
+  ;; Waits `ns` nanoseconds (nothing for 0 or less), by sys.poll: WASI's
+  ;; poll_oneoff with one relative clock subscription, which every backend
+  ;; gives. A wait a signal cuts short ends early.
+  (fn sleep [ns:i64] -> void (pub)
+    (when (lte ns 0i64) (return))
+    (unsafe
+      (let a:alloc.Allocator (call alloc.default))
+      ;; the subscription (48 bytes), the event it gives (32), the event count (4)
+      (let p:i32 (call alloc.raw a 96))
+      (mem.store64 p 0i64)
+      (mem.store8 (+ p 8) 0)
+      (mem.store32 (+ p 16) 1)
+      (mem.store64 (+ p 24) ns)
+      (mem.store64 (+ p 32) 0i64)
+      (mem.store16 (+ p 40) 0)
+      (let r:i32 (sys.poll p (+ p 48) 1 (+ p 80)))
+      (call alloc.free_raw a p 96)))
 
   ;; Nanoseconds since `start` (a value from now).
   (fn since [start:i64] -> i64 (pub) (- (sys.monotonic) start))

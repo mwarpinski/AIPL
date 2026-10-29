@@ -104,7 +104,7 @@ pub const HEAD_NAMES: &[&str] = &[
     "print", "println", "proc.close", "proc.exec", "proc.read", "proc.spawn", "proc.stream", "proc.wait",
     "proc.write", "ptr.addr", "ptr.cast", "ptr.gen", "ptr.make", "ptr.null", "put", "ref",
     "remu", "return", "set!", "shl", "shr", "shru", "sizeof", "str.len", "str.ptr", "sys.exit",
-    "sys.monotonic", "sys.print", "sys.random", "sys.time", "thread.join", "thread.spawn",
+    "sys.monotonic", "sys.poll", "sys.print", "sys.random", "sys.time", "thread.join", "thread.spawn",
     "try", "try_opt", "try_or", "unsafe", "while", "with", "zero",
 ];
 
@@ -1899,6 +1899,7 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 "sys.time" => OpCode::SysTime,
                                 "sys.monotonic" => OpCode::SysMonotonic,
                                 "sys.random" => OpCode::SysRandom,
+                                "sys.poll" => OpCode::SysPoll,
                                 "sys.exit" => OpCode::SysExit,
                                 "fs.open" => OpCode::FsOpen,
                                 "fs.read" => OpCode::FsRead,

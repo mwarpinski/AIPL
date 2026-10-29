@@ -347,3 +347,26 @@ call the operating system (`rmdir`, or `unlinkat` with `AT_REMOVEDIR`).
   got `exists` (-20) and `not_empty` (-55) right after (the owner agreed
   2026-10-29: LANGUAGE_DECISIONS.md, item on io.Error, amended), so a program
   can tell "already there" from a real failure with no `fs.stat` first.
+
+## 12. `sys.poll` and `std/time.sleep` (2026-10-29)
+
+`aipl watch` polls four times a second, and AIPL could not wait: no sleep, so
+only a busy loop or starting `sleep`. The Rust command's `thread::sleep` is an
+operating-system call, so AIPL gets the same.
+
+- **`(sys.poll subs out n nevents)`**, `0` or minus a WASI errno, is WASI's
+  `poll_oneoff` as it is: any host that gives WASI gives it (wasmtime for
+  `aipl-run`), with no new host module and no grant. Natively it is a
+  `nanosleep` of the timeout of one relative clock subscription (tag 0, flags
+  0), the event written as WASI says (the subscription's userdata, no error, a
+  clock). The VM does the same with `std::thread::sleep`. Other subscriptions
+  (a descriptor becoming readable, an absolute time, several at once) are
+  `-28` or `-58` there: waiting on a descriptor is for a later `select`-like
+  API, if one is wanted. `poll_oneoff` is the last import, so no earlier
+  program's bytes change.
+- **`time.sleep [ns:i64] -> void`** builds the subscription and calls it (a
+  wait of zero or less is none; a wait a signal cuts short ends early). The
+  test checks 300 ms to the nearest hundred, in every backend, and that both
+  toolchains compile it to the same bytes.
+- **Not here:** a way to tell whether standard output is a terminal, which the
+  Rust `watch` uses to clear the screen. The self-hosted `watch` does not clear it.

@@ -768,3 +768,40 @@ fn both_toolchains_compile_fs_mkdir_to_the_same_bytes() {
     assert!(String::from_utf8_lossy(&o.stdout).contains("BIT-FOR-BIT IDENTICAL"), "{}", String::from_utf8_lossy(&o.stdout));
     let _ = std::fs::remove_dir_all(&top);
 }
+
+const SLEEP_ANSWERS: &str = "slept 3 hundred ms\nno wait for zero or less: true\none clock: 0\nno subscription: -28\n";
+
+/// `sys.poll` (WASI's `poll_oneoff`) and `std/time`'s `sleep` wait the same
+/// time and give the same results in every backend (SYS_PLAN.md section 12):
+/// a wait of 300 ms, none for zero or less, and EINVAL for no subscription.
+#[test]
+fn sleeping_is_the_same_in_every_backend() {
+    let top = scratch("sleep");
+    let src = root().join("tests/aipl/sys/sleep.aipl");
+    let wasm = compile(&top, &src, "p.wasm", &[]);
+    let exe = compile(&top, &src, "p", &["--exe"]);
+    let bundle = compile(&top, &src, "p_bundle", &["--exe", "--target", "wasm"]);
+    let sandboxed = compile(&top, &src, "ps", &["--exe", "--sandbox"]);
+    let runs: Vec<Run> = vec![
+        ("VM", Box::new(|| { let mut c = Command::new(AIPL); c.arg("eval").arg(&src); c }), 0),
+        ("aipl-run", Box::new(|| { let mut c = Command::new(RUNNER); c.arg(&wasm); c }), 1),
+        ("native", Box::new(|| Command::new(&exe)), 1),
+        ("bundle", Box::new(|| Command::new(&bundle)), 1),
+        ("native --sandbox", Box::new(|| Command::new(&sandboxed)), 2),
+    ];
+    for (how, command, _) in runs {
+        let o = command().current_dir(&top).output().unwrap();
+        assert_eq!(answers(&o), SLEEP_ANSWERS, "{how}");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}
+
+/// Both toolchains compile the program to the same bytes.
+#[test]
+fn both_toolchains_compile_sys_poll_to_the_same_bytes() {
+    let top = scratch("sleep_bytes");
+    let o = Command::new(AIPL).arg("compile").arg("--self").arg(root().join("tests/aipl/sys/sleep.aipl")).arg("-o").arg(top.join("s.wasm")).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("BIT-FOR-BIT IDENTICAL"), "{}", String::from_utf8_lossy(&o.stdout));
+    let _ = std::fs::remove_dir_all(&top);
+}

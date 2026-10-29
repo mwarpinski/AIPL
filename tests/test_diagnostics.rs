@@ -209,6 +209,7 @@ fn every_unchecked_operation_needs_an_unsafe_context() {
         ("fs.rename", "(fs.rename 2048 4 2052 4)"),
         ("fs.rmdir", "(fs.rmdir 2048 4)"),
         ("fs.mkdir", "(fs.mkdir 2048 4)"),
+        ("sys.poll", "(sys.poll 2048 2200 1 2300)"),
         ("fs.opendir", "(fs.opendir 2048 4)"),
         ("fs.readdir", "(fs.readdir 3 2048 64 0i64)"),
         ("fs.stat", "(fs.stat 2048 4 2048)"),

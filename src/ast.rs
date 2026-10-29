@@ -179,6 +179,11 @@ pub enum OpCode {
     /// `(fs.mkdir ptr len)`: makes a directory at the path (mode 0777 less the
     /// umask, as WASI does): 0, or minus a WASI errno (`path_create_directory`).
     FsMkdir,
+    /// `(sys.poll subs out n nevents)`: WASI's `poll_oneoff`, as it is: waits for
+    /// the `n` subscriptions at `subs`, writes events at `out` and their number
+    /// at `nevents`; 0, or minus a WASI errno. Native executables and the VM
+    /// wait for one relative clock subscription only (`std/time.sleep`).
+    SysPoll,
     /// `(net.listen addr len port)`: a listening TCP socket on the address
     /// whose `len` (4 or 16) bytes are at `addr`; its handle, -1, or -2 if
     /// not granted (docs/design/NET_PLAN.md, `aipl_net_v1`).

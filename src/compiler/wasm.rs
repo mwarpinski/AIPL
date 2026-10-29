@@ -1362,6 +1362,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::FsRename
             | OpCode::FsRmdir
             | OpCode::FsMkdir
+            | OpCode::SysPoll
             | OpCode::FsOpendir
             | OpCode::FsReaddir
             | OpCode::FsStat
@@ -2173,6 +2174,15 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::LocalGet(io_a));
                 func.instruction(&Instruction::LocalGet(io_b));
                 func.instruction(&Instruction::Call(host));
+            }
+            OpCode::SysPoll => {
+                // (sys.poll subs out n nevents) -> poll_oneoff, as it is
+                let poll = wasi_index(ctx, Wasi::PollOneoff)?;
+                for a in args {
+                    compile_expr(a, ctx, func)?;
+                }
+                func.instruction(&Instruction::Call(poll));
+                emit_errno_to_result(func, ctx, None);
             }
             OpCode::FsMkdir => {
                 // (fs.mkdir ptr len) -> path_create_directory(fd, ptr, len), the
@@ -4327,6 +4337,8 @@ enum Wasi {
     PathRemoveDirectory,
     /// `path_create_directory`, after it, for the same reason.
     PathCreateDirectory,
+    /// `poll_oneoff`, after it, for the same reason.
+    PollOneoff,
 }
 
 impl Wasi {
@@ -4373,6 +4385,7 @@ impl Wasi {
             Wasi::PathRename => "path_rename",
             Wasi::PathRemoveDirectory => "path_remove_directory",
             Wasi::PathCreateDirectory => "path_create_directory",
+            Wasi::PollOneoff => "poll_oneoff",
             Wasi::ProcExec => "exec",
         }
     }
@@ -4400,6 +4413,7 @@ impl Wasi {
             Wasi::ProcClose | Wasi::ProcWait => (vec![I32], vec![I32]),
             Wasi::PathRename => (vec![I32; 6], vec![I32]),
             Wasi::PathRemoveDirectory | Wasi::PathCreateDirectory => (vec![I32, I32, I32], vec![I32]),
+            Wasi::PollOneoff => (vec![I32; 4], vec![I32]),
             Wasi::NetAccept | Wasi::NetClose => (vec![I32], vec![I32]),
         }
     }
@@ -4415,6 +4429,7 @@ impl Wasi {
             OpCode::FsRename => Some(Wasi::PathRename),
             OpCode::FsRmdir => Some(Wasi::PathRemoveDirectory),
             OpCode::FsMkdir => Some(Wasi::PathCreateDirectory),
+            OpCode::SysPoll => Some(Wasi::PollOneoff),
             OpCode::FsOpendir => Some(Wasi::PathOpen),
             OpCode::FsReaddir => Some(Wasi::FdReaddir),
             OpCode::FsStat => Some(Wasi::PathFilestatGet),
