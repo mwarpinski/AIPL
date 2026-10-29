@@ -838,10 +838,11 @@
     (call x64.mov_rr c 64 (call r13) (call rsp))
     (call x64.patch_rel32 c have_parent (call buf.len c)))
 
-  ;; path_unlink_file(dirfd, path, path_len) -> errno. unlinkat cannot
-  ;; resolve beneath a directory, so the parent directory is opened that
-  ;; way (O_PATH) and the last component removed inside it.
-  (fn emit_path_unlink [l:(ptr lower.L) w:(ptr W)] -> void
+  ;; path_unlink_file(dirfd, path, path_len) -> errno, and with flags 512
+  ;; (AT_REMOVEDIR) path_remove_directory. unlinkat cannot resolve beneath a
+  ;; directory, so the parent directory is opened that way (O_PATH) and the
+  ;; last component removed inside it.
+  (fn emit_path_unlink [l:(ptr lower.L) w:(ptr W) flags:i32] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
     (call arg c 32 3 0 (call rbx))
@@ -861,7 +862,9 @@
     ;; unlinkat(parent fd, base, 0), then close the parent
     (call x64.mov_rr c 64 (call rdi) (call rbx))
     (call x64.mov_rr c 64 (call rsi) (call r13))
-    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (if (eq flags 0)
+        (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+        (call x64.mov_ri32 c (call rdx) flags))
     (call x64.mov_ri32 c (call rax) 263)
     (call x64.syscall c)
     (call x64.mov_rr c 64 (call r13) (call rax))
@@ -1180,7 +1183,8 @@
       ((call is name "clock_time_get") (call emit_clock_time_get l w) true)
       ((call is name "random_get") (call emit_random_get l w) true)
       ((call is name "path_open") (call emit_path_open l w) true)
-      ((call is name "path_unlink_file") (call emit_path_unlink l w) true)
+      ((call is name "path_unlink_file") (call emit_path_unlink l w 0) true)
+      ((call is name "path_remove_directory") (call emit_path_unlink l w 512) true)
       ((call is name "path_rename") (call emit_path_rename l w) true)
       ((call is name "fd_readdir") (call emit_fd_readdir l w) true)
       ((call is name "path_filestat_get") (call emit_path_filestat l w) true)

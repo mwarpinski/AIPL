@@ -1709,6 +1709,18 @@ fn fits(got: &Type, want: &Type) -> bool {
                     }
                     Ok(Type::I32)
                 }
+                OpCode::FsRmdir => {
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: fs.rmdir requires 2 arguments (path_ptr, path_len)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: fs.rmdir argument {} must be i32 (pointer/length), got {}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
                 OpCode::FsRename => {
                     if args.len() != 4 {
                         return Err(format!("{}:{}: fs.rename requires 4 arguments (old_ptr, old_len, new_ptr, new_len)", l, c));
@@ -2440,7 +2452,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
         MemLoad8 | MemLoad32 | MemLoad64 | MemStore8 | MemStore32 | MemStore64 | MemLoad8S | MemLoad16U | MemLoad16S | MemStore16
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
-            | FsOpen | FsRead | FsWrite | FsDelete | FsChmod | FsRename | FsOpendir | FsReaddir | FsStat
+            | FsOpen | FsRead | FsWrite | FsDelete | FsChmod | FsRename | FsRmdir | FsOpendir | FsReaddir | FsStat
             | NetListen | NetAccept | NetRecv | NetSend | NetClose
             | ProcSpawn | ProcStream | ProcRead | ProcWrite | ProcClose | ProcWait | ProcExec
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet

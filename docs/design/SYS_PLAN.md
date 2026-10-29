@@ -310,3 +310,27 @@ it; `run` and `watch` will need it).
   `fs.delete`, so this needed no refresh. A directory is refused ("is a
   directory"); AIPL still has no operation to remove one (`path_remove_directory`)
   or to make one (`path_create_directory`).
+
+## 11. `fs.rmdir` (2026-10-29)
+
+Asked for by the owner after `remove`: AIPL could delete a file but not a
+directory. Neither C nor Rust does it any other way than AIPL now does: both
+call the operating system (`rmdir`, or `unlinkat` with `AT_REMOVEDIR`).
+
+- **`(fs.rmdir ptr len)`**, `0` or minus a WASI errno, is WASI's own
+  `path_remove_directory` (no new host module, no grant), with the directory
+  chosen as `fs.delete` chooses it and confined the same way. Natively it is
+  `emit_path_unlink` with the flag `AT_REMOVEDIR` (512): the parent is opened
+  beneath its directory, then `unlinkat` removes the last component. The VM
+  uses `std::fs::remove_dir`.
+- **The same answers everywhere**, which the test checks against all seven
+  runs and the directories left: an empty directory removed, one with anything
+  in it `-55`, a file `-54`, a link `-54` (even one to a directory: it is not
+  followed), a missing path `-44`, a `..` out of the directory `-63`, no `/`
+  under `--sandbox` `-8`. The openat2-refused fallback and both toolchains'
+  bytes are tested as for `fs.rename`.
+- **`path_remove_directory` is the last import**, after `path_rename`, so no
+  existing program's bytes change.
+- **Not yet: the std wrapper.** `fs.rmdir [path:str] -> (result i32 io.Error)`
+  belongs in `std/fs`, which the compiler imports; the seed cannot read the
+  new operation, so it lands with the next seed refresh.

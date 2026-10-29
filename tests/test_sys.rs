@@ -523,3 +523,103 @@ fn both_toolchains_compile_fs_rename_to_the_same_bytes() {
     assert!(String::from_utf8_lossy(&o.stdout).contains("BIT-FOR-BIT IDENTICAL"), "{}", String::from_utf8_lossy(&o.stdout));
     let _ = std::fs::remove_dir_all(&top);
 }
+
+/// What `rmdir.aipl` prints, for the VM (paths ordinary), for compiled
+/// programs (a relative path stays in the working directory), and under
+/// `--sandbox` (there is no absolute path to name).
+const RMDIR_ORDINARY: &str = "plain 0\nagain -44\nnot_empty -55\nfile -54\ninner 0\nouter 0\nlink -54\ndotdot 0\nabsolute 0\nempty_path -44\n";
+const RMDIR_CONFINED: &str = "plain 0\nagain -44\nnot_empty -55\nfile -54\ninner 0\nouter 0\nlink -54\ndotdot -63\nabsolute 0\nempty_path -44\n";
+const RMDIR_SANDBOXED: &str = "plain 0\nagain -44\nnot_empty -55\nfile -54\ninner 0\nouter 0\nlink -54\ndotdot -63\nabsolute -8\nempty_path -44\n";
+
+/// The tree each leaves: only the directories that were removed differ.
+const RMDIR_TREE_ORDINARY: &str = "abs/\nwork/\nwork/file.txt=x\nwork/full/\nwork/full/f.txt=F\nwork/link->target\nwork/target/\n";
+const RMDIR_TREE_CONFINED: &str = "abs/\noutside_dir/\nwork/\nwork/file.txt=x\nwork/full/\nwork/full/f.txt=F\nwork/link->target\nwork/target/\n";
+const RMDIR_TREE_SANDBOXED: &str = "abs/\nabs/gone/\noutside_dir/\nwork/\nwork/file.txt=x\nwork/full/\nwork/full/f.txt=F\nwork/link->target\nwork/target/\n";
+
+/// `top/work` to run in, beside `top/outside_dir` and `top/abs/gone`.
+fn rmdir_setup(top: &Path) -> PathBuf {
+    for d in ["work", "outside_dir", "abs"] {
+        let _ = std::fs::remove_dir_all(top.join(d));
+    }
+    for d in ["work/empty", "work/full", "work/sub/inner", "work/target", "outside_dir", "abs/gone"] {
+        std::fs::create_dir_all(top.join(d)).unwrap();
+    }
+    std::fs::write(top.join("work/full/f.txt"), "F").unwrap();
+    std::fs::write(top.join("work/file.txt"), "x").unwrap();
+    symlink("target", top.join("work/link")).unwrap();
+    top.join("work")
+}
+
+fn tree_text(top: &Path) -> String {
+    let mut got = Vec::new();
+    tree(top, top, &mut got);
+    got.iter().map(|l| format!("{l}\n")).collect()
+}
+
+/// `fs.rmdir` gives the same results, and leaves the same directories, from
+/// the VM, aipl-run, a native executable, and the launcher bundle
+/// (SYS_PLAN.md section 11): an empty directory removed, a full one `-55`, a
+/// file and a link `-54`, and what the working directory and `--sandbox`
+/// confine.
+#[test]
+fn fs_rmdir_is_the_same_in_every_backend() {
+    let (top, bins) = (scratch("rmdir"), scratch("rmdir_bins"));
+    let src = bins.join("rmdir.aipl");
+    std::fs::write(&src, std::fs::read_to_string(root().join("tests/aipl/sys/rmdir.aipl")).unwrap().replace("@ABS@", top.join("abs").to_str().unwrap())).unwrap();
+    let wasm = compile(&bins, &src, "p.wasm", &[]);
+    let exe = compile(&bins, &src, "p", &["--exe"]);
+    let bundle = compile(&bins, &src, "p_bundle", &["--exe", "--target", "wasm"]);
+    let sandboxed_exe = compile(&bins, &src, "ps", &["--exe", "--sandbox"]);
+    let sandboxed_bundle = compile(&bins, &src, "ps_bundle", &["--exe", "--target", "wasm", "--sandbox"]);
+    let runs: Vec<Run> = vec![
+        ("VM", Box::new(|| { let mut c = Command::new(AIPL); c.arg("eval").arg(&src); c }), 0),
+        ("aipl-run", Box::new(|| { let mut c = Command::new(RUNNER); c.arg(&wasm); c }), 1),
+        ("native", Box::new(|| Command::new(&exe)), 1),
+        ("bundle", Box::new(|| Command::new(&bundle)), 1),
+        ("aipl-run --sandbox", Box::new(|| { let mut c = Command::new(RUNNER); c.arg("--sandbox").arg(&wasm); c }), 2),
+        ("native --sandbox", Box::new(|| Command::new(&sandboxed_exe)), 2),
+        ("bundle --sandbox", Box::new(|| Command::new(&sandboxed_bundle)), 2),
+    ];
+    for (how, command, kind) in runs {
+        let work = rmdir_setup(&top);
+        let o = command().current_dir(&work).output().unwrap();
+        assert_eq!(answers(&o), [RMDIR_ORDINARY, RMDIR_CONFINED, RMDIR_SANDBOXED][kind as usize], "{how}");
+        assert_eq!(tree_text(&top), [RMDIR_TREE_ORDINARY, RMDIR_TREE_CONFINED, RMDIR_TREE_SANDBOXED][kind as usize], "{how}: the files left");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+    let _ = std::fs::remove_dir_all(&bins);
+}
+
+/// Where `openat2` is refused (tools/without_openat2.py), `fs.rmdir` still
+/// works, opening the parent with plain `openat` and giving up the
+/// confinement as every open does: the same answers as the VM's.
+#[test]
+fn fs_rmdir_works_where_openat2_is_refused() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let (top, bins) = (scratch("rmdir_fallback"), scratch("rmdir_fallback_bins"));
+    let src = bins.join("rmdir.aipl");
+    std::fs::write(&src, std::fs::read_to_string(root().join("tests/aipl/sys/rmdir.aipl")).unwrap().replace("@ABS@", top.join("abs").to_str().unwrap())).unwrap();
+    let exe = compile(&bins, &src, "p", &["--exe"]);
+    for flag in [&[][..], &["--eperm"][..]] {
+        let work = rmdir_setup(&top);
+        let o = Command::new("python3").arg(root().join("tools/without_openat2.py")).args(flag).arg(&exe).current_dir(&work).output().unwrap();
+        assert_eq!(answers(&o), RMDIR_ORDINARY, "{flag:?}");
+        assert_eq!(tree_text(&top), RMDIR_TREE_ORDINARY, "{flag:?}: the files left");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+    let _ = std::fs::remove_dir_all(&bins);
+}
+
+/// Both toolchains compile the program to the same bytes.
+#[test]
+fn both_toolchains_compile_fs_rmdir_to_the_same_bytes() {
+    let top = scratch("rmdir_bytes");
+    let src = top.join("rmdir.aipl");
+    std::fs::write(&src, std::fs::read_to_string(root().join("tests/aipl/sys/rmdir.aipl")).unwrap().replace("@ABS@", "/tmp/abs")).unwrap();
+    let o = Command::new(AIPL).arg("compile").arg("--self").arg(&src).arg("-o").arg(top.join("s.wasm")).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("BIT-FOR-BIT IDENTICAL"), "{}", String::from_utf8_lossy(&o.stdout));
+    let _ = std::fs::remove_dir_all(&top);
+}

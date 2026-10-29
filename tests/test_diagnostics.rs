@@ -207,6 +207,7 @@ fn every_unchecked_operation_needs_an_unsafe_context() {
         ("fs.write", "(fs.write 3 2048 4)"),
         ("fs.delete", "(fs.delete 2048 4)"),
         ("fs.rename", "(fs.rename 2048 4 2052 4)"),
+        ("fs.rmdir", "(fs.rmdir 2048 4)"),
         ("fs.opendir", "(fs.opendir 2048 4)"),
         ("fs.readdir", "(fs.readdir 3 2048 64 0i64)"),
         ("fs.stat", "(fs.stat 2048 4 2048)"),

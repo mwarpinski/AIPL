@@ -173,6 +173,9 @@ pub enum OpCode {
     /// directory at the old path to the new one, replacing a file there:
     /// 0, or minus a WASI errno (`path_rename`).
     FsRename,
+    /// `(fs.rmdir ptr len)`: removes the empty directory at the path: 0, or
+    /// minus a WASI errno (`path_remove_directory`).
+    FsRmdir,
     /// `(net.listen addr len port)`: a listening TCP socket on the address
     /// whose `len` (4 or 16) bytes are at `addr`; its handle, -1, or -2 if
     /// not granted (docs/design/NET_PLAN.md, `aipl_net_v1`).
