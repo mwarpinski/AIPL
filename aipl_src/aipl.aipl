@@ -8,6 +8,7 @@
 ;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... FILE.aipl -o OUT
 ;;   aipl compile [--exe] --max-memory SIZE FILE.aipl -o OUT   (memory's limit, 1M to 2G)
 ;;   aipl compile --no-opt ...   (without the optimizer, codegen_opt.aipl; it runs by default)
+;;   aipl verify FILE.aipl   (resolve and type-check; compile nothing)
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
@@ -33,6 +34,7 @@
 
   (fn usage [] -> i32
     (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] [--no-opt] FILE.aipl -o OUT")
+    (call io.eprintln "       aipl verify FILE.aipl")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -59,6 +61,20 @@
     (let _gone:bool (match_result (call fs.remove_path tmp) (ok done true) (err e false)))
     (call fail_bytes prefix b))
 
+  ;; aipl verify FILE.aipl: the front end alone, as the Rust command's verify
+  ;; (src/main.rs): the same message on success, the same errors.
+  (fn verify [n:i32] -> i32
+    (when (neq n 3) (return (call usage)))
+    (let std_dir:str.Bytes (call stdpath.find))
+    (let entry:str.Bytes (call arg 2))
+    (let res:(ptr driver.Out) (call driver.verify_file (call str.addr entry) (get entry str.Bytes.len) (call str.addr std_dir) (get std_dir str.Bytes.len)))
+    (when (neq (get res driver.Out.status) 0)
+        (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
+    (call io.write_str 1 "[AIPL Verifier] OK: module '")
+    (unsafe (fs.write 1 (get res driver.Out.addr) (get res driver.Out.len)))
+    (call io.println "' type-checks. Contracts are type-checked, not proven; req/ens run on every call, in the VM and in compiled code.")
+    0)
+
   (fn write_int [fd:i32 n:i32] -> void
     (unsafe (let digits:i32 (mem.alloc 11))
     (fs.write fd digits (call fmt.int_to_bytes n digits))))
@@ -69,6 +85,7 @@
     (let cmd:str.Bytes (call arg 1))
     (when (call str.is cmd "--version") (call io.println "aipl 0.1.0") (return 0))
     (when (call str.is cmd "doc") (return (call doc.command 2)))
+    (when (call str.is cmd "verify") (return (call verify n)))
     (when (not (call str.is cmd "compile")) (return (call usage)))
     (let exe:bool false)
     (let tests:bool false)

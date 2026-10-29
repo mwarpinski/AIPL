@@ -36,8 +36,7 @@ What is left, in the order to do it. Each item below points at its section.
 
 **After launch** (each already stated in ROADMAP.md or docs/HANDOFF.md)
 
-- the rest of the way off Rust (ROADMAP.md, "Next" 3): `verify` in the
-  self-hosted command, an AIPL way to start a process (so
+- the rest of the way off Rust (ROADMAP.md, "Next" 3): an AIPL way to start a process (so
   `eval`, `run`, `test`, and `watch` can be self-hosted, and the test
   suite itself), an installer built from the seed, and a WebAssembly seed
   for other platforms;
@@ -269,7 +268,7 @@ more than usual.
   (tools/make_kit.sh) is the real binaries, tested with the build's source
   hidden. Prebuilt release binaries are now possible. Later: the
   self-hosted binary could embed the library too and become one file; it
-  has no `verify` or `test`.
+  has no `test`.
 - [x] **CI** (added 2026-10-06, `.github/workflows/ci.yml`; check its first run on GitHub). A GitHub Actions workflow running `cargo build`, `cargo test`,
   and `aipl test aipl_src/test_suite.aipl` on Linux, with the badge in the
   README. The native tests need Linux x86-64, which GitHub's runners are.

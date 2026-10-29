@@ -14,11 +14,12 @@ sh bootstrap/build.sh            # about 8 seconds; the result is target/bootstr
 The script has the seed build the current source (stage 1), stage 1 build
 it again (stage 2), and stage 2 build itself once more, which must give
 the same bytes (a fixed point). No Rust is involved. The resulting `aipl`
-does what `aipl compile` does in the Rust command:
+does what `aipl compile` and `aipl verify` do in the Rust command:
 
 ```bash
 target/bootstrap/aipl compile FILE.aipl -o OUT.wasm
 target/bootstrap/aipl compile --exe [--sandbox] FILE.aipl -o OUT
+target/bootstrap/aipl verify FILE.aipl    # resolve and type-check, compile nothing
 ```
 
 It finds the standard library at `$AIPL_STD`, else `share/aipl/std/`
@@ -40,7 +41,7 @@ cmp target/aipl1 target/aipl2       # no output: the compiler reproduces itself
 the seed was made (`cargo build --release`, then
 `./target/release/aipl compile --exe aipl_src/aipl.aipl -o target/aipl0`).
 
-The rest of the Rust command (`eval`, `test`, `run`) is not here: the
+The rest of the Rust command (`eval`, `test`, `run`, `watch`, `serve`) is not here: the
 interpreter is Rust, and running WebAssembly takes wasmtime. Native
 executables run directly.
 

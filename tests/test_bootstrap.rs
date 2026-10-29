@@ -172,6 +172,10 @@ fn the_aipl_command_matches_the_rust_command() {
     let mut compared = 0;
     for p in &paths {
         let rel = p.strip_prefix(root()).unwrap().display().to_string();
+        // `aipl verify`: the same message or error, and status
+        let r = run(Command::new(AIPL).args(["verify", &rel]));
+        let a = run(Command::new(&aipl).args(["verify", &rel]));
+        assert_eq!((a.status.code(), &a.stdout, &a.stderr), (r.status.code(), &r.stdout, &r.stderr), "{rel}: verify");
         for exe in [false, true] {
             let (want, got) = (dir.join("want"), dir.join("got"));
             let mut args = vec!["compile"];
@@ -239,6 +243,8 @@ fn the_aipl_command_matches_the_rust_command() {
 
     // usage and version
     assert_eq!(run(&mut Command::new(&aipl)).status.code(), Some(2));
+    assert_eq!(run(Command::new(&aipl).arg("verify")).status.code(), Some(2));
+    assert_eq!(run(Command::new(&aipl).args(["verify", "a.aipl", "b.aipl"])).status.code(), Some(2));
     assert_eq!(run(Command::new(&aipl).args(["compile", "--sandbox", "x.aipl", "-o", "y"])).status.code(), Some(2));
     let v = run(Command::new(&aipl).arg("--version"));
     assert_eq!(String::from_utf8_lossy(&v.stdout), format!("aipl {}\n", env!("CARGO_PKG_VERSION")));

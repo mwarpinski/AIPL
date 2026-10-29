@@ -27,9 +27,8 @@ to run the referee tests.
 
 | What | In AIPL today | Only in Rust today |
 |---|---|---|
-| Compile to `.wasm`, to a native executable (`--sandbox`, `--listen`, `--max-memory`, `--no-opt`), `doc`, `--version` | the self-hosted command (aipl_src/aipl.aipl) | |
+| Compile to `.wasm`, to a native executable (`--sandbox`, `--listen`, `--max-memory`, `--no-opt`), `verify`, `doc`, `--version` | the self-hosted command (aipl_src/aipl.aipl) | |
 | The front end (resolve, generics, check) | aipl_src/ | the same, kept equal by tests and the fuzzer |
-| `verify` | | the Rust front end |
 | `run` (a `.wasm` or a source file) | | `aipl-run` (wasmtime) and the VM |
 | `test` | | `src/testrun.rs`: builds a native test executable, starts it once per test, compares VM, wasm, and native |
 | `watch` | | `src/watch.rs`: polls modification times, re-runs |
@@ -84,7 +83,7 @@ without the grant cannot name the imports.
 In this order, smallest first; each lands in aipl_src/aipl.aipl and a test
 runs it against the Rust command:
 
-1. `verify` (the AIPL front end exists; no new import);
+1. `verify` (the AIPL front end exists; no new import) **done 2026-10-29**: `driver.verify_file` stops after the checks, and tests/test_bootstrap.rs compares its output, errors, and status with the Rust command's on every example, benchmark, and test program;
 2. `run`: compile to a native executable and exec it (`.wasm` input waits
    for S3);
 3. `test`: build the test executable, start it once per test, compare
