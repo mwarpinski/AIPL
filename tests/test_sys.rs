@@ -400,6 +400,44 @@ fn std_fs_remove_is_the_same_in_every_backend() {
     let _ = std::fs::remove_dir_all(&top);
 }
 
+const STD_FS_DIRS_COMPILED: &str = "mkdir ok 0\nagain the file could not be read or written\nbytes ok 0\nmissing_parent no such file or directory\ndotdot permission denied\nrmdir ok 0\nrmdir_bytes ok 0\nnot_empty the file could not be read or written\nfile no such file or directory\nlink no such file or directory\nmissing no such file or directory\n";
+
+/// std/fs's `mkdir`, `mkdir_path`, `rmdir`, and `rmdir_path` make and remove
+/// directories and give an `io.Error` for each refusal, in every backend; the
+/// VM's paths are ordinary, so its `..` is followed (SYS_PLAN.md section 11).
+#[test]
+fn std_fs_directories_are_the_same_in_every_backend() {
+    let top = scratch("stdfs_dirs");
+    let src = root().join("tests/aipl/sys/std_fs_dirs.aipl");
+    let wasm = compile(&top, &src, "p.wasm", &[]);
+    let exe = compile(&top, &src, "p", &["--exe"]);
+    let bundle = compile(&top, &src, "p_bundle", &["--exe", "--target", "wasm"]);
+    let sandboxed = compile(&top, &src, "ps", &["--exe", "--sandbox"]);
+    let runs: Vec<Run> = vec![
+        ("VM", Box::new(|| { let mut c = Command::new(AIPL); c.arg("eval").arg(&src); c }), 0),
+        ("aipl-run", Box::new(|| { let mut c = Command::new(RUNNER); c.arg(&wasm); c }), 1),
+        ("native", Box::new(|| Command::new(&exe)), 1),
+        ("bundle", Box::new(|| Command::new(&bundle)), 1),
+        ("native --sandbox", Box::new(|| Command::new(&sandboxed)), 1),
+    ];
+    for (how, command, kind) in runs {
+        let ordinary = kind == 0;
+        let _ = std::fs::remove_dir_all(top.join("work"));
+        let _ = std::fs::remove_dir_all(top.join("outside_made"));
+        let work = top.join("work");
+        std::fs::create_dir_all(work.join("full")).unwrap();
+        std::fs::write(work.join("file.txt"), "x").unwrap();
+        std::fs::write(work.join("full/f.txt"), "F").unwrap();
+        symlink("full", work.join("link")).unwrap();
+        let o = command().current_dir(&work).output().unwrap();
+        let want = if ordinary { STD_FS_DIRS_COMPILED.replace("dotdot permission denied", "dotdot ok 0") } else { STD_FS_DIRS_COMPILED.to_string() };
+        assert_eq!(answers(&o), want, "{how}");
+        assert_eq!(tree_text(&work), "file.txt=x\nfull/\nfull/f.txt=F\nlink->full\n", "{how}: the files left");
+        assert_eq!(top.join("outside_made").is_dir(), ordinary, "{how}: the directory a `..` names");
+    }
+    let _ = std::fs::remove_dir_all(&top);
+}
+
 /// What `rename.aipl` prints, for the VM (paths ordinary), for compiled
 /// programs (a relative path stays in the working directory), and under
 /// `--sandbox` (there is no absolute path to name).

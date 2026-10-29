@@ -166,9 +166,9 @@
   ;; ===== Remove =====
 
   ;; Deletes the file `path` (a link is deleted itself, not what it names; a
-  ;; directory is refused, "is a directory"). Needs no grant: the path is one the program
-  ;; could open, confined as fs.open is. The result is 0, or why not (a missing
-  ;; path not_found, a path out of reach denied).
+  ;; directory is refused, "is a directory"). Needs no grant: the path is one
+  ;; the program could open, confined as fs.open is. The result is 0, or why
+  ;; not (a missing path not_found, a path out of reach denied).
   (fn remove [path:str] -> (result i32 io.Error) (pub)
     (unsafe (call remove_at (str.ptr path) (str.len path))))
 
@@ -179,6 +179,43 @@
   ;; The operation, on a path in memory.
   (fn remove_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
     (let r:i32 (fs.delete addr len))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; ===== Directories =====
+
+  ;; Makes the directory `path`, with the mode the umask leaves (0777 less it).
+  ;; Its parent must exist: there is no `mkdir -p`. Needs no grant: the path is
+  ;; one the program could open, confined as fs.open is. The result is 0, or
+  ;; why not (a missing parent, or a file as the parent, not_found; a path out
+  ;; of reach denied; a path that exists, a file or a link too, other: io.Error
+  ;; has no kind of its own for it, so a program that must tell it apart looks
+  ;; first, with fs.stat).
+  (fn mkdir [path:str] -> (result i32 io.Error) (pub)
+    (unsafe (call mkdir_at (str.ptr path) (str.len path))))
+
+  ;; mkdir for a path held as bytes.
+  (fn mkdir_path [path:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call mkdir_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; The operation, on a path in memory.
+  (fn mkdir_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.mkdir addr len))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; Removes the directory `path`, which must be empty. Needs no grant, and is
+  ;; confined as mkdir is. The result is 0, or why not (a missing path, or a
+  ;; file or a link, not_found: use remove for those; a path out of reach
+  ;; denied; a directory with anything in it other).
+  (fn rmdir [path:str] -> (result i32 io.Error) (pub)
+    (unsafe (call rmdir_at (str.ptr path) (str.len path))))
+
+  ;; rmdir for a path held as bytes.
+  (fn rmdir_path [path:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call rmdir_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; The operation, on a path in memory.
+  (fn rmdir_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.rmdir addr len))
     (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
 
   ;; ===== Tests =====
