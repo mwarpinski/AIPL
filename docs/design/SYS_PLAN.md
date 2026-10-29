@@ -370,3 +370,7 @@ operating-system call, so AIPL gets the same.
   toolchains compile it to the same bytes.
 - **Not here:** a way to tell whether standard output is a terminal, which the
   Rust `watch` uses to clear the screen. The self-hosted `watch` does not clear it.
+- **The seed** was refreshed for it (a fourth time; the compiler's source uses
+  `std/time`, so the old seed could not build it): from 5d08411, sha256 in
+  bootstrap/README.md, a fixed point. It is built with `--allow-run '*'` and is
+  now the whole command: `verify`, `run`, `test`, `watch`, `compile`, `doc`.

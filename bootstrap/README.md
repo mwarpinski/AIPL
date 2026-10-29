@@ -74,21 +74,25 @@ program to the same bytes as the Rust command, with the same errors.
 ## Where this seed came from
 
 Built 2026-10-29 by the Rust toolchain, from the source of commit
-0ca006e, so that the compiler can make and remove directories: `std/fs` has
-`mkdir` and `rmdir` (with `remove` and `rename` from the seeds before), which
-the compiler imports, and it can now write its output into a directory it
-makes (docs/design/aipl_standalone.md, S2):
+5d08411, with `--allow-run '*'`, so that the seed is the whole command it
+can be: `verify`, `run`, `test`, and `watch` as well as `compile` and `doc`
+(docs/design/aipl_standalone.md, S2). The compiler's source now uses `sys.poll`
+(`std/time.sleep`, for `watch`), which the seed before could not read, so this
+refresh was needed for `bootstrap/build.sh` to work at all (the owner's rule: a
+seed is refreshed for an immediate need only):
 
 ```bash
 cargo build --release
-./target/release/aipl compile --exe aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
+./target/release/aipl compile --exe --allow-run '*' aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `c6bed76f2347d9b89dde3b366d89530b3f25c79cac801ca8f82c95ffdf441d53`.
+sha256 `9e5f706b62a6e63745187b5fff9bf197d062686d48d6bed6d7f09d95ef6f68a1`.
 Building that commit's source with the seed gives the same bytes (stage
 2 is the seed), so for now the seed is its own stage 2.
 
-Earlier seeds: the one built 2026-10-29 from 49ec350 (sha256
+Earlier seeds: the one built 2026-10-29 from 0ca006e (sha256
+`c6bed76f2347d9b89dde3b366d89530b3f25c79cac801ca8f82c95ffdf441d53`), for
+`std/fs`'s `mkdir` and `rmdir`; the one built 2026-10-29 from 49ec350 (sha256
 `3717ed4a7be2cfc87c871e2d05741ad2213321930d253f73b582b073e4331051`), for
 `std/fs`'s `rename` and the compiler writing its output beside it and renaming it into place; the one built 2026-10-29 from 20888dd (sha256
 `1ba9a19ebfc1bda2614f205a783ce95bb6c612e91ff700b25e4d995f2f251e9b`), for
