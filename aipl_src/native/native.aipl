@@ -414,6 +414,28 @@
              (return (ptr.null (vec.Vec sockets.Grant))))))))
     out)
 
+  ;; What `serve` holds: the address, the connections to answer (-1: no end),
+  ;; and whether the executable removes itself.
+  (struct ServeOpts [address:str.Bytes requests:i32 temporary:bool])
+
+  (fn serve_options [spec:str.Bytes] -> (ptr ServeOpts)
+    (let opts:(ptr ServeOpts) (new ServeOpts (call alloc.forever) [address:spec requests:-1 temporary:false]))
+    (let n:i32 (get spec str.Bytes.len))
+    (let sp:i32 (call str.find_byte spec 32))
+    (when (lt sp 0) (return opts))
+    (put opts ServeOpts.address (call str.slice spec 0 sp))
+    (let start:i32 (+ sp 1))
+    (for i (+ sp 1) (+ n 1)
+      (when (or (eq i n) (eq (call str.byte_at spec i) 32))
+            (let w:str.Bytes (call str.slice spec start (- i start)))
+            (set! start (+ i 1))
+            (cond
+              ((call str.is w "temporary") (put opts ServeOpts.temporary true))
+              ((call str.starts_with w (call str.from_str "requests="))
+               (put opts ServeOpts.requests (call str.parse_int_or (call str.slice w 9 (- (get w str.Bytes.len) 9)) -1)))
+              (else (block)))))
+    opts)
+
   ;; `sandbox`: the program may use only the working directory (no `/`
   ;; preopen), as `aipl-run --sandbox` / `aipl compile --exe --sandbox`.
   ;; `listen`: the addresses and ports it may listen on, one ADDR:PORT a
@@ -429,7 +451,11 @@
     (when (gt (call buf.len problem) 0) (return (call failure (call buf.bytes problem))))
     (let granted:(ptr (vec.Vec sockets.Grant)) (call grants "--listen" (call buf.bytes addresses) problem))
     (when (eq granted (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))))
-    (let served:(ptr (vec.Vec sockets.Grant)) (call grants "--serve" serve problem))
+    ;; `serve` is an address, then (for `aipl serve`) " requests=N" and
+    ;; " temporary": how many connections to answer, and whether the
+    ;; executable removes itself as it starts
+    (let opts:(ptr ServeOpts) (call serve_options serve))
+    (let served:(ptr (vec.Vec sockets.Grant)) (call grants "--serve" (get opts ServeOpts.address) problem))
     (when (eq served (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))))
     (let serving:bool (gt (call (vec.len sockets.Grant) served) 0))
     (unsafe (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
@@ -535,7 +561,7 @@
     (call emit_main_stack l globals_block)
     (when has_memory (call emit_memory_setup l w base_cell) (call runtime.emit_install_fault_handler c handler restorer))
     ;; --serve: the host forks a copy per connection here, which goes on
-    (when serving (call fresh.emit_host l (call (vec.at sockets.Grant) served 0) serve argv0_cell sep))
+    (when serving (call fresh.emit_host l (call (vec.at sockets.Grant) served 0) (get opts ServeOpts.address) argv0_cell sep (get opts ServeOpts.requests) (get opts ServeOpts.temporary)))
     (when (gte (get w wasm_reader.Wasm.start) 0) (call lower.emit_call l (get w wasm_reader.Wasm.start)))
     (call lower.emit_call l entry_fn)
     (call runtime.emit_exit c 0)

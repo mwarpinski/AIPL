@@ -18,7 +18,11 @@
 ;;     trap's message and call chain are logged there, and the host says
 ;;     there why an answer past `cap` was not sent;
 ;;   - then shuts the connection down and closes it.
-;; One connection at a time; until the process is ended.
+;; One connection at a time; until the process is ended, or, with a limit
+;; fixed when the executable was compiled, until it has answered that many
+;; connections (aipl-run --serve-fresh --requests N); and an executable
+;; compiled `temporary` removes itself (unlink of argv[0]) as it starts
+;; (aipl-run --temporary), so `aipl serve` leaves nothing behind.
 (module fresh
   (import alloc)
   (import str)
@@ -43,7 +47,7 @@
   ;; and setsockopt's 1.
   (fn pipe_r [] -> i32 0) (fn pipe_w [] -> i32 4) (fn pid [] -> i32 8)
   (fn wstatus [] -> i32 16) (fn out [] -> i32 24) (fn over [] -> i32 32)
-  (fn one [] -> i32 40) (fn frame [] -> i32 48)
+  (fn one [] -> i32 40) (fn left [] -> i32 48) (fn frame [] -> i32 64)
 
   ;; What Linux's strerror says for the errors a listen meets, as Rust's
   ;; io::Error prints them (aipl-run's message); others are "os error N".
@@ -73,8 +77,10 @@
 
   ;; `g`: the address to listen on. `argv0_cell` and `sep` as
   ;; runtime.emit_trap_routine takes them; `at` is the grant as written,
-  ;; for the message when the address cannot be listened on.
-  (fn emit_host [l:(ptr lower.L) g:sockets.Grant at:str.Bytes argv0_cell:i32 sep:i32] -> void (pub)
+  ;; for the message when the address cannot be listened on. `requests`: how
+  ;; many connections to answer before exiting with status 0 (none: -1);
+  ;; `temporary`: remove this executable's own file as it starts.
+  (fn emit_host [l:(ptr lower.L) g:sockets.Grant at:str.Bytes argv0_cell:i32 sep:i32 requests:i32 temporary:bool] -> void (pub)
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let refused:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
     ;; the socket address, built now: sockaddr_in (16 bytes) or
@@ -97,6 +103,14 @@
     (let too_long_text:str "the answer is more than 64 MiB, the most a fresh instance may write: sent 500 Internal Server Error\n")
     (let too_long:i32 (call lower.data_text l too_long_text))
     (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) (call frame))
+    (when temporary
+          ;; unlink(argv[0]), if there is one
+          (call x64.mov_ri32 c (call rax) argv0_cell)
+          (call x64.load c 64 (call rdi) (call x64.mem (call rax) 0))
+          (call x64.test_rr c 64 (call rdi) (call rdi))
+          (let nameless:i32 (call x64.jcc c (call x64.cc_e)))
+          (call syscall c 87)
+          (call x64.patch_rel32 c nameless (call buf.len c)))
     ;; socket(family, SOCK_STREAM | SOCK_CLOEXEC, 0)
     (call x64.mov_ri32 c (call rdi) (if v4 2 10))
     (call x64.mov_ri32 c (call rsi) 524289)
@@ -139,6 +153,11 @@
     (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -4096)
     (call (vec.push i32) refused (call x64.jcc c (call x64.cc_a)))
     (call x64.store c 64 (call x64.mem (call rsp) (call out)) (call rax))
+    ;; a limit: the connections still to answer; none to answer is the end
+    (when (gte requests 0)
+          (call x64.mov_ri32 c (call rax) requests)
+          (call x64.store c 32 (call x64.mem (call rsp) (call left)) (call rax)))
+    (when (eq requests 0) (call runtime.emit_exit c 0))
     ;; the next connection: accept4(fd, 0, 0, SOCK_CLOEXEC); an error is
     ;; passed over, as aipl-run passes over a failed accept
     (let next:i32 (call buf.len c))
@@ -263,7 +282,14 @@
     (call x64.mov_ri32 c (call rsi) 2)
     (call syscall c 48)
     (call emit_close_reg c (call r13))
-    (call x64.patch_rel32 c (call x64.jmp c) next)
+    (if (gte requests 0)
+        (block
+          (call x64.load c 32 (call rax) (call x64.mem (call rsp) (call left)))
+          (call x64.alu_ri c 32 (call x64.op_sub) (call rax) 1)
+          (call x64.store c 32 (call x64.mem (call rsp) (call left)) (call rax))
+          (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ne)) next)
+          (call runtime.emit_exit c 0))
+        (call x64.patch_rel32 c (call x64.jmp c) next))
     ;; refused: `<argv[0]>: cannot listen on ADDR:PORT: <why> (os error N)`, exit 1
     (call sockets.patch_all c refused)
     (call x64.alu_rr c 32 (call x64.op_xor) (call r12) (call r12))

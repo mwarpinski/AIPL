@@ -109,7 +109,13 @@ runs it against the Rust command:
    the resolver read. It does not clear the screen (no way yet to tell a terminal),
    and its file count can differ from the Rust command's;
 5. `serve`: a fresh program per connection, pipes on the socket (std/net
-   exists);
+   exists). **Done 2026-10-29** (aipl_src/servecmd.aipl): `aipl serve --fresh FILE
+   --listen ADDR:PORT [--requests N] [-- ARGS]` builds the program as a native
+   executable that serves (native/fresh.aipl already forked a copy per connection
+   for `compile --exe --serve`) and becomes it (exec). Two things the executable
+   gained for it, given in the `serve` text of `native.compile_with` as ` requests=N`
+   and ` temporary` (not flags of `compile`): it stops after N connections, and
+   removes its own file as it starts (aipl-run's `--requests` and `--temporary`);
 6. `eval`: compile and run; the VM's result line stays, or it is dropped
    by decision (REPL_PLAN.md).
 
