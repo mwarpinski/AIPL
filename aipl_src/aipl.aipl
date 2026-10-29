@@ -13,6 +13,7 @@
 ;;       (compile to a native executable in a temporary file, run it with ARGS, remove it;
 ;;        its exit status is the command's, 128 plus the signal if a signal ended it)
 ;;   aipl test FILE|DIR [-k TEXT] [--native]   (each (test ...) in a fresh process; aipl_src/testcmd.aipl)
+;;   aipl watch FILE [--test] [-- ARGS...]   (run again when a file it reads changes; aipl_src/watchcmd.aipl)
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
@@ -34,6 +35,7 @@
   (import fmt)
   (import doc)
   (import testcmd)
+  (import watchcmd)
   (import buf)
   (import alloc)
   (import proc)
@@ -43,6 +45,7 @@
     (call io.eprintln "       aipl verify FILE.aipl")
     (call io.eprintln "       aipl run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [--no-opt] FILE.aipl [ARGS]...")
     (call io.eprintln "       aipl test FILE|DIR [-k TEXT] [--native]")
+    (call io.eprintln "       aipl watch FILE [--test] [-- ARGS...]")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -95,6 +98,7 @@
     (when (call str.is cmd "doc") (return (call doc.command 2)))
     (when (call str.is cmd "verify") (return (call verify n)))
     (when (call str.is cmd "test") (return (call testcmd.command 2)))
+    (when (call str.is cmd "watch") (return (call watchcmd.command 2)))
     (when (call str.is cmd "run") (return (call compile_command n true)))
     (when (not (call str.is cmd "compile")) (return (call usage)))
     (call compile_command n false))

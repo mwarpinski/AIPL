@@ -102,7 +102,12 @@ runs it against the Rust command:
    aipl_src/test_suite.aipl). A failed test's output and error come as one
    stream, in the order written, where the Rust command prints the output and
    then the error; nothing parses either;
-4. `watch`: poll `fs.stat`, run again;
+4. `watch`: poll `fs.stat`, run again. **Done 2026-10-29** (aipl_src/watchcmd.aipl,
+   resolver.files_read): `aipl watch FILE [--test] [-- ARGS...]` starts this command
+   again as `run` (the Rust command evals in the VM) or `test`, four times a second
+   (`std/time.sleep`, over the new `sys.poll`, SYS_PLAN.md section 12), on the files
+   the resolver read. It does not clear the screen (no way yet to tell a terminal),
+   and its file count can differ from the Rust command's;
 5. `serve`: a fresh program per connection, pipes on the socket (std/net
    exists);
 6. `eval`: compile and run; the VM's result line stays, or it is dropped

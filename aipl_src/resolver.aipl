@@ -2181,6 +2181,31 @@
                       orig:(ptr origins.Origins)] -> bool (pub)
     (call flatten_as entry std_dir flat err orig false))
 
+  ;; The files a program is read from, for aipl watch (src/watch.rs watched):
+  ;; every file the resolver read for the entry file, sorted; the entry alone
+  ;; while it does not resolve.
+  (fn files_read [entry:str.Bytes std_dir:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub)
+    (let files:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
+    (let orig:(ptr origins.Origins) (call origins.make))
+    (let flat:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+    (when (call flatten_mapped entry std_dir flat err orig)
+          (for i 0 (call (vec.len (ptr origins.File)) (get orig origins.Origins.files))
+            (call (vec.push str.Bytes) files (get (call origins.file_at orig i) origins.File.path))))
+    (let has_entry:bool false)
+    (for i 0 (call (vec.len str.Bytes) files)
+      (when (call str.bytes_eq (call (vec.at str.Bytes) files i) entry) (set! has_entry true)))
+    (when (not has_entry) (call (vec.push str.Bytes) files entry))
+    ;; sorted, by insertion
+    (for i 1 (call (vec.len str.Bytes) files)
+      (let x:str.Bytes (call (vec.at str.Bytes) files i))
+      (let j:i32 (- i 1))
+      (while (and (gte j 0) (gt (call str.cmp (call (vec.at str.Bytes) files j) x) 0))
+        (call (vec.set str.Bytes) files (+ j 1) (call (vec.at str.Bytes) files j))
+        (set! j (- j 1)))
+      (call (vec.set str.Bytes) files (+ j 1) x))
+    files)
+
   ;; The names of the (test "name" ...) items of the file at `path`, in order
   ;; (resolver.rs test_names); none if the file cannot be read or is not
   ;; well formed.

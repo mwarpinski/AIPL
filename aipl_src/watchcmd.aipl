@@ -1,0 +1,141 @@
+;; aipl watch, in AIPL (src/watch.rs is the Rust one): runs a file, or its
+;; tests, and again each time it or a file it imports changes, so a scratch
+;; file in an editor serves as a session.
+;;
+;;   aipl watch FILE [--test] [-- ARGS...]
+;;
+;; It looks four times a second (time.sleep) at the modification times of the
+;; files the resolver read, found again after each run (or FILE alone while it
+;; does not resolve). A run is this command started again, `aipl run FILE
+;; ARGS` (the program, built and run natively: the Rust command runs it in the
+;; VM) or `aipl test FILE`, on this command's own streams. Unlike the Rust
+;; command it does not clear the screen: AIPL cannot tell a terminal yet.
+(module watchcmd
+  (import resolver)
+  (import stdpath)
+  (import proc)
+  (import fs)
+  (import io)
+  (import str)
+  (import buf)
+  (import alloc)
+  (import option)
+  (import os)
+  (import vec)
+  (import time)
+
+  (fn usage [] -> i32
+    (call io.eprintln "usage: aipl watch FILE [--test] [-- ARGS...]")
+    2)
+
+  (fn fail_bytes [prefix:str b:str.Bytes] -> i32
+    (call io.write_str 2 "Error: ")
+    (call io.write_str 2 prefix)
+    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len)))
+    (call io.eprintln "")
+    1)
+
+  (fn write_buf [b:(ptr buf.Buf)] -> void
+    (let _w:i32 (call buf.write b 1))
+    (block))
+
+  ;; The modification time of each file, in nanoseconds, or -1 where there is none.
+  (fn stamps [files:(ptr (vec.Vec str.Bytes))] -> (arr i64)
+    (let n:i32 (call (vec.len str.Bytes) files))
+    (let out:(arr i64) (arr.new i64 (call alloc.default) (+ n 1)))
+    (for i 0 n
+      (arr.set i64 out i (match (call fs.info_path (call (vec.at str.Bytes) files i))
+                           ((option.Option fs.Info) some [info] (get info fs.Info.modified))
+                           ((option.Option fs.Info) none -1i64))))
+    out)
+
+  (fn same_stamps [a:(arr i64) b:(arr i64) n:i32] -> bool
+    (for i 0 n
+      (when (neq (arr.get i64 a i) (arr.get i64 b i)) (return false)))
+    true)
+
+  ;; This command's own path: argv[0] as it was started (a name with no slash
+  ;; is looked up in the PATH).
+  (fn self_path [] -> str.Bytes
+    (let me:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 0) (call str.from_str "aipl")))
+    (when (gte (call str.find_byte me 47) 0) (return me))
+    (let found:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (if (call proc.find (call str.from_bytes me) found) (call buf.bytes found) me))
+
+  ;; The time as seconds and hundredths, as {:.2}: "0.12".
+  (fn push_seconds [b:(ptr buf.Buf) ns:i64] -> void
+    (let hundredths:i32 (i32.wrap (/ (+ ns 5000000i64) 10000000i64)))
+    (call buf.push_int b (/ hundredths 100))
+    (call buf.push_byte b 46)
+    (when (lt (% hundredths 100) 10) (call buf.push_byte b 48))
+    (call buf.push_int b (% hundredths 100)))
+
+  ;; aipl watch, its arguments from os.arg `first` on; the exit status.
+  (fn command [first:i32] -> i32 (pub)
+    (let tests:bool false)
+    (let max_runs:i32 -1)
+    (let have_file:bool false)
+    (let file:str.Bytes (call str.from_str ""))
+    (let args_at:i32 -1)
+    (let n:i32 (call os.arg_count))
+    (let i:i32 first)
+    (while (and (lt i n) (lt args_at 0))
+      (let x:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str "")))
+      (cond
+        ((call str.is x "--test") (set! tests true))
+        ((call str.is x "--max-runs")
+         (when (gte (+ i 1) n) (return (call usage)))
+         (set! max_runs (call str.parse_int_or (call (option.unwrap_or str.Bytes) (call os.arg (+ i 1)) (call str.from_str "")) -1))
+         (when (lt max_runs 0) (return (call usage)))
+         (set! i (+ i 1)))
+        ((call str.is x "--") (set! args_at (+ i 1)))
+        ((call str.starts_with x (call str.from_str "-")) (return (call usage)))
+        (have_file (return (call usage)))
+        (else (set! have_file true) (set! file x)))
+      (set! i (+ i 1)))
+    (when (not have_file) (return (call usage)))
+    (when (and tests (gte args_at 0)) (return (call usage)))
+
+    (let std_dir:str.Bytes (call stdpath.find))
+    (let me:str.Bytes (call self_path))
+    (let runs:i32 0)
+    (while true
+      (let files:(ptr (vec.Vec str.Bytes)) (call resolver.files_read file std_dir))
+      (let count:i32 (call (vec.len str.Bytes) files))
+      (let seen:(arr i64) (call stamps files))
+      (let head:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+      (call buf.push_str head "aipl watch ")
+      (call buf.push_bytes head file)
+      (call buf.push_str head ": ")
+      (call buf.push_int head count)
+      (call buf.push_str head (if (eq count 1) " file, Ctrl-C to stop\n" " files, Ctrl-C to stop\n"))
+      (call write_buf head)
+
+      (let started:i64 (call time.now))
+      (let c:(ptr proc.Command) (call proc.command_path (call alloc.default) me))
+      (if tests
+          (block (call proc.arg c "test") (call proc.arg_bytes c file))
+          (block
+            (call proc.arg c "run")
+            (call proc.arg_bytes c file)
+            (when (gte args_at 0)
+                  (for j args_at n
+                    (call proc.arg_bytes c (call (option.unwrap_or str.Bytes) (call os.arg j) (call str.from_str "")))))))
+      (let code:i32 (match_result (call proc.spawn_with c proc.Stream.inherit proc.Stream.inherit proc.Stream.inherit)
+                      (ok ch (block (let s:i32 (call proc.wait ch)) (call proc.close ch) (if (call proc.exited s) s -1)))
+                      (err e -2)))
+      (when (eq code -2) (return (call fail_bytes "cannot start " me)))
+
+      (let tail:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+      (call buf.push_str tail (if tests "[tested in " "[ran in "))
+      (call push_seconds tail (call time.since started))
+      (call buf.push_str tail " s, exit ")
+      (call buf.push_int tail code)
+      (call buf.push_str tail "]\n")
+      (call write_buf tail)
+
+      (set! runs (+ runs 1))
+      (when (and (gte max_runs 0) (gte runs max_runs)) (return 0))
+      (while (call same_stamps (call stamps files) seen count)
+        (call time.sleep 250000000i64)))
+    0))
