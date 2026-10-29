@@ -35,7 +35,7 @@ grep -q '^== done' "$log" || { echo "ci_remote: the run did not reach its end"; 
 grep -Eq '[0-9]+ passed, 0 failed' "$log" || { echo "ci_remote: no passing test summary"; ok=0; }
 grep -q 'All groups passed' "$log" || { echo "ci_remote: the AIPL test suite did not pass"; ok=0; }
 grep -Eq '^0 findings' "$log" || { echo "ci_remote: the documentation check found something"; ok=0; }
-grep -Eiq 'FAILED|[1-9][0-9]* failing|clippy:' "$log" && { echo "ci_remote: something in the run failed"; ok=0; }
+grep -Eq 'FAILED|[1-9][0-9]* failing|^clippy:|^seed build FAILED' "$log" && { echo "ci_remote: something in the run failed"; ok=0; }
 rm -f "$log"
 [ "$ok" = 1 ] && echo "ci_remote: ALL PASSED ($(printf %.7s "$sha") on $host)" || echo "ci_remote: FAILED ($(printf %.7s "$sha") on $host)"
 [ "$ok" = 1 ]
