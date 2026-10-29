@@ -94,7 +94,14 @@ runs it against the Rust command:
    the Rust command's `run` takes only a `.wasm` file;
 3. `test`: build the test executable, start it once per test, compare
    output. It loses the VM column; the fuzzers and the test suite keep the
-   VM cross-check;
+   VM cross-check. **Done 2026-10-29** (aipl_src/testcmd.aipl, resolver.test_names):
+   `aipl test FILE|DIR [-k TEXT] [--native]` prints the Rust command's lines,
+   failures, counts, and status, byte for byte on the corpus (tests/test_testing.rs).
+   Left in Rust: `--vm`, `--all-backends`, and a file with no `(test ...)`, whose
+   entry function the Rust command runs in the VM (that is how CI runs
+   aipl_src/test_suite.aipl). A failed test's output and error come as one
+   stream, in the order written, where the Rust command prints the output and
+   then the error; nothing parses either;
 4. `watch`: poll `fs.stat`, run again;
 5. `serve`: a fresh program per connection, pipes on the socket (std/net
    exists);

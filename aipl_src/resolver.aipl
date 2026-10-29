@@ -2181,6 +2181,41 @@
                       orig:(ptr origins.Origins)] -> bool (pub)
     (call flatten_as entry std_dir flat err orig false))
 
+  ;; The names of the (test "name" ...) items of the file at `path`, in order
+  ;; (resolver.rs test_names); none if the file cannot be read or is not
+  ;; well formed.
+  (fn test_names [path:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub)
+    (let names:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
+    (let src:(ptr Src) (call load path (call origins.make) false))
+    (when (or (eq src (ptr.null Src)) (neq (get src Src.error) (ptr.null buf.Buf))) (return names))
+    (let item:(ptr compiler.Node) (call first_item src))
+    (while (neq item (ptr.null compiler.Node))
+      (when (call eq_lit (call head src item) "test")
+            (let name:(ptr compiler.Node) (call nth item 1))
+            (when (and (neq name (ptr.null compiler.Node)) (eq (get name compiler.Node.kind) compiler.Kind.string))
+                  (call (vec.push str.Bytes) names (call unescape (call text src name)))))
+      (set! item (get item compiler.Node.next)))
+    names)
+
+  ;; A string literal's body with its escapes undone (\" \\ \n \t \r \0).
+  (fn unescape [raw:str.Bytes] -> str.Bytes
+    (let n:i32 (get raw str.Bytes.len))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) (+ n 1)))
+    (let i:i32 0)
+    (let c:i32 0)
+    (let d:i32 0)
+    (while (lt i n)
+      (set! c (call str.byte_at raw i))
+      (cond
+        ((and (eq c 92) (lt (+ i 1) n))
+         (set! d (call str.byte_at raw (+ i 1)))
+         (call buf.push_byte b (cond ((eq d 110) 10) ((eq d 116) 9) ((eq d 114) 13) ((eq d 48) 0) (else d)))
+         (set! i (+ i 2)))
+        (else
+         (call buf.push_byte b c)
+         (set! i (+ i 1)))))
+    (call buf.bytes b))
+
   ;; flatten_mapped for a test build (resolver.rs resolve_tests): the entry's
   ;; tests are functions, with a _start running one.
   (fn flatten_tests_mapped [entry:str.Bytes std_dir:str.Bytes flat:(ptr buf.Buf) err:(ptr buf.Buf)

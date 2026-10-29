@@ -14,14 +14,16 @@ sh bootstrap/build.sh            # about 8 seconds; the result is target/bootstr
 The script has the seed build the current source (stage 1), stage 1 build
 it again (stage 2), and stage 2 build itself once more, which must give
 the same bytes (a fixed point). No Rust is involved. The resulting `aipl`
-does what `aipl compile` and `aipl verify` do in the Rust command, and has
-`aipl run`, which the Rust command has only for a `.wasm` file:
+does what `aipl compile`, `aipl verify`, and `aipl test` do in the Rust
+command (`test` natively only), and has `aipl run`, which the Rust command has
+only for a `.wasm` file:
 
 ```bash
 target/bootstrap/aipl compile FILE.aipl -o OUT.wasm
 target/bootstrap/aipl compile --exe [--sandbox] FILE.aipl -o OUT
 target/bootstrap/aipl verify FILE.aipl    # resolve and type-check, compile nothing
 target/bootstrap/aipl run [FLAGS] FILE.aipl [ARGS]...   # build into a temporary file, run it, remove it
+target/bootstrap/aipl test FILE|DIR [-k TEXT]           # each (test ...) in a fresh process, natively
 ```
 
 The command is built with `--allow-run '*'` (every stage does, and so does
@@ -48,7 +50,7 @@ cmp target/aipl1 target/aipl2       # no output: the compiler reproduces itself
 the seed was made (`cargo build --release`, then
 `./target/release/aipl compile --exe --allow-run '*' aipl_src/aipl.aipl -o target/aipl0`).
 
-The rest of the Rust command (`eval`, `test`, `watch`, `serve`, and `run` of a `.wasm` file) is not here: the
+The rest of the Rust command (`eval`, `watch`, `serve`, `run` of a `.wasm` file, and `test` in the VM) is not here: the
 interpreter is Rust, and running WebAssembly takes wasmtime. Native
 executables run directly.
 

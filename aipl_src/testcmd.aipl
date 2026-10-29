@@ -1,0 +1,233 @@
+;; aipl test, in AIPL (src/testrun.rs is the Rust one): runs each
+;; (test "name" ...) of a file, or of every .aipl file below a directory, in a
+;; fresh process, so a test cannot see another's state and a trap fails only
+;; its own test.
+;;
+;;   aipl test FILE|DIR [-k TEXT] [--native]
+;;
+;; The file's test build is compiled once (driver.compile_tests_limited, then
+;; the native backend), written to a temporary directory, and started once
+;; per test as `PROGRAM K`. A test passes when it exits 0. The output is the
+;; Rust command's: the file's path, a line for each test, what a failed one
+;; printed (its output and its error together, as one stream), and a count.
+;; What needs the VM stays in the Rust command: --vm, --all-backends, and a
+;; file with no (test ...) in it, whose entry function that command runs.
+(module testcmd
+  (import driver)
+  (import resolver)
+  (import native/native)
+  (import stdpath)
+  (import proc)
+  (import fs)
+  (import io)
+  (import str)
+  (import buf)
+  (import alloc)
+  (import option)
+  (import os)
+  (import vec)
+  (import text)
+
+  (fn usage [] -> i32
+    (call io.eprintln "usage: aipl test FILE|DIR [-k TEXT] [--native]")
+    2)
+
+  (fn fail_bytes [prefix:str b:str.Bytes] -> i32
+    (call io.write_str 2 "Error: ")
+    (call io.write_str 2 prefix)
+    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len)))
+    (call io.eprintln "")
+    1)
+
+  ;; 0 nothing there, 1 a file, 2 a directory, 3 anything else (links followed).
+  (fn kind_of [path:str.Bytes] -> i32
+    (match (call fs.info_path path)
+      ((option.Option fs.Info) some [i]
+        (match (get i fs.Info.kind)
+          (fs.Kind.file 1)
+          (fs.Kind.directory 2)
+          (fs.Kind.other 3)))
+      ((option.Option fs.Info) none 0)))
+
+  ;; dir and name joined with one slash.
+  (fn join [dir:str.Bytes name:str.Bytes] -> str.Bytes
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes b dir)
+    (when (neq (call str.byte_at dir (- (get dir str.Bytes.len) 1)) 47) (call buf.push_byte b 47))
+    (call buf.push_bytes b name)
+    (call buf.bytes b))
+
+  ;; Every .aipl file below dir, in the order of the paths' parts: a
+  ;; directory's names sorted, each directory's files where its name falls.
+  (fn collect [dir:str.Bytes out:(ptr (vec.Vec str.Bytes))] -> void
+    (match (call fs.list_path (call alloc.default) dir)
+      ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
+        (for i 0 (call (vec.len str.Bytes) names)
+          (let name:str.Bytes (call (vec.at str.Bytes) names i))
+          (let full:str.Bytes (call join dir name))
+          (let k:i32 (call kind_of full))
+          (cond
+            ((eq k 2) (call collect full out))
+            ((and (eq k 1) (and (gt (get name str.Bytes.len) 5) (call str.ends_with name (call str.from_str ".aipl"))))
+             (call (vec.push str.Bytes) out full))
+            (else (block)))))
+      ((option.Option (ptr (vec.Vec str.Bytes))) none (block))))
+
+  ;; $TMPDIR (else /tmp), and a name from the time in nanoseconds.
+  (fn temp_dir [] -> str.Bytes
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes b (call (option.unwrap_or str.Bytes) (call os.env "TMPDIR") (call str.from_str "/tmp")))
+    (call buf.push_str b "/aipl_test_")
+    (call buf.push_unsigned b (sys.time) 10 false)
+    (call buf.bytes b))
+
+  (fn write_buf [b:(ptr buf.Buf)] -> void
+    (let _w:i32 (call buf.write b 1))
+    (block))
+
+  ;; Runs test k of the executable `exe`: its exit status (134 for a signal or
+  ;; a program that would not start) and what it wrote, its error too, in
+  ;; `out`.
+  (fn run_test [exe:str.Bytes k:i32 out:(ptr buf.Buf)] -> i32
+    (let c:(ptr proc.Command) (call proc.command_path (call alloc.default) exe))
+    (let arg:(ptr buf.Buf) (call buf.make (call alloc.default) 12))
+    (call buf.push_int arg k)
+    (call proc.arg_bytes c (call buf.bytes arg))
+    (let r:(result i32 proc.Error) (call proc.run c (call str.from_str "") out))
+    (let _m:bool (match_result r
+                   (ok s true)
+                   (err e (block
+                            (call buf.push_str out "cannot run the native test build: ")
+                            (call buf.push_str out (call proc.message e))
+                            (call buf.push_byte out 10)
+                            false))))
+    (match_result r
+      (ok s (if (call proc.exited s) s 134))
+      (err e 134)))
+
+  ;; Runs the tests of one file whose names contain the filter (if any);
+  ;; prints a line for each; adds to passed and failed (cells of `counts`).
+  ;; Returns an exit status: 0, or 1 when the file could not be built.
+  (fn run_file [path:str.Bytes have_filter:bool filter:str.Bytes counts:(arr i32)] -> i32
+    (let names:(ptr (vec.Vec str.Bytes)) (call resolver.test_names path))
+    (let std_dir:str.Bytes (call stdpath.find))
+    (let res:(ptr driver.Out) (call driver.compile_tests_limited (call str.addr path) (get path str.Bytes.len) (call str.addr std_dir) (get std_dir str.Bytes.len) 32768))
+    (let status:i32 (get res driver.Out.status))
+    (when (or (eq status 1) (eq status 3))
+          (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
+    (when (eq status 2)
+          (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+          (call buf.push_str m "compile error ")
+          (call buf.push_int m (get res driver.Out.len))
+          (call buf.push_str m " (AIPL_SPEC.md 6.4)")
+          (return (call fail_bytes "" (call buf.bytes m))))
+    (let wasm:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
+    (let o:(ptr native.Output) (call native.compile_with wasm false (call str.from_str "") (call str.from_str "")))
+    (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
+
+    (let head:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes head path)
+    (call buf.push_byte head 10)
+    (call write_buf head)
+
+    (let dir:str.Bytes (call temp_dir))
+    (when (match_result (call fs.mkdir_path dir) (ok d false) (err e true)) (return (call fail_bytes "cannot make " dir)))
+    (let exe:str.Bytes (call join dir (call str.from_str "tests")))
+    (when (match_result (call io.write_path exe (get o native.Output.exe)) (ok n (neq n (get (get o native.Output.exe) str.Bytes.len))) (err e true))
+          (return (call fail_bytes "cannot write " exe)))
+    (when (match_result (call fs.chmod_path exe fs.PROGRAM) (ok d false) (err e true))
+          (return (call fail_bytes "cannot make executable " exe)))
+    (let prefix:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes prefix exe)
+    (call buf.push_str prefix ": ")
+    (for k 0 (call (vec.len str.Bytes) names)
+      (let name:str.Bytes (call (vec.at str.Bytes) names k))
+      (when (or (not have_filter) (call str.contains name filter))
+            (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+            (let code:i32 (call run_test exe k out))
+            ;; the program is named as the file, not the temporary build
+            (let shown:str.Bytes (call buf.bytes (call text.replace (call alloc.default) (call buf.bytes out) (call buf.bytes prefix) (call str.from_str ""))))
+            (let ok:bool (eq code 0))
+            (let line:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+            (call buf.push_str line (if ok "  ok    " "  FAIL  "))
+            (call buf.push_bytes line name)
+            (call buf.push_byte line 10)
+            (if ok
+                (arr.set i32 counts 0 (+ (arr.get i32 counts 0) 1))
+                (block
+                  (arr.set i32 counts 1 (+ (arr.get i32 counts 1) 1))
+                  (let rows:(ptr (vec.Vec str.Bytes)) (call text.lines (call alloc.default) shown))
+                  (for r 0 (call (vec.len str.Bytes) rows)
+                    (call buf.push_str line "        ")
+                    (call buf.push_bytes line (call (vec.at str.Bytes) rows r))
+                    (call buf.push_byte line 10))))
+            (call write_buf line)))
+    (let _gone:bool (match_result (call fs.remove_path exe) (ok d true) (err e false)))
+    (let _dir:bool (match_result (call fs.rmdir_path dir) (ok d true) (err e false)))
+    0)
+
+  ;; aipl test, its arguments from os.arg `first` on; the exit status.
+  (fn command [first:i32] -> i32 (pub)
+    (let have_filter:bool false)
+    (let filter:str.Bytes (call str.from_str ""))
+    (let have_path:bool false)
+    (let path:str.Bytes (call str.from_str ""))
+    (let n:i32 (call os.arg_count))
+    (let i:i32 first)
+    (while (lt i n)
+      (let x:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str "")))
+      (cond
+        ((call str.is x "-k")
+         (when (gte (+ i 1) n) (return (call usage)))
+         (set! have_filter true)
+         (set! filter (call (option.unwrap_or str.Bytes) (call os.arg (+ i 1)) (call str.from_str "")))
+         (set! i (+ i 1)))
+        ((call str.is x "--native") (block))
+        ((or (call str.is x "--vm") (or (call str.is x "--all-backends") (or (call str.is x "-f") (or (call str.is x "--func") (call str.is x "--run-one")))))
+         (return (call fail_bytes "this aipl runs tests natively only: for the VM (--vm, --all-backends, or a file's entry function) use the Rust aipl: " x)))
+        ((call str.starts_with x (call str.from_str "-")) (return (call usage)))
+        (have_path (return (call usage)))
+        (else (set! have_path true) (set! path x)))
+      (set! i (+ i 1)))
+    (when (not have_path) (return (call usage)))
+
+    ;; the files with tests: the file named, or every .aipl file below the directory
+    (let kind:i32 (call kind_of path))
+    (let found:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 16))
+    (cond
+      ((eq kind 1) (call (vec.push str.Bytes) found path))
+      ((eq kind 2) (call collect path found))
+      (else
+       (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+       (call buf.push_bytes m path)
+       (call buf.push_str m ": No such file or directory (os error 2)")
+       (return (call fail_bytes "" (call buf.bytes m)))))
+    (let files:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 16))
+    (for f 0 (call (vec.len str.Bytes) found)
+      (let file:str.Bytes (call (vec.at str.Bytes) found f))
+      (when (gt (call (vec.len str.Bytes) (call resolver.test_names file)) 0)
+            (call (vec.push str.Bytes) files file)))
+    (when (eq (call (vec.len str.Bytes) files) 0)
+          (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+          (call buf.push_bytes m path)
+          (call buf.push_str m (if (eq kind 2)
+                                   ": no (test ...) in any .aipl file below it"
+                                   ": no (test ...) in it: this aipl runs a file's tests natively only; for one with an entry function and no tests use the Rust aipl"))
+          (return (call fail_bytes "" (call buf.bytes m))))
+
+    (let counts:(arr i32) (arr.new i32 (call alloc.forever) 2))
+    (for f 0 (call (vec.len str.Bytes) files)
+      (let status:i32 (call run_file (call (vec.at str.Bytes) files f) have_filter filter counts))
+      (when (neq status 0) (return status)))
+    (let passed:i32 (arr.get i32 counts 0))
+    (let failed:i32 (arr.get i32 counts 1))
+    (let total:i32 (+ passed failed))
+    (let line:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_int line total)
+    (call buf.push_str line (if (eq total 1) " test: " " tests: "))
+    (call buf.push_int line passed)
+    (call buf.push_str line " passed, ")
+    (call buf.push_int line failed)
+    (call buf.push_str line " failed\n")
+    (call write_buf line)
+    (if (gt failed 0) 1 0)))
