@@ -267,11 +267,10 @@ The owner approved the seed refresh the same day. In order:
   bootstrap/README.md): a fixed point, byte for byte its own stage 2 and 3.
   It is the first seed that sets the execute bit, and its source can name every
   `aipl_sys_v1` operation, so the S2 commands can start programs.
-- **Not done, and found on the way:** the self-hosted command still writes its
+- **Found on the way, fixed in section 10:** the self-hosted command wrote its
   output in place (`io.write_path` truncates and writes), where the Rust one
   writes a new file and renames it (a program replacing the very executable
-  running it would stop with "text file busy"). AIPL has no rename operation
-  yet; it belongs to S2's `run` and `watch`, which write and start.
+  running it would stop with "text file busy").
 
 ## 10. `fs.rename` (2026-10-29)
 
@@ -296,9 +295,12 @@ it; `run` and `watch` will need it).
 - **`path_rename` is the last import**, after `exec`, so no existing program's
   import order or bytes change (the test that the seed's own build is
   unchanged is test_bootstrap).
-- **Not yet: the std wrapper.** `fs.rename [from:str to:str] -> (result i32
-  io.Error)` belongs in `std/fs`, which the compiler imports; the seed cannot
-  read the new operation, so it lands with the next seed refresh, together with
-  the self-hosted `compile` writing a new file and renaming it into place
-  (the Rust command's way, which does not stop when the output is the program
-  running).
+- **The std wrapper and the compiler's way of writing** came with the next seed
+  refresh (the owner approved 2026-10-29): `fs.rename [from:str to:str] ->
+  (result i32 io.Error)` and `rename_path` in `std/fs`, and the self-hosted
+  `compile` writes `OUT.aipl-tmp`, makes it executable, and renames it onto
+  `OUT`, so it can replace the compiler that is running it. The seed was built
+  by the Rust toolchain from 49ec350 (sha256 in bootstrap/README.md): a fixed
+  point again. Left: AIPL has no operation to remove a file that a failed
+  compile leaves behind (the Rust command removes its temporary file), so a
+  failed write or rename leaves `OUT.aipl-tmp` beside the output.

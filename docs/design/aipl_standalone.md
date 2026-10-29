@@ -49,7 +49,10 @@ the Rust one on the same inputs.
 
 **Done 2026-10-29** (SYS_PLAN.md, sections 6-9): `fs.chmod` and the process
 operations in every backend and both toolchains, `std/proc`, and a seed that
-sets the execute bit itself. The text below is the plan as it was.
+sets the execute bit itself. `fs.rename` (section 10) and `std/fs`'s `rename`
+followed, and the self-hosted `compile` now writes its output beside it and
+renames it into place, so a compiler can replace the file it is running from.
+The text below is the plan as it was.
 
 The one missing piece under most of the table. A host import module in the
 style of `aipl_net_v1`: lowered to system calls by the native backend

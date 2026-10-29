@@ -63,23 +63,25 @@ program to the same bytes as the Rust command, with the same errors.
 ## Where this seed came from
 
 Built 2026-10-29 by the Rust toolchain, from the source of commit
-20888dd, so that the compiler can use the system operations
-(docs/design/SYS_PLAN.md, `aipl_sys_v1`): `std/fs` has `chmod`, which the
-compiler imports, and `compile --exe` makes its output executable with it,
-so building the compiler from the seed needs no `chmod +x`. The seed itself
-is the first to do so, and the compiler can now start programs, for the
-commands that follow (docs/design/aipl_standalone.md, S2):
+49ec350, so that the compiler can rename a file: `std/fs` has `rename`
+and `rename_path`, which the compiler imports, and `compile` writes its
+output beside the file and renames it into place, as the Rust command
+does. A compiler can now replace the very file it is running from
+(an in-place write is "Text file busy" on Linux), which `run` and `watch`
+need (docs/design/aipl_standalone.md, S2):
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `1ba9a19ebfc1bda2614f205a783ce95bb6c612e91ff700b25e4d995f2f251e9b`.
+sha256 `3717ed4a7be2cfc87c871e2d05741ad2213321930d253f73b582b073e4331051`.
 Building that commit's source with the seed gives the same bytes (stage
 2 is the seed), so for now the seed is its own stage 2.
 
-Earlier seeds: the one built 2026-10-27 from 01bc216 (sha256
+Earlier seeds: the one built 2026-10-29 from 20888dd (sha256
+`1ba9a19ebfc1bda2614f205a783ce95bb6c612e91ff700b25e4d995f2f251e9b`), for
+`fs.chmod` and the process operations, which set the output's execute bit; the one built 2026-10-27 from 01bc216 (sha256
 `ae30b56410a1f5254422ff280e48b22a50334328d9ff04b434f341d086a6b4be`), for
 the `openat` fallback where `openat2` fails (Linux before 5.6, Rosetta 2, a
 container profile that refuses it); the one built 2026-10-27 from 29416a9 (sha256
