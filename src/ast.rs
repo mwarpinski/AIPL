@@ -176,6 +176,9 @@ pub enum OpCode {
     /// `(fs.rmdir ptr len)`: removes the empty directory at the path: 0, or
     /// minus a WASI errno (`path_remove_directory`).
     FsRmdir,
+    /// `(fs.mkdir ptr len)`: makes a directory at the path (mode 0777 less the
+    /// umask, as WASI does): 0, or minus a WASI errno (`path_create_directory`).
+    FsMkdir,
     /// `(net.listen addr len port)`: a listening TCP socket on the address
     /// whose `len` (4 or 16) bytes are at `addr`; its handle, -1, or -2 if
     /// not granted (docs/design/NET_PLAN.md, `aipl_net_v1`).

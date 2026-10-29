@@ -311,7 +311,7 @@ it; `run` and `watch` will need it).
   directory"); AIPL still has no operation to remove one (`path_remove_directory`)
   or to make one (`path_create_directory`).
 
-## 11. `fs.rmdir` (2026-10-29)
+## 11. `fs.rmdir` and `fs.mkdir` (2026-10-29)
 
 Asked for by the owner after `remove`: AIPL could delete a file but not a
 directory. Neither C nor Rust does it any other way than AIPL now does: both
@@ -331,6 +331,16 @@ call the operating system (`rmdir`, or `unlinkat` with `AT_REMOVEDIR`).
   bytes are tested as for `fs.rename`.
 - **`path_remove_directory` is the last import**, after `path_rename`, so no
   existing program's bytes change.
-- **Not yet: the std wrapper.** `fs.rmdir [path:str] -> (result i32 io.Error)`
-  belongs in `std/fs`, which the compiler imports; the seed cannot read the
-  new operation, so it lands with the next seed refresh.
+- **`(fs.mkdir ptr len)`** is the other half, asked for next: WASI's
+  `path_create_directory`, with the same directory choice, confinement, and
+  the same routine natively (`emit_path_unlink` takes the system call and its
+  third argument: `unlinkat` with 0 or `AT_REMOVEDIR`, `mkdirat` with mode 0777
+  less the umask, which the test compares with a directory Rust makes). The
+  VM uses `std::fs::create_dir`. A path that exists, a file or a link too, is
+  `-20`; a missing parent `-44`; a file as the parent `-54`; the rest as for
+  `fs.rmdir`. `path_create_directory` is the last import, after
+  `path_remove_directory`. There is no `mkdir -p`: that is a loop over this.
+- **Not yet: the std wrappers.** `fs.rmdir` and `fs.mkdir`, each `[path:str]
+  -> (result i32 io.Error)`, belong in `std/fs`, which the compiler imports;
+  the seed cannot read the new operations, so they land with the next seed
+  refresh.

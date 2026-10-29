@@ -1361,6 +1361,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::FsChmod
             | OpCode::FsRename
             | OpCode::FsRmdir
+            | OpCode::FsMkdir
             | OpCode::FsOpendir
             | OpCode::FsReaddir
             | OpCode::FsStat
@@ -2172,6 +2173,21 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::LocalGet(io_a));
                 func.instruction(&Instruction::LocalGet(io_b));
                 func.instruction(&Instruction::Call(host));
+            }
+            OpCode::FsMkdir => {
+                // (fs.mkdir ptr len) -> path_create_directory(fd, ptr, len), the
+                // directory chosen as fs.delete chooses it
+                let mkdir = wasi_index(ctx, Wasi::PathCreateDirectory)?;
+                let (io_a, _) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_a)); // len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
+                emit_path_dir(func, ctx.addr_scratch, io_a);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                func.instruction(&Instruction::Call(mkdir));
+                emit_errno_to_result(func, ctx, None);
             }
             OpCode::FsRmdir => {
                 // (fs.rmdir ptr len) -> path_remove_directory(fd, ptr, len), the
@@ -4309,6 +4325,8 @@ enum Wasi {
     PathRename,
     /// `path_remove_directory`, after it, for the same reason.
     PathRemoveDirectory,
+    /// `path_create_directory`, after it, for the same reason.
+    PathCreateDirectory,
 }
 
 impl Wasi {
@@ -4354,6 +4372,7 @@ impl Wasi {
             Wasi::ProcWait => "wait",
             Wasi::PathRename => "path_rename",
             Wasi::PathRemoveDirectory => "path_remove_directory",
+            Wasi::PathCreateDirectory => "path_create_directory",
             Wasi::ProcExec => "exec",
         }
     }
@@ -4380,7 +4399,7 @@ impl Wasi {
             Wasi::ProcStream => (vec![I32, I32], vec![I32]),
             Wasi::ProcClose | Wasi::ProcWait => (vec![I32], vec![I32]),
             Wasi::PathRename => (vec![I32; 6], vec![I32]),
-            Wasi::PathRemoveDirectory => (vec![I32, I32, I32], vec![I32]),
+            Wasi::PathRemoveDirectory | Wasi::PathCreateDirectory => (vec![I32, I32, I32], vec![I32]),
             Wasi::NetAccept | Wasi::NetClose => (vec![I32], vec![I32]),
         }
     }
@@ -4395,6 +4414,7 @@ impl Wasi {
             OpCode::FsDelete => Some(Wasi::PathUnlinkFile),
             OpCode::FsRename => Some(Wasi::PathRename),
             OpCode::FsRmdir => Some(Wasi::PathRemoveDirectory),
+            OpCode::FsMkdir => Some(Wasi::PathCreateDirectory),
             OpCode::FsOpendir => Some(Wasi::PathOpen),
             OpCode::FsReaddir => Some(Wasi::FdReaddir),
             OpCode::FsStat => Some(Wasi::PathFilestatGet),

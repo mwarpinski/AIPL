@@ -2195,6 +2195,22 @@ impl VM {
                     Err(e) => Ok(Value::Int(wasi_errno(&e))),
                 }
             }
+            OpCode::FsMkdir => {
+                let path_ptr = self.int_operand(&args[0], scope, "fs.mkdir")? as u32 as usize;
+                let path_len = self.int_operand(&args[1], scope, "fs.mkdir")? as u32 as usize;
+                let size = self.shared.lock().unwrap().bytes.len();
+                if path_ptr.checked_add(path_len).is_none_or(|end| end > size) {
+                    return Ok(Value::Int(-21));
+                }
+                let path_bytes = self.read_bytes(path_ptr, path_len);
+                match std::str::from_utf8(&path_bytes) {
+                    Ok(p) => match std::fs::create_dir(p) {
+                        Ok(_) => Ok(Value::Int(0)),
+                        Err(e) => Ok(Value::Int(wasi_errno(&e))),
+                    },
+                    Err(_) => Ok(Value::Int(WASI_EILSEQ)),
+                }
+            }
             OpCode::FsRmdir => {
                 let path_ptr = self.int_operand(&args[0], scope, "fs.rmdir")? as u32 as usize;
                 let path_len = self.int_operand(&args[1], scope, "fs.rmdir")? as u32 as usize;
