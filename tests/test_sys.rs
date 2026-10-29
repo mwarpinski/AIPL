@@ -304,14 +304,15 @@ fn std_fs_chmod_is_the_same_in_every_backend() {
     let exe = compile(&top, &src, "p", &["--exe"]);
     let bundle = compile(&top, &src, "p_bundle", &["--exe", "--target", "wasm"]);
     let sandboxed = compile(&top, &src, "ps", &["--exe", "--sandbox"]);
-    let runs: Vec<(&str, Box<dyn Fn() -> Command + '_>, bool)> = vec![
-        ("VM", Box::new(|| { let mut c = Command::new(AIPL); c.arg("eval").arg(&src); c }), true),
-        ("aipl-run", Box::new(|| { let mut c = Command::new(RUNNER); c.arg(&wasm); c }), false),
-        ("native", Box::new(|| Command::new(&exe)), false),
-        ("bundle", Box::new(|| Command::new(&bundle)), false),
-        ("native --sandbox", Box::new(|| Command::new(&sandboxed)), false),
+    let runs: Vec<Run> = vec![
+        ("VM", Box::new(|| { let mut c = Command::new(AIPL); c.arg("eval").arg(&src); c }), 0),
+        ("aipl-run", Box::new(|| { let mut c = Command::new(RUNNER); c.arg(&wasm); c }), 1),
+        ("native", Box::new(|| Command::new(&exe)), 1),
+        ("bundle", Box::new(|| Command::new(&bundle)), 1),
+        ("native --sandbox", Box::new(|| Command::new(&sandboxed)), 1),
     ];
-    for (how, command, ordinary) in runs {
+    for (how, command, kind) in runs {
+        let ordinary = kind == 0;
         let (work, outside, _) = setup(&top);
         let o = command().current_dir(&work).output().unwrap();
         let want = if ordinary { STD_FS_CHMOD_COMPILED.replace("dotdot permission denied", "dotdot ok 0") } else { STD_FS_CHMOD_COMPILED.to_string() };
