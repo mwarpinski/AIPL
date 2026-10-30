@@ -82,3 +82,23 @@ fn files_directories_listing_and_file_information() {
                 rmdir sub ok\nrmdir ok\ngone\n";
     expect(&src, want, 0);
 }
+
+/// A trap prints `<argv[0]>: <reason>` and the call chain with positions, and exits with 134,
+/// as the x86-64 build and aipl-run do (the output of `aipl compile --no-opt --exe` on this
+/// program, argv[0] left off: it is where the test put the executable).
+#[test]
+fn a_trap_prints_its_reason_and_call_chain() {
+    let src = "(module prog\n  (fn divide [a:i32 b:i32] -> i32 (/ a b))\n  (fn middle [a:i32] -> i32 (+ 1 (call divide a 0)))\n  (fn main [] -> i32 (call middle 7)))\n";
+    let exe = build(src);
+    let Some(out) = arm64::run(&exe, &[], b"") else {
+        eprintln!("no AArch64 machine to run on: not run");
+        return;
+    };
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    let (_, rest) = err.split_once(": ").expect("argv[0] and the reason");
+    assert_eq!(
+        rest,
+        "wasm trap: integer divide by zero\n  at divide (prog.aipl:2:35)\n  at middle (prog.aipl:3:34)\n  at main (prog.aipl:4:22)\n"
+    );
+    assert_eq!(out.status.code(), Some(134));
+}

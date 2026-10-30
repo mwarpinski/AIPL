@@ -56,7 +56,8 @@
              (read failed:bool) (read msg:(ptr buf.Buf))
              np:i32 ndecl:i32 nres:i32 func:i32
              (pub mem_pages:i32) (pub results:i32) (pub globals:i32)
-             (pub trap_routine:i32) (pub mem_max:i32)
+             (pub trap_routine:i32) (pub unreachable_routine:i32) (pub mem_max:i32)
+             (read positions:(ptr (vec.Vec (ptr NPos))))
              (pub table_addr:i32) (pub table_size:i32) (read canon:(ptr (vec.Vec i32)))] (pub))
 
   ;; The trap reasons' numbers, the trap routine's table order.
@@ -95,11 +96,25 @@
                                                 results:0
                                                 globals:0
                                                 trap_routine:0
+                                                unreachable_routine:-1
                                                 mem_max:0
+                                                positions:(call (vec.make (ptr NPos)) (call alloc.default) 256)
                                                 table_addr:0
                                                 table_size:0
                                                 canon:(call canonical_types w)]))
     l)
+
+  ;; From code offset `code` on, the machine code is at file:line:col (the module's line
+  ;; table, wasm_reader.LinePos); file -1: no position (each function starts with one, so
+  ;; a lookup never reaches the function before).
+  (struct NPos [(read code:i32) (read file:i32) (read line:i32) (read col:i32)] (pub))
+
+  (fn note_position [l:(ptr L) file:i32 line:i32 col:i32] -> void
+    (let p:(ptr NPos) (new NPos (call alloc.forever) [code:(call buf.len (get l L.code))
+                                                      file:file
+                                                      line:line
+                                                      col:col]))
+    (call (vec.push (ptr NPos)) (get l L.positions) p))
 
   (fn fail [l:(ptr L) msg:str] -> void
     (when (not (get l L.failed))
@@ -281,6 +296,7 @@
     (put l L.ndecl declared)
     (put l L.nres nres)
     (put l L.func index)
+    (call note_position l -1 0 0)
     ;; prologue: the frame, then a zeroed slot for each declared local
     (call arm64.stp_pre c 29 30 31 -16)
     (call arm64.mov_sp c 64 29 31)
@@ -290,9 +306,19 @@
     (call (vec.clear (ptr Label)) (get l L.labels))
     (let _f:(ptr Label) (call open_label l 3 nres))
     (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get body wasm_reader.Body.code))
+    ;; the line table's entries take effect where their instruction's code starts
+    (let lines:(ptr (vec.Vec (ptr wasm_reader.LinePos))) (call wasm_reader.lines_of (get l L.w) index))
+    (let next:i32 0)
+    (let nlines:i32 (if (eq lines (ptr.null (vec.Vec (ptr wasm_reader.LinePos)))) 0 (call (vec.len (ptr wasm_reader.LinePos)) lines)))
     (for i 0 (call (vec.len (ptr wasm_reader.Instr)) code)
       (when (get l L.failed) (break))
-      (call instr l nres (call (vec.at (ptr wasm_reader.Instr)) code i))))
+      (let ins:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code i))
+      (let at:i32 (+ (get body wasm_reader.Body.head) (get ins wasm_reader.Instr.offset)))
+      (while (and (lt next nlines) (lte (get (call (vec.at (ptr wasm_reader.LinePos)) lines next) wasm_reader.LinePos.at) at))
+        (let e:(ptr wasm_reader.LinePos) (call (vec.at (ptr wasm_reader.LinePos)) lines next))
+        (call note_position l (get e wasm_reader.LinePos.file) (get e wasm_reader.LinePos.line) (get e wasm_reader.LinePos.col))
+        (set! next (+ next 1)))
+      (call instr l nres ins)))
 
   ;; ===== Labels =====
 
@@ -396,16 +422,20 @@
        (call go_dead l)
        true)
       ((eq op 0)
-       (call arm64.mov_imm c 32 0 (i64.extend_s (call trap_unreachable)))
-       (call emit_trap l)
+       (if (gte (get l L.unreachable_routine) 0)
+           (call arm64.patch_b c (call arm64.bl c) (get l L.unreachable_routine))
+           (block
+             (call arm64.mov_imm c 32 0 (i64.extend_s (call trap_unreachable)))
+             (call emit_trap l)))
        (call go_dead l)
        true)
       (else false)))
 
-  ;; a jump to the trap routine, which does not return (reason in x0)
+  ;; a call of the trap routine, which does not return (reason in x0): the return address
+  ;; is the trap's place, and the frame pointer the frame it is in
   (fn emit_trap [l:(ptr L)] -> void
     (let c:(ptr buf.Buf) (get l L.code))
-    (call arm64.b_to c (get l L.trap_routine)))
+    (call arm64.patch_b c (call arm64.bl c) (get l L.trap_routine)))
 
   ;; A guard that traps when the condition (from the last compare) is `cc`:
   ;; a branch over the trap when it is not.

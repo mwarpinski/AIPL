@@ -1,0 +1,245 @@
+;; backtrace_arm64: what an AArch64 executable does when the program traps (native ARM64
+;; backend, docs/design/ARM64_PLAN.md, NA6), runtime.aipl's trap and call-chain routines
+;; for x86-64 and printing what they print, the lines aipl-run prints: `<argv[0]>:
+;; <reason>`, then "  at NAME (file:line:col)" for each frame whose function has a name
+;; to show, innermost first, at most 32, then "  ... N more"; then exit status 134.
+;;
+;; A trap is a `bl` of the trap routine with the reason's number in x0, so x30 is the
+;; trap's place. The frames are found through the frame pointers (every function's
+;; prologue is `stp x29, x30, [sp, #-16]!; mov x29, sp`, so [x29] is the caller's x29
+;; and [x29 + 8] its return address); the walk ends at an address outside every
+;; function. Nothing is kept in a register across a trap, so these routines use all of
+;; them.
+(module backtrace_arm64
+  (import alloc)
+  (import buf)
+  (import arm64)
+  (import runtime_arm64)
+
+  ;; Data addresses: the reasons' table ([text address, length], 16 bytes each), the
+  ;; process's initial stack pointer's cell, the function table's cell ([entries, count],
+  ;; each entry [start end name address name length], 32-bit words), the position table's
+  ;; cell ([entries, count, files]; each entry [address file line col], each file [address
+  ;; length]), the memory size cell (in pages), and the texts the output is made of.
+  (struct Texts [(pub reasons:i32) (pub sp_cell:i32) (pub chain:i32) (pub positions:i32) (pub pages:i32)
+                 (pub sep:i32) (pub nl:i32) (pub at:i32) (pub dots:i32) (pub more:i32)
+                 (pub open:i32) (pub colon:i32) (pub close:i32)] (pub))
+
+  ;; Where the routines begin.
+  (struct Routines [(pub plain:i32) (pub trap:i32) (pub unreachable:i32)] (pub))
+
+  (fn imm [c:(ptr buf.Buf) rd:i32 v:i32] -> void
+    (call arm64.mov_imm c 64 rd (i64.extend_s v)))
+
+  ;; write(2, x(a), x(b)) with the address and length in registers (clobbers x0-x2, x8)
+  (fn write_regs [c:(ptr buf.Buf) a:i32 b:i32] -> void
+    (call arm64.mov_rr c 64 1 a)
+    (call arm64.mov_rr c 64 2 b)
+    (call imm c 0 2)
+    (call runtime_arm64.emit_syscall c (call runtime_arm64.sys_write)))
+
+  ;; The unsigned value in x(reg) to standard error in decimal, from a buffer on the stack
+  ;; (clobbers x0-x8)
+  (fn write_decimal [c:(ptr buf.Buf) reg:i32] -> void
+    (call arm64.sub_ri c 64 31 31 32)
+    (call arm64.mov_rr c 64 3 reg)
+    (call arm64.add_ri c 64 4 31 32)
+    (call imm c 5 10)
+    (let top:i32 (call buf.len c))
+    (call arm64.udiv c 64 6 3 5)
+    (call arm64.msub c 64 7 6 5 3)
+    (call arm64.add_ri c 64 7 7 48)
+    (call arm64.sub_ri c 64 4 4 1)
+    (call arm64.strb c 7 4 0)
+    (call arm64.mov_rr c 64 3 6)
+    (call arm64.patch_cond c (call arm64.cbnz c 64 3) top)
+    (call arm64.add_ri c 64 9 31 32)
+    (call arm64.sub_rrr c 64 9 9 4)
+    (call write_regs c 4 9)
+    (call arm64.add_ri c 64 31 31 32))
+
+  ;; `<argv[0]>: ` to standard error, or nothing if there is no argv[0]: the initial stack is
+  ;; argc, argv[0], ... (clobbers x0-x2, x8-x13)
+  (fn write_argv0 [c:(ptr buf.Buf) t:(ptr Texts)] -> void
+    (call imm c 9 (get t Texts.sp_cell))
+    (call arm64.ldr_x c 9 9 0)
+    (call arm64.ldr_x c 10 9 0)
+    (let no_name:i32 (call arm64.cbz c 64 10))
+    (call arm64.ldr_x c 11 9 8)
+    (call imm c 12 0)
+    (let top:i32 (call buf.len c))
+    (call arm64.ldrb_uxtw c 13 11 12)
+    (let done:i32 (call arm64.cbz c 32 13))
+    (call arm64.add_ri c 64 12 12 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_cond c done (call buf.len c))
+    (call write_regs c 11 12)
+    (call runtime_arm64.emit_write c 2 (get t Texts.sep) 2)
+    (call arm64.patch_cond c no_name (call buf.len c)))
+
+  ;; x1, x2 = the text and length of reason x0
+  (fn lookup_reason [c:(ptr buf.Buf) t:(ptr Texts)] -> void
+    (call arm64.lsl_ri c 64 0 0 4)
+    (call imm c 16 (get t Texts.reasons))
+    (call arm64.add_rrr c 64 16 16 0)
+    (call arm64.ldr_x c 1 16 0)
+    (call arm64.ldr_x c 2 16 8))
+
+  ;; `<argv[0]>: <message>` and a newline, the message in x1 (address) and x2 (length)
+  (fn write_header [c:(ptr buf.Buf) t:(ptr Texts)] -> void
+    (call arm64.mov_rr c 64 19 1)
+    (call arm64.mov_rr c 64 24 2)
+    (call write_argv0 c t)
+    (call write_regs c 19 24)
+    (call runtime_arm64.emit_write c 2 (get t Texts.nl) 1))
+
+  ;; The trap with no call chain (not a trap under wasmtime: an exit status outside 0-125):
+  ;; reached by a jump with the reason's number in x0.
+  (fn emit_plain [c:(ptr buf.Buf) t:(ptr Texts)] -> void
+    (call lookup_reason c t)
+    (call write_header c t)
+    (call runtime_arm64.emit_exit c 134))
+
+  ;; " (file:line:col)" for the frame whose address is in x21: the last position entry at or
+  ;; before x21 - 1 (entries are by address), unless it has no file (clobbers x0-x14)
+  (fn write_position [c:(ptr buf.Buf) t:(ptr Texts)] -> void
+    (call arm64.sub_ri c 64 9 21 1)
+    (call imm c 10 (get t Texts.positions))
+    (call arm64.ldr_w c 11 10 0)
+    (call arm64.ldr_w c 12 10 4)
+    (call imm c 13 0)
+    (let scan:i32 (call buf.len c))
+    (let ended1:i32 (call arm64.cbz c 64 12))
+    (call arm64.ldr_w c 14 11 0)
+    (call arm64.cmp_rr c 64 9 14)
+    (let past:i32 (call arm64.b_cond c (call arm64.cc_lo)))
+    (call arm64.mov_rr c 64 13 11)
+    (call arm64.add_ri c 64 11 11 16)
+    (call arm64.sub_ri c 64 12 12 1)
+    (call arm64.b_to c scan)
+    (call arm64.patch_cond c ended1 (call buf.len c))
+    (call arm64.patch_cond c past (call buf.len c))
+    ;; none found, or one without a file
+    (let none:i32 (call arm64.cbz c 64 13))
+    (call arm64.ldr_w c 9 13 4)
+    (call arm64.cmp_ri c 32 9 0)
+    (let no_file:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call runtime_arm64.emit_write c 2 (get t Texts.open) 2)
+    (call imm c 10 (get t Texts.positions))
+    (call arm64.ldr_w c 10 10 8)
+    (call arm64.lsl_ri c 64 9 9 3)
+    (call arm64.add_rrr c 64 9 10 9)
+    (call arm64.ldr_w c 11 9 0)
+    (call arm64.ldr_w c 12 9 4)
+    (call write_regs c 11 12)
+    (call runtime_arm64.emit_write c 2 (get t Texts.colon) 1)
+    (call arm64.ldr_w c 9 13 8)
+    (call write_decimal c 9)
+    (call runtime_arm64.emit_write c 2 (get t Texts.colon) 1)
+    (call arm64.ldr_w c 9 13 12)
+    (call write_decimal c 9)
+    (call runtime_arm64.emit_write c 2 (get t Texts.close) 1)
+    (call arm64.patch_cond c none (call buf.len c))
+    (call arm64.patch_cond c no_file (call buf.len c)))
+
+  ;; The frames, from the trap's place (x20) and frame pointer (x29): x21 an address in the
+  ;; current frame's function, x22 that frame's x29, x23 the frames shown, x24 those not
+  ;; shown past the limit
+  (fn write_frames [c:(ptr buf.Buf) t:(ptr Texts)] -> void
+    (call arm64.mov_rr c 64 21 20)
+    (call arm64.mov_rr c 64 22 29)
+    (call imm c 23 0)
+    (call imm c 24 0)
+    (let frame:i32 (call buf.len c))
+    ;; the entry with start <= address - 1 < end (a return address may be the first byte
+    ;; after its function)
+    (call arm64.sub_ri c 64 9 21 1)
+    (call imm c 10 (get t Texts.chain))
+    (call arm64.ldr_w c 11 10 0)
+    (call arm64.ldr_w c 12 10 4)
+    (let scan:i32 (call buf.len c))
+    (let done:i32 (call arm64.cbz c 64 12))
+    (call arm64.ldr_w c 13 11 0)
+    (call arm64.cmp_rr c 64 9 13)
+    (let before:i32 (call arm64.b_cond c (call arm64.cc_lo)))
+    (call arm64.ldr_w c 13 11 4)
+    (call arm64.cmp_rr c 64 9 13)
+    (let found:i32 (call arm64.b_cond c (call arm64.cc_lo)))
+    (call arm64.patch_cond c before (call buf.len c))
+    (call arm64.add_ri c 64 11 11 16)
+    (call arm64.sub_ri c 64 12 12 1)
+    (call arm64.b_to c scan)
+    ;; found: shown (name length > 0), or counted past the limit
+    (call arm64.patch_cond c found (call buf.len c))
+    (call arm64.ldr_w c 13 11 12)
+    (let hidden:i32 (call arm64.cbz c 64 13))
+    (call arm64.cmp_ri c 32 23 32)
+    (let over:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call runtime_arm64.emit_write c 2 (get t Texts.at) 5)
+    (call arm64.ldr_w c 9 11 8)
+    (call arm64.ldr_w c 10 11 12)
+    (call write_regs c 9 10)
+    (call write_position c t)
+    (call runtime_arm64.emit_write c 2 (get t Texts.nl) 1)
+    (call arm64.add_ri c 64 23 23 1)
+    (let shown:i32 (call arm64.b c))
+    (call arm64.patch_cond c over (call buf.len c))
+    (call arm64.add_ri c 64 24 24 1)
+    ;; on to the caller's frame
+    (call arm64.patch_cond c hidden (call buf.len c))
+    (call arm64.patch_b c shown (call buf.len c))
+    (call arm64.ldr_x c 21 22 8)
+    (call arm64.ldr_x c 22 22 0)
+    (call arm64.b_to c frame)
+    ;; past the last frame
+    (call arm64.patch_cond c done (call buf.len c))
+    (let none:i32 (call arm64.cbz c 64 24))
+    (call runtime_arm64.emit_write c 2 (get t Texts.dots) 6)
+    (call write_decimal c 24)
+    (call runtime_arm64.emit_write c 2 (get t Texts.more) 6)
+    (call arm64.patch_cond c none (call buf.len c))
+    (call runtime_arm64.emit_exit c 134))
+
+  ;; The trap routine: x0 = the reason's number, x30 = the trap's place. The message is
+  ;; the reason's text. `message_at` is where the message (x1, x2) is already known:
+  ;; the unreachable routine jumps there with the program's own message.
+  (fn emit_trap [c:(ptr buf.Buf) t:(ptr Texts)] -> i32
+    (call arm64.mov_rr c 64 20 30)
+    (call lookup_reason c t)
+    (let message_at:i32 (call buf.len c))
+    (call write_header c t)
+    (call write_frames c t)
+    message_at)
+
+  ;; unreachable: a failed contract or bounds check has left its message in linear memory,
+  ;; its address and length in cells 92 and 96 (AIPL_SPEC.md 7.9); the trap routine prints
+  ;; that instead of the reason, as aipl-run does. Any other unreachable traps as before
+  ;; (reason `reason`). Reached by `bl`: x30 is the place.
+  (fn emit_unreachable [c:(ptr buf.Buf) t:(ptr Texts) trap:i32 message_at:i32 reason:i32 has_memory:bool] -> void
+    (when has_memory
+          (call imm c 9 (get t Texts.pages))
+          (call arm64.ldr_x c 9 9 0)
+          (call arm64.lsl_ri c 64 9 9 16)
+          (call arm64.cmp_ri c 64 9 100)
+          (let small:i32 (call arm64.b_cond c (call arm64.cc_lo)))
+          (call arm64.ldr_w c 2 28 96)
+          (let none:i32 (call arm64.cbz c 32 2))
+          (call arm64.ldr_w c 1 28 92)
+          (call arm64.add_rrr c 64 1 28 1)
+          (call arm64.mov_rr c 64 20 30)
+          (call arm64.b_to c message_at)
+          (call arm64.patch_cond c small (call buf.len c))
+          (call arm64.patch_cond c none (call buf.len c)))
+    (call imm c 0 reason)
+    (call arm64.b_to c trap))
+
+  ;; Emits the three routines.
+  (fn emit_routines [c:(ptr buf.Buf) t:(ptr Texts) unreachable_reason:i32 has_memory:bool] -> (ptr Routines) (pub)
+    (let plain:i32 (call buf.len c))
+    (call emit_plain c t)
+    (let trap:i32 (call buf.len c))
+    (let message_at:i32 (call emit_trap c t))
+    (let unreachable:i32 (call buf.len c))
+    (call emit_unreachable c t trap message_at unreachable_reason has_memory)
+    (new Routines (call alloc.forever) [plain:plain trap:trap unreachable:unreachable]))
+)
