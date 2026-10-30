@@ -12,6 +12,8 @@
 #    from the same source by an independent route, whether or not the seed is from this source.
 # 5. stage 1 there runs a program (`aipl run`, which builds it, starts it, and removes it) and a
 #    file of tests (`aipl test`, a fresh process per test), as it does on x86-64.
+# 6. there, a plain `compile --exe` (no --target) makes an AArch64 executable (ELF machine 183), as
+#    `run`, `test`, `eval`, and `serve` build theirs.
 # Exits 0 only if all of that holds. HOST keeps its files in ~/aipl-arm-self.
 set -u
 host=${1:?usage: sh tools/arm64_bootstrap.sh HOST}
@@ -48,6 +50,7 @@ ssh -o BatchMode=yes "$host" '
     cmp stage1 stage2 && echo STAGE2-IDENTICAL
     sh bootstrap/build.sh /w/seed_out > /dev/null && echo SEED-BUILT
     cmp seed_out/aipl stage1 && echo SEED-CHAIN-MATCHES
+    /w/stage1 compile --exe examples/quicksort.aipl -o q_default > /dev/null && [ \"\$(od -An -tu1 -j18 -N2 q_default | tr -s \" \" | sed \"s/^ //\")\" = \"183 0\" ] && echo DEFAULT-IS-AARCH64
     [ \"\$(/w/stage1 run examples/quicksort.aipl)\" = \"median of 5000 random values: 502\" ] && echo RUN-WORKS
     /w/stage1 test tests/aipl/testing/rows.aipl 2>&1 | tail -1 | grep -q \"7 tests: 3 passed, 4 failed\" && echo TEST-WORKS
     while read f; do
@@ -60,6 +63,7 @@ ok=1
 grep -q '^aarch64' "$work/remote.log" || { echo "arm64_bootstrap: not an AArch64 machine"; ok=0; }
 grep -q '^SEED-BUILT' "$work/remote.log" || { echo "arm64_bootstrap: bootstrap/build.sh failed from the AArch64 seed"; ok=0; }
 grep -q '^SEED-CHAIN-MATCHES' "$work/remote.log" || { echo "arm64_bootstrap: the seed's chain builds a different compiler than stage 1"; ok=0; }
+grep -q '^DEFAULT-IS-AARCH64' "$work/remote.log" || { echo "arm64_bootstrap: a plain compile --exe on AArch64 did not make an AArch64 executable"; ok=0; }
 grep -q '^RUN-WORKS' "$work/remote.log" || { echo "arm64_bootstrap: aipl run did not build and run a program"; ok=0; }
 grep -q '^TEST-WORKS' "$work/remote.log" || { echo "arm64_bootstrap: aipl test did not give the expected counts"; ok=0; }
 grep -q '^STAGE2-IDENTICAL' "$work/remote.log" || { echo "arm64_bootstrap: stage 2 is not stage 1"; ok=0; }

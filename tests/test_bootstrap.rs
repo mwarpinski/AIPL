@@ -364,7 +364,7 @@ fn the_aipl_command_matches_the_rust_command() {
 
 /// `aipl compile --exe --target arm64`, in the self-hosted command, writes the AArch64
 /// executable the Rust command writes (the compiler itself among them), and refuses the flags
-/// that are not built for AArch64 with the same message. tools/arm64_bootstrap.sh runs the
+/// (`--sandbox`, `--listen`, `--serve`, `--allow-run`) the same bytes, and an address that is not one the same message. tools/arm64_bootstrap.sh runs the
 /// result on AArch64 Linux: that compiler compiling itself is stage 2 there.
 #[test]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
@@ -384,7 +384,21 @@ fn the_aipl_command_builds_the_aarch64_executables_the_rust_command_builds() {
         let _ = std::fs::remove_file(&want);
         let _ = std::fs::remove_file(&got);
     }
-    for flag in [vec!["--sandbox"], vec!["--listen", "127.0.0.1:8080"], vec!["--serve", "127.0.0.1:8080"]] {
+    // the flags AArch64 executables take: the same bytes from both commands
+    for flag in [vec!["--sandbox"], vec!["--listen", "127.0.0.1:8080"], vec!["--serve", "127.0.0.1:8080"], vec!["--allow-run", "/bin/sh", "--listen", "[::1]:9"]] {
+        let (want, got) = (dir.join("want"), dir.join("got"));
+        let mut args = vec!["compile", "--exe", "--target", "arm64"];
+        args.extend(flag.iter());
+        args.extend(["examples/quicksort.aipl", "-o"]);
+        let r = run(Command::new(AIPL).args(&args).arg(&want));
+        let a = run(Command::new(&aipl).args(&args).arg(&got));
+        assert_eq!((r.status.code(), a.status.code()), (Some(0), Some(0)), "{flag:?}: {}", String::from_utf8_lossy(&a.stderr));
+        assert!(std::fs::read(&want).unwrap() == std::fs::read(&got).unwrap(), "{flag:?}: different bytes");
+        let _ = std::fs::remove_file(&want);
+        let _ = std::fs::remove_file(&got);
+    }
+    // an address that is not one: the same message and status, and no file left
+    for flag in [vec!["--listen", "nonsense"], vec!["--serve", "nonsense"]] {
         let out = dir.join("never");
         let mut args = vec!["compile", "--exe", "--target", "arm64"];
         args.extend(flag.iter());
@@ -392,6 +406,7 @@ fn the_aipl_command_builds_the_aarch64_executables_the_rust_command_builds() {
         let r = run(Command::new(AIPL).args(&args).arg(&out));
         let a = run(Command::new(&aipl).args(&args).arg(&out));
         assert_eq!(a.status.code(), r.status.code(), "{flag:?}");
+        assert_ne!(a.status.code(), Some(0), "{flag:?}");
         assert_eq!(String::from_utf8_lossy(&a.stderr), String::from_utf8_lossy(&r.stderr), "{flag:?}");
         assert!(!out.exists(), "{flag:?}: a file was left");
     }

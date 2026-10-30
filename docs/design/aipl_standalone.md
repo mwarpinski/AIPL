@@ -151,8 +151,8 @@ against the Rust command's. The rest:
   repository program to the bytes the Rust command makes
   (tools/arm64_bootstrap.sh). **The process operations are there too
   (2026-10-30, procs_arm64.aipl), so `aipl run`, `test`, `watch`, and `eval` work
-  on AArch64 Linux**, and the AArch64 seed is checked in. To come: sockets and
-  `--serve`, threads, `--sandbox`;
+  on AArch64 Linux**, and the AArch64 seed is checked in. Sockets,
+  `--serve`, and `--sandbox` are there as well (2026-10-30); to come: threads;
 - macOS needs a Mach-O writer and code signing (ARM64_PLAN.md, section on
   Darwin) or, until then, the launcher bundle;
 - a WebAssembly interpreter in AIPL, for any platform without a native

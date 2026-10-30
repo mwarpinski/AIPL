@@ -29,7 +29,7 @@
 
   ;; Data addresses, and the positions of the shared code.
   (struct W [fd_table:i32 errno_table:i32 pages_cell:i32 dot:i32 root:i32
-             t_errno:i32 t_negated:i32 s_copy:i32 s_split:i32 s_openat2:i32] (pub))
+             t_errno:i32 t_negated:i32 s_copy:i32 s_split:i32 s_openat2:i32 sandbox:bool said:i32] (pub))
 
   (fn fd_slots [] -> i32 64)
 
@@ -59,7 +59,7 @@
     b)
 
   ;; The data the routines use. Call after the memory size cell exists.
-  (fn make [l:(ptr lower_arm64.L)] -> (ptr W) (pub)
+  (fn make [l:(ptr lower_arm64.L) sandbox:bool] -> (ptr W) (pub)
     (let fds:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (for i 0 (call fd_slots)
       (call push_u32 fds (if (lte i 2) i -1)))
@@ -71,10 +71,11 @@
     (call buf.push_byte data 0)
     (let root:i32 (call lower_arm64.data_text l "/"))
     (call buf.push_byte data 0)
+    (let said:i32 (call lower_arm64.data_text l "this program was built with --sandbox, which needs the openat2 system call (Linux 5.6 or newer)\n"))
     (new W (call alloc.forever) [fd_table:fd_table errno_table:errno_table
                                  pages_cell:(get l lower_arm64.L.mem_pages)
                                  dot:dot root:root
-                                 t_errno:-1 t_negated:-1 s_copy:-1 s_split:-1 s_openat2:-1]))
+                                 t_errno:-1 t_negated:-1 s_copy:-1 s_split:-1 s_openat2:-1 sandbox:sandbox said:said]))
 
   ;; ===== Building blocks =====
 
@@ -252,7 +253,7 @@
   ;; result in x0. A kernel without openat2 (ENOSYS) or a profile that refuses
   ;; it (EPERM) gets the same open as plain openat. Keeps x1 and x13; clobbers
   ;; x0, x2-x5, and x8.
-  (fn emit_s_openat2 [c:(ptr buf.Buf)] -> void
+  (fn emit_s_openat2 [c:(ptr buf.Buf) fallback:bool] -> void
     ;; struct open_how { u64 flags; u64 mode; u64 resolve } on the stack;
     ;; resolve = RESOLVE_BENEATH (8) | RESOLVE_NO_MAGICLINKS (2)
     (call arm64.sub_ri c 64 31 31 32)
@@ -270,21 +271,22 @@
     (call arm64.mov_sp c 64 2 31)
     (call imm c 3 24)
     (call runtime_arm64.emit_syscall c 437)
-    (call imm c 4 -38)
-    (call arm64.cmp_rr c 64 0 4)
-    (let enosys:i32 (call arm64.b_cond c (call arm64.cc_eq)))
-    (call imm c 4 -1)
-    (call arm64.cmp_rr c 64 0 4)
-    (let eperm:i32 (call arm64.b_cond c (call arm64.cc_eq)))
-    (let done:i32 (call arm64.b c))
-    (call arm64.patch_cond c enosys (call buf.len c))
-    (call arm64.patch_cond c eperm (call buf.len c))
-    ;; openat(x0 = dir fd, x1 = path, x2 = flags, x3 = mode)
-    (call arm64.mov_rr c 64 0 5)
-    (call arm64.ldr_x c 2 31 0)
-    (call arm64.ldr_x c 3 31 8)
-    (call runtime_arm64.emit_syscall c 56)
-    (call arm64.patch_b c done (call buf.len c))
+    (when fallback
+      (call imm c 4 -38)
+      (call arm64.cmp_rr c 64 0 4)
+      (let enosys:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+      (call imm c 4 -1)
+      (call arm64.cmp_rr c 64 0 4)
+      (let eperm:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+      (let done:i32 (call arm64.b c))
+      (call arm64.patch_cond c enosys (call buf.len c))
+      (call arm64.patch_cond c eperm (call buf.len c))
+      ;; openat(x0 = dir fd, x1 = path, x2 = flags, x3 = mode)
+      (call arm64.mov_rr c 64 0 5)
+      (call arm64.ldr_x c 2 31 0)
+      (call arm64.ldr_x c 3 31 8)
+      (call runtime_arm64.emit_syscall c 56)
+      (call arm64.patch_b c done (call buf.len c)))
     (call arm64.add_ri c 64 31 31 32)
     (call arm64.ret c))
 
@@ -299,28 +301,66 @@
     (put w W.s_split (call buf.len c))
     (call emit_s_split c w)
     (put w W.s_openat2 (call buf.len c))
-    (call emit_s_openat2 c))
+    (call emit_s_openat2 c (not (get w W.sandbox))))
 
   (fn call_shared [c:(ptr buf.Buf) target:i32] -> void
     (call arm64.patch_b c (call arm64.bl c) target))
 
   ;; ===== Start-up =====
 
-  ;; Descriptors 3 (the working directory) and 4 (`/`) are open before the program starts.
+  ;; Descriptors 3 (the working directory) and 4 (`/`, not with --sandbox) are open before the
+  ;; program starts, as O_PATH directories.
   (fn emit_preopens [c:(ptr buf.Buf) w:(ptr W)] -> void (pub)
+    (when (get w W.sandbox) (call emit_openat2_probe c w))
     (call emit_preopen c w (get w W.dot) 3)
-    (call emit_preopen c w (get w W.root) 4))
+    (when (not (get w W.sandbox)) (call emit_preopen c w (get w W.root) 4)))
 
-  ;; openat(AT_FDCWD, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC): the descriptor, or the
-  ;; negative errno, in the table's entry
+  ;; openat(AT_FDCWD, path, O_PATH | O_DIRECTORY | O_CLOEXEC): the descriptor, or the negative
+  ;; errno, in the table's entry
   (fn emit_preopen [c:(ptr buf.Buf) w:(ptr W) path:i32 slot:i32] -> void
     (call imm c 0 -100)
     (call imm c 1 path)
-    (call imm c 2 540672)
+    (call imm c 2 (call o_path_dir_cloexec))
     (call imm c 3 0)
     (call runtime_arm64.emit_syscall c 56)
     (call imm c 1 (get w W.fd_table))
     (call arm64.str_w c 0 1 (* 4 slot)))
+
+  ;; A --sandbox program confines every open with openat2, so one that cannot (the kernel is older
+  ;; than 5.6, or a seccomp profile refuses it) stops at start with a message, not at its first
+  ;; file with an error that does not say why.
+  (fn emit_openat2_probe [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (let said:str "this program was built with --sandbox, which needs the openat2 system call (Linux 5.6 or newer)\n")
+    (let msg:i32 (get w W.said))
+    ;; openat2(AT_FDCWD, ".", { O_PATH | O_DIRECTORY | O_CLOEXEC, 0, 0 }, 24)
+    (call arm64.sub_ri c 64 31 31 32)
+    (call imm c 9 (call o_path_dir_cloexec))
+    (call arm64.str_x c 9 31 0)
+    (call arm64.str_x c 31 31 8)
+    (call arm64.str_x c 31 31 16)
+    (call imm c 0 -100)
+    (call imm c 1 (get w W.dot))
+    (call arm64.mov_sp c 64 2 31)
+    (call imm c 3 24)
+    (call runtime_arm64.emit_syscall c 437)
+    (call arm64.add_ri c 64 31 31 32)
+    (call imm c 4 -38)
+    (call arm64.cmp_rr c 64 0 4)
+    (let enosys:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (call imm c 4 -1)
+    (call arm64.cmp_rr c 64 0 4)
+    (let eperm:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    ;; supported: close the probe's descriptor, if it opened one
+    (let other_error:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call runtime_arm64.emit_syscall c 57)
+    (let supported:i32 (call arm64.b c))
+    ;; unsupported: write(2, msg), exit_group(1)
+    (call arm64.patch_cond c enosys (call buf.len c))
+    (call arm64.patch_cond c eperm (call buf.len c))
+    (call runtime_arm64.emit_write c 2 msg (str.len said))
+    (call runtime_arm64.emit_exit c 1)
+    (call arm64.patch_cond c other_error (call buf.len c))
+    (call arm64.patch_b c supported (call buf.len c)))
 
   ;; ===== The routines =====
 

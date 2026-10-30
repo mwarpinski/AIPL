@@ -15,7 +15,7 @@
 (module testcmd
   (import driver)
   (import resolver)
-  (import native/native)
+  (import native/hostnative)
   (import stdpath)
   (import proc)
   (import fs)
@@ -122,8 +122,8 @@
           (call buf.push_str m " (AIPL_SPEC.md 6.4)")
           (return (call fail_bytes "" (call buf.bytes m))))
     (let wasm:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
-    (let o:(ptr native.Output) (call native.compile_with wasm false (call str.from_str "") (call str.from_str "")))
-    (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
+    (let o:(ptr hostnative.Built) (call hostnative.build wasm false (call str.from_str "") (call str.from_str "") 0))
+    (when (not (get o hostnative.Built.ok)) (return (call fail_bytes "native backend: " (get o hostnative.Built.error))))
 
     (let head:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (call buf.push_bytes head path)
@@ -133,7 +133,7 @@
     (let dir:str.Bytes (call temp_dir))
     (when (match_result (call fs.mkdir_path dir) (ok d false) (err e true)) (return (call fail_bytes "cannot make " dir)))
     (let exe:str.Bytes (call join dir (call str.from_str "tests")))
-    (when (match_result (call io.write_path exe (get o native.Output.exe)) (ok n (neq n (get (get o native.Output.exe) str.Bytes.len))) (err e true))
+    (when (match_result (call io.write_path exe (get o hostnative.Built.exe)) (ok n (neq n (get (get o hostnative.Built.exe) str.Bytes.len))) (err e true))
           (return (call fail_bytes "cannot write " exe)))
     (when (match_result (call fs.chmod_path exe fs.PROGRAM) (ok d false) (err e true))
           (return (call fail_bytes "cannot make executable " exe)))

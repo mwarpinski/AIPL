@@ -18,6 +18,7 @@
 (module evalcmd
   (import driver)
   (import native/native)
+  (import native/hostnative)
   (import stdpath)
   (import proc)
   (import fs)
@@ -399,11 +400,11 @@
           (call buf.push_str m " (AIPL_SPEC.md 6.4)")
           (return (call fail_bytes "" (call buf.bytes m))))
     (let wasm:str.Bytes (unsafe (call str.bytes (get built driver.Out.addr) (get built driver.Out.len))))
-    (let o:(ptr native.Output) (call native.compile_with wasm false (call buf.bytes grants) (call str.from_str "")))
-    (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
+    (let o:(ptr hostnative.Built) (call hostnative.build wasm false (call buf.bytes grants) (call str.from_str "") 0))
+    (when (not (get o hostnative.Built.ok)) (return (call fail_bytes "native backend: " (get o hostnative.Built.error))))
 
     (let exe:str.Bytes (call temp_path))
-    (when (match_result (call io.write_path exe (get o native.Output.exe)) (ok w (neq w (get (get o native.Output.exe) str.Bytes.len))) (err e true))
+    (when (match_result (call io.write_path exe (get o hostnative.Built.exe)) (ok w (neq w (get (get o hostnative.Built.exe) str.Bytes.len))) (err e true))
           (let _gone:bool (match_result (call fs.remove_path exe) (ok d true) (err e2 false)))
           (return (call fail_bytes "cannot write " exe)))
     (when (match_result (call fs.chmod_path exe fs.PROGRAM) (ok d false) (err e true))

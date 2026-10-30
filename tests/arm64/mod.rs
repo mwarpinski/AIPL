@@ -94,3 +94,25 @@ pub fn run_env(exe: &[u8], args: &[&str], input: &[u8], env: &[(&str, &str)]) ->
     std::fs::remove_dir_all(&dir).ok();
     Some(out)
 }
+
+/// Starts the executable `exe` with `args` as a child process whose network is this machine's, to be
+/// talked to from the test (a server): where AArch64 code runs on this machine, directly or under
+/// qemu-user. None elsewhere, as a container on another machine is not on this one's network.
+pub fn spawn(exe: &[u8], args: &[&str]) -> Option<std::process::Child> {
+    use std::os::unix::fs::PermissionsExt;
+    let how = available()?;
+    if !(how == "this machine" || how.starts_with("qemu")) {
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("aipl_arm64_srv_{}_{}", std::process::id(), exe.len()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog");
+    std::fs::write(&path, exe).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut c = if how == "this machine" { Command::new(&path) } else { Command::new(&how) };
+    if how != "this machine" {
+        c.arg(&path);
+    }
+    c.args(args).current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    Some(c.spawn().unwrap())
+}

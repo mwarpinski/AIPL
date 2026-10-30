@@ -267,7 +267,7 @@ is missing):
 2. **The standard library:** networking and starting processes, once WASI
    can, and time zones.
 3. **Rust out of the build path:** the seeds build the compiler on Linux
-   x86-64 and AArch64 today (on AArch64 without sockets and threads yet); next, a
+   x86-64 and AArch64 today (on AArch64 without threads yet); next, a
    macOS seed (or a WebAssembly one), and an installer that needs no Rust. The Rust compiler stays as the referee.
 4. **Packages:** a registry with versioned packages, dependency resolution,
    and lock files.
@@ -278,7 +278,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **507 Rust tests** and an AIPL test suite, run on every push by CI.
+- **510 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500
