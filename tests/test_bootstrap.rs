@@ -154,6 +154,35 @@ fn aipl_run_builds_starts_and_removes_a_program() {
     assert_eq!((o.status.code(), text(&o.stdout), text(&o.stderr)), (Some(1), String::new(), text(&want.stderr)));
     nothing_left();
 
+    // a compiled module (x.wasm) runs as the Rust command runs it under aipl-run,
+    // built natively as it stands: the same output and status, a trap named by
+    // the file, and (a status of 126 or more cannot be exited) a line more for it
+    let wasm = dir.join("target.wasm");
+    let r = run(Command::new(AIPL).args(["compile", target, "-o"]).arg(&wasm));
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    let trap_src = dir.join("trap.aipl");
+    std::fs::write(&trap_src, "(module trap\n  (import alloc)\n  (fn main [] -> i32\n    (println \"before\")\n    (let xs:(arr i32) (arr.new i32 (call alloc.forever) 2))\n    (println \"{(arr.get i32 xs 5)}\")\n    0))\n").unwrap();
+    let trap_wasm = dir.join("trap.wasm");
+    let r = run(Command::new(AIPL).arg("compile").arg(&trap_src).arg("-o").arg(&trap_wasm));
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    for args in [&["a", "b c"][..], &["seven"]] {
+        let want = {
+            let mut child = Command::new(AIPL).arg("run").arg(&wasm).arg("--").args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            child.stdin.take().unwrap().write_all(b"hello").unwrap();
+            child.wait_with_output().unwrap()
+        };
+        let got = run_with(&[wasm.to_str().unwrap(), "--"].iter().chain(args.iter()).copied().collect::<Vec<_>>(), "hello");
+        assert_eq!((got.status.code(), text(&got.stdout), text(&got.stderr)), (want.status.code(), text(&want.stdout), text(&want.stderr)), "{args:?}");
+    }
+    let want = run(Command::new(AIPL).arg("run").arg(&trap_wasm));
+    let got = run_with(&[trap_wasm.to_str().unwrap()], "");
+    assert_eq!((got.status.code(), want.status.code(), text(&got.stdout)), (Some(134), Some(134), text(&want.stdout)));
+    assert!(text(&got.stderr).starts_with(&text(&want.stderr)), "{}\n{}", text(&got.stderr), text(&want.stderr));
+    assert!(text(&got.stderr).contains("trap.wasm: Array index out of bounds"), "{}", text(&got.stderr));
+    nothing_left();
+    let gone = run_with(&[dir.join("no_such.wasm").to_str().unwrap()], "");
+    assert!(gone.status.code() == Some(1) && text(&gone.stderr).contains("cannot read"), "{}", text(&gone.stderr));
+
     // usage: no file, or the compile command's -o, which run has no use for
     assert_eq!(run_with(&[], "").status.code(), Some(2));
     assert_eq!(run_with(&["-o", "x", target], "").status.code(), Some(2));

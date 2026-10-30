@@ -217,10 +217,11 @@ in its trailer, as `run:PROGRAM` lines beside the `--listen` addresses).
 `std/proc` (aipl_src/std/proc.aipl), the safe interface over step 2, with no
 `unsafe` for a caller:
 
-- `Command` (`command`, `command_path`, `arg`, `arg_bytes`, `free_command`):
-  the path (also the program's own name) and the arguments as the host takes
-  them, one block, each followed by a zero byte; its memory is the
-  allocator's.
+- `Command` (`command`, `command_path`, `command_named`, `arg`, `arg_bytes`,
+  `free_command`): the path, and the program's own name and the arguments as
+  the host takes them, one block, each followed by a zero byte (the name is
+  the path unless `command_named` gives another: `aipl run x.wasm` starts its
+  native build as `x.wasm`, so a trap says so); its memory is the allocator's.
 - `run c input out` to the end: its status in `(result i32 proc.Error)`, with
   everything it wrote, its error too, added to `out`; an empty input is the
   null device. `spawn c` for a conversation (a pipe each way, the error

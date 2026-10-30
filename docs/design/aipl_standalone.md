@@ -30,7 +30,7 @@ to run the referee tests.
 | Compile to `.wasm`, to a native executable (`--sandbox`, `--listen`, `--max-memory`, `--no-opt`), `verify`, `doc`, `--version` | the self-hosted command (aipl_src/aipl.aipl) | |
 | The front end (resolve, generics, check) | aipl_src/ | the same, kept equal by tests and the fuzzer |
 | `run` of a source file, `test` (natively), `watch`, `serve --fresh`, `eval` (natively) | the self-hosted command (S2, done 2026-10-29; tested against the Rust command's output) | |
-| `run` of a `.wasm` file | | `aipl-run` (wasmtime) |
+| `run` of a `.wasm` file (Linux x86-64) | the self-hosted command (S3's first step, 2026-10-29) | `aipl-run` (wasmtime), elsewhere |
 | `test --vm`, `--all-backends`, and a file with no `(test ...)` (its entry function); `eval -f FUNC` and `--wasm`; `watch`'s VM runs | | the VM (`src/vm.rs`, a tree-walking interpreter) and `aipl-run` |
 | Executables off Linux x86-64 | | the launcher bundle (aipl-run, wasmtime, about 18 MB) |
 | Listening on TCP | std/net over `aipl_net_v1` | `aipl-run` supplies the same imports |
@@ -137,7 +137,11 @@ which needs the VM until S4).
 
 On Linux x86-64 the native backend already turns wasm into machine code
 (wasm_reader.aipl, lower.aipl, x64.aipl), so `aipl run x.wasm` is
-translate, write, exec. The rest:
+translate, write, exec. **Done 2026-10-29 for the self-hosted command:** `aipl run
+[--sandbox] [--listen A]... [--allow-run P]... x.wasm [ARGS]` builds the module as
+it stands (`native.compile_with`), starts it named `x.wasm` (so a trap reads as
+under `aipl-run`), and gives its output and status, which test_bootstrap checks
+against the Rust command's. The rest:
 
 - a native ARM64 backend, Linux first (ARM64_PLAN.md, proposed), which
   also gives Apple Silicon Linux containers and Rosetta-free Macs a real

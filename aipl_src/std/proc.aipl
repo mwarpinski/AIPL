@@ -34,11 +34,12 @@
   (import os)
   (import fs)
 
-  ;; A program to start, and its arguments: the path first (as the program's
-  ;; own name, argv[0], too), each argument after it, each followed by a zero
-  ;; byte. Made by command, added to by arg and arg_bytes, started by run,
-  ;; spawn, spawn_with, or exec.
-  (struct Command [args:(ptr buf.Buf)] (pub))
+  ;; A program to start, and its arguments: the program's name (argv[0], the
+  ;; path too unless command_named gave another) first, each argument after
+  ;; it, each followed by a zero byte; and the path it is started from. Made by
+  ;; command, added to by arg and arg_bytes, started by run, spawn,
+  ;; spawn_with, or exec.
+  (struct Command [args:(ptr buf.Buf) path:(ptr buf.Buf)] (pub))
 
   ;; A started program and the pipes to it (-1 where a stream is not a pipe).
   (struct Child [p:i32 input:i32 output:i32 error:i32] (value) (pub))
@@ -78,10 +79,18 @@
 
   ;; command for a path held as bytes.
   (fn command_path [a:alloc.Allocator path:str.Bytes] -> (ptr Command) (pub)
+    (call command_named a path path))
+
+  ;; command for a program that is to be given another name than its path
+  ;; (argv[0]: what it says when it reports a failure, as `x.wasm: ...` for
+  ;; a program built from x.wasm).
+  (fn command_named [a:alloc.Allocator path:str.Bytes name:str.Bytes] -> (ptr Command) (pub)
     (let args:(ptr buf.Buf) (call buf.make a 64))
-    (call buf.push_bytes args path)
+    (call buf.push_bytes args name)
     (call buf.push_byte args 0)
-    (new Command a [args:args]))
+    (let from:(ptr buf.Buf) (call buf.make a 32))
+    (call buf.push_bytes from path)
+    (new Command a [args:args path:from]))
 
   ;; Adds an argument.
   (fn arg [c:(ptr Command) s:str] -> void (pub)
@@ -95,11 +104,8 @@
 
   ;; Gives back what command, arg, and arg_bytes took from the allocator.
   (fn free_command [c:(ptr Command)] -> void (pub)
-    (call buf.free (get c Command.args)))
-
-  ;; The length of the path: the first word of the arguments.
-  (fn path_len [c:(ptr Command)] -> i32
-    (call str.find_byte (call buf.bytes (get c Command.args)) 0))
+    (call buf.free (get c Command.args))
+    (call buf.free (get c Command.path)))
 
   ;; ===== Starting =====
 
@@ -114,7 +120,8 @@
     (let all:str.Bytes (call buf.bytes (get c Command.args)))
     (let stdio:i32 (bitor in_n (bitor (shl out_n 2) (shl err_n 4))))
     (unsafe
-      (let p:i32 (proc.spawn (call str.addr all) (call path_len c) (call str.addr all) (get all str.Bytes.len) stdio))
+      (let from:str.Bytes (call buf.bytes (get c Command.path)))
+      (let p:i32 (proc.spawn (call str.addr from) (get from str.Bytes.len) (call str.addr all) (get all str.Bytes.len) stdio))
       (when (lt p 0) (return (err:Child (call error_of p))))
       (ok:Error (make Child [p:p input:(proc.stream p 0) output:(proc.stream p 1) error:(proc.stream p 2)]))))
 
@@ -127,7 +134,8 @@
   ;; works, so what it gives is why it did not.
   (fn exec [c:(ptr Command)] -> Error (pub)
     (let all:str.Bytes (call buf.bytes (get c Command.args)))
-    (call error_of (unsafe (proc.exec (call str.addr all) (call path_len c) (call str.addr all) (get all str.Bytes.len)))))
+    (let from:str.Bytes (call buf.bytes (get c Command.path)))
+    (call error_of (unsafe (proc.exec (call str.addr from) (get from str.Bytes.len) (call str.addr all) (get all str.Bytes.len)))))
 
   ;; ===== Talking to a program =====
 

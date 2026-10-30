@@ -17,13 +17,14 @@ the same bytes (a fixed point). No Rust is involved. The resulting `aipl`
 does what `aipl compile`, `aipl verify`, `aipl test`, `aipl watch`, `aipl serve
 --fresh`, and `aipl eval` do in the Rust command (`test`, `watch`, and `eval` run
 programs natively, not in the VM),
-and has `aipl run`, which the Rust command has only for a `.wasm` file:
+and has `aipl run`, which runs a source file or a `.wasm` module natively (the Rust
+command has it for a `.wasm` file only, under wasmtime):
 
 ```bash
 target/bootstrap/aipl compile FILE.aipl -o OUT.wasm
 target/bootstrap/aipl compile --exe [--sandbox] FILE.aipl -o OUT
 target/bootstrap/aipl verify FILE.aipl    # resolve and type-check, compile nothing
-target/bootstrap/aipl run [FLAGS] FILE.aipl [ARGS]...   # build into a temporary file, run it, remove it
+target/bootstrap/aipl run [FLAGS] FILE.aipl|FILE.wasm [ARGS]...   # build into a temporary file, run it, remove it
 target/bootstrap/aipl test FILE|DIR [-k TEXT]           # each (test ...) in a fresh process, natively
 target/bootstrap/aipl watch FILE [--test] [-- ARGS...]  # run again when a file it reads changes
 target/bootstrap/aipl serve --fresh FILE --listen ADDR:PORT [--requests N]   # a fresh program per connection
@@ -54,7 +55,7 @@ cmp target/aipl1 target/aipl2       # no output: the compiler reproduces itself
 the seed was made (`cargo build --release`, then
 `./target/release/aipl compile --exe --allow-run '*' aipl_src/aipl.aipl -o target/aipl0`).
 
-The rest of the Rust command (`run` of a `.wasm` file, and `eval`, `test`, and `watch` in the VM) is not here: the
+The rest of the Rust command (`eval`, `test`, and `watch` in the VM) is not here: the
 interpreter is Rust, and running WebAssembly takes wasmtime. Native
 executables run directly.
 

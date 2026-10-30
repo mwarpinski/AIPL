@@ -10,6 +10,7 @@
 ;;   aipl compile --no-opt ...   (without the optimizer, codegen_opt.aipl; it runs by default)
 ;;   aipl verify FILE.aipl   (resolve and type-check; compile nothing)
 ;;   aipl run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [--no-opt] FILE.aipl [ARGS]...
+;;   aipl run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... FILE.wasm [ARGS]...   (a module, built natively)
 ;;       (compile to a native executable in a temporary file, run it with ARGS, remove it;
 ;;        its exit status is the command's, 128 plus the signal if a signal ended it)
 ;;   aipl test FILE|DIR [-k TEXT] [--native]   (each (test ...) in a fresh process; aipl_src/testcmd.aipl)
@@ -47,7 +48,7 @@
   (fn usage [] -> i32
     (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] [--no-opt] FILE.aipl -o OUT")
     (call io.eprintln "       aipl verify FILE.aipl")
-    (call io.eprintln "       aipl run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [--no-opt] FILE.aipl [ARGS]...")
+    (call io.eprintln "       aipl run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [--no-opt] FILE.aipl|FILE.wasm [ARGS]...")
     (call io.eprintln "       aipl test FILE|DIR [-k TEXT] [--native]")
     (call io.eprintln "       aipl watch FILE [--test] [-- ARGS...]")
     (call io.eprintln "       aipl serve --fresh FILE --listen ADDR:PORT [--requests N] [-- ARGS...]")
@@ -129,11 +130,12 @@
     (call buf.push_unsigned b (sys.time) 10 false)
     (call buf.bytes b))
 
-  ;; Starts the executable at `path` with the arguments from index `first` to
-  ;; n - 1, on this program's own streams, waits for it, removes it, and gives
+  ;; Starts the executable at `path`, named `name` (what it calls itself in a
+  ;; message: the file it was built from), with the arguments from index `first`
+  ;; to n - 1, on this program's own streams, waits for it, removes it, and gives
   ;; its status as a command's: its exit status, or 128 plus the signal.
-  (fn run_built [path:str.Bytes first:i32 n:i32] -> i32
-    (let c:(ptr proc.Command) (call proc.command_path (call alloc.default) path))
+  (fn run_built [path:str.Bytes name:str.Bytes first:i32 n:i32] -> i32
+    (let c:(ptr proc.Command) (call proc.command_named (call alloc.default) path name))
     (for j first n (call proc.arg_bytes c (call arg j)))
     (let started:(result proc.Child proc.Error) (call proc.spawn_with c proc.Stream.inherit proc.Stream.inherit proc.Stream.inherit))
     (let status:i32 (match_result started
@@ -246,20 +248,26 @@
     (let el:i32 (get entry str.Bytes.len))
     (let da:i32 (call str.addr std_dir))
     (let dl:i32 (get std_dir str.Bytes.len))
-    (let res:(ptr driver.Out) (cond
-                                ((and tests opt) (call driver.compile_tests_opt ea el da dl max_pages))
-                                (tests (call driver.compile_tests_limited ea el da dl max_pages))
-                                (opt (call driver.compile_file_opt ea el da dl max_pages))
-                                (else (call driver.compile_file_limited ea el da dl max_pages))))
-    (let status:i32 (get res driver.Out.status))
-    (when (or (eq status 1) (eq status 3))
-        (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
-    (when (eq status 2)
-          (call io.write_str 2 "Error: compile error ")
-          (call write_int 2 (get res driver.Out.len))
-          (call io.eprintln " (AIPL_SPEC.md 6.4)")
-          (return 1))
-    (let bytes:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
+    ;; aipl run x.wasm: the module is the program, to be built natively as it stands
+    (let wasm_in:bool (and run_mode (call str.ends_with entry (call str.from_str ".wasm"))))
+    (let bytes:str.Bytes (call str.from_str ""))
+    (if wasm_in
+        (set! bytes (match_result (call io.read_path entry) (ok t t) (err e (return (call fail_bytes "cannot read " entry)))))
+        (block
+          (let res:(ptr driver.Out) (cond
+                                      ((and tests opt) (call driver.compile_tests_opt ea el da dl max_pages))
+                                      (tests (call driver.compile_tests_limited ea el da dl max_pages))
+                                      (opt (call driver.compile_file_opt ea el da dl max_pages))
+                                      (else (call driver.compile_file_limited ea el da dl max_pages))))
+          (let status:i32 (get res driver.Out.status))
+          (when (or (eq status 1) (eq status 3))
+              (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
+          (when (eq status 2)
+                (call io.write_str 2 "Error: compile error ")
+                (call write_int 2 (get res driver.Out.len))
+                (call io.eprintln " (AIPL_SPEC.md 6.4)")
+                (return 1))
+          (set! bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
     (when exe
           (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen) (call buf.bytes serve)))
           (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
@@ -282,7 +290,7 @@
     (when run_mode
           (let first_arg:i32 (+ in_i 1))
           (when (and (lt first_arg n) (call str.is (call arg first_arg) "--")) (set! first_arg (+ first_arg 1)))
-          (return (call run_built out first_arg n)))
+          (return (call run_built out entry first_arg n)))
     (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
     (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
     (call io.write_str 1 "' -> '")
