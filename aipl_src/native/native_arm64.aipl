@@ -129,8 +129,12 @@
        (call arm64.brk c 0))
       ((call str.is name "fd_write") (call emit_fd_io c wa 64))
       ((call str.is name "fd_read") (call emit_fd_io c wa 63))
+      ;; an aipl_sys_v1 import not built yet is minus ENOSYS, as those imports report an error;
+      ;; any other WASI import, ENOSYS
       (else
-       (call arm64.mov_imm c 64 0 52i64)
+       (if (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_sys_v1"))
+           (call arm64.mov_imm c 64 0 -52i64)
+           (call arm64.mov_imm c 64 0 52i64))
        (call arm64.ret c))))
 
   ;; x11 = the first string pointer of the arguments, or of the environment, from

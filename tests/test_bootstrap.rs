@@ -358,3 +358,39 @@ fn the_aipl_command_matches_the_rust_command() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `aipl compile --exe --target arm64`, in the self-hosted command, writes the AArch64
+/// executable the Rust command writes (the compiler itself among them), and refuses the flags
+/// that are not built for AArch64 with the same message. tools/arm64_bootstrap.sh runs the
+/// result on AArch64 Linux: that compiler compiling itself is stage 2 there.
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn the_aipl_command_builds_the_aarch64_executables_the_rust_command_builds() {
+    let dir = scratch("bootstrap_arm64");
+    let aipl = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &aipl);
+    for rel in ["aipl_src/aipl.aipl", "examples/quicksort.aipl", "examples/jsonpp.aipl", "benchmarks/nbody/nbody.aipl"] {
+        let (want, got) = (dir.join("want"), dir.join("got"));
+        let args = ["compile", "--exe", "--target", "arm64", "--allow-run", "*", rel, "-o"];
+        let r = run(Command::new(AIPL).args(args).arg(&want));
+        let a = run(Command::new(&aipl).args(args).arg(&got));
+        assert_eq!(r.status.code(), Some(0), "{rel}: {}", String::from_utf8_lossy(&r.stderr));
+        assert_eq!(a.status.code(), Some(0), "{rel}: {}", String::from_utf8_lossy(&a.stderr));
+        assert!(std::fs::read(&want).unwrap() == std::fs::read(&got).unwrap(), "{rel}: different bytes");
+        let _ = std::fs::remove_file(&want);
+        let _ = std::fs::remove_file(&got);
+    }
+    for flag in [vec!["--sandbox"], vec!["--listen", "127.0.0.1:8080"], vec!["--serve", "127.0.0.1:8080"]] {
+        let out = dir.join("never");
+        let mut args = vec!["compile", "--exe", "--target", "arm64"];
+        args.extend(flag.iter());
+        args.extend(["examples/quicksort.aipl", "-o"]);
+        let r = run(Command::new(AIPL).args(&args).arg(&out));
+        let a = run(Command::new(&aipl).args(&args).arg(&out));
+        assert_eq!(a.status.code(), r.status.code(), "{flag:?}");
+        assert_eq!(String::from_utf8_lossy(&a.stderr), String::from_utf8_lossy(&r.stderr), "{flag:?}");
+        assert!(!out.exists(), "{flag:?}: a file was left");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

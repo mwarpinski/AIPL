@@ -143,9 +143,15 @@ it stands (`native.compile_with`), starts it named `x.wasm` (so a trap reads as
 under `aipl-run`), and gives its output and status, which test_bootstrap checks
 against the Rust command's. The rest:
 
-- a native ARM64 backend, Linux first (ARM64_PLAN.md, proposed), which
-  also gives Apple Silicon Linux containers and Rosetta-free Macs a real
-  executable;
+- a native ARM64 backend, Linux first (ARM64_PLAN.md), which also gives Apple
+  Silicon Linux containers and Rosetta-free Macs a real executable. **Done
+  2026-10-30 for the compiler:** `aipl compile --exe --target arm64` (the
+  default on an AArch64 machine) builds the compiler for AArch64, and that
+  compiler, run on AArch64 Linux, compiles itself to the same bytes and every
+  repository program to the bytes the Rust command makes
+  (tools/arm64_bootstrap.sh). To come there: the process operations (so
+  `aipl run` and `test`), sockets and `--serve`, threads, `--sandbox`, and a
+  checked-in AArch64 seed;
 - macOS needs a Mach-O writer and code signing (ARM64_PLAN.md, section on
   Darwin) or, until then, the launcher bundle;
 - a WebAssembly interpreter in AIPL, for any platform without a native

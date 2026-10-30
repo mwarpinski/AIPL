@@ -59,6 +59,17 @@ The rest of the Rust command (`eval`, `test`, and `watch` in the VM) is not here
 interpreter is Rust, and running WebAssembly takes wasmtime. Native
 executables run directly.
 
+## On AArch64 Linux
+
+The compiler also builds for AArch64: `aipl compile --exe --target arm64 --allow-run '*'
+aipl_src/aipl.aipl -o stage1` (the default `--target` on an AArch64 machine). Run on AArch64
+Linux, `stage1` compiles the compiler again to the same bytes (a fixed point) and every program
+in `examples/`, `benchmarks/`, and `tests/aipl` to the bytes the Rust command makes, with no
+Rust and no x86-64 machine on the second stage. `sh tools/arm64_bootstrap.sh HOST` checks it all
+over ssh on an Apple Silicon Mac with Docker (2 minutes). There is no AArch64 seed in the
+repository yet: its first stage is built on x86-64, and the process operations (`aipl run`,
+`test`, `watch`), sockets, threads, and `--sandbox` are not built for AArch64.
+
 ## Why the Rust compiler stays
 
 A compiler built by an earlier binary of itself could carry something the

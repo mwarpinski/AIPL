@@ -19,7 +19,7 @@ Written following the Apple Silicon port and investigation documented in `docs/A
 | NA9 | WASI routines (`wasi_arm64.aipl`): stdio, path_open, args, environ, clock, random | **Done for files** (2026-10-30): proc_exit, args, environ, clock, random, fd_write/fd_read through a descriptor table, fd_close, path_open (openat2 with the openat fallback), path_unlink_file, path_remove_directory, path_create_directory, path_rename, fd_readdir, path_filestat_get, poll_oneoff, and aipl_sys_v1 chmod, all as the x86-64 build does; a pointer outside memory is EFAULT where x86-64 traps (NA6), `--sandbox` and the process operations to come |
 | NA10 | Sockets & fresh serving (`sockets_arm64.aipl`, `fresh_arm64.aipl`): `aipl_net_v1` over AArch64 Linux | Not started |
 | NA11 | Threads & atomics: `clone`, `futex`, load/store acquire/release barriers | Not started |
-| NA12 | End-to-end integration: `aipl compile --target native-linux-arm64`, test suite un-gating, CI runner configuration | Not started |
+| NA12 | End-to-end integration: `aipl compile --target native-linux-arm64`, test suite un-gating, CI runner configuration | **Begun** (2026-10-30): `--target arm64` in both toolchains (the self-hosted one defaults to it on an AArch64 machine); the Rust suite passes on AArch64 Linux (475 tests, the others being x86-64's); the compiler compiles itself on AArch64 Linux to the same bytes (tools/arm64_bootstrap.sh); a GitHub `ubuntu-24.04-arm` job and a checked-in AArch64 seed to come |
 
 ---
 
