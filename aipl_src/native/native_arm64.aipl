@@ -101,9 +101,15 @@
   ;; The routine for an import, called as a wasm function is (its arguments on
   ;; the value stack, the last at [sp]): the result in x0. proc_exit, fd_write
   ;; and fd_read are here; any other is ENOSYS (52) until the WASI routines come.
-  (fn emit_import [c:(ptr buf.Buf) imp:(ptr wasm_reader.Import)] -> void
+  (fn emit_import [c:(ptr buf.Buf) imp:(ptr wasm_reader.Import) sp_cell:i32] -> void
     (let name:str.Bytes (get imp wasm_reader.Import.name))
     (cond
+      ((call str.is name "args_sizes_get") (call emit_strings_sizes c sp_cell false))
+      ((call str.is name "args_get") (call emit_strings_get c sp_cell false))
+      ((call str.is name "environ_sizes_get") (call emit_strings_sizes c sp_cell true))
+      ((call str.is name "environ_get") (call emit_strings_get c sp_cell true))
+      ((call str.is name "clock_time_get") (call emit_clock_time_get c))
+      ((call str.is name "random_get") (call emit_random_get c))
       ((call str.is name "proc_exit")
        (call arm64.ldr_x c 0 31 0)
        (call runtime_arm64.emit_syscall c 94)
@@ -113,6 +119,159 @@
       (else
        (call arm64.mov_imm c 64 0 52i64)
        (call arm64.ret c))))
+
+  ;; x11 = the first string pointer of the arguments, or of the environment, from
+  ;; the stack as it was at entry (argc, the argument pointers, a zero, the
+  ;; environment pointers, a zero), whose address is in the cell; x10 = argc
+  (fn emit_string_table [c:(ptr buf.Buf) sp_cell:i32 env:bool] -> void
+    (call arm64.mov_imm c 64 9 (i64.extend_s sp_cell))
+    (call arm64.ldr_x c 9 9 0)
+    (call arm64.ldr_x c 10 9 0)
+    (call arm64.add_ri c 64 11 9 8)
+    (when env
+          (call arm64.add_rrr c 64 11 11 0)
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.add_rrr c 64 11 11 12)
+          (call arm64.add_ri c 64 11 11 8)))
+
+  ;; args_sizes_get(argc_ptr, buf_size_ptr) and environ_sizes_get: the count and the
+  ;; bytes the strings take with their zeros. The pointers are on the value stack
+  ;; (argc_ptr at [sp + 16], buf_size_ptr at [sp]).
+  (fn emit_strings_sizes [c:(ptr buf.Buf) sp_cell:i32 env:bool] -> void
+    (call emit_string_table c sp_cell false)
+    (when env
+          ;; the environment's count: walk to the zero pointer
+          (call arm64.add_ri c 64 11 9 8)
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.add_rrr c 64 11 11 12)
+          (call arm64.add_ri c 64 11 11 8)
+          (call arm64.mov_imm c 64 10 0i64)
+          (let count_top:i32 (call buf.len c))
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.ldr_x_reg c 14 11 12)
+          (let counted:i32 (call arm64.cbz c 64 14))
+          (call arm64.add_ri c 64 10 10 1)
+          (call arm64.b_to c count_top)
+          (call arm64.patch_cond c counted (call buf.len c)))
+    (call arm64.mov_imm c 64 12 0i64)
+    (call arm64.mov_imm c 64 13 0i64)
+    (let top:i32 (call buf.len c))
+    (call arm64.cmp_rr c 64 13 10)
+    (let done_at:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call arm64.lsl_ri c 64 15 13 3)
+    (call arm64.ldr_x_reg c 14 11 15)
+    (call arm64.mov_imm c 64 15 0i64)
+    (let len_top:i32 (call buf.len c))
+    (call arm64.add_rrr c 64 16 14 15)
+    (call arm64.ldrb c 0 16 0)
+    (let ended:i32 (call arm64.cbz c 32 0))
+    (call arm64.add_ri c 64 15 15 1)
+    (call arm64.b_to c len_top)
+    (call arm64.patch_cond c ended (call buf.len c))
+    (call arm64.add_ri c 64 15 15 1)
+    (call arm64.add_rrr c 64 12 12 15)
+    (call arm64.add_ri c 64 13 13 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_cond c done_at (call buf.len c))
+    (call arm64.ldr_x c 0 31 16)
+    (call arm64.mov_rr c 32 0 0)
+    (call arm64.add_rrr c 64 0 28 0)
+    (call arm64.str_w c 10 0 0)
+    (call arm64.ldr_x c 0 31 0)
+    (call arm64.mov_rr c 32 0 0)
+    (call arm64.add_rrr c 64 0 28 0)
+    (call arm64.str_w c 12 0 0)
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.ret c))
+
+  ;; args_get(argv, argv_buf) and environ_get: each string copied into the buffer
+  ;; (in memory), its address in memory written to the pointer array. argv at
+  ;; [sp + 16], argv_buf at [sp].
+  (fn emit_strings_get [c:(ptr buf.Buf) sp_cell:i32 env:bool] -> void
+    (call emit_string_table c sp_cell false)
+    (when env
+          (call arm64.add_ri c 64 11 9 8)
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.add_rrr c 64 11 11 12)
+          (call arm64.add_ri c 64 11 11 8)
+          (call arm64.mov_imm c 64 10 0i64)
+          (let count_top:i32 (call buf.len c))
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.ldr_x_reg c 14 11 12)
+          (let counted:i32 (call arm64.cbz c 64 14))
+          (call arm64.add_ri c 64 10 10 1)
+          (call arm64.b_to c count_top)
+          (call arm64.patch_cond c counted (call buf.len c)))
+    (call arm64.ldr_x c 12 31 16)
+    (call arm64.mov_rr c 32 12 12)
+    (call arm64.add_rrr c 64 12 28 12)
+    (call arm64.ldr_x c 13 31 0)
+    (call arm64.mov_rr c 32 13 13)
+    (call arm64.mov_imm c 64 15 0i64)
+    (let top:i32 (call buf.len c))
+    (call arm64.cmp_rr c 64 15 10)
+    (let done_at:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    ;; the pointer array's entry i: this string's address in memory
+    (call arm64.lsl_ri c 64 16 15 2)
+    (call arm64.add_rrr c 64 16 12 16)
+    (call arm64.str_w c 13 16 0)
+    ;; copy the string, its zero included
+    (call arm64.lsl_ri c 64 16 15 3)
+    (call arm64.ldr_x_reg c 14 11 16)
+    (call arm64.add_rrr c 64 16 28 13)
+    (let copy_top:i32 (call buf.len c))
+    (call arm64.ldrb c 0 14 0)
+    (call arm64.strb c 0 16 0)
+    (call arm64.add_ri c 64 14 14 1)
+    (call arm64.add_ri c 64 16 16 1)
+    (call arm64.add_ri c 32 13 13 1)
+    (call arm64.patch_cond c (call arm64.cbnz c 32 0) copy_top)
+    (call arm64.add_ri c 64 15 15 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_cond c done_at (call buf.len c))
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.ret c))
+
+  ;; clock_time_get(id, precision, out): the nanoseconds of CLOCK_REALTIME (0) or
+  ;; CLOCK_MONOTONIC (1) as a u64 at out; any other clock is EINVAL (28). id at
+  ;; [sp + 32], out at [sp].
+  (fn emit_clock_time_get [c:(ptr buf.Buf)] -> void
+    (call arm64.ldr_x c 0 31 32)
+    (call arm64.cmp_ri c 64 0 1)
+    (let bad:i32 (call arm64.b_cond c (call arm64.cc_hi)))
+    (call arm64.sub_ri c 64 31 31 16)
+    (call arm64.mov_sp c 64 1 31)
+    (call runtime_arm64.emit_syscall c 113)
+    (call arm64.ldp c 2 3 31 0)
+    (call arm64.add_ri c 64 31 31 16)
+    (call arm64.mov_imm c 64 4 1000000000i64)
+    (call arm64.madd c 64 2 2 4 3)
+    (call arm64.ldr_x c 5 31 0)
+    (call arm64.mov_rr c 32 5 5)
+    (call arm64.add_rrr c 64 5 28 5)
+    (call arm64.str_x c 2 5 0)
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.ret c)
+    (call arm64.patch_cond c bad (call buf.len c))
+    (call arm64.mov_imm c 64 0 28i64)
+    (call arm64.ret c))
+
+  ;; random_get(buf, len) from getrandom. buf at [sp + 16], len at [sp].
+  (fn emit_random_get [c:(ptr buf.Buf)] -> void
+    (call arm64.ldr_x c 0 31 16)
+    (call arm64.mov_rr c 32 0 0)
+    (call arm64.add_rrr c 64 0 28 0)
+    (call arm64.ldr_x c 1 31 0)
+    (call arm64.mov_rr c 32 1 1)
+    (call arm64.mov_imm c 64 2 0i64)
+    (call runtime_arm64.emit_syscall c 278)
+    (call arm64.cmp_ri c 64 0 0)
+    (let failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.ret c)
+    (call arm64.patch_cond c failed (call buf.len c))
+    (call arm64.mov_imm c 64 0 29i64)
+    (call arm64.ret c))
 
   ;; fd_write(fd, iovs, iovs_len, nwritten) or fd_read: one system call (`number`)
   ;; per iovec, the total stored at nwritten, the result 0 or an errno. A short
@@ -196,6 +355,8 @@
     (let nfuncs:i32 (+ nimports (call (vec.len i32) (get w wasm_reader.Wasm.funcs))))
     ;; data: the memory size cell, the results area, the globals
     (put l lower_arm64.L.mem_pages (call lower_arm64.data_zeros l 8))
+    ;; the stack pointer as the process started: the arguments and the environment
+    (let sp_cell:i32 (call lower_arm64.data_zeros l 8))
     (put l lower_arm64.L.results (call lower_arm64.data_zeros l (call lower_arm64.results_size)))
     (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get w wasm_reader.Wasm.globals))
     (let gb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
@@ -250,6 +411,9 @@
     (put l lower_arm64.L.trap_routine (call buf.len c))
     (call emit_trap_routine c table nl)
     (let entry:i32 (call buf.len c))
+    (call arm64.mov_sp c 64 0 31)
+    (call arm64.mov_imm c 64 16 (i64.extend_s sp_cell))
+    (call arm64.str_x c 0 16 0)
     (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
     (when (neq lim (ptr.null wasm_reader.Limits))
           (call emit_reserve_memory c)
@@ -268,7 +432,7 @@
     (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (+ nfuncs 1)))
     (for i 0 nimports
       (call (vec.push i32) starts (call buf.len c))
-      (call emit_import c (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i)))
+      (call emit_import c (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell))
     (for i nimports nfuncs
       (when (get l lower_arm64.L.failed) (break))
       (call (vec.push i32) starts (call buf.len c))

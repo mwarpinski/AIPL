@@ -95,9 +95,10 @@ enum Commands {
         /// 64K pages, as 512M; recorded in the module, so every host stops there
         #[arg(long = "max-memory", value_name = "SIZE")]
         max_memory: Option<String>,
-        /// With --exe: `native` (Linux x86-64; the default there) or `wasm` (the launcher bundle;
-        /// the default elsewhere)
-        #[arg(long, requires = "exe", value_parser = ["native", "wasm"])]
+        /// With --exe: `native` (Linux x86-64; the default there), `wasm` (the launcher bundle;
+        /// the default elsewhere), or `arm64` (a Linux AArch64 executable, which runs on an AArch64
+        /// machine: begun, docs/design/ARM64_PLAN.md)
+        #[arg(long, requires = "exe", value_parser = ["native", "wasm", "arm64"])]
         target: Option<String>,
         /// Compile the file's test build: its (test ...) items as functions, and a _start
         /// running the test its first argument names (aipl test runs this)
@@ -511,6 +512,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if exe {
                 // `output` holds the module; replace it with the executable
                 let wasm = fs::read(&output)?;
+                if target.as_deref() == Some("arm64") {
+                    if sandbox || !listen.is_empty() || serve.is_some() {
+                        let _ = fs::remove_file(&output);
+                        return Err("--target arm64: --sandbox, --listen, --allow-run, and --serve are not built for AArch64 yet".into());
+                    }
+                    let exe_bytes = aipl_core::native::executable_arm64(&wasm).inspect_err(|_| {
+                        let _ = fs::remove_file(&output);
+                    })?;
+                    write_replacing(&output, &exe_bytes)?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        fs::set_permissions(&output, fs::Permissions::from_mode(0o755))?;
+                    }
+                    say!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+                    return Ok(());
+                }
                 let native = match target.as_deref() {
                     Some("native") if !aipl_core::native::supported() => {
                         return Err("--target native: the native backend targets Linux x86-64 only (use --target wasm)".into())
