@@ -82,11 +82,13 @@
   (enum Wasi [(none -1) fd_write fd_read path_open fd_close proc_exit path_unlink_file
               args_sizes_get args_get environ_sizes_get environ_get thread_spawn
               clock_time_get random_get fd_readdir path_filestat_get
-              net_listen net_accept net_recv net_send net_close])
+              net_listen net_accept net_recv net_send net_close sys_chmod
+              proc_spawn proc_stream proc_read proc_write proc_close proc_wait proc_exec
+              path_rename path_remove_directory path_create_directory poll_oneoff])
 
   ;; How many WASI functions there are (enum Wasi, none aside), AIPL's own
-  ;; aipl_net_v1 among them.
-  (const NWASI:i32 20)
+  ;; aipl_net_v1 and aipl_sys_v1 among them.
+  (const NWASI:i32 32)
 
   ;; A struct of the module and its layout (checker.rs get_field_offset):
   ;; fields in declaration order, each aligned to its alignment (a scalar's
@@ -250,7 +252,7 @@
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
   ;; type names (200-209); none for any other symbol. The values are the ids
   ;; the code generator has always used.
-  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (mem_load8_s 24) (mem_load16_u 25) (mem_load16_s 26) (mem_store16 27) (arr_gen 28) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (get 51) (put 52) (sizeof 53) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (ptr_make 97) (arr_make 98) (ptr_gen 99) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (with 119) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209) (ty_u8 210) (ty_i8 211) (ty_u16 212) (ty_i16 213) (f32_demote 300) (f64_promote 301) (f32_convert_i32_s 302) (f32_convert_i64_s 303) (f64_convert_i32_s 304) (i32_trunc_f32_s 305) (i32_trunc_f64_s 306) (i64_trunc_f32_s 307) (f32_reinterpret_i32 308) (i32_reinterpret_f32 309) (net_listen 310) (net_accept 311) (net_recv 312) (net_send 313) (net_close 314) (when 315)])
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (mem_load8_s 24) (mem_load16_u 25) (mem_load16_s 26) (mem_store16 27) (arr_gen 28) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (get 51) (put 52) (sizeof 53) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (ptr_make 97) (arr_make 98) (ptr_gen 99) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (with 119) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209) (ty_u8 210) (ty_i8 211) (ty_u16 212) (ty_i16 213) (f32_demote 300) (f64_promote 301) (f32_convert_i32_s 302) (f32_convert_i64_s 303) (f64_convert_i32_s 304) (i32_trunc_f32_s 305) (i32_trunc_f64_s 306) (i64_trunc_f32_s 307) (f32_reinterpret_i32 308) (i32_reinterpret_f32 309) (net_listen 310) (net_accept 311) (net_recv 312) (net_send 313) (net_close 314) (when 315) (fs_chmod 316) (proc_spawn 317) (proc_stream 318) (proc_read 319) (proc_write 320) (proc_close 321) (proc_wait 322) (proc_exec 323) (fs_rename 324) (fs_rmdir 325) (fs_mkdir 326) (sys_poll 327)])
   (import alloc)
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
@@ -316,6 +318,18 @@
     (call reg m "net.recv" Kw.net_recv)
     (call reg m "net.send" Kw.net_send)
     (call reg m "net.close" Kw.net_close)
+    (call reg m "fs.chmod" Kw.fs_chmod)
+    (call reg m "fs.rename" Kw.fs_rename)
+    (call reg m "fs.rmdir" Kw.fs_rmdir)
+    (call reg m "fs.mkdir" Kw.fs_mkdir)
+    (call reg m "sys.poll" Kw.sys_poll)
+    (call reg m "proc.spawn" Kw.proc_spawn)
+    (call reg m "proc.stream" Kw.proc_stream)
+    (call reg m "proc.read" Kw.proc_read)
+    (call reg m "proc.write" Kw.proc_write)
+    (call reg m "proc.close" Kw.proc_close)
+    (call reg m "proc.wait" Kw.proc_wait)
+    (call reg m "proc.exec" Kw.proc_exec)
     (call reg m "%" Kw.rem)
     (call reg m "divu" Kw.divu)
     (call reg m "remu" Kw.remu)
@@ -2512,6 +2526,18 @@
       ((eq w Wasi.net_recv) "recv")
       ((eq w Wasi.net_send) "send")
       ((eq w Wasi.net_close) "close")
+      ((eq w Wasi.sys_chmod) "chmod")
+      ((eq w Wasi.proc_spawn) "spawn")
+      ((eq w Wasi.proc_stream) "stream")
+      ((eq w Wasi.proc_read) "read")
+      ((eq w Wasi.proc_write) "write")
+      ((eq w Wasi.proc_close) "close")
+      ((eq w Wasi.proc_wait) "wait")
+      ((eq w Wasi.proc_exec) "exec")
+      ((eq w Wasi.path_rename) "path_rename")
+      ((eq w Wasi.path_remove_directory) "path_remove_directory")
+      ((eq w Wasi.path_create_directory) "path_create_directory")
+      ((eq w Wasi.poll_oneoff) "poll_oneoff")
       (else "random_get")))
 
   ;; The import module of WASI function w (wasm.rs Wasi::module).
@@ -2519,22 +2545,39 @@
     (cond
       ((eq w Wasi.thread_spawn) "wasi")
       ((call is_net_wasi w) "aipl_net_v1")
+      ((or (eq w Wasi.sys_chmod) (call is_proc_wasi w)) "aipl_sys_v1")
       (else "wasi_snapshot_preview1")))
+
+  (fn is_proc_wasi [w:Wasi] -> bool
+    (or (or (or (eq w Wasi.proc_spawn) (eq w Wasi.proc_stream)) (or (eq w Wasi.proc_read) (eq w Wasi.proc_write)))
+        (or (or (eq w Wasi.proc_close) (eq w Wasi.proc_wait)) (eq w Wasi.proc_exec))))
 
   (fn is_net_wasi [w:Wasi] -> bool
     (or (or (eq w Wasi.net_listen) (eq w Wasi.net_accept))
         (or (or (eq w Wasi.net_recv) (eq w Wasi.net_send)) (eq w Wasi.net_close))))
 
-  ;; The aipl_net_v1 operations, and the import each calls.
-  (fn is_net_kw [k:Kw] -> bool
-    (or (or (eq k Kw.net_listen) (eq k Kw.net_accept))
-        (or (or (eq k Kw.net_recv) (eq k Kw.net_send)) (eq k Kw.net_close))))
-  (fn net_wasi [k:Kw] -> Wasi
+  ;; The operations that call an AIPL host import (aipl_net_v1's and
+  ;; aipl_sys_v1's), which gives the result itself, and the import each calls.
+  (fn is_host_kw [k:Kw] -> bool
+    (or (or (or (eq k Kw.net_listen) (eq k Kw.net_accept))
+            (or (or (eq k Kw.net_recv) (eq k Kw.net_send)) (eq k Kw.net_close)))
+        (or (eq k Kw.fs_chmod)
+            (or (or (or (eq k Kw.proc_spawn) (eq k Kw.proc_stream)) (or (eq k Kw.proc_read) (eq k Kw.proc_write)))
+                (or (or (eq k Kw.proc_close) (eq k Kw.proc_wait)) (eq k Kw.proc_exec))))))
+  (fn host_wasi [k:Kw] -> Wasi
     (cond
       ((eq k Kw.net_listen) Wasi.net_listen)
       ((eq k Kw.net_accept) Wasi.net_accept)
       ((eq k Kw.net_recv) Wasi.net_recv)
       ((eq k Kw.net_send) Wasi.net_send)
+      ((eq k Kw.fs_chmod) Wasi.sys_chmod)
+      ((eq k Kw.proc_spawn) Wasi.proc_spawn)
+      ((eq k Kw.proc_stream) Wasi.proc_stream)
+      ((eq k Kw.proc_read) Wasi.proc_read)
+      ((eq k Kw.proc_write) Wasi.proc_write)
+      ((eq k Kw.proc_close) Wasi.proc_close)
+      ((eq k Kw.proc_wait) Wasi.proc_wait)
+      ((eq k Kw.proc_exec) Wasi.proc_exec)
       (else Wasi.net_close)))
 
   ;; ===== WASI Import Detection =====
@@ -2580,6 +2623,10 @@
             ((eq kw Kw.fs_opendir) (call mark_wasi_used cg Wasi.path_open) 0)
             ((eq kw Kw.fs_readdir) (call mark_wasi_used cg Wasi.fd_readdir) 0)
             ((eq kw Kw.fs_stat) (call mark_wasi_used cg Wasi.path_filestat_get) 0)
+            ((eq kw Kw.fs_rename) (call mark_wasi_used cg Wasi.path_rename) 0)
+            ((eq kw Kw.fs_rmdir) (call mark_wasi_used cg Wasi.path_remove_directory) 0)
+            ((eq kw Kw.fs_mkdir) (call mark_wasi_used cg Wasi.path_create_directory) 0)
+            ((eq kw Kw.sys_poll) (call mark_wasi_used cg Wasi.poll_oneoff) 0)
             ((eq kw Kw.args_sizes) (call mark_wasi_used cg Wasi.args_sizes_get) 0)
             ((eq kw Kw.args_get) (call mark_wasi_used cg Wasi.args_get) 0)
             ((eq kw Kw.env_sizes) (call mark_wasi_used cg Wasi.environ_sizes_get) 0)
@@ -2587,7 +2634,7 @@
             ((eq kw Kw.thread_spawn) (call mark_wasi_used cg Wasi.thread_spawn) 0)
             ((or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (call mark_wasi_used cg Wasi.clock_time_get) 0)
             ((eq kw Kw.sys_random) (call mark_wasi_used cg Wasi.random_get) 0)
-            ((call is_net_kw kw) (call mark_wasi_used cg (call net_wasi kw)) 0)
+            ((call is_host_kw kw) (call mark_wasi_used cg (call host_wasi kw)) 0)
             ;; an array index, req, or ens: the module needs the check helpers
             ((or (or (eq kw Kw.arr_get) (eq kw Kw.arr_set)) (or (eq kw Kw.req) (or (eq kw Kw.ens) (eq kw Kw.inv)))) (put cg Cg.uses_checks true) 0)
             ;; and a struct access or arr.len (the null check)
@@ -2782,10 +2829,11 @@
     (cond
       ((or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.fs_open) (or (eq k Kw.fs_read)
           (or (eq k Kw.fs_write) (or (eq k Kw.fs_close) (eq k Kw.fs_delete))))))) true)
+      ((or (eq k Kw.fs_rename) (or (eq k Kw.fs_rmdir) (or (eq k Kw.fs_mkdir) (eq k Kw.sys_poll)))) true)
       ((or (eq k Kw.fs_opendir) (or (eq k Kw.fs_readdir) (eq k Kw.fs_stat))) true)
       ((or (eq k Kw.args_sizes) (or (eq k Kw.args_get) (or (eq k Kw.env_sizes) (or (eq k Kw.env_get) (eq k Kw.thread_spawn))))) true)
       ((or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock))) true)
-      ((call is_net_kw k) true)
+      ((call is_host_kw k) true)
       (else (or (eq k Kw.sys_time) (or (eq k Kw.sys_monotonic) (eq k Kw.sys_random))))))
 
   ;; Check if function uses I/O ops
@@ -3981,6 +4029,19 @@
           (call emit_call o (call get_wasi_index cg Wasi.path_filestat_get))
           (call emit_errno_to_result cg o -1)
           (set! done true))
+    (when (eq op_id Kw.fs_chmod)
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call compile_expr cg (call nth_child node 3) o)
+          (call emit_local_set o io_b)
+          (call emit_local_set o io_a)
+          (call emit_local_set o (get cg Cg.scratch))
+          (call emit_path_dir o (get cg Cg.scratch) io_a)
+          (call emit_local_get o (get cg Cg.scratch))
+          (call emit_local_get o io_a)
+          (call emit_local_get o io_b)
+          (call emit_call o (call get_wasi_index cg Wasi.sys_chmod))
+          (set! done true))
     (when (eq op_id Kw.fs_read)
           (call compile_expr cg (call nth_child node 1) o)
           (call compile_expr cg (call nth_child node 2) o)
@@ -4047,6 +4108,54 @@
           (call emit_local_get o (get cg Cg.scratch))
           (call emit_local_get o io_a)
           (call emit_call o (call get_wasi_index cg Wasi.path_unlink_file))
+          (call emit_errno_to_result cg o -1)
+          (set! done true))
+    (when (eq op_id Kw.sys_poll)
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call compile_expr cg (call nth_child node 3) o)
+          (call compile_expr cg (call nth_child node 4) o)
+          (call emit_call o (call get_wasi_index cg Wasi.poll_oneoff))
+          (call emit_errno_to_result cg o -1)
+          (set! done true))
+    (when (eq op_id Kw.fs_mkdir)
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call emit_local_set o io_a)
+          (call emit_local_set o (get cg Cg.scratch))
+          (call emit_path_dir o (get cg Cg.scratch) io_a)
+          (call emit_local_get o (get cg Cg.scratch))
+          (call emit_local_get o io_a)
+          (call emit_call o (call get_wasi_index cg Wasi.path_create_directory))
+          (call emit_errno_to_result cg o -1)
+          (set! done true))
+    (when (eq op_id Kw.fs_rmdir)
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call emit_local_set o io_a)
+          (call emit_local_set o (get cg Cg.scratch))
+          (call emit_path_dir o (get cg Cg.scratch) io_a)
+          (call emit_local_get o (get cg Cg.scratch))
+          (call emit_local_get o io_a)
+          (call emit_call o (call get_wasi_index cg Wasi.path_remove_directory))
+          (call emit_errno_to_result cg o -1)
+          (set! done true))
+    (when (eq op_id Kw.fs_rename)
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call compile_expr cg (call nth_child node 3) o)
+          (call compile_expr cg (call nth_child node 4) o)
+          (call emit_local_set o (+ (get cg Cg.scratch) 1))
+          (call emit_local_set o io_b)
+          (call emit_local_set o io_a)
+          (call emit_local_set o (get cg Cg.scratch))
+          (call emit_path_dir o (get cg Cg.scratch) io_a)
+          (call emit_local_get o (get cg Cg.scratch))
+          (call emit_local_get o io_a)
+          (call emit_path_dir o io_b (+ (get cg Cg.scratch) 1))
+          (call emit_local_get o io_b)
+          (call emit_local_get o (+ (get cg Cg.scratch) 1))
+          (call emit_call o (call get_wasi_index cg Wasi.path_rename))
           (call emit_errno_to_result cg o -1)
           (set! done true))
     (when (eq op_id Kw.mem_alloc)
@@ -4339,13 +4448,14 @@
           (call emit_rt cg o 80)
           (call emit_memop o OP_I64_LOAD 3)
           (set! done true))
-    ;; aipl_net_v1 gives the result itself (a handle, a count, -1 or -2)
-    (when (call is_net_kw op_id)
+    ;; aipl_net_v1 gives the result itself (a handle, a count, -1 or -2), and
+    ;; so does aipl_sys_v1 (0, or minus an errno)
+    (when (and (call is_host_kw op_id) (neq op_id Kw.fs_chmod))
           (let k:i32 1)
           (while (neq (call nth_child node k) (ptr.null compiler.Node))
             (call compile_expr cg (call nth_child node k) o)
             (set! k (+ k 1)))
-          (call emit_call o (call get_wasi_index cg (call net_wasi op_id)))
+          (call emit_call o (call get_wasi_index cg (call host_wasi op_id)))
           (set! done true))
     (when (eq op_id Kw.sys_random)
           (call compile_expr cg (call nth_child node 1) o)
@@ -4533,9 +4643,10 @@
       ((or (eq k Kw.atomic_add) (or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock)))) true)
       ((or (eq k Kw.thread_spawn) (eq k Kw.thread_join)) true)
       ((or (eq k Kw.fs_open) (or (eq k Kw.fs_read) (or (eq k Kw.fs_write) (eq k Kw.fs_delete)))) true)
+      ((or (eq k Kw.fs_rename) (or (eq k Kw.fs_rmdir) (or (eq k Kw.fs_mkdir) (eq k Kw.sys_poll)))) true)
       ((or (eq k Kw.fs_opendir) (or (eq k Kw.fs_readdir) (eq k Kw.fs_stat))) true)
       ((or (eq k Kw.args_sizes) (or (eq k Kw.args_get) (or (eq k Kw.env_sizes) (eq k Kw.env_get)))) true)
-      ((call is_net_kw k) true)
+      ((call is_host_kw k) true)
       (else (eq k Kw.sys_random))))
 
   ;; Whether node writes memory itself or calls through a reference; the
@@ -5089,11 +5200,20 @@
       ((eq w Wasi.fd_close) (call sig_from "i" 127))
       ((eq w Wasi.proc_exit) (call sig_from "i" 0))
       ((eq w Wasi.path_unlink_file) (call sig_from "iii" 127))
+      ((eq w Wasi.path_rename) (call sig_from "iiiiii" 127))
+      ((eq w Wasi.path_remove_directory) (call sig_from "iii" 127))
+      ((eq w Wasi.path_create_directory) (call sig_from "iii" 127))
+      ((eq w Wasi.poll_oneoff) (call sig_from "iiii" 127))
       ((eq w Wasi.clock_time_get) (call sig_from "ili" 127))
       ((eq w Wasi.thread_spawn) (call sig_from "i" 127))
       ((eq w Wasi.fd_readdir) (call sig_from "iiili" 127))
       ((eq w Wasi.path_filestat_get) (call sig_from "iiiii" 127))
       ((or (eq w Wasi.net_listen) (or (eq w Wasi.net_recv) (eq w Wasi.net_send))) (call sig_from "iii" 127))
+      ((or (eq w Wasi.sys_chmod) (eq w Wasi.proc_exec)) (call sig_from "iiii" 127))
+      ((eq w Wasi.proc_spawn) (call sig_from "iiiii" 127))
+      ((or (eq w Wasi.proc_read) (eq w Wasi.proc_write)) (call sig_from "iii" 127))
+      ((eq w Wasi.proc_stream) (call sig_from "ii" 127))
+      ((or (eq w Wasi.proc_close) (eq w Wasi.proc_wait)) (call sig_from "i" 127))
       ((or (eq w Wasi.net_accept) (eq w Wasi.net_close)) (call sig_from "i" 127))
       ;; random_get, args_sizes_get, args_get, environ_sizes_get, environ_get
       (else (call sig_from "ii" 127))))

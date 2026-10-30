@@ -1,0 +1,19 @@
+;; The program `aipl run` starts in tests/test_bootstrap.rs: it prints its
+;; arguments, copies one line of its input, and exits with the status its
+;; first argument names ("status N"), else 0.
+(module run_target
+  (import os)
+  (import str)
+  (import option)
+  (import io)
+
+  (fn main [] -> i32
+    (let n:i32 (call os.arg_count))
+    (println "args {n}")
+    (for i 1 n
+      (let a:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str "")))
+      (println "arg {a}"))
+    (let input:str.Bytes (match_result (call io.read_stdin) (ok b b) (err e (call str.from_str ""))))
+    (println "stdin {input}")
+    (let first:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (if (call str.is first "seven") 7 0)))

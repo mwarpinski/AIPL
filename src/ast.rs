@@ -165,6 +165,25 @@ pub enum OpCode {
     FsReaddir,
     /// `(fs.stat ptr len out)`: a file's WASI filestat (64 bytes at `out`).
     FsStat,
+    /// `(fs.chmod ptr len mode)`: sets the permission bits (0 to 0o777) of
+    /// the file at the path: 0, or minus a WASI errno (docs/design/SYS_PLAN.md,
+    /// `aipl_sys_v1`).
+    FsChmod,
+    /// `(fs.rename old_ptr old_len new_ptr new_len)`: moves the file or
+    /// directory at the old path to the new one, replacing a file there:
+    /// 0, or minus a WASI errno (`path_rename`).
+    FsRename,
+    /// `(fs.rmdir ptr len)`: removes the empty directory at the path: 0, or
+    /// minus a WASI errno (`path_remove_directory`).
+    FsRmdir,
+    /// `(fs.mkdir ptr len)`: makes a directory at the path (mode 0777 less the
+    /// umask, as WASI does): 0, or minus a WASI errno (`path_create_directory`).
+    FsMkdir,
+    /// `(sys.poll subs out n nevents)`: WASI's `poll_oneoff`, as it is: waits for
+    /// the `n` subscriptions at `subs`, writes events at `out` and their number
+    /// at `nevents`; 0, or minus a WASI errno. Native executables and the VM
+    /// wait for one relative clock subscription only (`std/time.sleep`).
+    SysPoll,
     /// `(net.listen addr len port)`: a listening TCP socket on the address
     /// whose `len` (4 or 16) bytes are at `addr`; its handle, -1, or -2 if
     /// not granted (docs/design/NET_PLAN.md, `aipl_net_v1`).
@@ -178,6 +197,25 @@ pub enum OpCode {
     NetSend,
     /// `(net.close h)`: closes a socket; 0, or -1.
     NetClose,
+    /// `(proc.spawn path len args args_len stdio)`: starts the program at the
+    /// path (docs/design/SYS_PLAN.md, `aipl_sys_v1`); its process handle, or
+    /// minus an errno (-76: not granted by `--allow-run`).
+    ProcSpawn,
+    /// `(proc.stream p which)`: the pipe to process p's input (0), output
+    /// (1), or error (2); -1 if that stream is not a pipe.
+    ProcStream,
+    /// `(proc.read h buf max)`: bytes read from a pipe; 0 at the end, or minus an errno.
+    ProcRead,
+    /// `(proc.write h buf len)`: bytes written to a pipe, or minus an errno.
+    ProcWrite,
+    /// `(proc.close h)`: closes a pipe, or lets go of a process; 0, or minus an errno.
+    ProcClose,
+    /// `(proc.wait p)`: waits for the program to end; its exit status, or
+    /// 256 plus the signal that ended it.
+    ProcWait,
+    /// `(proc.exec path len args args_len)`: replaces this process with the
+    /// program; returns only minus an errno.
+    ProcExec,
     /// `(args.sizes count_ptr size_ptr)`: WASI `args_sizes_get`. Writes the
     /// argument count and the total bytes of the NUL-terminated arguments;
     /// returns 0, or -1 on failure. std/os wraps the four args/env ops.

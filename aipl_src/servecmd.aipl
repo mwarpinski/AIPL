@@ -1,0 +1,136 @@
+;; aipl serve --fresh, in AIPL (src/main.rs Commands::Serve is the Rust one):
+;; a fresh instance of a program per connection (docs/design/NET_PLAN.md
+;; mode B).
+;;
+;;   aipl serve --fresh FILE --listen ADDR:PORT [--requests N] [-- ARGS...]
+;;
+;; The program is built as a native executable that serves on the address
+;; (native/fresh.aipl: fork per connection, the connection its standard input
+;; and a pipe its output; a trap answers 500 and the next connection is
+;; served), in a temporary file that removes itself as it starts and stops
+;; after N connections if asked; this command then becomes it (exec), so
+;; ending this process ends the server and nothing is left behind. A
+;; long-running server is a program that calls serve.run: `aipl run --listen
+;; ADDR:PORT FILE`.
+(module servecmd
+  (import driver)
+  (import native/native)
+  (import stdpath)
+  (import proc)
+  (import fs)
+  (import io)
+  (import str)
+  (import buf)
+  (import alloc)
+  (import option)
+  (import os)
+  (import vec)
+
+  (fn usage [] -> i32
+    (call io.eprintln "usage: aipl serve --fresh FILE --listen ADDR:PORT [--requests N] [-- ARGS...]")
+    2)
+
+  (fn fail_bytes [prefix:str b:str.Bytes] -> i32
+    (call io.write_str 2 "Error: ")
+    (call io.write_str 2 prefix)
+    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len)))
+    (call io.eprintln "")
+    1)
+
+  ;; $TMPDIR (else /tmp), and a name from the time in nanoseconds.
+  (fn temp_path [] -> str.Bytes
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes b (call (option.unwrap_or str.Bytes) (call os.env "TMPDIR") (call str.from_str "/tmp")))
+    (call buf.push_str b "/aipl-serve-")
+    (call buf.push_unsigned b (sys.time) 10 false)
+    (call buf.bytes b))
+
+  ;; aipl serve, its arguments from os.arg `first` on; the exit status.
+  (fn command [first:i32] -> i32 (pub)
+    (let fresh:bool false)
+    (let have_file:bool false)
+    (let file:str.Bytes (call str.from_str ""))
+    (let have_listen:bool false)
+    (let listen:str.Bytes (call str.from_str ""))
+    (let requests:i32 -1)
+    (let args_at:i32 -1)
+    (let n:i32 (call os.arg_count))
+    (let i:i32 first)
+    (while (and (lt i n) (lt args_at 0))
+      (let x:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str "")))
+      (cond
+        ((call str.is x "--fresh") (set! fresh true))
+        ((call str.is x "--listen")
+         (when (gte (+ i 1) n) (return (call usage)))
+         (set! have_listen true)
+         (set! listen (call (option.unwrap_or str.Bytes) (call os.arg (+ i 1)) (call str.from_str "")))
+         (set! i (+ i 1)))
+        ((call str.is x "--requests")
+         (when (gte (+ i 1) n) (return (call usage)))
+         (set! requests (call str.parse_int_or (call (option.unwrap_or str.Bytes) (call os.arg (+ i 1)) (call str.from_str "")) -1))
+         (when (lt requests 0) (return (call usage)))
+         (set! i (+ i 1)))
+        ((call str.is x "--") (set! args_at (+ i 1)))
+        ((call str.starts_with x (call str.from_str "-")) (return (call usage)))
+        (have_file (return (call usage)))
+        (else (set! have_file true) (set! file x)))
+      (set! i (+ i 1)))
+    (when (or (not have_file) (not have_listen)) (return (call usage)))
+    (when (not fresh)
+          (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+          (call buf.push_str m "aipl serve runs a fresh instance per connection: add --fresh. A long-running server is a program that calls serve.run: run it with aipl run --listen ")
+          (call buf.push_bytes m listen)
+          (call buf.push_byte m 32)
+          (call buf.push_bytes m file)
+          (return (call fail_bytes "" (call buf.bytes m))))
+    (when (not (call native.valid_grant listen))
+          (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+          (call buf.push_str m "--listen ")
+          (call buf.push_bytes m listen)
+          (call buf.push_str m ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
+          (return (call fail_bytes "" (call buf.bytes m))))
+
+    ;; the program, built to serve: the address, how many connections, and
+    ;; removing itself
+    (let std_dir:str.Bytes (call stdpath.find))
+    (let res:(ptr driver.Out) (call driver.compile_file_limited (call str.addr file) (get file str.Bytes.len) (call str.addr std_dir) (get std_dir str.Bytes.len) 32768))
+    (let status:i32 (get res driver.Out.status))
+    (when (or (eq status 1) (eq status 3))
+          (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
+    (when (eq status 2)
+          (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+          (call buf.push_str m "compile error ")
+          (call buf.push_int m (get res driver.Out.len))
+          (call buf.push_str m " (AIPL_SPEC.md 6.4)")
+          (return (call fail_bytes "" (call buf.bytes m))))
+    (let wasm:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
+    (let spec:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes spec listen)
+    (when (gte requests 0)
+          (call buf.push_str spec " requests=")
+          (call buf.push_int spec requests))
+    (call buf.push_str spec " temporary")
+    (let o:(ptr native.Output) (call native.compile_with wasm false (call str.from_str "") (call buf.bytes spec)))
+    (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
+
+    (let exe:str.Bytes (call temp_path))
+    (when (match_result (call io.write_path exe (get o native.Output.exe)) (ok w (neq w (get (get o native.Output.exe) str.Bytes.len))) (err e true))
+          (let _gone:bool (match_result (call fs.remove_path exe) (ok d true) (err e2 false)))
+          (return (call fail_bytes "cannot write " exe)))
+    (when (match_result (call fs.chmod_path exe fs.PROGRAM) (ok d false) (err e true))
+          (let _gone:bool (match_result (call fs.remove_path exe) (ok d true) (err e2 false)))
+          (return (call fail_bytes "cannot make executable " exe)))
+
+    ;; this process becomes the server
+    (let c:(ptr proc.Command) (call proc.command_path (call alloc.default) exe))
+    (when (gte args_at 0)
+          (for j args_at n
+            (call proc.arg_bytes c (call (option.unwrap_or str.Bytes) (call os.arg j) (call str.from_str "")))))
+    (let why:proc.Error (call proc.exec c))
+    (let _gone:bool (match_result (call fs.remove_path exe) (ok d true) (err e2 false)))
+    (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_str m "cannot start the server: ")
+    (call buf.push_str m (if (eq (enum.ord why) (enum.ord proc.Error.not_granted))
+                             "this aipl was built without --allow-run '*' (see bootstrap/README.md)"
+                             (call proc.message why)))
+    (call fail_bytes "" (call buf.bytes m))))

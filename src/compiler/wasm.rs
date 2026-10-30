@@ -1358,6 +1358,11 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::FsWrite
             | OpCode::FsClose
             | OpCode::FsDelete
+            | OpCode::FsChmod
+            | OpCode::FsRename
+            | OpCode::FsRmdir
+            | OpCode::FsMkdir
+            | OpCode::SysPoll
             | OpCode::FsOpendir
             | OpCode::FsReaddir
             | OpCode::FsStat
@@ -1366,6 +1371,13 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::NetRecv
             | OpCode::NetSend
             | OpCode::NetClose
+            | OpCode::ProcSpawn
+            | OpCode::ProcStream
+            | OpCode::ProcRead
+            | OpCode::ProcWrite
+            | OpCode::ProcClose
+            | OpCode::ProcWait
+            | OpCode::ProcExec
             | OpCode::ArgsSizes
             | OpCode::ArgsGet
             | OpCode::EnvSizes
@@ -2125,14 +2137,104 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::Call(host));
                 emit_errno_to_result(func, ctx, None);
             }
-            OpCode::NetListen | OpCode::NetAccept | OpCode::NetRecv | OpCode::NetSend | OpCode::NetClose => {
-                // aipl_net_v1 returns the result itself (a handle, a count, or
+            OpCode::NetListen
+            | OpCode::NetAccept
+            | OpCode::NetRecv
+            | OpCode::NetSend
+            | OpCode::NetClose
+            | OpCode::ProcSpawn
+            | OpCode::ProcStream
+            | OpCode::ProcRead
+            | OpCode::ProcWrite
+            | OpCode::ProcClose
+            | OpCode::ProcWait
+            | OpCode::ProcExec => {
+                // aipl_net_v1 and aipl_sys_v1's process operations return the result itself (a handle, a count, or
                 // -1/-2), so the call is the whole operation
                 let host = wasi_index(ctx, Wasi::for_op(op).expect("a net op has an import"))?;
                 for a in args {
                     compile_expr(a, ctx, func)?;
                 }
                 func.instruction(&Instruction::Call(host));
+            }
+            OpCode::FsChmod => {
+                // (fs.chmod ptr len mode) -> aipl_sys_v1's chmod(dirfd, ptr,
+                // len, mode), the directory chosen as fs.delete chooses it;
+                // the host gives the result itself (0, or minus an errno)
+                let host = wasi_index(ctx, Wasi::SysChmod)?;
+                let (io_a, io_b) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                compile_expr(&args[2], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_b)); // mode
+                func.instruction(&Instruction::LocalSet(io_a)); // len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
+                emit_path_dir(func, ctx.addr_scratch, io_a);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                func.instruction(&Instruction::LocalGet(io_b));
+                func.instruction(&Instruction::Call(host));
+            }
+            OpCode::SysPoll => {
+                // (sys.poll subs out n nevents) -> poll_oneoff, as it is
+                let poll = wasi_index(ctx, Wasi::PollOneoff)?;
+                for a in args {
+                    compile_expr(a, ctx, func)?;
+                }
+                func.instruction(&Instruction::Call(poll));
+                emit_errno_to_result(func, ctx, None);
+            }
+            OpCode::FsMkdir => {
+                // (fs.mkdir ptr len) -> path_create_directory(fd, ptr, len), the
+                // directory chosen as fs.delete chooses it
+                let mkdir = wasi_index(ctx, Wasi::PathCreateDirectory)?;
+                let (io_a, _) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_a)); // len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
+                emit_path_dir(func, ctx.addr_scratch, io_a);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                func.instruction(&Instruction::Call(mkdir));
+                emit_errno_to_result(func, ctx, None);
+            }
+            OpCode::FsRmdir => {
+                // (fs.rmdir ptr len) -> path_remove_directory(fd, ptr, len), the
+                // directory chosen as fs.delete chooses it
+                let rmdir = wasi_index(ctx, Wasi::PathRemoveDirectory)?;
+                let (io_a, _) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_a)); // len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
+                emit_path_dir(func, ctx.addr_scratch, io_a);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                func.instruction(&Instruction::Call(rmdir));
+                emit_errno_to_result(func, ctx, None);
+            }
+            OpCode::FsRename => {
+                // (fs.rename old_ptr old_len new_ptr new_len) -> path_rename
+                // (old_fd, old_ptr, old_len, new_fd, new_ptr, new_len), each
+                // path's directory chosen as fs.delete chooses it
+                let rename = wasi_index(ctx, Wasi::PathRename)?;
+                let (io_a, io_b) = io_locals(ctx)?;
+                for a in args {
+                    compile_expr(a, ctx, func)?;
+                }
+                func.instruction(&Instruction::LocalSet(ctx.index_scratch)); // new len
+                func.instruction(&Instruction::LocalSet(io_b)); // new ptr
+                func.instruction(&Instruction::LocalSet(io_a)); // old len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // old ptr
+                emit_path_dir(func, ctx.addr_scratch, io_a);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                emit_path_dir(func, io_b, ctx.index_scratch);
+                func.instruction(&Instruction::LocalGet(io_b));
+                func.instruction(&Instruction::LocalGet(ctx.index_scratch));
+                func.instruction(&Instruction::Call(rename));
+                emit_errno_to_result(func, ctx, None);
             }
             OpCode::SysExit => {
                 let proc_exit = wasi_index(ctx, Wasi::ProcExit)?;
@@ -4218,6 +4320,25 @@ enum Wasi {
     NetRecv,
     NetSend,
     NetClose,
+    /// AIPL's own host interface, module "aipl_sys_v1" (docs/design/SYS_PLAN.md):
+    /// `chmod(dirfd, path, len, mode)`.
+    SysChmod,
+    /// The process operations of "aipl_sys_v1" (docs/design/SYS_PLAN.md D3).
+    ProcSpawn,
+    ProcStream,
+    ProcRead,
+    ProcWrite,
+    ProcClose,
+    ProcWait,
+    ProcExec,
+    /// `path_rename`, last so that every other import keeps its place.
+    PathRename,
+    /// `path_remove_directory`, after it, for the same reason.
+    PathRemoveDirectory,
+    /// `path_create_directory`, after it, for the same reason.
+    PathCreateDirectory,
+    /// `poll_oneoff`, after it, for the same reason.
+    PollOneoff,
 }
 
 impl Wasi {
@@ -4227,6 +4348,7 @@ impl Wasi {
         match self {
             Wasi::ThreadSpawn => "wasi",
             Wasi::NetListen | Wasi::NetAccept | Wasi::NetRecv | Wasi::NetSend | Wasi::NetClose => "aipl_net_v1",
+            Wasi::SysChmod | Wasi::ProcSpawn | Wasi::ProcStream | Wasi::ProcRead | Wasi::ProcWrite | Wasi::ProcClose | Wasi::ProcWait | Wasi::ProcExec => "aipl_sys_v1",
             _ => "wasi_snapshot_preview1",
         }
     }
@@ -4253,6 +4375,18 @@ impl Wasi {
             Wasi::NetRecv => "recv",
             Wasi::NetSend => "send",
             Wasi::NetClose => "close",
+            Wasi::SysChmod => "chmod",
+            Wasi::ProcSpawn => "spawn",
+            Wasi::ProcStream => "stream",
+            Wasi::ProcRead => "read",
+            Wasi::ProcWrite => "write",
+            Wasi::ProcClose => "close",
+            Wasi::ProcWait => "wait",
+            Wasi::PathRename => "path_rename",
+            Wasi::PathRemoveDirectory => "path_remove_directory",
+            Wasi::PathCreateDirectory => "path_create_directory",
+            Wasi::PollOneoff => "poll_oneoff",
+            Wasi::ProcExec => "exec",
         }
     }
 
@@ -4272,6 +4406,14 @@ impl Wasi {
             Wasi::FdReaddir => (vec![I32, I32, I32, I64, I32], vec![I32]),
             Wasi::PathFilestatGet => (vec![I32, I32, I32, I32, I32], vec![I32]),
             Wasi::NetListen | Wasi::NetRecv | Wasi::NetSend => (vec![I32, I32, I32], vec![I32]),
+            Wasi::SysChmod | Wasi::ProcExec => (vec![I32, I32, I32, I32], vec![I32]),
+            Wasi::ProcSpawn => (vec![I32, I32, I32, I32, I32], vec![I32]),
+            Wasi::ProcRead | Wasi::ProcWrite => (vec![I32, I32, I32], vec![I32]),
+            Wasi::ProcStream => (vec![I32, I32], vec![I32]),
+            Wasi::ProcClose | Wasi::ProcWait => (vec![I32], vec![I32]),
+            Wasi::PathRename => (vec![I32; 6], vec![I32]),
+            Wasi::PathRemoveDirectory | Wasi::PathCreateDirectory => (vec![I32, I32, I32], vec![I32]),
+            Wasi::PollOneoff => (vec![I32; 4], vec![I32]),
             Wasi::NetAccept | Wasi::NetClose => (vec![I32], vec![I32]),
         }
     }
@@ -4284,6 +4426,10 @@ impl Wasi {
             OpCode::FsClose => Some(Wasi::FdClose),
             OpCode::SysExit => Some(Wasi::ProcExit),
             OpCode::FsDelete => Some(Wasi::PathUnlinkFile),
+            OpCode::FsRename => Some(Wasi::PathRename),
+            OpCode::FsRmdir => Some(Wasi::PathRemoveDirectory),
+            OpCode::FsMkdir => Some(Wasi::PathCreateDirectory),
+            OpCode::SysPoll => Some(Wasi::PollOneoff),
             OpCode::FsOpendir => Some(Wasi::PathOpen),
             OpCode::FsReaddir => Some(Wasi::FdReaddir),
             OpCode::FsStat => Some(Wasi::PathFilestatGet),
@@ -4299,6 +4445,14 @@ impl Wasi {
             OpCode::NetRecv => Some(Wasi::NetRecv),
             OpCode::NetSend => Some(Wasi::NetSend),
             OpCode::NetClose => Some(Wasi::NetClose),
+            OpCode::FsChmod => Some(Wasi::SysChmod),
+            OpCode::ProcSpawn => Some(Wasi::ProcSpawn),
+            OpCode::ProcStream => Some(Wasi::ProcStream),
+            OpCode::ProcRead => Some(Wasi::ProcRead),
+            OpCode::ProcWrite => Some(Wasi::ProcWrite),
+            OpCode::ProcClose => Some(Wasi::ProcClose),
+            OpCode::ProcWait => Some(Wasi::ProcWait),
+            OpCode::ProcExec => Some(Wasi::ProcExec),
             _ => None,
         }
     }

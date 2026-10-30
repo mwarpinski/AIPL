@@ -5,9 +5,18 @@
 ;; builds the next version of itself with no Rust involved.
 ;;
 ;;   aipl compile FILE.aipl -o OUT.wasm
-;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... FILE.aipl -o OUT
+;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... FILE.aipl -o OUT
 ;;   aipl compile [--exe] --max-memory SIZE FILE.aipl -o OUT   (memory's limit, 1M to 2G)
 ;;   aipl compile --no-opt ...   (without the optimizer, codegen_opt.aipl; it runs by default)
+;;   aipl verify FILE.aipl   (resolve and type-check; compile nothing)
+;;   aipl run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [--no-opt] FILE.aipl [ARGS]...
+;;   aipl run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... FILE.wasm [ARGS]...   (a module, built natively)
+;;       (compile to a native executable in a temporary file, run it with ARGS, remove it;
+;;        its exit status is the command's, 128 plus the signal if a signal ended it)
+;;   aipl test FILE|DIR [-k TEXT] [--native]   (each (test ...) in a fresh process; aipl_src/testcmd.aipl)
+;;   aipl watch FILE [--test] [-- ARGS...]   (run again when a file it reads changes; aipl_src/watchcmd.aipl)
+;;   aipl serve --fresh FILE --listen ADDR:PORT [--requests N] [-- ARGS...]   (aipl_src/servecmd.aipl)
+;;   aipl eval FILE [-- ARGS]   (as aipl run); aipl eval -e EXPRS [--with FILE] ...   (aipl_src/evalcmd.aipl)
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
@@ -15,8 +24,8 @@
 ;; the executable's folder, else aipl_src/std/ below the working directory
 ;; (stdpath.aipl). Exit status 0 on success, 1 on a resolve,
 ;; type, compile, or write error (reported on stderr as "Error: ..."), 2 on
-;; bad usage. WASI cannot set the execute bit, so a written executable
-;; still needs `chmod +x`.
+;; bad usage. An executable it writes (--exe) has its execute bit set, by
+;; fs.chmod (aipl_sys_v1; WASI has no call for it).
 (module aipl
   (import driver)
   (import option)
@@ -24,14 +33,26 @@
   (import native/native)
   (import os)
   (import io)
+  (import fs)
   (import str)
   (import fmt)
   (import doc)
+  (import testcmd)
+  (import watchcmd)
+  (import servecmd)
+  (import evalcmd)
   (import buf)
   (import alloc)
+  (import proc)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] [--no-opt] FILE.aipl -o OUT")
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] [--no-opt] FILE.aipl -o OUT")
+    (call io.eprintln "       aipl verify FILE.aipl")
+    (call io.eprintln "       aipl run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [--no-opt] FILE.aipl|FILE.wasm [ARGS]...")
+    (call io.eprintln "       aipl test FILE|DIR [-k TEXT] [--native]")
+    (call io.eprintln "       aipl watch FILE [--test] [-- ARGS...]")
+    (call io.eprintln "       aipl serve --fresh FILE --listen ADDR:PORT [--requests N] [-- ARGS...]")
+    (call io.eprintln "       aipl eval FILE [-- ARGS...] | -e EXPRS [--with FILE] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [-- ARGS...]")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -52,6 +73,35 @@
     (call io.eprintln "")
     1)
 
+  ;; fail_bytes, after removing the temporary file that was being written
+  ;; (there may be none: what is left of a failed write is no use).
+  (fn fail_removing [tmp:str.Bytes prefix:str b:str.Bytes] -> i32
+    (let _gone:bool (match_result (call fs.remove_path tmp) (ok done true) (err e false)))
+    (call fail_bytes prefix b))
+
+  ;; aipl verify FILE.aipl: the front end alone, as the Rust command's verify
+  ;; (src/main.rs): the same message on success, the same errors.
+  (fn verify [n:i32] -> i32
+    (when (neq n 3) (return (call usage)))
+    (let std_dir:str.Bytes (call stdpath.find))
+    (let entry:str.Bytes (call arg 2))
+    (let res:(ptr driver.Out) (call driver.verify_file (call str.addr entry) (get entry str.Bytes.len) (call str.addr std_dir) (get std_dir str.Bytes.len)))
+    (when (neq (get res driver.Out.status) 0)
+        (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
+    (call io.write_str 1 "[AIPL Verifier] OK: module '")
+    (unsafe (fs.write 1 (get res driver.Out.addr) (get res driver.Out.len)))
+    (call io.println "' type-checks. Contracts are type-checked, not proven; req/ens run on every call, in the VM and in compiled code.")
+    0)
+
+  ;; aipl eval: -e EXPRS is evalcmd's; FILE is run natively, as aipl run does
+  ;; (the Rust command runs it in the VM and prints its result line).
+  (fn eval [n:i32] -> i32
+    (for i 2 n
+      (let a:str.Bytes (call arg i))
+      (when (or (call str.is a "-e") (call str.is a "--expr")) (return (call evalcmd.command 2)))
+      (when (call str.is a "--") (return (call compile_command n true))))
+    (call compile_command n true))
+
   (fn write_int [fd:i32 n:i32] -> void
     (unsafe (let digits:i32 (mem.alloc 11))
     (fs.write fd digits (call fmt.int_to_bytes n digits))))
@@ -62,8 +112,50 @@
     (let cmd:str.Bytes (call arg 1))
     (when (call str.is cmd "--version") (call io.println "aipl 0.1.0") (return 0))
     (when (call str.is cmd "doc") (return (call doc.command 2)))
+    (when (call str.is cmd "verify") (return (call verify n)))
+    (when (call str.is cmd "test") (return (call testcmd.command 2)))
+    (when (call str.is cmd "watch") (return (call watchcmd.command 2)))
+    (when (call str.is cmd "serve") (return (call servecmd.command 2)))
+    (when (call str.is cmd "eval") (return (call eval n)))
+    (when (call str.is cmd "run") (return (call compile_command n true)))
     (when (not (call str.is cmd "compile")) (return (call usage)))
-    (let exe:bool false)
+    (call compile_command n false))
+
+  ;; A path for the executable `run` builds: $TMPDIR (else /tmp), and a name
+  ;; from the time in nanoseconds.
+  (fn temp_path [] -> str.Bytes
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes b (call (option.unwrap_or str.Bytes) (call os.env "TMPDIR") (call str.from_str "/tmp")))
+    (call buf.push_str b "/aipl-run-")
+    (call buf.push_unsigned b (sys.time) 10 false)
+    (call buf.bytes b))
+
+  ;; Starts the executable at `path`, named `name` (what it calls itself in a
+  ;; message: the file it was built from), with the arguments from index `first`
+  ;; to n - 1, on this program's own streams, waits for it, removes it, and gives
+  ;; its status as a command's: its exit status, or 128 plus the signal.
+  (fn run_built [path:str.Bytes name:str.Bytes first:i32 n:i32] -> i32
+    (let c:(ptr proc.Command) (call proc.command_named (call alloc.default) path name))
+    (for j first n (call proc.arg_bytes c (call arg j)))
+    (let started:(result proc.Child proc.Error) (call proc.spawn_with c proc.Stream.inherit proc.Stream.inherit proc.Stream.inherit))
+    (let status:i32 (match_result started
+                      (ok ch (block (let s:i32 (call proc.wait ch)) (call proc.close ch) s))
+                      (err e (block
+                               (call io.write_str 2 "Error: cannot run the program: ")
+                               (call io.eprintln (if (eq (enum.ord e) (enum.ord proc.Error.not_granted))
+                                                     "this aipl was built without --allow-run '*' (see bootstrap/README.md)"
+                                                     (call proc.message e)))
+                               -1))))
+    (let _gone:bool (match_result (call fs.remove_path path) (ok done true) (err e2 false)))
+    (cond
+      ((lt status 0) 1)
+      ((call proc.exited status) status)
+      (else (+ 128 (call proc.signal status)))))
+
+  ;; aipl compile ..., or aipl run ... (run_mode): the same flags, the file
+  ;; the last of them, the program's own arguments after it, and no -o.
+  (fn compile_command [n:i32 run_mode:bool] -> i32
+    (let exe:bool run_mode)
     (let tests:bool false)
     (let sandbox:bool false)
     ;; the optimizer runs unless --no-opt (docs/design/OPT_PLAN.md)
@@ -81,7 +173,17 @@
       (let a:str.Bytes (call arg i))
       (cond
         ((call str.is a "--exe") (set! exe true))
-        ((call str.is a "--tests") (set! tests true))
+        ((call str.is a "--tests") (when run_mode (return (call usage))) (set! tests true))
+        ;; what aipl eval takes that run has no need of: --native is what it does;
+        ;; a function other than main, and wasm, need the Rust command's VM and aipl-run
+        ((and run_mode (call str.is a "--native")) (block))
+        ((and run_mode (call str.is a "--wasm"))
+         (return (call fail_bytes "this aipl evaluates natively only: for --wasm use the Rust aipl: " a)))
+        ((and run_mode (or (call str.is a "-f") (call str.is a "--func")))
+         (when (gte (+ i 1) n) (return (call usage)))
+         (when (not (call str.is (call arg (+ i 1)) "main"))
+               (return (call fail_bytes "this aipl evaluates a program's main only: for another function (-f) use the Rust aipl, which runs it in the VM: " (call arg (+ i 1)))))
+         (set! i (+ i 1)))
         ((call str.is a "--no-opt") (set! opt false))
         ((call str.is a "--sandbox") (set! sandbox true))
         ((call str.is a "--max-memory")
@@ -106,6 +208,20 @@
          (call buf.push_bytes listen (call arg (+ i 1)))
          (call buf.push_byte listen 10)
          (set! i (+ i 1)))
+        ((call str.is a "--allow-run")
+         (when (gte (+ i 1) n) (return (call usage)))
+         ;; a program the executable may start, a `run:PROGRAM` line among the grants;
+         ;; checked before anything is compiled, as native.compile_with does too
+         (when (gt (get (call arg (+ i 1)) str.Bytes.len) (call native.max_run_grant))
+               (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+               (call buf.push_str m "--allow-run ")
+               (call buf.push_bytes m (call arg (+ i 1)))
+               (call buf.push_str m ": the program's path is longer than 256 bytes, the most a native executable's grant holds")
+               (return (call fail_bytes "" (call buf.bytes m))))
+         (call buf.push_str listen "run:")
+         (call buf.push_bytes listen (call arg (+ i 1)))
+         (call buf.push_byte listen 10)
+         (set! i (+ i 1)))
         ((call str.is a "--serve")
          (when (or (gte (+ i 1) n) (gt (call buf.len serve) 0)) (return (call usage)))
          (when (not (call native.valid_grant (call arg (+ i 1))))
@@ -117,41 +233,64 @@
          (call buf.push_bytes serve (call arg (+ i 1)))
          (set! i (+ i 1)))
         ((call str.is a "-o")
-         (when (gte (+ i 1) n) (return (call usage)))
+         (when (or run_mode (gte (+ i 1) n)) (return (call usage)))
          (set! out_i (+ i 1))
          (set! i (+ i 1)))
-        ((lt in_i 0) (set! in_i i))
+        ((lt in_i 0) (set! in_i i) (when run_mode (set! i n)))
         (else (return (call usage))))
       (set! i (+ i 1)))
-    (when (or (lt in_i 0) (lt out_i 0)) (return (call usage)))
+    (when (or (lt in_i 0) (and (not run_mode) (lt out_i 0))) (return (call usage)))
     (when (and (or sandbox (or (gt (call buf.len listen) 0) (gt (call buf.len serve) 0))) (not exe)) (return (call usage)))
     (let std_dir:str.Bytes (call stdpath.find))
     (let entry:str.Bytes (call arg in_i))
-    (let out:str.Bytes (call arg out_i))
+    (let out:str.Bytes (if run_mode (call temp_path) (call arg out_i)))
     (let ea:i32 (call str.addr entry))
     (let el:i32 (get entry str.Bytes.len))
     (let da:i32 (call str.addr std_dir))
     (let dl:i32 (get std_dir str.Bytes.len))
-    (let res:(ptr driver.Out) (cond
-                                ((and tests opt) (call driver.compile_tests_opt ea el da dl max_pages))
-                                (tests (call driver.compile_tests_limited ea el da dl max_pages))
-                                (opt (call driver.compile_file_opt ea el da dl max_pages))
-                                (else (call driver.compile_file_limited ea el da dl max_pages))))
-    (let status:i32 (get res driver.Out.status))
-    (when (or (eq status 1) (eq status 3))
-        (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
-    (when (eq status 2)
-          (call io.write_str 2 "Error: compile error ")
-          (call write_int 2 (get res driver.Out.len))
-          (call io.eprintln " (AIPL_SPEC.md 6.4)")
-          (return 1))
-    (let bytes:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
+    ;; aipl run x.wasm: the module is the program, to be built natively as it stands
+    (let wasm_in:bool (and run_mode (call str.ends_with entry (call str.from_str ".wasm"))))
+    (let bytes:str.Bytes (call str.from_str ""))
+    (if wasm_in
+        (set! bytes (match_result (call io.read_path entry) (ok t t) (err e (return (call fail_bytes "cannot read " entry)))))
+        (block
+          (let res:(ptr driver.Out) (cond
+                                      ((and tests opt) (call driver.compile_tests_opt ea el da dl max_pages))
+                                      (tests (call driver.compile_tests_limited ea el da dl max_pages))
+                                      (opt (call driver.compile_file_opt ea el da dl max_pages))
+                                      (else (call driver.compile_file_limited ea el da dl max_pages))))
+          (let status:i32 (get res driver.Out.status))
+          (when (or (eq status 1) (eq status 3))
+              (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
+          (when (eq status 2)
+                (call io.write_str 2 "Error: compile error ")
+                (call write_int 2 (get res driver.Out.len))
+                (call io.eprintln " (AIPL_SPEC.md 6.4)")
+                (return 1))
+          (set! bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
     (when exe
           (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen) (call buf.bytes serve)))
           (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
           (set! bytes (get o native.Output.exe)))
-    (when (match_result (call io.write_path out bytes) (ok wrote (neq wrote (get bytes str.Bytes.len))) (err e true))
-        (return (call fail_bytes "cannot write " out)))
+    ;; Written beside the output and renamed into place, as the Rust command
+    ;; does: a file that was run is never opened for writing again (Linux can
+    ;; refuse with "Text file busy"; macOS kills a binary rewritten in place).
+    (let tmp_buf:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes tmp_buf out)
+    (call buf.push_str tmp_buf ".aipl-tmp")
+    (let tmp:str.Bytes (call buf.bytes tmp_buf))
+    (when (match_result (call io.write_path tmp bytes) (ok wrote (neq wrote (get bytes str.Bytes.len))) (err e true))
+        (return (call fail_removing tmp "cannot write " out)))
+    ;; an executable is one: the execute bit, as the Rust command sets it
+    (when (and exe (match_result (call fs.chmod_path tmp fs.PROGRAM) (ok done false) (err e true)))
+        (return (call fail_removing tmp "cannot make executable " out)))
+    (when (match_result (call fs.rename_path tmp out) (ok done false) (err e true))
+        (return (call fail_removing tmp "cannot write " out)))
+    ;; the program's arguments follow the file (after a `--`, if one separates them)
+    (when run_mode
+          (let first_arg:i32 (+ in_i 1))
+          (when (and (lt first_arg n) (call str.is (call arg first_arg) "--")) (set! first_arg (+ first_arg 1)))
+          (return (call run_built out entry first_arg n)))
     (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
     (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
     (call io.write_str 1 "' -> '")

@@ -1,5 +1,5 @@
 ;; std/fs: directories and file information (AIPL_SPEC.md 4.C), over
-;; fs.opendir, fs.readdir, and fs.stat:
+;; fs.opendir, fs.readdir, fs.stat, and fs.chmod:
 ;;
 ;;   (match (call fs.list (call alloc.default) "data")
 ;;     ((option.Option (ptr (vec.Vec str.Bytes))) some [names] ...)
@@ -7,6 +7,7 @@
 ;;   (match (call fs.info "data/a.txt")
 ;;     ((option.Option fs.Info) some [i] (get i fs.Info.size))
 ;;     ((option.Option fs.Info) none -1i64))
+;;   (call fs.chmod "build/tool" fs.PROGRAM)    ;; (result i32 io.Error)
 ;;
 ;; A directory's names come sorted bytewise, without "." and "..", so a
 ;; listing is the same in every backend and on every file system (the order
@@ -17,6 +18,7 @@
   (import str)
   (import vec)
   (import option)
+  (import io)
 
   ;; What a path names, after following symbolic links.
   (enum Kind [file directory other] (pub))
@@ -111,6 +113,108 @@
                             modified:(mem.load64 (+ st 48))]))
     (call alloc.free_raw a st 64)
     (if (lt r 0) (make (option.Option Info) none) (make (option.Option Info) some i)))
+
+  ;; ===== Permissions =====
+
+  ;; Mode bits for chmod: owner read and write, everyone else read (0o644), the
+  ;; mode of an ordinary file.
+  (const FILE:i32 420 (pub))
+
+  ;; Owner read, write, and execute; everyone else read and execute (0o755), the
+  ;; mode of a program.
+  (const PROGRAM:i32 493 (pub))
+
+  ;; Sets the permission bits of `path`: `mode` is 0 to 0o777 (setuid, setgid,
+  ;; and sticky are refused). Needs no grant: the path is one the program could
+  ;; open, confined as fs.open is (a relative path stays in the working
+  ;; directory; under --sandbox, nothing outside it). The result is 0, or why
+  ;; not (a missing path not_found, a path out of reach denied, a bad mode
+  ;; other).
+  (fn chmod [path:str mode:i32] -> (result i32 io.Error) (pub)
+    (unsafe (call chmod_at (str.ptr path) (str.len path) mode)))
+
+  ;; chmod for a path held as bytes.
+  (fn chmod_path [path:str.Bytes mode:i32] -> (result i32 io.Error) (pub)
+    (unsafe (call chmod_at (call str.addr path) (get path str.Bytes.len) mode)))
+
+  ;; The operation, on a path in memory.
+  (fn chmod_at [addr:i32 len:i32 mode:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.chmod addr len mode))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; ===== Rename =====
+
+  ;; Moves `from` to `to`, replacing what is there: a file replaces a file, a
+  ;; directory replaces only an empty directory. A link is moved itself, not
+  ;; what it names. Needs no grant: both paths are ones the program could open,
+  ;; confined as fs.open is. The result is 0, or why not (a missing `from`
+  ;; not_found, a path out of reach denied, a directory onto a file or a file
+  ;; onto a directory other).
+  (fn rename [from:str to:str] -> (result i32 io.Error) (pub)
+    (unsafe (call rename_at (str.ptr from) (str.len from) (str.ptr to) (str.len to))))
+
+  ;; rename for paths held as bytes.
+  (fn rename_path [from:str.Bytes to:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call rename_at (call str.addr from) (get from str.Bytes.len)
+                            (call str.addr to) (get to str.Bytes.len))))
+
+  ;; The operation, on paths in memory.
+  (fn rename_at [oa:i32 ol:i32 na:i32 nl:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.rename oa ol na nl))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; ===== Remove =====
+
+  ;; Deletes the file `path` (a link is deleted itself, not what it names; a
+  ;; directory is refused, "is a directory"). Needs no grant: the path is one
+  ;; the program could open, confined as fs.open is. The result is 0, or why
+  ;; not (a missing path not_found, a path out of reach denied).
+  (fn remove [path:str] -> (result i32 io.Error) (pub)
+    (unsafe (call remove_at (str.ptr path) (str.len path))))
+
+  ;; remove for a path held as bytes.
+  (fn remove_path [path:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call remove_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; The operation, on a path in memory.
+  (fn remove_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.delete addr len))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; ===== Directories =====
+
+  ;; Makes the directory `path`, with the mode the umask leaves (0777 less it).
+  ;; Its parent must exist: there is no `mkdir -p`. Needs no grant: the path is
+  ;; one the program could open, confined as fs.open is. The result is 0, or
+  ;; why not (a missing parent, or a file as the parent, not_found; a path out
+  ;; of reach denied; a path that exists, a file or a link too, exists).
+  (fn mkdir [path:str] -> (result i32 io.Error) (pub)
+    (unsafe (call mkdir_at (str.ptr path) (str.len path))))
+
+  ;; mkdir for a path held as bytes.
+  (fn mkdir_path [path:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call mkdir_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; The operation, on a path in memory.
+  (fn mkdir_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.mkdir addr len))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; Removes the directory `path`, which must be empty. Needs no grant, and is
+  ;; confined as mkdir is. The result is 0, or why not (a missing path, or a
+  ;; file or a link, not_found: use remove for those; a path out of reach
+  ;; denied; a directory with anything in it not_empty).
+  (fn rmdir [path:str] -> (result i32 io.Error) (pub)
+    (unsafe (call rmdir_at (str.ptr path) (str.len path))))
+
+  ;; rmdir for a path held as bytes.
+  (fn rmdir_path [path:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call rmdir_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; The operation, on a path in memory.
+  (fn rmdir_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.rmdir addr len))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
 
   ;; ===== Tests =====
 

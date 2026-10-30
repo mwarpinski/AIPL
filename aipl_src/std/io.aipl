@@ -1,7 +1,8 @@
 ;; std/io: plain text out, and whole-file reads/writes over fs.*. fds 1 and
 ;; 2 are stdout and stderr in both the VM and under WASI. Numbers and values
 ;; are printed with the format forms, (println "total {n}") (AIPL_SPEC.md 4.K). A read or write that
-;; fails gives an io.Error (not_found, denied, is_directory, other), with
+;; fails gives an io.Error (not_found, denied, is_directory, other, exists,
+;; not_empty), with
 ;; io.message for its words.
 (module io
   (import str)
@@ -24,7 +25,7 @@
   ;; What went wrong reading or writing a file; io.message says it in words.
   ;; A program that needs more (which file, what it was doing) says so
   ;; itself: it has the path.
-  (enum Error [not_found denied is_directory other] (pub))
+  (enum Error [not_found denied is_directory other exists not_empty] (pub))
 
   ;; e in words, for a message: "notes.txt: no such file or directory".
   (fn message [e:Error] -> str (pub) (no_leak)
@@ -32,18 +33,23 @@
       (Error.not_found "no such file or directory")
       (Error.denied "permission denied")
       (Error.is_directory "is a directory")
-      (Error.other "the file could not be read or written")))
+      (Error.other "the file could not be read or written")
+      (Error.exists "file exists")
+      (Error.not_empty "directory not empty")))
 
   ;; The Error for a failed fs.* operation's result: minus a WASI errno
   ;; (AIPL_SPEC.md 4.C), as every backend gives it. A missing file or
   ;; directory on the path (ENOENT 44, ENOTDIR 54) is not_found; no access
   ;; (EACCES 2, EPERM 63, outside what the program may reach ENOTCAPABLE 76)
-  ;; denied; EISDIR (31) is_directory; anything else other.
+  ;; denied; EISDIR (31) is_directory; EEXIST (20) exists; ENOTEMPTY (55)
+  ;; not_empty; anything else other.
   (fn error_of [code:i32] -> Error (pub) (no_leak)
     (cond
       ((or (eq code -44) (eq code -54)) Error.not_found)
       ((or (eq code -2) (or (eq code -63) (eq code -76))) Error.denied)
       ((eq code -31) Error.is_directory)
+      ((eq code -20) Error.exists)
+      ((eq code -55) Error.not_empty)
       (else Error.other)))
 
   ;; The whole file, in a buffer that is never freed (read_fd), or why not.

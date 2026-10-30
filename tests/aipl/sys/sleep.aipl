@@ -1,0 +1,33 @@
+;; sys.poll and std/time's sleep (docs/design/SYS_PLAN.md section 12):
+;; test_sys.rs runs it in every backend; it waits, and says how long, to the
+;; nearest 100 ms, and what the odd cases give.
+(module sleep_cases
+  (import time)
+
+  (fn poll_status [subs_tag:i32 flags:i32 n:i32] -> i32
+    (unsafe
+      (let p:i32 (mem.alloc 96))
+      (mem.store64 p 5i64)
+      (mem.store8 (+ p 8) subs_tag)
+      (mem.store32 (+ p 16) 1)
+      (mem.store64 (+ p 24) 1000000i64)
+      (mem.store64 (+ p 32) 0i64)
+      (mem.store16 (+ p 40) flags)
+      (sys.poll p (+ p 48) n (+ p 80))))
+
+  (fn main [] -> i32
+    (let t0:i64 (call time.now))
+    (call time.sleep 300000000i64)
+    (let slept:i64 (/ (/ (+ (call time.since t0) 50000000i64) 100000000i64) 1i64))
+    (println "slept {slept} hundred ms")
+    ;; nothing to wait for
+    (let t1:i64 (call time.now))
+    (call time.sleep 0i64)
+    (call time.sleep -5i64)
+    (let quick:bool (lt (call time.since t1) 50000000i64))
+    (println "no wait for zero or less: {quick}")
+    (let one:i32 (call poll_status 0 0 1))
+    (println "one clock: {one}")
+    (let none:i32 (call poll_status 0 0 0))
+    (println "no subscription: {none}")
+    0))

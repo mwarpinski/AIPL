@@ -16,6 +16,7 @@ pub mod scopes;
 pub mod sugar;
 pub mod native;
 pub mod net;
+pub mod sys;
 pub mod tools;
 pub mod testrun;
 pub mod watch;

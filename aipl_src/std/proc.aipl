@@ -1,0 +1,255 @@
+;; std/proc: starting other programs (docs/design/SYS_PLAN.md), over AIPL's
+;; own host interface, aipl_sys_v1: the same in the VM, under aipl-run, and
+;; in native executables.
+;;
+;;   (let c:(ptr proc.Command) (call proc.command (call alloc.default) "/bin/sh"))
+;;   (call proc.arg c "-c")
+;;   (call proc.arg c "echo hello; exit 3")
+;;   (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+;;   (let status:i32 (try (call proc.run c (call str.from_str "") out)))   ;; 3
+;;   ;; (call buf.bytes out) is "hello\n"
+;;
+;; A program may start only what it was granted: `aipl eval --allow-run
+;; /bin/sh prog.aipl`, `aipl-run --allow-run ...`, or, fixed in an executable,
+;; `aipl compile --exe --allow-run ...` (`*` grants any program); elsewhere a
+;; start gives Error.not_granted. The path is given to the system exactly as
+;; written: use `find` to look a name up in the PATH. The program has this
+;; program's working directory and environment, and `--sandbox` confines this
+;; program's files, not the program it starts.
+;;
+;; run is the whole of it for a program whose output fits in memory. For a
+;; conversation, spawn gives a Child with a pipe each way: write to it, read
+;; what it says, close_input to tell it there is no more, wait for its end.
+;; A program that writes more than a pipe holds (64 KiB) before it reads what
+;; it was sent can wait for this one to read while this one waits for it to
+;; read: send it little, or read first. A Child's handles are private to this
+;; module, so they never reach std/fs or std/net.
+;; A program's status is its exit status, 0 to 255, or 256 plus the number of
+;; the signal that ended it (exited and signal tell them apart).
+(module proc
+  (import alloc)
+  (import buf)
+  (import str)
+  (import option)
+  (import os)
+  (import fs)
+
+  ;; A program to start, and its arguments: the program's name (argv[0], the
+  ;; path too unless command_named gave another) first, each argument after
+  ;; it, each followed by a zero byte; and the path it is started from. Made by
+  ;; command, added to by arg and arg_bytes, started by run, spawn,
+  ;; spawn_with, or exec.
+  (struct Command [args:(ptr buf.Buf) path:(ptr buf.Buf)] (pub))
+
+  ;; A started program and the pipes to it (-1 where a stream is not a pipe).
+  (struct Child [p:i32 input:i32 output:i32 error:i32] (value) (pub))
+
+  ;; What a program's standard input, output, or error is: this program's own
+  ;; (inherit), a pipe to it (pipe), the null device (null), or, for the error
+  ;; only, the same as its output (merged).
+  (enum Stream [inherit pipe null merged] (pub))
+
+  ;; Why a call failed.
+  (enum Error [not_granted not_found denied other] (pub))
+
+  ;; What went wrong, for a message.
+  (fn message [e:Error] -> str (pub) (no_leak)
+    (match e
+      (Error.not_granted "not granted: run the program with --allow-run PROGRAM")
+      (Error.not_found "no such program")
+      (Error.denied "permission denied")
+      (Error.other "the program could not be started")))
+
+  ;; The Error for a failed call's result: minus a WASI errno, as every
+  ;; backend gives it (-76 not granted, -44 or -54 no such program, -2 or -63
+  ;; no access, anything else other).
+  (fn error_of [code:i32] -> Error (pub) (no_leak)
+    (cond
+      ((eq code -76) Error.not_granted)
+      ((or (eq code -44) (eq code -54)) Error.not_found)
+      ((or (eq code -2) (eq code -63)) Error.denied)
+      (else Error.other)))
+
+  ;; ===== Commands =====
+
+  ;; The program at `path` (given to the system as it is written), with no
+  ;; arguments yet; its memory comes from a.
+  (fn command [a:alloc.Allocator path:str] -> (ptr Command) (pub)
+    (call command_path a (call str.from_str path)))
+
+  ;; command for a path held as bytes.
+  (fn command_path [a:alloc.Allocator path:str.Bytes] -> (ptr Command) (pub)
+    (call command_named a path path))
+
+  ;; command for a program that is to be given another name than its path
+  ;; (argv[0]: what it says when it reports a failure, as `x.wasm: ...` for
+  ;; a program built from x.wasm).
+  (fn command_named [a:alloc.Allocator path:str.Bytes name:str.Bytes] -> (ptr Command) (pub)
+    (let args:(ptr buf.Buf) (call buf.make a 64))
+    (call buf.push_bytes args name)
+    (call buf.push_byte args 0)
+    (let from:(ptr buf.Buf) (call buf.make a 32))
+    (call buf.push_bytes from path)
+    (new Command a [args:args path:from]))
+
+  ;; Adds an argument.
+  (fn arg [c:(ptr Command) s:str] -> void (pub)
+    (call arg_bytes c (call str.from_str s)))
+
+  ;; Adds an argument held as bytes (it must hold no zero byte).
+  (fn arg_bytes [c:(ptr Command) s:str.Bytes] -> void (pub)
+    (req (lt (call str.find_byte s 0) 0))
+    (call buf.push_bytes (get c Command.args) s)
+    (call buf.push_byte (get c Command.args) 0))
+
+  ;; Gives back what command, arg, and arg_bytes took from the allocator.
+  (fn free_command [c:(ptr Command)] -> void (pub)
+    (call buf.free (get c Command.args))
+    (call buf.free (get c Command.path)))
+
+  ;; ===== Starting =====
+
+  ;; Starts the program with the streams `input`, `output`, and `error`
+  ;; (Stream.merged is for the error only: for the others the system refuses
+  ;; it, as Error.other).
+  (fn spawn_with [c:(ptr Command) input:Stream output:Stream error:Stream] -> (result Child Error) (pub)
+    ;; the streams' numbers are the host's: 0 inherit, 1 pipe, 2 null, 3 merged
+    (let in_n:i32 (enum.ord input))
+    (let out_n:i32 (enum.ord output))
+    (let err_n:i32 (enum.ord error))
+    (let all:str.Bytes (call buf.bytes (get c Command.args)))
+    (let stdio:i32 (bitor in_n (bitor (shl out_n 2) (shl err_n 4))))
+    (unsafe
+      (let from:str.Bytes (call buf.bytes (get c Command.path)))
+      (let p:i32 (proc.spawn (call str.addr from) (get from str.Bytes.len) (call str.addr all) (get all str.Bytes.len) stdio))
+      (when (lt p 0) (return (err:Child (call error_of p))))
+      (ok:Error (make Child [p:p input:(proc.stream p 0) output:(proc.stream p 1) error:(proc.stream p 2)]))))
+
+  ;; Starts the program with a pipe to its input, and one from its output
+  ;; and its error together: the way to talk to it.
+  (fn spawn [c:(ptr Command)] -> (result Child Error) (pub)
+    (call spawn_with c Stream.pipe Stream.pipe Stream.merged))
+
+  ;; Replaces this program with the program: it does not return when that
+  ;; works, so what it gives is why it did not.
+  (fn exec [c:(ptr Command)] -> Error (pub)
+    (let all:str.Bytes (call buf.bytes (get c Command.args)))
+    (let from:str.Bytes (call buf.bytes (get c Command.path)))
+    (call error_of (unsafe (proc.exec (call str.addr from) (get from str.Bytes.len) (call str.addr all) (get all str.Bytes.len)))))
+
+  ;; ===== Talking to a program =====
+
+  ;; Sends all of b to the program's input; false on an error (the program
+  ;; gone, or its input not a pipe).
+  (fn write [ch:Child b:str.Bytes] -> bool (pub)
+    (let done:i32 0)
+    (let n:i32 (get b str.Bytes.len))
+    (while (lt done n)
+      (let part:str.Bytes (call str.slice b done (- n done)))
+      (let k:i32 (unsafe (proc.write (get ch Child.input) (call str.addr part) (get part str.Bytes.len))))
+      (when (lte k 0) (return false))
+      (set! done (+ done k)))
+    true)
+
+  ;; Closes the pipe to the program's input, which tells it there is no more.
+  (fn close_input [ch:Child] -> void (pub)
+    (let _r:i32 (unsafe (proc.close (get ch Child.input))))
+    (block))
+
+  ;; Up to max bytes of what the program writes (its error too, when spawn
+  ;; merged it), added to `into`: how many (it waits for some), 0 at the end,
+  ;; or minus an errno on an error.
+  (fn read [ch:Child into:(ptr buf.Buf) max:i32] -> i32 (pub)
+    (call read_from (get ch Child.output) into max))
+
+  ;; read for the program's error, where spawn_with made it a pipe of its own.
+  (fn read_error [ch:Child into:(ptr buf.Buf) max:i32] -> i32 (pub)
+    (call read_from (get ch Child.error) into max))
+
+  (fn read_from [h:i32 into:(ptr buf.Buf) max:i32] -> i32
+    (req (gte max 0))
+    (unsafe
+      (let at:i32 (call buf.room into max))
+      (let n:i32 (proc.read h at max))
+      (when (gt n 0) (call buf.grew into n))
+      n))
+
+  ;; Waits for the program to end: its status (below), the same on a second wait.
+  (fn wait [ch:Child] -> i32 (pub)
+    (unsafe (proc.wait (get ch Child.p))))
+
+  ;; Closes the pipes and lets go of the program (which goes on running if it
+  ;; has not ended: wait first).
+  (fn close [ch:Child] -> void (pub)
+    (unsafe
+      (let _a:i32 (proc.close (get ch Child.input)))
+      (let _b:i32 (proc.close (get ch Child.output)))
+      (let _c:i32 (proc.close (get ch Child.error)))
+      (let _d:i32 (proc.close (get ch Child.p)))
+      (block)))
+
+  ;; Whether a status is an exit status (0 to 255), not a signal's.
+  (fn exited [status:i32] -> bool (pub) (no_leak)
+    (lt status 256))
+
+  ;; The signal that ended the program, or 0 if it exited by itself.
+  (fn signal [status:i32] -> i32 (pub) (no_leak)
+    (if (lt status 256) 0 (- status 256)))
+
+  ;; ===== In one call =====
+
+  ;; Runs the program to its end: `input` sent to it (nothing for an empty
+  ;; one: its input is the null device), and everything it writes, its error
+  ;; too, added to `out`. Its status, or why it did not start.
+  (fn run [c:(ptr Command) input:str.Bytes out:(ptr buf.Buf)] -> (result i32 Error) (pub)
+    (let sending:bool (gt (get input str.Bytes.len) 0))
+    (let ch:Child (try (call spawn_with c (if sending Stream.pipe Stream.null) Stream.pipe Stream.merged)))
+    (when sending
+      (let _sent:bool (call write ch input))
+      (call close_input ch))
+    (while (gt (call read ch out 8192) 0) (block))
+    (let status:i32 (call wait ch))
+    (call close ch)
+    (ok:Error status))
+
+  ;; ===== Looking a program up =====
+
+  ;; Looks `name` up in the directories of the PATH, in order, and adds the
+  ;; first path to a file of that name to `out`: true if there was one. A name
+  ;; with a slash in it is a path already: true if a file is there. Whether it
+  ;; may be run is for the system to say when it is started.
+  (fn find [name:str out:(ptr buf.Buf)] -> bool (pub)
+    (let want:str.Bytes (call str.from_str name))
+    (when (gte (call str.find_byte want 47) 0)
+      (when (call is_file want)
+        (call buf.push_bytes out want)
+        (return true))
+      (return false))
+    (match (call os.env "PATH")
+      ((option.Option str.Bytes) none false)
+      ((option.Option str.Bytes) some [path]
+       (let n:i32 (get path str.Bytes.len))
+       (let start:i32 0)
+       (let try_path:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+       (for i 0 (+ n 1)
+         (when (or (eq i n) (eq (call str.byte_at path i) 58))
+           (let dir:str.Bytes (call str.slice path start (- i start)))
+           (set! start (+ i 1))
+           (call buf.clear try_path)
+           ;; an empty entry is the working directory
+           (if (eq (get dir str.Bytes.len) 0) (call buf.push_str try_path ".") (call buf.push_bytes try_path dir))
+           (call buf.push_byte try_path 47)
+           (call buf.push_bytes try_path want)
+           (when (call is_file (call buf.bytes try_path))
+             (call buf.push_bytes out (call buf.bytes try_path))
+             (call buf.free try_path)
+             (return true))))
+       (call buf.free try_path)
+       false)))
+
+  ;; Whether a regular file is at path (after following symbolic links).
+  (fn is_file [path:str.Bytes] -> bool
+    (match (call fs.info_path path)
+      ((option.Option fs.Info) some [i] (eq (get i fs.Info.kind) fs.Kind.file))
+      ((option.Option fs.Info) none false)))
+)

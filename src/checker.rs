@@ -1697,6 +1697,66 @@ fn fits(got: &Type, want: &Type) -> bool {
                     }
                     Ok(Type::I32)
                 }
+                OpCode::FsChmod => {
+                    if args.len() != 3 {
+                        return Err(format!("{}:{}: fs.chmod requires 3 arguments (path_ptr, path_len, mode)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: fs.chmod argument {} must be i32 (pointer, length, mode), got {}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
+                OpCode::SysPoll => {
+                    if args.len() != 4 {
+                        return Err(format!("{}:{}: sys.poll requires 4 arguments (subs, out, n, nevents)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: sys.poll argument {} must be i32 (address or count), got {}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
+                OpCode::FsMkdir => {
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: fs.mkdir requires 2 arguments (path_ptr, path_len)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: fs.mkdir argument {} must be i32 (pointer/length), got {}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
+                OpCode::FsRmdir => {
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: fs.rmdir requires 2 arguments (path_ptr, path_len)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: fs.rmdir argument {} must be i32 (pointer/length), got {}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
+                OpCode::FsRename => {
+                    if args.len() != 4 {
+                        return Err(format!("{}:{}: fs.rename requires 4 arguments (old_ptr, old_len, new_ptr, new_len)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: fs.rename argument {} must be i32 (pointer/length), got {}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
                 OpCode::FsOpendir => {
                     self.expect_operands("fs.opendir", "(fs.opendir ptr len)", args, &[Type::I32, Type::I32], env, (l, c))?;
                     Ok(Type::I32)
@@ -1727,6 +1787,34 @@ fn fits(got: &Type, want: &Type) -> bool {
                 }
                 OpCode::NetClose => {
                     self.expect_operands("net.close", "(net.close h)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcSpawn => {
+                    self.expect_operands("proc.spawn", "(proc.spawn path len args args_len stdio)", args, &[Type::I32, Type::I32, Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcStream => {
+                    self.expect_operands("proc.stream", "(proc.stream p which)", args, &[Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcRead => {
+                    self.expect_operands("proc.read", "(proc.read h buf max)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcWrite => {
+                    self.expect_operands("proc.write", "(proc.write h buf len)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcClose => {
+                    self.expect_operands("proc.close", "(proc.close h)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcWait => {
+                    self.expect_operands("proc.wait", "(proc.wait p)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::ProcExec => {
+                    self.expect_operands("proc.exec", "(proc.exec path len args args_len)", args, &[Type::I32, Type::I32, Type::I32, Type::I32], env, (l, c))?;
                     Ok(Type::I32)
                 }
                 OpCode::ThreadSpawn => {
@@ -2388,8 +2476,9 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
         MemLoad8 | MemLoad32 | MemLoad64 | MemStore8 | MemStore32 | MemStore64 | MemLoad8S | MemLoad16U | MemLoad16S | MemStore16
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
-            | FsOpen | FsRead | FsWrite | FsDelete | FsOpendir | FsReaddir | FsStat
+            | FsOpen | FsRead | FsWrite | FsDelete | FsChmod | FsRename | FsRmdir | FsMkdir | SysPoll | FsOpendir | FsReaddir | FsStat
             | NetListen | NetAccept | NetRecv | NetSend | NetClose
+            | ProcSpawn | ProcStream | ProcRead | ProcWrite | ProcClose | ProcWait | ProcExec
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom
     )

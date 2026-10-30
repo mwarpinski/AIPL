@@ -24,6 +24,7 @@ pub fn run(source: &str, name: &str, args: &[String]) -> Result<i32, String> {
     let module = Module::new(&engine, &wasm).map_err(|e| e.to_string())?;
     let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).map_err(|e| e.to_string())?;
+    crate::sys::add_chmod(&mut linker)?;
     let argv: Vec<String> = std::iter::once(name.to_string()).chain(args.iter().cloned()).collect();
     let mut b = WasiCtxBuilder::new();
     b.inherit_stdio().inherit_env().args(&argv);

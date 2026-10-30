@@ -35,4 +35,13 @@
         (ok b false)
         (err e (eq e io.Error.not_found))))
     (println "branch on not_found: {created}")
+    ;; the kinds that mkdir and rmdir give, from their WASI errnos
+    (let exists:io.Error (call io.error_of -20))
+    (let not_empty:io.Error (call io.error_of -55))
+    (let exists_words:str (call io.message exists))
+    (let not_empty_words:str (call io.message not_empty))
+    (let exists_kind:bool (eq exists io.Error.exists))
+    (let not_empty_kind:bool (eq not_empty io.Error.not_empty))
+    (println "EEXIST: {exists_words}, a kind of its own: {exists_kind}")
+    (println "ENOTEMPTY: {not_empty_words}, a kind of its own: {not_empty_kind}")
     0))

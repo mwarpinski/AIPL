@@ -1,0 +1,448 @@
+;; native_arm64: turns a wasm module into a Linux AArch64 executable (native
+;; ARM64 backend, docs/design/ARM64_PLAN.md): the driver, as native.aipl is the
+;; x86-64 one. It reads the module (wasm_reader.aipl, shared), lays out the
+;; data, writes the trap routine, the start-up stub that reserves linear
+;; memory and calls _start, the routines for the imports (WASI's), and every
+;; function (lower_arm64.aipl), then wraps them in an ELF image (elf.aipl).
+;;
+;; Data: the memory size cell, the results area, the globals (8 bytes each),
+;; the trap table, then the data segments' bytes (copied into memory at start-up).
+(module native_arm64
+  (import alloc)
+  (import str)
+  (import buf)
+  (import vec)
+  (import wasm_reader)
+  (import arm64)
+  (import elf)
+  (import lower_arm64)
+  (import runtime_arm64)
+
+  ;; The result of a compile: the ELF image, or the reason there is none. Its
+  ;; first fields are what a host reads (native.aipl's Output has the same).
+  (struct Output [(read addr:i32) (read len:i32) (read ok:bool) (read error:str.Bytes) (read exe:str.Bytes)] (pub))
+
+  (fn failure [msg:str.Bytes] -> (ptr Output)
+    (new Output (call alloc.forever) [addr:(call str.addr msg) len:(get msg str.Bytes.len) ok:false error:msg exe:(call str.from_str "")]))
+
+  ;; For a host to put the module in memory.
+  (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+
+  (fn export_func [w:(ptr wasm_reader.Wasm) name:str] -> i32
+    (let want:str.Bytes (call str.from_str name))
+    (let found:i32 -1)
+    (for i 0 (call (vec.len (ptr wasm_reader.Export)) (get w wasm_reader.Wasm.exports))
+      (let e:(ptr wasm_reader.Export) (call (vec.at (ptr wasm_reader.Export)) (get w wasm_reader.Wasm.exports) i))
+      (when (and (eq (get e wasm_reader.Export.kind) 0) (call str.bytes_eq (get e wasm_reader.Export.name) want))
+          (set! found (get e wasm_reader.Export.index))))
+    found)
+
+  (fn memory_limits [w:(ptr wasm_reader.Wasm)] -> (ptr wasm_reader.Limits)
+    (let mems:(ptr (vec.Vec (ptr wasm_reader.Limits))) (get w wasm_reader.Wasm.memories))
+    (when (gt (call (vec.len (ptr wasm_reader.Limits)) mems) 0) (return (call (vec.at (ptr wasm_reader.Limits)) mems 0)))
+    (for i 0 (call (vec.len (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports))
+      (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports) i))
+      (when (eq (get imp wasm_reader.Import.kind) 2) (return (get imp wasm_reader.Import.limits))))
+    (ptr.null wasm_reader.Limits))
+
+  ;; ===== The trap routine =====
+
+  ;; Reached by `b` with the reason's number in x0: writes the reason's text and a newline
+  ;; on standard error and exits with status 134, as a trap does under aipl-run.
+  (fn emit_trap_routine [c:(ptr buf.Buf) table:i32 nl:i32] -> void
+    (call arm64.lsl_ri c 64 0 0 4)
+    (call arm64.mov_imm c 64 16 (i64.extend_s table))
+    (call arm64.add_rrr c 64 16 16 0)
+    (call arm64.ldr_x c 1 16 0)
+    (call arm64.ldr_x c 2 16 8)
+    (call arm64.mov_imm c 64 0 2i64)
+    (call arm64.mov_imm c 64 8 (i64.extend_s (call runtime_arm64.sys_write)))
+    (call arm64.svc c 0)
+    (call runtime_arm64.emit_write c 2 nl 1)
+    (call runtime_arm64.emit_exit c 134))
+
+  ;; ===== Start-up =====
+
+  ;; mmap(0, 8 GiB, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0): x28 = the base
+  (fn emit_reserve_memory [c:(ptr buf.Buf)] -> void
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.mov_imm c 64 1 8589934592i64)
+    (call arm64.mov_imm c 64 2 0i64)
+    (call arm64.mov_imm c 64 3 16418i64)
+    (call arm64.mov_imm c 64 4 -1i64)
+    (call arm64.mov_imm c 64 5 0i64)
+    (call runtime_arm64.emit_syscall c 222)
+    (call arm64.mov_rr c 64 28 0))
+
+  ;; mprotect(x28, pages * 64 KiB, PROT_READ | PROT_WRITE)
+  (fn emit_commit_memory [c:(ptr buf.Buf) pages:i32] -> void
+    (call arm64.mov_rr c 64 0 28)
+    (call arm64.mov_imm c 64 1 (* (i64.extend_s pages) 65536i64))
+    (call arm64.mov_imm c 64 2 3i64)
+    (call runtime_arm64.emit_syscall c 226))
+
+  ;; copy len bytes from address `src` to x28 + `dest`
+  (fn emit_copy [c:(ptr buf.Buf) src:i32 dest:i32 len:i32] -> void
+    (when (gt len 0)
+          (call arm64.mov_imm c 64 0 (i64.extend_s src))
+          (call arm64.mov_imm c 64 1 (i64.extend_s dest))
+          (call arm64.add_rrr c 64 1 28 1)
+          (call arm64.mov_imm c 64 2 (i64.extend_s len))
+          (let top:i32 (call buf.len c))
+          (call arm64.ldrb c 3 0 0)
+          (call arm64.strb c 3 1 0)
+          (call arm64.add_ri c 64 0 0 1)
+          (call arm64.add_ri c 64 1 1 1)
+          (call arm64.sub_ri c 64 2 2 1)
+          (call arm64.patch_cond c (call arm64.cbnz c 64 2) top)))
+
+  ;; ===== Imports =====
+
+  ;; The routine for an import, called as a wasm function is (its arguments on
+  ;; the value stack, the last at [sp]): the result in x0. proc_exit, fd_write
+  ;; and fd_read are here; any other is ENOSYS (52) until the WASI routines come.
+  (fn emit_import [c:(ptr buf.Buf) imp:(ptr wasm_reader.Import) sp_cell:i32] -> void
+    (let name:str.Bytes (get imp wasm_reader.Import.name))
+    (cond
+      ((call str.is name "args_sizes_get") (call emit_strings_sizes c sp_cell false))
+      ((call str.is name "args_get") (call emit_strings_get c sp_cell false))
+      ((call str.is name "environ_sizes_get") (call emit_strings_sizes c sp_cell true))
+      ((call str.is name "environ_get") (call emit_strings_get c sp_cell true))
+      ((call str.is name "clock_time_get") (call emit_clock_time_get c))
+      ((call str.is name "random_get") (call emit_random_get c))
+      ((call str.is name "proc_exit")
+       (call arm64.ldr_x c 0 31 0)
+       (call runtime_arm64.emit_syscall c 94)
+       (call arm64.brk c 0))
+      ((call str.is name "fd_write") (call emit_fd_io c 64))
+      ((call str.is name "fd_read") (call emit_fd_io c 63))
+      (else
+       (call arm64.mov_imm c 64 0 52i64)
+       (call arm64.ret c))))
+
+  ;; x11 = the first string pointer of the arguments, or of the environment, from
+  ;; the stack as it was at entry (argc, the argument pointers, a zero, the
+  ;; environment pointers, a zero), whose address is in the cell; x10 = argc
+  (fn emit_string_table [c:(ptr buf.Buf) sp_cell:i32 env:bool] -> void
+    (call arm64.mov_imm c 64 9 (i64.extend_s sp_cell))
+    (call arm64.ldr_x c 9 9 0)
+    (call arm64.ldr_x c 10 9 0)
+    (call arm64.add_ri c 64 11 9 8)
+    (when env
+          (call arm64.add_rrr c 64 11 11 0)
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.add_rrr c 64 11 11 12)
+          (call arm64.add_ri c 64 11 11 8)))
+
+  ;; args_sizes_get(argc_ptr, buf_size_ptr) and environ_sizes_get: the count and the
+  ;; bytes the strings take with their zeros. The pointers are on the value stack
+  ;; (argc_ptr at [sp + 16], buf_size_ptr at [sp]).
+  (fn emit_strings_sizes [c:(ptr buf.Buf) sp_cell:i32 env:bool] -> void
+    (call emit_string_table c sp_cell false)
+    (when env
+          ;; the environment's count: walk to the zero pointer
+          (call arm64.add_ri c 64 11 9 8)
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.add_rrr c 64 11 11 12)
+          (call arm64.add_ri c 64 11 11 8)
+          (call arm64.mov_imm c 64 10 0i64)
+          (let count_top:i32 (call buf.len c))
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.ldr_x_reg c 14 11 12)
+          (let counted:i32 (call arm64.cbz c 64 14))
+          (call arm64.add_ri c 64 10 10 1)
+          (call arm64.b_to c count_top)
+          (call arm64.patch_cond c counted (call buf.len c)))
+    (call arm64.mov_imm c 64 12 0i64)
+    (call arm64.mov_imm c 64 13 0i64)
+    (let top:i32 (call buf.len c))
+    (call arm64.cmp_rr c 64 13 10)
+    (let done_at:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call arm64.lsl_ri c 64 15 13 3)
+    (call arm64.ldr_x_reg c 14 11 15)
+    (call arm64.mov_imm c 64 15 0i64)
+    (let len_top:i32 (call buf.len c))
+    (call arm64.add_rrr c 64 16 14 15)
+    (call arm64.ldrb c 0 16 0)
+    (let ended:i32 (call arm64.cbz c 32 0))
+    (call arm64.add_ri c 64 15 15 1)
+    (call arm64.b_to c len_top)
+    (call arm64.patch_cond c ended (call buf.len c))
+    (call arm64.add_ri c 64 15 15 1)
+    (call arm64.add_rrr c 64 12 12 15)
+    (call arm64.add_ri c 64 13 13 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_cond c done_at (call buf.len c))
+    (call arm64.ldr_x c 0 31 16)
+    (call arm64.mov_rr c 32 0 0)
+    (call arm64.add_rrr c 64 0 28 0)
+    (call arm64.str_w c 10 0 0)
+    (call arm64.ldr_x c 0 31 0)
+    (call arm64.mov_rr c 32 0 0)
+    (call arm64.add_rrr c 64 0 28 0)
+    (call arm64.str_w c 12 0 0)
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.ret c))
+
+  ;; args_get(argv, argv_buf) and environ_get: each string copied into the buffer
+  ;; (in memory), its address in memory written to the pointer array. argv at
+  ;; [sp + 16], argv_buf at [sp].
+  (fn emit_strings_get [c:(ptr buf.Buf) sp_cell:i32 env:bool] -> void
+    (call emit_string_table c sp_cell false)
+    (when env
+          (call arm64.add_ri c 64 11 9 8)
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.add_rrr c 64 11 11 12)
+          (call arm64.add_ri c 64 11 11 8)
+          (call arm64.mov_imm c 64 10 0i64)
+          (let count_top:i32 (call buf.len c))
+          (call arm64.lsl_ri c 64 12 10 3)
+          (call arm64.ldr_x_reg c 14 11 12)
+          (let counted:i32 (call arm64.cbz c 64 14))
+          (call arm64.add_ri c 64 10 10 1)
+          (call arm64.b_to c count_top)
+          (call arm64.patch_cond c counted (call buf.len c)))
+    (call arm64.ldr_x c 12 31 16)
+    (call arm64.mov_rr c 32 12 12)
+    (call arm64.add_rrr c 64 12 28 12)
+    (call arm64.ldr_x c 13 31 0)
+    (call arm64.mov_rr c 32 13 13)
+    (call arm64.mov_imm c 64 15 0i64)
+    (let top:i32 (call buf.len c))
+    (call arm64.cmp_rr c 64 15 10)
+    (let done_at:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    ;; the pointer array's entry i: this string's address in memory
+    (call arm64.lsl_ri c 64 16 15 2)
+    (call arm64.add_rrr c 64 16 12 16)
+    (call arm64.str_w c 13 16 0)
+    ;; copy the string, its zero included
+    (call arm64.lsl_ri c 64 16 15 3)
+    (call arm64.ldr_x_reg c 14 11 16)
+    (call arm64.add_rrr c 64 16 28 13)
+    (let copy_top:i32 (call buf.len c))
+    (call arm64.ldrb c 0 14 0)
+    (call arm64.strb c 0 16 0)
+    (call arm64.add_ri c 64 14 14 1)
+    (call arm64.add_ri c 64 16 16 1)
+    (call arm64.add_ri c 32 13 13 1)
+    (call arm64.patch_cond c (call arm64.cbnz c 32 0) copy_top)
+    (call arm64.add_ri c 64 15 15 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_cond c done_at (call buf.len c))
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.ret c))
+
+  ;; clock_time_get(id, precision, out): the nanoseconds of CLOCK_REALTIME (0) or
+  ;; CLOCK_MONOTONIC (1) as a u64 at out; any other clock is EINVAL (28). id at
+  ;; [sp + 32], out at [sp].
+  (fn emit_clock_time_get [c:(ptr buf.Buf)] -> void
+    (call arm64.ldr_x c 0 31 32)
+    (call arm64.cmp_ri c 64 0 1)
+    (let bad:i32 (call arm64.b_cond c (call arm64.cc_hi)))
+    (call arm64.sub_ri c 64 31 31 16)
+    (call arm64.mov_sp c 64 1 31)
+    (call runtime_arm64.emit_syscall c 113)
+    (call arm64.ldp c 2 3 31 0)
+    (call arm64.add_ri c 64 31 31 16)
+    (call arm64.mov_imm c 64 4 1000000000i64)
+    (call arm64.madd c 64 2 2 4 3)
+    (call arm64.ldr_x c 5 31 0)
+    (call arm64.mov_rr c 32 5 5)
+    (call arm64.add_rrr c 64 5 28 5)
+    (call arm64.str_x c 2 5 0)
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.ret c)
+    (call arm64.patch_cond c bad (call buf.len c))
+    (call arm64.mov_imm c 64 0 28i64)
+    (call arm64.ret c))
+
+  ;; random_get(buf, len) from getrandom. buf at [sp + 16], len at [sp].
+  (fn emit_random_get [c:(ptr buf.Buf)] -> void
+    (call arm64.ldr_x c 0 31 16)
+    (call arm64.mov_rr c 32 0 0)
+    (call arm64.add_rrr c 64 0 28 0)
+    (call arm64.ldr_x c 1 31 0)
+    (call arm64.mov_rr c 32 1 1)
+    (call arm64.mov_imm c 64 2 0i64)
+    (call runtime_arm64.emit_syscall c 278)
+    (call arm64.cmp_ri c 64 0 0)
+    (let failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.ret c)
+    (call arm64.patch_cond c failed (call buf.len c))
+    (call arm64.mov_imm c 64 0 29i64)
+    (call arm64.ret c))
+
+  ;; fd_write(fd, iovs, iovs_len, nwritten) or fd_read: one system call (`number`)
+  ;; per iovec, the total stored at nwritten, the result 0 or an errno. A short
+  ;; transfer ends it. The arguments: fd at [sp + 48], iovs at [sp + 32], the
+  ;; count at [sp + 16], nwritten at [sp].
+  (fn emit_fd_io [c:(ptr buf.Buf) number:i32] -> void
+    (call arm64.ldr_x c 9 31 48)
+    (call arm64.ldr_x c 10 31 32)
+    (call arm64.ldr_x c 11 31 16)
+    (call arm64.mov_rr c 32 10 10)
+    (call arm64.add_rrr c 64 10 28 10)
+    (call arm64.mov_imm c 64 12 0i64)
+    (let top:i32 (call buf.len c))
+    (let done_at:i32 (call arm64.cbz c 32 11))
+    (call arm64.ldr_w c 1 10 0)
+    (call arm64.ldr_w c 2 10 4)
+    (call arm64.add_rrr c 64 1 28 1)
+    (call arm64.mov_rr c 64 0 9)
+    (call runtime_arm64.emit_syscall c number)
+    (call arm64.cmp_ri c 64 0 0)
+    (let failed_at:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.add_rrr c 64 12 12 0)
+    (call arm64.cmp_rr c 64 0 2)
+    (let short_at:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+    (call arm64.add_ri c 64 10 10 8)
+    (call arm64.sub_ri c 32 11 11 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_cond c done_at (call buf.len c))
+    (call arm64.patch_cond c short_at (call buf.len c))
+    (call arm64.ldr_x c 13 31 0)
+    (call arm64.mov_rr c 32 13 13)
+    (call arm64.add_rrr c 64 13 28 13)
+    (call arm64.str_w c 12 13 0)
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.ret c)
+    ;; an error: Linux errno 4 EINTR and the like are reported as 29 (WASI's io error)
+    (call arm64.patch_cond c failed_at (call buf.len c))
+    (call arm64.mov_imm c 64 0 29i64)
+    (call arm64.ret c))
+
+  ;; The type index of function `f` (imports first).
+  (fn type_index_of [l:(ptr lower_arm64.L) w:(ptr wasm_reader.Wasm) f:i32] -> i32
+    (let ni:i32 (call (vec.len (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports)))
+    (if (lt f ni)
+        (get (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) f) wasm_reader.Import.type_index)
+        (call (vec.at i32) (get w wasm_reader.Wasm.funcs) (- f ni))))
+
+  ;; The element segments' functions into the table, now that every function's
+  ;; start is known: the entry's code address (absolute: the code's page and
+  ;; the function's offset) and its type's canonical id.
+  (fn fill_table [l:(ptr lower_arm64.L) w:(ptr wasm_reader.Wasm) starts:(ptr (vec.Vec i32))] -> void
+    (unsafe (when (eq (get l lower_arm64.L.table_size) 0) (return))
+    (let data:(ptr buf.Buf) (get l lower_arm64.L.data))
+    (let code_vaddr:i32 (get (call elf.layout_arm64 (call buf.len data) 0) elf.Layout.code_vaddr))
+    (let base:i32 (+ (get data buf.Buf.data) (- (get l lower_arm64.L.table_addr) (call elf.data_vaddr_arm64))))
+    (let elems:(ptr (vec.Vec (ptr wasm_reader.Elem))) (get w wasm_reader.Wasm.elems))
+    (for i 0 (call (vec.len (ptr wasm_reader.Elem)) elems)
+      (let e:(ptr wasm_reader.Elem) (call (vec.at (ptr wasm_reader.Elem)) elems i))
+      (let funcs:(ptr (vec.Vec i32)) (get e wasm_reader.Elem.funcs))
+      (for k 0 (call (vec.len i32) funcs)
+        (let f:i32 (call (vec.at i32) funcs k))
+        (let entry:i32 (+ base (* 16 (+ (get e wasm_reader.Elem.offset) k))))
+        (mem.store32 entry (+ code_vaddr (call (vec.at i32) starts f)))
+        (mem.store32 (+ entry 4) 0)
+        (mem.store32 (+ entry 8) (call (vec.at i32) (get l lower_arm64.L.canon) (call type_index_of l w f)))))))
+
+  ;; ===== The compile =====
+
+  (fn compile_at [addr:i32 len:i32] -> (ptr Output) (pub)
+    (unsafe (call compile (call str.bytes addr len))))
+
+  (fn compile [wasm:str.Bytes] -> (ptr Output) (pub)
+    (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
+    (when (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))))
+    (let entry_fn:i32 (call export_func w "_start"))
+    (when (lt entry_fn 0) (return (call failure (call str.from_str "the module has no _start export"))))
+    (let l:(ptr lower_arm64.L) (call lower_arm64.make w))
+    (let c:(ptr buf.Buf) (get l lower_arm64.L.code))
+    (let data:(ptr buf.Buf) (get l lower_arm64.L.data))
+    (let nimports:i32 (call (vec.len (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports)))
+    (let nfuncs:i32 (+ nimports (call (vec.len i32) (get w wasm_reader.Wasm.funcs))))
+    ;; data: the memory size cell, the results area, the globals
+    (put l lower_arm64.L.mem_pages (call lower_arm64.data_zeros l 8))
+    ;; the stack pointer as the process started: the arguments and the environment
+    (let sp_cell:i32 (call lower_arm64.data_zeros l 8))
+    (put l lower_arm64.L.results (call lower_arm64.data_zeros l (call lower_arm64.results_size)))
+    (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get w wasm_reader.Wasm.globals))
+    (let gb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (for i 0 (call (vec.len (ptr wasm_reader.Global)) gs)
+      (let v:i64 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
+      (for k 0 8 (call buf.push_byte gb (i32.wrap (bitand (shru v (i64.extend_s (* 8 k))) 255i64)))))
+    (put l lower_arm64.L.globals (call lower_arm64.data_bytes l (call buf.bytes gb)))
+    ;; the table: 16-byte entries [code address:u64][type id:i32][pad], an empty
+    ;; one's type id -1 (filled in once the functions' addresses are known)
+    (let tables:(ptr (vec.Vec (ptr wasm_reader.Table))) (get w wasm_reader.Wasm.tables))
+    (when (gt (call (vec.len (ptr wasm_reader.Table)) tables) 1) (return (call failure (call str.from_str "more than one table"))))
+    (when (eq (call (vec.len (ptr wasm_reader.Table)) tables) 1)
+          (let size:i32 (get (get (call (vec.at (ptr wasm_reader.Table)) tables 0) wasm_reader.Table.limits) wasm_reader.Limits.min))
+          (when (gt size 65536) (return (call failure (call str.from_str "a table with more than 65536 entries"))))
+          (let tb:(ptr buf.Buf) (call buf.make (call alloc.default) (+ 16 (* 16 size))))
+          (for i 0 size
+            (for k 0 8 (call buf.push_byte tb 0))
+            (for k 0 4 (call buf.push_byte tb 255))
+            (for k 0 4 (call buf.push_byte tb 0)))
+          (while (neq (bitand (call buf.len data) 15) 0) (call buf.push_byte data 0))
+          (put l lower_arm64.L.table_addr (call lower_arm64.data_bytes l (call buf.bytes tb)))
+          (put l lower_arm64.L.table_size size))
+    ;; the trap table: each reason's text address and length
+    (let reasons:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: integer divide by zero"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: integer overflow"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: wasm `unreachable` instruction executed"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: invalid conversion to integer"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: unaligned atomic"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: atomic wait on non-shared memory"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: undefined element: out of bounds table access"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: uninitialized element"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: indirect call type mismatch"))
+    (let tb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (for i 0 (call (vec.len str.Bytes) reasons)
+      (let t:str.Bytes (call (vec.at str.Bytes) reasons i))
+      (let at:i32 (call lower_arm64.data_bytes l t))
+      (for k 0 4 (call buf.push_byte tb (bitand (shru at (* 8 k)) 255)))
+      (for k 0 4 (call buf.push_byte tb 0))
+      (let n:i32 (get t str.Bytes.len))
+      (for k 0 4 (call buf.push_byte tb (bitand (shru n (* 8 k)) 255)))
+      (for k 0 4 (call buf.push_byte tb 0)))
+    (let table:i32 (call lower_arm64.data_bytes l (call buf.bytes tb)))
+    (let nl:i32 (call lower_arm64.data_text l "\n"))
+    ;; the data segments' bytes
+    (let datas:(ptr (vec.Vec (ptr wasm_reader.Data))) (get w wasm_reader.Wasm.datas))
+    (let seg_addrs:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
+    (for i 0 (call (vec.len (ptr wasm_reader.Data)) datas)
+      (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
+      (call (vec.push i32) seg_addrs (call lower_arm64.data_bytes l (unsafe (call str.bytes (get d wasm_reader.Data.addr) (get d wasm_reader.Data.len))))))
+    ;; code: the trap routine, the start-up stub, the imports' routines, the functions
+    (put l lower_arm64.L.trap_routine (call buf.len c))
+    (call emit_trap_routine c table nl)
+    (let entry:i32 (call buf.len c))
+    (call arm64.mov_sp c 64 0 31)
+    (call arm64.mov_imm c 64 16 (i64.extend_s sp_cell))
+    (call arm64.str_x c 0 16 0)
+    (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
+    (when (neq lim (ptr.null wasm_reader.Limits))
+          (call emit_reserve_memory c)
+          (call emit_commit_memory c (get lim wasm_reader.Limits.min))
+          (call arm64.mov_imm c 64 16 (i64.extend_s (get l lower_arm64.L.mem_pages)))
+          (call arm64.mov_imm c 64 0 (i64.extend_s (get lim wasm_reader.Limits.min)))
+          (call arm64.str_x c 0 16 0)
+          (put l lower_arm64.L.mem_max (if (get lim wasm_reader.Limits.has_max) (get lim wasm_reader.Limits.max) 32768))
+          (for i 0 (call (vec.len (ptr wasm_reader.Data)) datas)
+            (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
+            (when (not (get d wasm_reader.Data.passive))
+                  (call emit_copy c (call (vec.at i32) seg_addrs i) (get d wasm_reader.Data.offset) (get d wasm_reader.Data.len)))))
+    (when (gte (get w wasm_reader.Wasm.start) 0) (call lower_arm64.emit_call l (get w wasm_reader.Wasm.start)))
+    (call lower_arm64.emit_call l entry_fn)
+    (call runtime_arm64.emit_exit c 0)
+    (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (+ nfuncs 1)))
+    (for i 0 nimports
+      (call (vec.push i32) starts (call buf.len c))
+      (call emit_import c (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell))
+    (for i nimports nfuncs
+      (when (get l lower_arm64.L.failed) (break))
+      (call (vec.push i32) starts (call buf.len c))
+      (call lower_arm64.function l i (call (vec.at (ptr wasm_reader.Body)) (get w wasm_reader.Wasm.code) (- i nimports))))
+    (when (get l lower_arm64.L.failed) (return (call failure (call buf.bytes (get l lower_arm64.L.msg)))))
+    ;; every call now knows where its target starts
+    (for i 0 (call (vec.len (ptr lower_arm64.Fixup)) (get l lower_arm64.L.fixups))
+      (let f:(ptr lower_arm64.Fixup) (call (vec.at (ptr lower_arm64.Fixup)) (get l lower_arm64.L.fixups) i))
+      (call arm64.patch_b c (get f lower_arm64.Fixup.at) (call (vec.at i32) starts (get f lower_arm64.Fixup.func))))
+    (call fill_table l w starts)
+    (let exe:str.Bytes (call buf.bytes (call elf.image_arm64 (call buf.bytes c) entry (call buf.bytes data) 0)))
+    (new Output (call alloc.forever) [addr:(call str.addr exe) len:(get exe str.Bytes.len) ok:true error:(call str.from_str "") exe:exe]))
+)

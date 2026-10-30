@@ -518,3 +518,77 @@ fn ending_aipl_serve_ends_the_server() {
     assert!(std::net::TcpStream::connect(&at).is_err(), "something is still listening on {at}");
     assert!(!std::env::temp_dir().join(format!("aipl_serve_{pid}")).exists());
 }
+
+/// `aipl serve --fresh` in the self-hosted aipl (aipl_src/servecmd.aipl):
+/// the program built as a native executable that serves on the address and
+/// removes itself, which this command becomes. The same answers as the
+/// others give, a trap answering 500 and the next request served, an answer
+/// past what a host keeps said so, the server stopping by itself after
+/// `--requests` (0 being none), nothing left in the temporary directory, and
+/// the same messages for an address that cannot be listened on and a missing
+/// `--fresh`.
+#[test]
+fn the_self_hosted_aipl_serves_a_fresh_instance_per_request() {
+    if !NATIVE {
+        return;
+    }
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let dir = scratch("fresh_selfhosted");
+    let me = dir.join("aipl");
+    let o = Command::new(AIPL).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(&me).current_dir(root()).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let tmp = dir.join("tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    // `aipl serve ARGS FILE`, in the repository's root, with the library and a temporary directory of its own
+    let serve = |args: &[&str]| {
+        let mut c = Command::new(&me);
+        c.arg("serve").args(args).arg(&src).current_dir(root()).env("AIPL_STD", root().join("aipl_src/std/")).env("TMPDIR", &tmp);
+        c
+    };
+    let failed = b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 22\r\n\r\nInternal Server Error\n".to_vec();
+    let requests: [(&str, Vec<u8>); 5] = [
+        ("/", text_response("200 OK", "hello\n")),
+        ("/crash", failed.clone()),
+        ("/echo?after=crash", text_response("200 OK", "/echo?after=crash")),
+        ("/big", failed),
+        ("/", text_response("200 OK", "hello\n")),
+    ];
+    let at = format!("127.0.0.1:{}", free_port("127.0.0.1"));
+    let mut server = serve(&["--fresh", "--listen", &at, "--requests", "5"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    for (path, want) in &requests {
+        let got = exchange(&at, &mut server, format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes());
+        assert!(got == *want, "{path}: {:?}", String::from_utf8_lossy(&got));
+    }
+    let o = finish(server);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains(": Array index out of bounds: index 5 for array of length 1\n  at handle (fresh_demo.aipl:32:54)\n"), "{err}");
+    assert_eq!(err.matches("Array index").count(), 1, "{err}");
+    assert_eq!(err.matches(aipl_core::net::FRESH_TOO_LONG).count(), 1, "{err}");
+    assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0, "the temporary executable was left");
+
+    // no connection to answer: it listens, and ends
+    let at0 = format!("127.0.0.1:{}", free_port("127.0.0.1"));
+    let o = serve(&["--fresh", "--listen", &at0, "--requests", "0"]).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0, "the temporary executable was left");
+
+    // an address that cannot be listened on: the message the others give, status 1
+    let busy = TcpListener::bind("127.0.0.1:0").unwrap();
+    let held = busy.local_addr().unwrap().to_string();
+    let why = TcpListener::bind(&held).unwrap_err();
+    let o = serve(&["--fresh", "--listen", &held]).output().unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).ends_with(&format!(": cannot listen on {held}: {why}\n")), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0, "the temporary executable was left");
+
+    // without --fresh, the way to a long-running server; a bad address; usage
+    let o = serve(&["--listen", "127.0.0.1:1"]).output().unwrap();
+    assert!(o.status.code() == Some(1) && String::from_utf8_lossy(&o.stderr).contains("add --fresh"), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = serve(&["--fresh", "--listen", "127.0.0.1"]).output().unwrap();
+    assert!(o.status.code() == Some(1) && String::from_utf8_lossy(&o.stderr).contains("expected ADDR:PORT"), "{}", String::from_utf8_lossy(&o.stderr));
+    for args in [&["serve"][..], &["serve", "--fresh", "--listen", "127.0.0.1:1"], &["serve", "--fresh", "x.aipl"]] {
+        assert_eq!(Command::new(&me).args(args).output().unwrap().status.code(), Some(2), "{args:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

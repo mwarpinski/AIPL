@@ -83,7 +83,7 @@ fn an_ordinary_build_leaves_the_tests_out() {
 /// The self-hosted aipl, built natively once for the comparisons below.
 fn self_hosted(dir: &Path) -> PathBuf {
     let exe = dir.join("aipl");
-    let o = aipl(&["compile", "--exe", "aipl_src/aipl.aipl", "-o", exe.to_str().unwrap()]);
+    let o = aipl(&["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o", exe.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -125,5 +125,62 @@ fn both_toolchains_build_tests_alike_with_the_same_errors() {
         assert_eq!(String::from_utf8_lossy(&a.stderr), rerr, "{item}");
         assert_eq!(a.status.code(), Some(1), "{item}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `aipl test` in the self-hosted aipl (aipl_src/testcmd.aipl) prints what the
+/// Rust command prints, natively: the same lines, failures, trap, counts, and
+/// statuses, for a file, a directory, and `-k`; a test build that does not
+/// compile gives the same error; a temporary build is left nowhere. What needs
+/// the VM is refused, saying so.
+#[test]
+fn the_self_hosted_aipl_runs_tests_as_the_rust_one_does() {
+    if !NATIVE {
+        return;
+    }
+    let dir = scratch("selftest");
+    let me = self_hosted(&dir);
+    let tmp = dir.join("tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let bad = dir.join("bad.aipl");
+    std::fs::write(&bad, "(module bad\n  (fn main [] -> i32 0)\n  (test \"int\" (expect 1)))\n").unwrap();
+    let notests = dir.join("notests.aipl");
+    std::fs::write(&notests, "(module notests\n  (fn main [] -> i32 0))\n").unwrap();
+    let (bad, notests) = (bad.to_str().unwrap(), notests.to_str().unwrap());
+    let run = |exe: &Path, args: &[&str]| {
+        Command::new(exe).args(args).current_dir(root()).env("AIPL_STD", root().join("aipl_src/std/")).env("TMPDIR", &tmp).output().unwrap()
+    };
+    let cases: &[&[&str]] = &[
+        &[ROWS],
+        &["-k", "fields", ROWS],
+        &["-k", "no test has this name", ROWS],
+        &["--native", ROWS],
+        &["tests/aipl/testing"],
+        &["tests/aipl/sugar/main.aipl"],
+        &["examples/jsonpp.aipl"],
+        &["tests/aipl/doc"],
+        &["no_such_dir"],
+        &[bad],
+    ];
+    for args in cases {
+        let mut full = vec!["test"];
+        full.extend(*args);
+        let r = run(Path::new(AIPL), &full);
+        let a = run(&me, &full);
+        assert_eq!((a.status.code(), String::from_utf8_lossy(&a.stdout), String::from_utf8_lossy(&a.stderr)), (r.status.code(), String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr)), "{args:?}");
+    }
+    // the first of them is the file `rows.expected` holds
+    assert_eq!(stdout(&run(&me, &["test", ROWS])), std::fs::read_to_string(root().join("tests/aipl/testing/rows.expected")).unwrap());
+    // what needs the VM, or is not a test file, is refused and says where to go
+    for args in [&["test", "--vm", ROWS][..], &["test", "--all-backends", ROWS], &["test", notests]] {
+        let a = run(&me, args);
+        assert_eq!(a.status.code(), Some(1), "{args:?}");
+        assert!(String::from_utf8_lossy(&a.stderr).contains("Rust aipl"), "{args:?}: {}", String::from_utf8_lossy(&a.stderr));
+    }
+    // usage
+    for args in [&["test"][..], &["test", ROWS, ROWS], &["test", "-k"], &["test", "--no-such-flag", ROWS]] {
+        assert_eq!(run(&me, args).status.code(), Some(2), "{args:?}");
+    }
+    assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0, "a temporary build was left");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -40,12 +40,19 @@ fn run(cmd: &mut Command) -> Output {
     panic!("{cmd:?}: executable stayed busy");
 }
 
-/// `compiler` builds the aipl command into `out`, which is made executable.
+/// `compiler` builds the aipl command into `out`, which it makes executable
+/// itself (the self-hosted compiler with `fs.chmod`).
 fn build_aipl(compiler: &Path, out: &Path) {
-    let r = run(Command::new(compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(out));
+    let r = run(Command::new(compiler).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(out));
     assert_eq!(r.status.code(), Some(0), "{}: {}", compiler.display(), String::from_utf8_lossy(&r.stderr));
+    assert_executable(out, compiler);
+}
+
+/// `out` has mode 0755, whatever the umask: the compiler set it.
+fn assert_executable(out: &Path, compiler: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mode = std::fs::metadata(out).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o755, "{} wrote {} without its execute bit", compiler.display(), out.display());
 }
 
 #[test]
@@ -70,6 +77,127 @@ fn the_seed_builds_the_compiler_the_rust_toolchain_builds() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A compiler writes its output beside it and renames it into place, so it can
+/// replace the very file that is running (an in-place write is "Text file
+/// busy" on Linux), and leaves nothing behind, a failure included (SYS_PLAN.md section 10).
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn a_compiler_replaces_the_file_it_is_running_from() {
+    let dir = scratch("bootstrap_replace");
+    let compiler = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &compiler);
+    let before = std::fs::read(&compiler).unwrap();
+    let r = run(Command::new(&compiler).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(&compiler));
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_executable(&compiler, &compiler);
+    assert!(std::fs::read(&compiler).unwrap() == before, "the replacement differs from the Rust-built compiler");
+    let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(left.len(), 1, "files left beside the output: {left:?}");
+    // an output that cannot be replaced (a directory) is an error that leaves
+    // no temporary file either
+    let into = dir.join("into");
+    std::fs::create_dir(&into).unwrap();
+    let r = run(Command::new(&compiler).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(&into));
+    assert_eq!(r.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("cannot write"), "{}", String::from_utf8_lossy(&r.stderr));
+    let mut left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    left.sort();
+    assert_eq!(left, ["aipl", "into"], "files left beside the output");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `aipl run FILE.aipl ARGS`: the program is built into a temporary file,
+/// started with the arguments and this command's own standard input, and
+/// removed; its exit status is the command's (SYS_PLAN.md; aipl_standalone.md,
+/// S2). Only an `aipl` built with `--allow-run '*'` can start it.
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn aipl_run_builds_starts_and_removes_a_program() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let dir = scratch("bootstrap_run");
+    let aipl = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &aipl);
+    let tmp = dir.join("tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let target = "tests/aipl/sys/run_target.aipl";
+    let run_with = |args: &[&str], input: &str| {
+        let mut child = Command::new(&aipl).arg("run").args(args).env("TMPDIR", &tmp).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
+    let nothing_left = || assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0, "a temporary file was left");
+
+    // arguments and standard input reach the program; its output is ours
+    let o = run_with(&[target, "a", "b c"], "hello");
+    assert_eq!((o.status.code(), text(&o.stdout)), (Some(0), "args 3\narg a\narg b c\nstdin hello\n".to_string()), "{}", text(&o.stderr));
+    nothing_left();
+
+    // its exit status is ours
+    let o = run_with(&[target, "seven"], "");
+    assert_eq!(o.status.code(), Some(7), "{}", text(&o.stderr));
+    nothing_left();
+
+    // flags before the file are the compiler's; after it, the program's
+    let o = run_with(&["--sandbox", "--no-opt", target, "--sandbox"], "");
+    assert_eq!((o.status.code(), text(&o.stdout)), (Some(0), "args 2\narg --sandbox\nstdin \n".to_string()), "{}", text(&o.stderr));
+    nothing_left();
+
+    // a program that does not compile: the compile error and status 1, nothing started
+    let bad = dir.join("bad.aipl");
+    std::fs::write(&bad, "(module bad\n  (fn f [x:i32] -> i32 x)\n  (fn main [] -> i32 (call f true)))\n").unwrap();
+    let want = run(Command::new(AIPL).arg("compile").arg(&bad).arg("-o").arg(dir.join("x.wasm")));
+    let o = run_with(&[bad.to_str().unwrap()], "");
+    assert_eq!((o.status.code(), text(&o.stdout), text(&o.stderr)), (Some(1), String::new(), text(&want.stderr)));
+    nothing_left();
+
+    // a compiled module (x.wasm) runs as the Rust command runs it under aipl-run,
+    // built natively as it stands: the same output and status, a trap named by
+    // the file, and (a status of 126 or more cannot be exited) a line more for it
+    let wasm = dir.join("target.wasm");
+    let r = run(Command::new(AIPL).args(["compile", target, "-o"]).arg(&wasm));
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    let trap_src = dir.join("trap.aipl");
+    std::fs::write(&trap_src, "(module trap\n  (import alloc)\n  (fn main [] -> i32\n    (println \"before\")\n    (let xs:(arr i32) (arr.new i32 (call alloc.forever) 2))\n    (println \"{(arr.get i32 xs 5)}\")\n    0))\n").unwrap();
+    let trap_wasm = dir.join("trap.wasm");
+    let r = run(Command::new(AIPL).arg("compile").arg(&trap_src).arg("-o").arg(&trap_wasm));
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    for args in [&["a", "b c"][..], &["seven"]] {
+        let want = {
+            let mut child = Command::new(AIPL).arg("run").arg(&wasm).arg("--").args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            child.stdin.take().unwrap().write_all(b"hello").unwrap();
+            child.wait_with_output().unwrap()
+        };
+        let got = run_with(&[wasm.to_str().unwrap(), "--"].iter().chain(args.iter()).copied().collect::<Vec<_>>(), "hello");
+        assert_eq!((got.status.code(), text(&got.stdout), text(&got.stderr)), (want.status.code(), text(&want.stdout), text(&want.stderr)), "{args:?}");
+    }
+    let want = run(Command::new(AIPL).arg("run").arg(&trap_wasm));
+    let got = run_with(&[trap_wasm.to_str().unwrap()], "");
+    assert_eq!((got.status.code(), want.status.code(), text(&got.stdout)), (Some(134), Some(134), text(&want.stdout)));
+    assert!(text(&got.stderr).starts_with(&text(&want.stderr)), "{}\n{}", text(&got.stderr), text(&want.stderr));
+    assert!(text(&got.stderr).contains("trap.wasm: Array index out of bounds"), "{}", text(&got.stderr));
+    nothing_left();
+    let gone = run_with(&[dir.join("no_such.wasm").to_str().unwrap()], "");
+    assert!(gone.status.code() == Some(1) && text(&gone.stderr).contains("cannot read"), "{}", text(&gone.stderr));
+
+    // usage: no file, or the compile command's -o, which run has no use for
+    assert_eq!(run_with(&[], "").status.code(), Some(2));
+    assert_eq!(run_with(&["-o", "x", target], "").status.code(), Some(2));
+
+    // built without the grant, the command says so (and exits 1)
+    let plain = dir.join("plain");
+    let r = run(Command::new(AIPL).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(&plain));
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    let o = run(Command::new(&plain).args(["run", target]).env("TMPDIR", &tmp));
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("built without --allow-run"), "{}", text(&o.stderr));
+    nothing_left();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The bootstrap where openat2 is refused (Linux before 5.6, Rosetta 2, an old
 /// container profile: tools/without_openat2.py): the seed, and the compiler it
 /// builds, open the source files with openat, and build the same bytes as
@@ -84,10 +212,9 @@ fn the_bootstrap_finishes_where_openat2_is_refused() {
     build_aipl(&seed, &plain);
     let helper = root().join("tools/without_openat2.py");
     let build = |how: &[&str], compiler: &Path, out: &Path| {
-        let r = run(Command::new("python3").arg(&helper).args(how).arg(compiler).args(["compile", "--exe", "aipl_src/aipl.aipl", "-o"]).arg(out));
+        let r = run(Command::new("python3").arg(&helper).args(how).arg(compiler).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(out));
         assert_eq!(r.status.code(), Some(0), "{how:?} {}: {}", compiler.display(), String::from_utf8_lossy(&r.stderr));
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_executable(out, compiler);
     };
     let (enosys, eperm, again) = (dir.join("enosys"), dir.join("eperm"), dir.join("again"));
     build(&[], &seed, &enosys);
@@ -136,6 +263,10 @@ fn the_aipl_command_matches_the_rust_command() {
     let mut compared = 0;
     for p in &paths {
         let rel = p.strip_prefix(root()).unwrap().display().to_string();
+        // `aipl verify`: the same message or error, and status
+        let r = run(Command::new(AIPL).args(["verify", &rel]));
+        let a = run(Command::new(&aipl).args(["verify", &rel]));
+        assert_eq!((a.status.code(), &a.stdout, &a.stderr), (r.status.code(), &r.stdout, &r.stderr), "{rel}: verify");
         for exe in [false, true] {
             let (want, got) = (dir.join("want"), dir.join("got"));
             let mut args = vec!["compile"];
@@ -184,8 +315,27 @@ fn the_aipl_command_matches_the_rust_command() {
         assert_eq!((a.status.code(), String::from_utf8_lossy(&a.stderr).to_string()), (r.status.code(), String::from_utf8_lossy(&r.stderr).to_string()), "{args:?}");
     }
 
+    // the programs an executable may start (--allow-run), which only a program
+    // that starts one carries: the same bytes from both commands; one grant too
+    // long for a native executable refused with the same message and status
+    for args in [&["compile", "--exe", "--allow-run", "/bin/sh", "--allow-run", "/bin/cat"][..], &["compile", "--exe", "--allow-run", "*", "--listen", "127.0.0.1:8080"]] {
+        let (want, got) = (dir.join("want"), dir.join("got"));
+        let r = run(Command::new(AIPL).args(args).arg("tests/aipl/sys/spawn_ops.aipl").arg("-o").arg(&want));
+        let a = run(Command::new(&aipl).args(args).arg("tests/aipl/sys/spawn_ops.aipl").arg("-o").arg(&got));
+        assert!(r.status.success() && a.status.success(), "{args:?}: {}", String::from_utf8_lossy(&a.stderr));
+        assert!(std::fs::read(&want).unwrap() == std::fs::read(&got).unwrap(), "{args:?}: different bytes");
+    }
+    let long = "/".repeat(300);
+    let args = ["compile", "--exe", "--allow-run", long.as_str()];
+    let r = run(Command::new(AIPL).args(args).arg("tests/aipl/sys/spawn_ops.aipl").arg("-o").arg(dir.join("x")));
+    let a = run(Command::new(&aipl).args(args).arg("tests/aipl/sys/spawn_ops.aipl").arg("-o").arg(dir.join("x")));
+    assert_eq!(r.status.code(), Some(1));
+    assert_eq!((a.status.code(), String::from_utf8_lossy(&a.stderr).to_string()), (r.status.code(), String::from_utf8_lossy(&r.stderr).to_string()));
+
     // usage and version
     assert_eq!(run(&mut Command::new(&aipl)).status.code(), Some(2));
+    assert_eq!(run(Command::new(&aipl).arg("verify")).status.code(), Some(2));
+    assert_eq!(run(Command::new(&aipl).args(["verify", "a.aipl", "b.aipl"])).status.code(), Some(2));
     assert_eq!(run(Command::new(&aipl).args(["compile", "--sandbox", "x.aipl", "-o", "y"])).status.code(), Some(2));
     let v = run(Command::new(&aipl).arg("--version"));
     assert_eq!(String::from_utf8_lossy(&v.stdout), format!("aipl {}\n", env!("CARGO_PKG_VERSION")));

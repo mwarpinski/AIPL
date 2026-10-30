@@ -385,6 +385,71 @@
     (call x64.patch_rel32 c bad_id (call buf.len c))
     (call emit_return_errno c 28))
 
+  ;; poll_oneoff(subs, out, n, nevents) -> errno, for what a program asks to
+  ;; sleep: one subscription, a relative clock (the tag and the flags 0), the
+  ;; wait a nanosleep of its timeout. Another shape is EINVAL (n not 1) or
+  ;; ENOTSUP. The one event, the subscription's userdata with no error, is
+  ;; written to `out` and its count to `nevents`.
+  (fn emit_poll_oneoff [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call arg c 32 4 0 (call r8))
+    (call arg c 32 4 1 (call r9))
+    (call arg c 32 4 2 (call r13))
+    (call arg c 32 4 3 (call r14))
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call r13) 1)
+    (let bad_n:i32 (call x64.jcc c (call x64.cc_ne)))
+    (call x64.mov_ri32 c (call rbx) 48)
+    (call emit_guest_check l w (call r8) (call rbx) 1)
+    (call x64.mov_ri32 c (call rbx) 32)
+    (call emit_guest_check l w (call r9) (call rbx) 1)
+    (call x64.mov_ri32 c (call rbx) 4)
+    (call emit_guest_check l w (call r14) (call rbx) 1)
+    (call x64.lea c 64 (call rdi) (call x64.mem_index (call r15) (call r8) 1 0))
+    (call x64.load8u c (call rax) (call x64.mem (call rdi) 8))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let not_clock:i32 (call x64.jcc c (call x64.cc_ne)))
+    (call x64.load16u c (call rax) (call x64.mem (call rdi) 40))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let not_relative:i32 (call x64.jcc c (call x64.cc_ne)))
+    ;; seconds and nanoseconds of the timeout, on the stack as a timespec
+    (call x64.load c 64 (call rax) (call x64.mem (call rdi) 24))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (call x64.mov_ri64 c (call rcx) 1000000000i64)
+    (call x64.div_r c 64 (call rcx))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 16)
+    (call x64.store c 64 (call x64.mem (call rsp) 0) (call rax))
+    (call x64.store c 64 (call x64.mem (call rsp) 8) (call rdx))
+    (call x64.mov_rr c 64 (call rdi) (call rsp))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rsi) (call rsi))
+    (call x64.mov_ri32 c (call rax) 35)
+    (call x64.syscall c)
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 16)
+    ;; a wait cut short by a signal (EINTR, -4) ends the sleep early, as success
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -4)
+    (let interrupted:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.patch_rel32 c interrupted (call buf.len c))
+    ;; the event: the subscription's userdata, then zeros (no error, a clock)
+    (call x64.lea c 64 (call rdi) (call x64.mem_index (call r15) (call r8) 1 0))
+    (call x64.load c 64 (call rax) (call x64.mem (call rdi) 0))
+    (call x64.lea c 64 (call rsi) (call x64.mem_index (call r15) (call r9) 1 0))
+    (call x64.store c 64 (call x64.mem (call rsi) 0) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store c 64 (call x64.mem (call rsi) 8) (call rax))
+    (call x64.store c 64 (call x64.mem (call rsi) 16) (call rax))
+    (call x64.store c 64 (call x64.mem (call rsi) 24) (call rax))
+    (call x64.mov_ri32 c (call rax) 1)
+    (call x64.store c 32 (call x64.mem_index (call r15) (call r14) 1 0) (call rax))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_errno_return l w)
+    (call x64.patch_rel32 c bad_n (call buf.len c))
+    (call emit_return_errno c 28)
+    (call x64.patch_rel32 c not_clock (call buf.len c))
+    (call x64.patch_rel32 c not_relative (call buf.len c))
+    (call emit_return_errno c 58))
+
   ;; random_get(buf, len) -> errno, from getrandom.
   (fn emit_random_get [l:(ptr lower.L) w:(ptr W)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
@@ -442,6 +507,12 @@
   (fn emit_path_to_stack [l:(ptr lower.L) w:(ptr W)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (call x64.mov_rr c 64 (call r12) (call rsp))
+    (call emit_copy_path l w))
+
+  ;; emit_path_to_stack without saving rsp: for a second path, copied below
+  ;; the first, with r12 already holding the routine's own rsp.
+  (fn emit_copy_path [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
     ;; room for the path, its NUL, and alignment: (len + 16) & ~15
     (call x64.lea c 64 (call rcx) (call x64.mem (call r14) 16))
     (call x64.alu_ri c 64 (call x64.op_and) (call rcx) -16)
@@ -805,10 +876,40 @@
     (call x64.alu_ri c 32 (call x64.op_or) (call r8) linux)
     (call x64.patch_rel32 c off (call buf.len c)))
 
-  ;; path_unlink_file(dirfd, path, path_len) -> errno. unlinkat cannot
-  ;; resolve beneath a directory, so the parent directory is opened that
-  ;; way (O_PATH) and the last component removed inside it.
-  (fn emit_path_unlink [l:(ptr lower.L) w:(ptr W)] -> void
+  ;; With the path's copy at rsp (emit_path_to_stack; r14 its length): rsi =
+  ;; the directory part (the copy cut at its last '/', or "." when it has
+  ;; none) and r13 = the last component, for the calls that cannot resolve a
+  ;; path beneath a directory themselves (unlinkat, fchmodat, renameat), whose
+  ;; parent is opened that way instead. `tmp` is a scratch register; rax too.
+  (fn emit_split_parent [l:(ptr lower.L) tmp:i32] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.mov_rr c 64 tmp (call r14))
+    (let top:i32 (call buf.len c))
+    (call x64.test_rr c 64 tmp tmp)
+    (let no_slash:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 64 (call x64.op_sub) tmp 1)
+    (call x64.load8u c (call rax) (call x64.mem_index (call rsp) tmp 1 0))
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) 47)
+    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ne)) top)
+    ;; parent = the copy cut at the slash, base after it
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store8 c (call x64.mem_index (call rsp) tmp 1 0) (call rax))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.lea c 64 (call r13) (call x64.mem_index (call rsp) tmp 1 1))
+    (let have_parent:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c no_slash (call buf.len c))
+    (call x64.mov_ri32 c (call rsi) (call lower.data_text l "."))
+    (call buf.push_byte (get l lower.L.data) 0)
+    (call x64.mov_rr c 64 (call r13) (call rsp))
+    (call x64.patch_rel32 c have_parent (call buf.len c)))
+
+  ;; path_unlink_file(dirfd, path, path_len) -> errno, and path_remove_directory
+  ;; and path_create_directory, which differ only in the system call and its
+  ;; third argument: unlinkat (263) with flags 0, unlinkat with AT_REMOVEDIR
+  ;; (512), mkdirat (258) with mode 0777 (511). None can resolve beneath a
+  ;; directory, so the parent directory is opened that way (O_PATH) and the
+  ;; last component dealt with inside it.
+  (fn emit_path_unlink [l:(ptr lower.L) w:(ptr W) sysno:i32 flags:i32] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
     (call arg c 32 3 0 (call rbx))
@@ -817,26 +918,7 @@
     (call arg c 32 3 2 (call r14))
     (call emit_guest_check l w (call r13) (call r14) 1)
     (call emit_path_to_stack l w)
-    ;; r9 = the last '/' in the copy, or none: parent ".", base = the path
-    (call x64.mov_rr c 64 (call r9) (call r14))
-    (let top:i32 (call buf.len c))
-    (call x64.test_rr c 64 (call r9) (call r9))
-    (let no_slash:i32 (call x64.jcc c (call x64.cc_e)))
-    (call x64.alu_ri c 64 (call x64.op_sub) (call r9) 1)
-    (call x64.load8u c (call rax) (call x64.mem_index (call rsp) (call r9) 1 0))
-    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) 47)
-    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ne)) top)
-    ;; parent = the copy cut at the slash, base after it
-    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
-    (call x64.store8 c (call x64.mem_index (call rsp) (call r9) 1 0) (call rax))
-    (call x64.mov_rr c 64 (call rsi) (call rsp))
-    (call x64.lea c 64 (call r13) (call x64.mem_index (call rsp) (call r9) 1 1))
-    (let have_parent:i32 (call x64.jmp c))
-    (call x64.patch_rel32 c no_slash (call buf.len c))
-    (call x64.mov_ri32 c (call rsi) (call lower.data_text l "."))
-    (call buf.push_byte (get l lower.L.data) 0)
-    (call x64.mov_rr c 64 (call r13) (call rsp))
-    (call x64.patch_rel32 c have_parent (call buf.len c))
+    (call emit_split_parent l (call r9))
     ;; parent fd = openat2(dir, parent, O_PATH | O_DIRECTORY | O_CLOEXEC)
     (call x64.mov_rr c 64 (call rdi) (call rbx))
     (call x64.mov_ri32 c (call rdx) 2752512)
@@ -844,11 +926,14 @@
     (call x64.test_rr c 64 (call rax) (call rax))
     (let no_parent:i32 (call x64.jcc c (call x64.cc_s)))
     (call x64.mov_rr c 64 (call rbx) (call rax))
-    ;; unlinkat(parent fd, base, 0), then close the parent
+    ;; unlinkat(parent fd, base, flags) or mkdirat(parent fd, base, mode), then
+    ;; close the parent
     (call x64.mov_rr c 64 (call rdi) (call rbx))
     (call x64.mov_rr c 64 (call rsi) (call r13))
-    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
-    (call x64.mov_ri32 c (call rax) 263)
+    (if (eq flags 0)
+        (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+        (call x64.mov_ri32 c (call rdx) flags))
+    (call x64.mov_ri32 c (call rax) sysno)
     (call x64.syscall c)
     (call x64.mov_rr c 64 (call r13) (call rax))
     (call x64.mov_rr c 64 (call rdi) (call rbx))
@@ -864,6 +949,223 @@
     (call emit_errno_return l w)
     (call patch_all c badf)
     (call emit_return_errno c 8))
+
+  ;; path_rename(old_fd, old_path, old_len, new_fd, new_path, new_len) ->
+  ;; errno. renameat cannot resolve beneath a directory either, so each
+  ;; path's parent is opened that way (O_PATH, as path_unlink_file does) and
+  ;; renameat moves the last component between the two. The new path is
+  ;; handled first, its parent's descriptor and last component kept in r8
+  ;; and r9 while the old path is copied below it; rbx holds the old
+  ;; directory until its parent is open.
+  (fn emit_path_rename [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (call x64.mov_rr c 64 (call r12) (call rsp))
+    (call saved_arg c 32 6 0 (call rbx))
+    (call emit_fd_lookup l w (call rbx) (call rbx) badf)
+    (call saved_arg c 32 6 3 (call r8))
+    (call emit_fd_lookup l w (call r8) (call r8) badf)
+    (call saved_arg c 32 6 1 (call r13))
+    (call saved_arg c 32 6 2 (call r14))
+    (call emit_guest_check l w (call r13) (call r14) 1)
+    (call saved_arg c 32 6 4 (call r13))
+    (call saved_arg c 32 6 5 (call r14))
+    (call emit_guest_check l w (call r13) (call r14) 1)
+    ;; the new path: its parent's descriptor (r8) and last component (r9)
+    (call emit_copy_path l w)
+    (call emit_split_parent l (call r9))
+    (call x64.mov_rr c 64 (call r9) (call r13))
+    (call x64.mov_rr c 64 (call rdi) (call r8))
+    (call x64.mov_ri32 c (call rdx) 2752512)
+    (call emit_openat2 c (not (get w W.sandbox)))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let new_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call r8) (call rax))
+    ;; the old path, below it
+    (call saved_arg c 32 6 1 (call r13))
+    (call saved_arg c 32 6 2 (call r14))
+    (call emit_copy_path l w)
+    (call emit_split_parent l (call r10))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rdx) 2752512)
+    (call emit_openat2 c (not (get w W.sandbox)))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let old_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call rbx) (call rax))
+    ;; renameat(old parent, old name, new parent, new name), then close both
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call r13))
+    (call x64.mov_rr c 64 (call rdx) (call r8))
+    (call x64.mov_rr c 64 (call r10) (call r9))
+    (call x64.mov_ri32 c (call rax) 264)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call r13) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rdi) (call r8))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rax) (call r13))
+    (let finish:i32 (call x64.jmp c))
+    ;; the old parent did not open: close the new one, keeping the error
+    (call x64.patch_rel32 c old_failed (call buf.len c))
+    (call x64.mov_rr c 64 (call rbx) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call r8))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rax) (call rbx))
+    (call x64.patch_rel32 c finish (call buf.len c))
+    (call x64.patch_rel32 c new_failed (call buf.len c))
+    (call x64.mov_rr c 64 (call rsp) (call r12))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c 8))
+
+  ;; reg = argument i (of n) of a routine whose entry rsp is saved in r12,
+  ;; for after rsp has moved (arg reads from rsp itself).
+  (fn saved_arg [c:(ptr buf.Buf) sz:i32 n:i32 i:i32 reg:i32] -> void
+    (call x64.load c sz reg (call x64.mem (call r12) (+ 8 (* 8 (- (- n 1) i))))))
+
+  ;; With a Linux result (-errno) in rax: returns minus the WASI errno, the
+  ;; way aipl_sys_v1's imports report an error.
+  (fn emit_negated_errno_return [l:(ptr lower.L) w:(ptr W)] -> void
+    (call emit_negated_errno l w)
+    (call x64.ret (get l lower.L.code)))
+
+  ;; The cell holding the host address of the environment the process started with.
+  (fn env_cell [w:(ptr W)] -> i32 (pub) (get w W.envp_cell))
+
+  ;; With a Linux result (-errno) in rax: leaves minus the WASI errno there.
+  ;; Clobbers rcx.
+  (fn emit_negated_errno [l:(ptr lower.L) w:(ptr W)] -> void (pub)
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.mov_rr c 64 (call rcx) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call rax) (call rcx))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) 64)
+    (let unlisted:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call x64.mov_ri32 c (call rcx) (get w W.errno_table))
+    (call x64.load8u c (call rax) (call x64.mem_index (call rcx) (call rax) 1 0))
+    (let listed:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c unlisted (call buf.len c))
+    (call x64.mov_ri32 c (call rax) 29)
+    (call x64.patch_rel32 c listed (call buf.len c))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call rcx) (call rax))
+    (call x64.mov_rr c 64 (call rax) (call rcx)))
+
+  ;; aipl_sys_v1's chmod(dirfd, path, path_len, mode) -> 0, or minus the WASI
+  ;; errno (docs/design/SYS_PLAN.md). A mode with a bit outside 0o777 is
+  ;; EINVAL (-28) and a descriptor that is not open is EBADF (-8), as in
+  ;; src/sys.rs. The file is opened beneath its directory as path_open opens
+  ;; one (so --sandbox confines it as every open is), read-only and without
+  ;; blocking, then given its mode by fchmod and closed: a file the program
+  ;; cannot open for reading cannot be given a mode this way.
+  (fn emit_sys_chmod [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (call arg c 32 4 1 (call r13))
+    (call arg c 32 4 2 (call r14))
+    ;; a path outside the program's memory is EFAULT (-21), a value and not a
+    ;; trap, as in src/sys.rs and aipl-run
+    (call x64.mov_rr c 64 (call r11) (call r13))
+    (call x64.alu_rr c 64 (call x64.op_add) (call r11) (call r14))
+    (call lower.load_mem_size l (call r10))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r11) (call r10))
+    (let in_bounds:i32 (call x64.jcc c (call x64.cc_be)))
+    (call emit_return_errno c -21)
+    (call x64.patch_rel32 c in_bounds (call buf.len c))
+    (call arg c 32 4 0 (call rbx))
+    (call emit_fd_lookup l w (call rbx) (call rbx) badf)
+    (call arg c 32 4 3 (call r8))
+    (call x64.test_ri c 32 (call r8) -512)
+    (let bad_mode:i32 (call x64.jcc c (call x64.cc_ne)))
+    (call emit_path_to_stack l w)
+    ;; fd = openat2(dir, path, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.mov_ri32 c (call rdx) 526592)
+    (call emit_openat2 c (not (get w W.sandbox)))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let opened:i32 (call x64.jcc c (call x64.cc_ns)))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -13)
+    (let unreadable:i32 (call x64.jcc c (call x64.cc_e)))
+    (let open_failed:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c opened (call buf.len c))
+    ;; fchmod(fd, mode), then close the descriptor
+    (call x64.mov_rr c 64 (call rbx) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call r8))
+    (call x64.mov_ri32 c (call rax) 91)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call r13) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rax) (call r13))
+    (let chmodded:i32 (call x64.jmp c))
+    ;; A file the program may not read (mode 0, say) cannot be opened to be
+    ;; given a mode, and the program must be able to give it one back. The
+    ;; parent directory is opened beneath the directory as path_unlink_file
+    ;; does, and fchmodat names the file in it: unless the file is a symbolic
+    ;; link, which fchmodat would follow out of the directory unchecked.
+    (call x64.patch_rel32 c unreadable (call buf.len c))
+    (call emit_split_parent l (call r9))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rdx) 2752512)
+    (call emit_openat2 c (not (get w W.sandbox)))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let no_parent:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call rbx) (call rax))
+    ;; newfstatat(parent, base, &stat, AT_SYMLINK_NOFOLLOW): st_mode is at 24
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 160)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call r13))
+    (call x64.mov_rr c 64 (call rdx) (call rsp))
+    (call x64.mov_ri32 c (call r10) 256)
+    (call x64.mov_ri32 c (call rax) 262)
+    (call x64.syscall c)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let stat_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.load c 32 (call rax) (call x64.mem (call rsp) 24))
+    (call x64.alu_ri c 32 (call x64.op_and) (call rax) 61440)
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) 40960)
+    (let is_link:i32 (call x64.jcc c (call x64.cc_e)))
+    ;; fchmodat(parent, base, mode)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call r13))
+    (call x64.mov_rr c 64 (call rdx) (call r8))
+    (call x64.mov_ri32 c (call rax) 268)
+    (call x64.syscall c)
+    (let done:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c is_link (call buf.len c))
+    (call x64.mov_ri32 c (call rax) -13)
+    (call x64.patch_rel32 c stat_failed (call buf.len c))
+    (call x64.patch_rel32 c done (call buf.len c))
+    ;; close the parent, keeping the result
+    (call x64.mov_rr c 64 (call r14) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rax) (call r14))
+    (call x64.patch_rel32 c no_parent (call buf.len c))
+    (call x64.patch_rel32 c open_failed (call buf.len c))
+    (call x64.patch_rel32 c chmodded (call buf.len c))
+    (call x64.mov_rr c 64 (call rsp) (call r12))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_negated_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c -8)
+    (call x64.patch_rel32 c bad_mode (call buf.len c))
+    (call emit_return_errno c -28))
 
   ;; Start-up: opens the preopened directories, fd 3 = "." and fd 4 = "/"
   ;; (skipped with sandbox), as O_PATH directory descriptors.
@@ -949,9 +1251,20 @@
       ((call is name "clock_time_get") (call emit_clock_time_get l w) true)
       ((call is name "random_get") (call emit_random_get l w) true)
       ((call is name "path_open") (call emit_path_open l w) true)
-      ((call is name "path_unlink_file") (call emit_path_unlink l w) true)
+      ((call is name "path_unlink_file") (call emit_path_unlink l w 263 0) true)
+      ((call is name "path_remove_directory") (call emit_path_unlink l w 263 512) true)
+      ((call is name "path_create_directory") (call emit_path_unlink l w 258 511) true)
+      ((call is name "path_rename") (call emit_path_rename l w) true)
+      ((call is name "poll_oneoff") (call emit_poll_oneoff l w) true)
       ((call is name "fd_readdir") (call emit_fd_readdir l w) true)
       ((call is name "path_filestat_get") (call emit_path_filestat l w) true)
+      (else false)))
+
+  ;; Emits the routine for the aipl_sys_v1 import `name`; false if it is not
+  ;; one of these.
+  (fn emit_sys_import [l:(ptr lower.L) w:(ptr W) name:str.Bytes] -> bool (pub)
+    (cond
+      ((call is name "chmod") (call emit_sys_chmod l w) true)
       (else false)))
 
   (fn is [name:str.Bytes want:str] -> bool

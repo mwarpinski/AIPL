@@ -14,34 +14,48 @@ sh bootstrap/build.sh            # about 8 seconds; the result is target/bootstr
 The script has the seed build the current source (stage 1), stage 1 build
 it again (stage 2), and stage 2 build itself once more, which must give
 the same bytes (a fixed point). No Rust is involved. The resulting `aipl`
-does what `aipl compile` does in the Rust command:
+does what `aipl compile`, `aipl verify`, `aipl test`, `aipl watch`, `aipl serve
+--fresh`, and `aipl eval` do in the Rust command (`test`, `watch`, and `eval` run
+programs natively, not in the VM),
+and has `aipl run`, which runs a source file or a `.wasm` module natively (the Rust
+command has it for a `.wasm` file only, under wasmtime):
 
 ```bash
 target/bootstrap/aipl compile FILE.aipl -o OUT.wasm
 target/bootstrap/aipl compile --exe [--sandbox] FILE.aipl -o OUT
+target/bootstrap/aipl verify FILE.aipl    # resolve and type-check, compile nothing
+target/bootstrap/aipl run [FLAGS] FILE.aipl|FILE.wasm [ARGS]...   # build into a temporary file, run it, remove it
+target/bootstrap/aipl test FILE|DIR [-k TEXT]           # each (test ...) in a fresh process, natively
+target/bootstrap/aipl watch FILE [--test] [-- ARGS...]  # run again when a file it reads changes
+target/bootstrap/aipl serve --fresh FILE --listen ADDR:PORT [--requests N]   # a fresh program per connection
+target/bootstrap/aipl eval -e EXPRS [--with FILE]       # a value and its type, natively; eval FILE runs it as run does
 ```
+
+The command is built with `--allow-run '*'` (every stage does, and so does
+the by-hand build below): a native executable may start only the programs it
+was granted, and `run` starts whatever it has just built. A build without the
+grant works as before, and its `run` says why it cannot start anything.
 
 It finds the standard library at `$AIPL_STD`, else `share/aipl/std/`
 beside its folder (an install or a kit, `<prefix>/bin/aipl` with
 `<prefix>/share/aipl/std/`), else `aipl_src/std/` under the working
-directory (aipl_src/stdpath.aipl). WASI has no way to set a file's execute bit, so an
-executable it writes needs `chmod +x` (the script does this).
+directory (aipl_src/stdpath.aipl). An executable it writes is executable: it
+sets the bit itself (`fs.chmod`, over `aipl_sys_v1`; WASI has no call for it),
+so no `chmod +x` is needed.
 
 **By hand**, each executable builds the next:
 
 ```bash
-./bootstrap/aipl-linux-x86_64 compile --exe aipl_src/aipl.aipl -o target/aipl1
-chmod +x target/aipl1
-./target/aipl1 compile --exe aipl_src/aipl.aipl -o target/aipl2
-chmod +x target/aipl2
+./bootstrap/aipl-linux-x86_64 compile --exe --allow-run '*' aipl_src/aipl.aipl -o target/aipl1
+./target/aipl1 compile --exe --allow-run '*' aipl_src/aipl.aipl -o target/aipl2
 cmp target/aipl1 target/aipl2       # no output: the compiler reproduces itself
 ```
 
 **The first executable** of all was built by the Rust toolchain, which is how
 the seed was made (`cargo build --release`, then
-`./target/release/aipl compile --exe aipl_src/aipl.aipl -o target/aipl0`).
+`./target/release/aipl compile --exe --allow-run '*' aipl_src/aipl.aipl -o target/aipl0`).
 
-The rest of the Rust command (`eval`, `test`, `run`) is not here: the
+The rest of the Rust command (`eval`, `test`, and `watch` in the VM) is not here: the
 interpreter is Rust, and running WebAssembly takes wasmtime. Native
 executables run directly.
 
@@ -63,27 +77,33 @@ program to the same bytes as the Rust command, with the same errors.
 
 ## Where this seed came from
 
-Built 2026-10-27 by the Rust toolchain, from the source of commit
-01bc216, for the release: the executables the compiler writes (this seed
-among them) open files with plain `openat` where `openat2` fails (Linux
-before 5.6, Rosetta 2, a container profile that refuses it; a `--sandbox`
-program says it needs `openat2` and stops at start), so the bootstrap
-finishes there (`tests/test_bootstrap.rs`, with `tools/without_openat2.py`);
-the previous seed stopped at its first file with `cannot read entry file`.
-The earlier seed's change, the ELF headers as their own read-only first
-segment at file offset 0, which Rosetta 2 requires to load an executable
-(Task D), is in this one too:
+Built 2026-10-29 by the Rust toolchain, from the source of commit
+5d08411, with `--allow-run '*'`, so that the seed is the whole command it
+can be: `verify`, `run`, `test`, and `watch` as well as `compile` and `doc`
+(docs/design/aipl_standalone.md, S2). The compiler's source now uses `sys.poll`
+(`std/time.sleep`, for `watch`), which the seed before could not read, so this
+refresh was needed for `bootstrap/build.sh` to work at all (the owner's rule: a
+seed is refreshed for an immediate need only):
 
 ```bash
 cargo build --release
-./target/release/aipl compile --exe aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
+./target/release/aipl compile --exe --allow-run '*' aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `ae30b56410a1f5254422ff280e48b22a50334328d9ff04b434f341d086a6b4be`.
+sha256 `9e5f706b62a6e63745187b5fff9bf197d062686d48d6bed6d7f09d95ef6f68a1`.
 Building that commit's source with the seed gives the same bytes (stage
 2 is the seed), so for now the seed is its own stage 2.
 
-Earlier seeds: the one built 2026-10-27 from 29416a9 (sha256
+Earlier seeds: the one built 2026-10-29 from 0ca006e (sha256
+`c6bed76f2347d9b89dde3b366d89530b3f25c79cac801ca8f82c95ffdf441d53`), for
+`std/fs`'s `mkdir` and `rmdir`; the one built 2026-10-29 from 49ec350 (sha256
+`3717ed4a7be2cfc87c871e2d05741ad2213321930d253f73b582b073e4331051`), for
+`std/fs`'s `rename` and the compiler writing its output beside it and renaming it into place; the one built 2026-10-29 from 20888dd (sha256
+`1ba9a19ebfc1bda2614f205a783ce95bb6c612e91ff700b25e4d995f2f251e9b`), for
+`fs.chmod` and the process operations, which set the output's execute bit; the one built 2026-10-27 from 01bc216 (sha256
+`ae30b56410a1f5254422ff280e48b22a50334328d9ff04b434f341d086a6b4be`), for
+the `openat` fallback where `openat2` fails (Linux before 5.6, Rosetta 2, a
+container profile that refuses it); the one built 2026-10-27 from 29416a9 (sha256
 `840060d9a7d52bd6a6ca402b5881f791110fa68f9a8386306ef70c52cbe6a0bc`), for
 Task D's read-only first segment; the one built 2026-10-26 from bb8c35f (sha256
 `ebc67e10ca127d78e4a03dc7c735ee7a4e48c853af8baa2511f9c49f92b4d5c5`), so

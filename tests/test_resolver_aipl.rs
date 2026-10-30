@@ -183,6 +183,7 @@ mod wasm_driver {
         let module = WasmModule::new(&engine, driver).expect("driver module");
         let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
         wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+        aipl_core::sys::add_chmod(&mut linker).unwrap();
         let ctx = WasiCtxBuilder::new()
             .inherit_stderr()
             .preopened_dir(root(), ".", FsPerms::ReadWrite)
@@ -318,6 +319,7 @@ fn run_driver_command(driver: &[u8], args: &[&str], env: &[(&str, &str)]) -> i32
     let module = WasmModule::new(&engine, driver).unwrap();
     let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    aipl_core::sys::add_chmod(&mut linker).unwrap();
     let mut b = WasiCtxBuilder::new();
     b.inherit_stdout().inherit_stderr().args(args);
     for (k, v) in env {

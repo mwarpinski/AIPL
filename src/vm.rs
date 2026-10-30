@@ -109,6 +109,8 @@ pub struct VM {
     /// Sockets (aipl_net_v1) and the grants they need, shared by every
     /// thread of the program.
     net: crate::net::Net,
+    /// The processes the program started (aipl_sys_v1), and what it may start
+    procs: crate::sys::Procs,
     thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
     /// String literal -> address of its interned bytes, laid out exactly as
     /// the wasm backend's data segment (wasm::string_layout).
@@ -168,6 +170,7 @@ impl VM {
             dirs: HashMap::new(),
             next_fd: 3,
             net: crate::net::Net::new(Vec::new()),
+            procs: crate::sys::Procs::new(Vec::new()),
             thread_handles: HashMap::new(),
             strings: Arc::new(HashMap::new()),
             heap_start: HEAP_START,
@@ -199,6 +202,7 @@ impl VM {
             dirs: HashMap::new(),
             next_fd: 3,
             net: self.net.clone(),
+            procs: self.procs.clone(),
             thread_handles: HashMap::new(),
             strings: Arc::clone(&self.strings),
             heap_start: self.heap_start,
@@ -225,6 +229,12 @@ impl VM {
     /// The addresses `net.listen` may use (`--listen`); none by default.
     pub fn set_listen(&mut self, grants: Vec<std::net::SocketAddr>) {
         self.net = crate::net::Net::new(grants);
+    }
+
+    /// The programs `proc.spawn` and `proc.exec` may start (`--allow-run`);
+    /// none by default. "*" is any.
+    pub fn set_allow_run(&mut self, programs: Vec<String>) {
+        self.procs = crate::sys::Procs::new(programs);
     }
 
     /// What `fs.read` on fd 0 returns, instead of the process's stdin.
@@ -2015,6 +2025,58 @@ impl VM {
                 let h = self.int_operand(&args[0], scope, "net.close")? as i32;
                 Ok(Value::Int(self.net.close(h) as i64))
             }
+            // aipl_sys_v1's process operations (src/sys.rs); a range outside
+            // memory is minus EFAULT, a value and not a trap
+            OpCode::ProcSpawn | OpCode::ProcExec => {
+                let name = if matches!(op, OpCode::ProcSpawn) { "proc.spawn" } else { "proc.exec" };
+                let path = self.int_operand(&args[0], scope, name)? as u32 as usize;
+                let len = self.int_operand(&args[1], scope, name)? as u32 as usize;
+                let argv = self.int_operand(&args[2], scope, name)? as u32 as usize;
+                let argv_len = self.int_operand(&args[3], scope, name)? as u32 as usize;
+                let stdio = if matches!(op, OpCode::ProcSpawn) { self.int_operand(&args[4], scope, name)? as i32 } else { 0 };
+                if !self.in_memory(path, len) || !self.in_memory(argv, argv_len) {
+                    return Ok(Value::Int(-21));
+                }
+                let (path, argv) = (self.read_bytes(path, len), self.read_bytes(argv, argv_len));
+                Ok(Value::Int(if matches!(op, OpCode::ProcSpawn) { self.procs.spawn(&path, &argv, stdio) } else { self.procs.exec(&path, &argv) } as i64))
+            }
+            OpCode::ProcStream => {
+                let (p, which) = (self.int_operand(&args[0], scope, "proc.stream")? as i32, self.int_operand(&args[1], scope, "proc.stream")? as i32);
+                Ok(Value::Int(self.procs.stream(p, which) as i64))
+            }
+            OpCode::ProcRead => {
+                let h = self.int_operand(&args[0], scope, "proc.read")? as i32;
+                let buf = self.int_operand(&args[1], scope, "proc.read")? as u32 as usize;
+                let max = self.int_operand(&args[2], scope, "proc.read")? as u32 as usize;
+                if !self.in_memory(buf, max) {
+                    return Ok(Value::Int(-21));
+                }
+                match self.procs.read(h, max) {
+                    Ok(bytes) => {
+                        self.write_bytes(buf, &bytes);
+                        Ok(Value::Int(bytes.len() as i64))
+                    }
+                    Err(e) => Ok(Value::Int(e as i64)),
+                }
+            }
+            OpCode::ProcWrite => {
+                let h = self.int_operand(&args[0], scope, "proc.write")? as i32;
+                let buf = self.int_operand(&args[1], scope, "proc.write")? as u32 as usize;
+                let len = self.int_operand(&args[2], scope, "proc.write")? as u32 as usize;
+                if !self.in_memory(buf, len) {
+                    return Ok(Value::Int(-21));
+                }
+                let bytes = self.read_bytes(buf, len);
+                Ok(Value::Int(self.procs.write(h, &bytes) as i64))
+            }
+            OpCode::ProcClose => {
+                let h = self.int_operand(&args[0], scope, "proc.close")? as i32;
+                Ok(Value::Int(self.procs.close(h) as i64))
+            }
+            OpCode::ProcWait => {
+                let p = self.int_operand(&args[0], scope, "proc.wait")? as i32;
+                Ok(Value::Int(self.procs.wait(p) as i64))
+            }
             OpCode::FsOpendir => {
                 let (ptr, len) = (self.int_operand(&args[0], scope, "fs.opendir")?, self.int_operand(&args[1], scope, "fs.opendir")?);
                 let path = self.read_bytes(ptr as u32 as usize, len as u32 as usize);
@@ -2102,6 +2164,18 @@ impl VM {
                 let sizes = matches!(op, OpCode::ArgsSizes | OpCode::EnvSizes);
                 Ok(self.wasi_strings(&items, sizes, addr[0], addr[1]))
             }
+            OpCode::FsChmod => {
+                let path_ptr = self.int_operand(&args[0], scope, "fs.chmod")? as u32 as usize;
+                let path_len = self.int_operand(&args[1], scope, "fs.chmod")? as u32 as usize;
+                let mode = self.int_operand(&args[2], scope, "fs.chmod")? as i32;
+                // a path outside the program's memory is minus EFAULT, a value and not a trap
+                let size = self.shared.lock().unwrap().bytes.len();
+                if path_ptr.checked_add(path_len).is_none_or(|end| end > size) {
+                    return Ok(Value::Int(-21));
+                }
+                let path = self.read_bytes(path_ptr, path_len);
+                Ok(Value::Int(crate::sys::chmod(&path, mode, false) as i64))
+            }
             OpCode::FsDelete => {
                 let path_ptr = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as usize,
@@ -2119,6 +2193,83 @@ impl VM {
                 match std::fs::remove_file(path_str) {
                     Ok(_) => Ok(Value::Int(0)),
                     Err(e) => Ok(Value::Int(wasi_errno(&e))),
+                }
+            }
+            OpCode::SysPoll => {
+                // poll_oneoff for one relative clock subscription: sleeps
+                let subs = self.int_operand(&args[0], scope, "sys.poll")? as u32 as usize;
+                let out = self.int_operand(&args[1], scope, "sys.poll")? as u32 as usize;
+                let n = self.int_operand(&args[2], scope, "sys.poll")? as u32 as usize;
+                let nevents = self.int_operand(&args[3], scope, "sys.poll")? as u32 as usize;
+                let size = self.shared.lock().unwrap().bytes.len();
+                let inside = |p: usize, len: usize| p.checked_add(len).is_some_and(|end| end <= size);
+                if n != 1 {
+                    return Ok(Value::Int(-28));
+                }
+                if !inside(subs, 48) || !inside(out, 32) || !inside(nevents, 4) {
+                    return Ok(Value::Int(-21));
+                }
+                let sub = self.read_bytes(subs, 48);
+                let (tag, flags) = (sub[8], u16::from_le_bytes([sub[40], sub[41]]));
+                if tag != 0 || flags != 0 {
+                    return Ok(Value::Int(-58));
+                }
+                let ns = u64::from_le_bytes(sub[24..32].try_into().unwrap());
+                std::thread::sleep(std::time::Duration::from_nanos(ns));
+                let mut event = [0u8; 32];
+                event[..8].copy_from_slice(&sub[..8]);
+                self.write_bytes(out, &event);
+                self.write_bytes(nevents, &1u32.to_le_bytes());
+                Ok(Value::Int(0))
+            }
+            OpCode::FsMkdir => {
+                let path_ptr = self.int_operand(&args[0], scope, "fs.mkdir")? as u32 as usize;
+                let path_len = self.int_operand(&args[1], scope, "fs.mkdir")? as u32 as usize;
+                let size = self.shared.lock().unwrap().bytes.len();
+                if path_ptr.checked_add(path_len).is_none_or(|end| end > size) {
+                    return Ok(Value::Int(-21));
+                }
+                let path_bytes = self.read_bytes(path_ptr, path_len);
+                match std::str::from_utf8(&path_bytes) {
+                    Ok(p) => match std::fs::create_dir(p) {
+                        Ok(_) => Ok(Value::Int(0)),
+                        Err(e) => Ok(Value::Int(wasi_errno(&e))),
+                    },
+                    Err(_) => Ok(Value::Int(WASI_EILSEQ)),
+                }
+            }
+            OpCode::FsRmdir => {
+                let path_ptr = self.int_operand(&args[0], scope, "fs.rmdir")? as u32 as usize;
+                let path_len = self.int_operand(&args[1], scope, "fs.rmdir")? as u32 as usize;
+                let size = self.shared.lock().unwrap().bytes.len();
+                if path_ptr.checked_add(path_len).is_none_or(|end| end > size) {
+                    return Ok(Value::Int(-21));
+                }
+                let path_bytes = self.read_bytes(path_ptr, path_len);
+                match std::str::from_utf8(&path_bytes) {
+                    Ok(p) => match std::fs::remove_dir(p) {
+                        Ok(_) => Ok(Value::Int(0)),
+                        Err(e) => Ok(Value::Int(wasi_errno(&e))),
+                    },
+                    Err(_) => Ok(Value::Int(WASI_EILSEQ)),
+                }
+            }
+            OpCode::FsRename => {
+                let old_ptr = self.int_operand(&args[0], scope, "fs.rename")? as u32 as usize;
+                let old_len = self.int_operand(&args[1], scope, "fs.rename")? as u32 as usize;
+                let new_ptr = self.int_operand(&args[2], scope, "fs.rename")? as u32 as usize;
+                let new_len = self.int_operand(&args[3], scope, "fs.rename")? as u32 as usize;
+                let size = self.shared.lock().unwrap().bytes.len();
+                if [(old_ptr, old_len), (new_ptr, new_len)].iter().any(|&(p, n)| p.checked_add(n).is_none_or(|end| end > size)) {
+                    return Ok(Value::Int(-21));
+                }
+                let (old, new) = (self.read_bytes(old_ptr, old_len), self.read_bytes(new_ptr, new_len));
+                match (std::str::from_utf8(&old), std::str::from_utf8(&new)) {
+                    (Ok(o), Ok(n)) => match std::fs::rename(o, n) {
+                        Ok(_) => Ok(Value::Int(0)),
+                        Err(e) => Ok(Value::Int(wasi_errno(&e))),
+                    },
+                    _ => Ok(Value::Int(WASI_EILSEQ)),
                 }
             }
             // Real OS thread spawn: the worker is a function reference (its
@@ -2533,7 +2684,7 @@ fn wasi_filetype(t: &std::fs::FileType) -> u8 {
 /// A failed fs.* operation's result, as wasmtime and native executables
 /// give it: minus the WASI errno for the OS error, through the table
 /// aipl_src/native/wasi.aipl uses (anything unlisted is EIO, 29).
-fn wasi_errno(e: &std::io::Error) -> i64 {
+pub(crate) fn wasi_errno(e: &std::io::Error) -> i64 {
     let wasi = match e.raw_os_error() {
         Some(0) => 0,
         Some(1) => 63,

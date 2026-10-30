@@ -25,6 +25,14 @@
         (call checker.check_formats src (get r parser.Parsed.module) fmts)
         (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))
 
+  ;; check, writing in `eval_type` the type of the last expression of the
+  ;; function __eval, as source writes a type (aipl eval -e).
+  (fn check_eval [src:i32 len:i32 eval_type:(ptr buf.Buf)] -> (ptr checker.Problem) (pub)
+    (let r:(ptr parser.Parsed) (call parse src len))
+    (if (get r parser.Parsed.ok)
+        (call checker.check_eval src (get r parser.Parsed.module) eval_type)
+        (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))
+
   ;; Tokenize, expand, parse; a tokenizer error comes first, as in Rust.
   (fn parse [src:i32 len:i32] -> (ptr parser.Parsed) (pub)
     (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))

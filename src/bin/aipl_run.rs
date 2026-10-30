@@ -37,7 +37,8 @@ use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::{FsPerms, I32Exit, WasiCtxBuilder};
 
 /// An executable made by `aipl compile --exe --target wasm` is this runner
-/// followed by the wasm module, its --listen grants (one ADDR:PORT a line),
+/// followed by the wasm module, its grants (one a line: --listen's ADDR:PORT,
+/// or --allow-run's `run:PROGRAM`),
 /// and a 20-byte trailer: flags (u32 LE; bit 0 = sandbox, bit 1 = serve a
 /// fresh instance per connection on the address that is then the grants'
 /// first line: --serve), the grants' length and the module's (u32 LE
@@ -51,6 +52,8 @@ struct Program {
     argv: Vec<String>,
     sandbox: bool,
     listen: Vec<std::net::SocketAddr>,
+    /// --allow-run: the programs the module may start ("*": any)
+    allow_run: Vec<String>,
     /// --serve-fresh: the address to serve on, and how many connections to
     /// answer before stopping (none: no end)
     fresh: Option<(std::net::SocketAddr, Option<usize>)>,
@@ -83,15 +86,18 @@ fn embedded(args: &[String]) -> Option<Program> {
     let grants_at = n.checked_sub(20 + glen)?;
     let start = grants_at.checked_sub(len)?;
     // write_executable checked each grant
-    let mut lines = std::str::from_utf8(&me[grants_at..n - 20]).ok()?.lines().filter_map(|g| aipl_core::net::Net::parse_grant(g).ok());
+    let text = std::str::from_utf8(&me[grants_at..n - 20]).ok()?;
+    let allow_run = text.lines().filter_map(|g| g.strip_prefix("run:").map(str::to_string)).collect();
+    let mut lines = text.lines().filter_map(|g| aipl_core::net::Net::parse_grant(g).ok());
     let fresh = if flags & FLAG_SERVE != 0 { Some((lines.next()?, None)) } else { None };
     let listen = lines.collect();
-    Some(Program { wasm: me[start..grants_at].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0, listen, fresh })
+    Some(Program { wasm: me[start..grants_at].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0, listen, allow_run, fresh })
 }
 
 fn from_command_line(args: &[String]) -> Result<Program, String> {
     let mut rest = &args[1.min(args.len())..];
     let (mut sandbox, mut listen, mut fresh, mut requests, mut name) = (false, Vec::new(), None, None, None);
+    let mut allow_run: Vec<String> = Vec::new();
     let mut temporary = false;
     loop {
         match rest.first().map(String::as_str) {
@@ -126,10 +132,14 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
                 listen.push(aipl_core::net::Net::parse_grant(g)?);
                 rest = &rest[2..];
             }
+            Some("--allow-run") => {
+                allow_run.push(rest.get(1).ok_or("--allow-run needs a program's path, or *")?.clone());
+                rest = &rest[2..];
+            }
             _ => break,
         }
     }
-    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... [--name NAME] PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] [--name NAME] PROGRAM.wasm [ARGS...]")?;
+    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--name NAME] PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] [--name NAME] PROGRAM.wasm [ARGS...]")?;
     let wasm = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
     if temporary {
         let _ = std::fs::remove_file(file);
@@ -144,7 +154,7 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
     if let Some(n) = name {
         argv[0] = n;
     }
-    Ok(Program { wasm, argv, sandbox, listen, fresh: fresh.map(|at| (at, requests)) })
+    Ok(Program { wasm, argv, sandbox, listen, allow_run, fresh: fresh.map(|at| (at, requests)) })
 }
 
 /// What one thread's instance needs: shared by the main thread and every
@@ -236,6 +246,65 @@ fn add_net(linker: &mut Linker<WasiP1Ctx>, net: &aipl_core::net::Net, shared: &O
     })?;
     let n = net.clone();
     linker.func_wrap("aipl_net_v1", "close", move |h: i32| -> i32 { n.close(h) })?;
+    Ok(())
+}
+
+/// The `aipl_sys_v1` imports (src/sys.rs). A path or buffer outside the
+/// program's memory is minus EFAULT, a value and not a trap.
+fn add_sys(linker: &mut Linker<WasiP1Ctx>, shared: &Option<SharedMemory>, sandbox: bool, procs: &aipl_core::sys::Procs) -> wasmtime::Result<()> {
+    let sh = shared.clone();
+    linker.func_wrap("aipl_sys_v1", "chmod", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, dirfd: i32, path: i32, len: i32, mode: i32| -> i32 {
+        if sandbox && dirfd == 4 {
+            return -8;
+        }
+        match read_mem(&mut c, &sh, path, len) {
+            Some(p) => aipl_core::sys::chmod_at(dirfd, &p, mode),
+            None => -21,
+        }
+    })?;
+    // the process operations (src/sys.rs); a range outside memory is -21
+    let (pr, sh) = (procs.clone(), shared.clone());
+    linker.func_wrap("aipl_sys_v1", "spawn", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, path: i32, len: i32, argv: i32, argv_len: i32, stdio: i32| -> i32 {
+        match (read_mem(&mut c, &sh, path, len), read_mem(&mut c, &sh, argv, argv_len)) {
+            (Some(p), Some(a)) => pr.spawn(&p, &a, stdio),
+            _ => -21,
+        }
+    })?;
+    let pr = procs.clone();
+    linker.func_wrap("aipl_sys_v1", "stream", move |p: i32, which: i32| -> i32 { pr.stream(p, which) })?;
+    let (pr, sh) = (procs.clone(), shared.clone());
+    linker.func_wrap("aipl_sys_v1", "read", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, h: i32, buf: i32, max: i32| -> i32 {
+        if read_mem(&mut c, &sh, buf, max).is_none() {
+            return -21;
+        }
+        match pr.read(h, max as u32 as usize) {
+            Ok(bytes) => {
+                if !bytes.is_empty() && !write_mem(&mut c, &sh, buf, &bytes) {
+                    return -21;
+                }
+                bytes.len() as i32
+            }
+            Err(e) => e,
+        }
+    })?;
+    let (pr, sh) = (procs.clone(), shared.clone());
+    linker.func_wrap("aipl_sys_v1", "write", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, h: i32, buf: i32, len: i32| -> i32 {
+        match read_mem(&mut c, &sh, buf, len) {
+            Some(b) => pr.write(h, &b),
+            None => -21,
+        }
+    })?;
+    let pr = procs.clone();
+    linker.func_wrap("aipl_sys_v1", "close", move |h: i32| -> i32 { pr.close(h) })?;
+    let pr = procs.clone();
+    linker.func_wrap("aipl_sys_v1", "wait", move |p: i32| -> i32 { pr.wait(p) })?;
+    let (pr, sh) = (procs.clone(), shared.clone());
+    linker.func_wrap("aipl_sys_v1", "exec", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, path: i32, len: i32, argv: i32, argv_len: i32| -> i32 {
+        match (read_mem(&mut c, &sh, path, len), read_mem(&mut c, &sh, argv, argv_len)) {
+            (Some(p), Some(a)) => pr.exec(&p, &a),
+            _ => -21,
+        }
+    })?;
     Ok(())
 }
 
@@ -471,6 +540,9 @@ fn serve_fresh(p: Program) -> i32 {
     if let Err(e) = wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t) {
         return fail(e.to_string());
     }
+    if let Err(e) = add_sys(&mut linker, &None, p.sandbox, &aipl_core::sys::Procs::new(p.allow_run.clone())) {
+        return fail(e.to_string());
+    }
     if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()), &None) {
         return fail(e.to_string());
     }
@@ -603,6 +675,9 @@ fn run(p: Program) -> i32 {
         if let Err(e) = spawn {
             return fail(e.to_string());
         }
+    }
+    if let Err(e) = add_sys(&mut linker, &shared, p.sandbox, &aipl_core::sys::Procs::new(p.allow_run.clone())) {
+        return fail(e.to_string());
     }
     if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()), &shared) {
         return fail(e.to_string());

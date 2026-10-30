@@ -1,0 +1,31 @@
+;; fs.rename (docs/design/SYS_PLAN.md): the program test_sys.rs runs in a
+;; directory it has set up (a.txt, b.txt, dir, full/f.txt, sub, link, and
+;; ../outside.txt, with an absolute directory substituted for @ABS@), once for
+;; each backend; each case prints its label and what fs.rename gave, and the
+;; test reads the tree it leaves.
+(module rename_cases
+  (fn rename [from:str to:str] -> i32
+    (unsafe (fs.rename (str.ptr from) (str.len from) (str.ptr to) (str.len to))))
+
+  (fn show [label:str got:i32] -> void
+    (println "{label} {got}"))
+
+  (fn main [] -> i32
+    (call show "plain" (call rename "a.txt" "c.txt"))
+    (call show "replace" (call rename "b.txt" "c.txt"))
+    (call show "missing" (call rename "nope" "x"))
+    (call show "into_dir" (call rename "c.txt" "sub/c.txt"))
+    (call show "missing_dir" (call rename "sub/c.txt" "nodir/c.txt"))
+    (call show "same" (call rename "sub/c.txt" "sub/c.txt"))
+    (call show "directory" (call rename "dir" "dir2"))
+    (call show "dir_onto_full" (call rename "dir2" "full"))
+    (call show "file_onto_dir" (call rename "sub/c.txt" "full"))
+    (call show "dir_onto_file" (call rename "full" "sub/c.txt"))
+    (call show "link" (call rename "link" "link2"))
+    (call show "dotdot_from" (call rename "../outside.txt" "o2.txt"))
+    (call show "dotdot_to" (call rename "full/f.txt" "../moved.txt"))
+    (call show "absolute" (call rename "@ABS@/p.txt" "@ABS@/r.txt"))
+    (call show "abs_to_rel" (call rename "@ABS@/q.txt" "q.txt"))
+    (call show "rel_to_abs" (call rename "q.txt" "@ABS@/q2.txt"))
+    (call show "empty" (call rename "" "x"))
+    0))
