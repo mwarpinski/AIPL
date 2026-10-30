@@ -17,6 +17,7 @@
   (import elf)
   (import lower_arm64)
   (import runtime_arm64)
+  (import wasi_arm64)
 
   ;; The result of a compile: the ELF image, or the reason there is none. Its
   ;; first fields are what a host reads (native.aipl's Output has the same).
@@ -101,8 +102,9 @@
   ;; The routine for an import, called as a wasm function is (its arguments on
   ;; the value stack, the last at [sp]): the result in x0. proc_exit, fd_write
   ;; and fd_read are here; any other is ENOSYS (52) until the WASI routines come.
-  (fn emit_import [c:(ptr buf.Buf) imp:(ptr wasm_reader.Import) sp_cell:i32] -> void
+  (fn emit_import [c:(ptr buf.Buf) wa:(ptr wasi_arm64.W) imp:(ptr wasm_reader.Import) sp_cell:i32] -> void
     (let name:str.Bytes (get imp wasm_reader.Import.name))
+    (when (call wasi_arm64.emit_import c wa imp) (return))
     (cond
       ((call str.is name "args_sizes_get") (call emit_strings_sizes c sp_cell false))
       ((call str.is name "args_get") (call emit_strings_get c sp_cell false))
@@ -114,8 +116,8 @@
        (call arm64.ldr_x c 0 31 0)
        (call runtime_arm64.emit_syscall c 94)
        (call arm64.brk c 0))
-      ((call str.is name "fd_write") (call emit_fd_io c 64))
-      ((call str.is name "fd_read") (call emit_fd_io c 63))
+      ((call str.is name "fd_write") (call emit_fd_io c wa 64))
+      ((call str.is name "fd_read") (call emit_fd_io c wa 63))
       (else
        (call arm64.mov_imm c 64 0 52i64)
        (call arm64.ret c))))
@@ -277,8 +279,10 @@
   ;; per iovec, the total stored at nwritten, the result 0 or an errno. A short
   ;; transfer ends it. The arguments: fd at [sp + 48], iovs at [sp + 32], the
   ;; count at [sp + 16], nwritten at [sp].
-  (fn emit_fd_io [c:(ptr buf.Buf) number:i32] -> void
-    (call arm64.ldr_x c 9 31 48)
+  (fn emit_fd_io [c:(ptr buf.Buf) wa:(ptr wasi_arm64.W) number:i32] -> void
+    (let badf:(ptr (vec.Vec i32)) (call wasi_arm64.new_list))
+    (call arm64.ldr_w c 9 31 48)
+    (call wasi_arm64.lookup c wa 9 9 badf)
     (call arm64.ldr_x c 10 31 32)
     (call arm64.ldr_x c 11 31 16)
     (call arm64.mov_rr c 32 10 10)
@@ -307,9 +311,19 @@
     (call arm64.str_w c 12 13 0)
     (call arm64.mov_imm c 64 0 0i64)
     (call arm64.ret c)
-    ;; an error: Linux errno 4 EINTR and the like are reported as 29 (WASI's io error)
+    ;; an error: reading a directory is EBADF (wasmtime's directory handles cannot be read; Linux
+    ;; says EISDIR); the others through the errno table
     (call arm64.patch_cond c failed_at (call buf.len c))
-    (call arm64.mov_imm c 64 0 29i64)
+    (when (eq number 63)
+          (call arm64.mov_imm c 64 4 -21i64)
+          (call arm64.cmp_rr c 64 0 4)
+          (let not_dir:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+          (call arm64.mov_imm c 64 0 8i64)
+          (call arm64.ret c)
+          (call arm64.patch_cond c not_dir (call buf.len c)))
+    (call wasi_arm64.jump_errno c wa)
+    (call wasi_arm64.patch_all c badf)
+    (call arm64.mov_imm c 64 0 8i64)
     (call arm64.ret c))
 
   ;; The type index of function `f` (imports first).
@@ -355,6 +369,7 @@
     (let nfuncs:i32 (+ nimports (call (vec.len i32) (get w wasm_reader.Wasm.funcs))))
     ;; data: the memory size cell, the results area, the globals
     (put l lower_arm64.L.mem_pages (call lower_arm64.data_zeros l 8))
+    (let wa:(ptr wasi_arm64.W) (call wasi_arm64.make l))
     ;; the stack pointer as the process started: the arguments and the environment
     (let sp_cell:i32 (call lower_arm64.data_zeros l 8))
     (put l lower_arm64.L.results (call lower_arm64.data_zeros l (call lower_arm64.results_size)))
@@ -426,13 +441,15 @@
             (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
             (when (not (get d wasm_reader.Data.passive))
                   (call emit_copy c (call (vec.at i32) seg_addrs i) (get d wasm_reader.Data.offset) (get d wasm_reader.Data.len)))))
+    (call wasi_arm64.emit_preopens c wa)
     (when (gte (get w wasm_reader.Wasm.start) 0) (call lower_arm64.emit_call l (get w wasm_reader.Wasm.start)))
     (call lower_arm64.emit_call l entry_fn)
     (call runtime_arm64.emit_exit c 0)
+    (call wasi_arm64.emit_common c wa)
     (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (+ nfuncs 1)))
     (for i 0 nimports
       (call (vec.push i32) starts (call buf.len c))
-      (call emit_import c (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell))
+      (call emit_import c wa (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell))
     (for i nimports nfuncs
       (when (get l lower_arm64.L.failed) (break))
       (call (vec.push i32) starts (call buf.len c))

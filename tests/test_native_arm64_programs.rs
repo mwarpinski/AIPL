@@ -69,3 +69,16 @@ fn loops_and_calls() {
 fn printing_through_wasi() {
     expect("(module t (fn main [] -> i32 (println \"hello {(+ 40 2)}\") 3))", "hello 42\n", 3);
 }
+
+/// Files, directories, listing, and file information (the descriptor table, path_open,
+/// fd_readdir, path_filestat_get, rename, unlink, mkdir, rmdir): the output the x86-64
+/// build prints, from tests/aipl/sys/files_dirs_stat.aipl.
+#[test]
+fn files_directories_listing_and_file_information() {
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/aipl/sys/files_dirs_stat.aipl")).unwrap();
+    let want = "mkdir ok\nwrite b ok\nwrite a ok\nmkdir sub ok\nread: a longer text\nentry a.txt\nentry b.txt\nentry sub\n\
+                d/a.txt: file 13\nd/b.txt: file 3\nd/sub: directory\nd/none: missing\nrename ok\nd/b.txt: missing\n\
+                d/c.txt: file 3\nrmdir full directory not empty\nremove a ok\nremove c ok\nremove missing no such file or directory\n\
+                rmdir sub ok\nrmdir ok\ngone\n";
+    expect(&src, want, 0);
+}
