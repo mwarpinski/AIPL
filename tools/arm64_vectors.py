@@ -326,11 +326,16 @@ BRANCH_AIPL = '''  (fn test_branches [] -> i32
     (call nop c)
     (call dmb_ish c)
     (call isb c)
+    (call mrs_tpidr c 0)
+    (call mrs_tpidr c 17)
+    (call msr_tpidr c 1)
+    (call msr_tpidr c 30)
     (call check "system" c "SYSTEM"))
 '''
 BRANCH_ASM = ["start:", "b end", "bl end"] + [f"b.{c} end" for c in "eq ne hs lo mi pl vs vc hi ls ge lt gt le".split()] + \
     ["cbz x3, end", "cbnz x4, end", "cbz w5, end", "cbnz w30, end", "b start", "adr x7, end", "br x9", "blr x10", "ret x11", "ret", "end:", "ret"]
-SYSTEM_ASM = ["svc #0", "svc #65535", "brk #0", "brk #1000", "udf #0", "udf #513", "nop", "dmb ish", "isb"]
+SYSTEM_ASM = ["svc #0", "svc #65535", "brk #0", "brk #1000", "udf #0", "udf #513", "nop", "dmb ish", "isb",
+              "mrs x0, tpidr_el0", "mrs x17, tpidr_el0", "msr tpidr_el0, x1", "msr tpidr_el0, x30"]
 
 def aipl_group(name, extra=()):
     """The AIPL test function for a group, with its expected hex as HEX_<name>."""

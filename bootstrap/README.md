@@ -76,9 +76,9 @@ build it again (stage 2), and stage 2 once more (a fixed point), as on x86-64, w
 It is larger than the x86-64 seed (7.6 MB against 4 MB) because the AArch64 backend is a
 baseline one, every value in a stack slot (docs/design/ARM64_PLAN.md). The process operations
 (procs_arm64.aipl), sockets and `--serve` (sockets_arm64.aipl, fresh_arm64.aipl), and `--sandbox`
-are built for AArch64, so the `aipl` the script makes does what the x86-64 one does: `compile`,
-`verify`, `run`, `test`, `watch`, `eval`, `serve`, and `doc`; only threaded programs are not built
-for AArch64 yet. The commands that build a program and start it use the machine's own backend
+and threads (lower_arm64.aipl, native_arm64.aipl) are built for AArch64, so the `aipl` the script makes does what the x86-64 one does: `compile`,
+`verify`, `run`, `test`, `watch`, `eval`, `serve`, and `doc`, and the programs it builds may use threads. The
+commands that build a program and start it use the machine's own backend
 (native/hostnative.aipl). The seed itself is from before the process operations, so it cannot start a program (its
 stage 1 cannot, and stage 2 can): `build.sh`'s result is the compiler that can, and it is the
 bytes `tools/arm64_bootstrap.sh` finds the Rust-built compiler to be.

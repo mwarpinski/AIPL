@@ -33,6 +33,7 @@
   (import vec)
   (import wasm_reader)
   (import arm64)
+  (import runtime_arm64)
   (import elf)
 
   ;; A call whose `bl` (at buffer position `at`) must point at function `func`.
@@ -58,7 +59,9 @@
              (pub mem_pages:i32) (pub results:i32) (pub globals:i32)
              (pub trap_routine:i32) (pub unreachable_routine:i32) (pub mem_max:i32)
              (read positions:(ptr (vec.Vec (ptr NPos))))
-             (pub table_addr:i32) (pub table_size:i32) (read canon:(ptr (vec.Vec i32)))] (pub))
+             (pub table_addr:i32) (pub table_size:i32) (read canon:(ptr (vec.Vec i32)))
+             (pub threaded:bool) (pub shared:bool) (pub results_off:i32)
+             (read seg_addrs:(ptr (vec.Vec i32))) (read seg_lens:(ptr (vec.Vec i32)))] (pub))
 
   ;; The trap reasons' numbers, the trap routine's table order.
   (fn trap_div_zero [] -> i32 (pub) 0)
@@ -102,7 +105,12 @@
                                                 positions:(call (vec.make (ptr NPos)) (call alloc.default) 256)
                                                 table_addr:0
                                                 table_size:0
-                                                canon:(call canonical_types w)]))
+                                                canon:(call canonical_types w)
+                                                threaded:false
+                                                shared:false
+                                                results_off:0
+                                                seg_addrs:(call (vec.make i32) (call alloc.default) 4)
+                                                seg_lens:(call (vec.make i32) (call alloc.default) 4)]))
     l)
 
   ;; From code offset `code` on, the machine code is at file:line:col (the module's line
@@ -173,7 +181,28 @@
 
   ;; x16 = the address of global i's cell
   (fn global_addr [l:(ptr L) i:i32] -> void
-    (call arm64.mov_imm (get l L.code) 64 16 (i64.extend_s (+ (get l L.globals) (* 8 i)))))
+    (if (get l L.threaded)
+        (call thread_block l (* 8 i))
+        (call arm64.mov_imm (get l L.code) 64 16 (i64.extend_s (+ (get l L.globals) (* 8 i))))))
+
+  ;; x16 = the address `off` bytes into this thread's own block (its globals, then its results area):
+  ;; the thread pointer, which clone's SETTLS gives each thread, points at it. Only a threaded
+  ;; module keeps them there; others keep them at fixed addresses in the data. (Clobbers x17.)
+  (fn thread_block [l:(ptr L) off:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (call arm64.mrs_tpidr c 16)
+    (cond
+      ((eq off 0) (block))
+      ((lte off 4095) (call arm64.add_ri c 64 16 16 off))
+      (else
+       (call arm64.mov_imm c 64 17 (i64.extend_s off))
+       (call arm64.add_rrr c 64 16 16 17))))
+
+  ;; x16 = the address of the results area (a call's results beyond the first, or this function's)
+  (fn results_addr [l:(ptr L)] -> void
+    (if (get l L.threaded)
+        (call thread_block l (get l L.results_off))
+        (call arm64.mov_imm (get l L.code) 64 16 (i64.extend_s (get l L.results)))))
 
   ;; sp = x29 - 16 * (declared locals + height): the value stack at that depth
   (fn emit_reset_sp [l:(ptr L) height:i32] -> void
@@ -263,7 +292,7 @@
       ((eq n 0) (block))
       ((eq n 1) (call push l 0))
       (else
-       (call arm64.mov_imm c 64 16 (i64.extend_s (get l L.results)))
+       (call results_addr l)
        (for k 0 n
          (call arm64.ldr_x c 0 16 (* 8 k))
          (call push l 0)))))
@@ -275,7 +304,7 @@
       ((eq nres 0) (block))
       ((eq nres 1) (call arm64.ldr_x c 0 31 0))
       (else
-       (call arm64.mov_imm c 64 16 (i64.extend_s (get l L.results)))
+       (call results_addr l)
        (for k 0 nres
          (call arm64.ldr_x c 0 31 (* 16 (- (- nres 1) k)))
          (call arm64.str_x c 0 16 (* 8 k)))))
@@ -511,6 +540,7 @@
       ((call float_op l op) true)
       ((call memory_op l op (get ins wasm_reader.Instr.b)) true)
       ((call atomic_op l op (get ins wasm_reader.Instr.b)) true)
+      ((eq op 64520) (call emit_memory_init l a) true)
       (else false)))
 
   ;; ===== Integer instructions =====
@@ -831,23 +861,127 @@
        (call arm64.mov_rr c 32 0 4)
        (call push l 0)
        true)
-      ;; notify: unshared memory has no waiters
+      ;; notify(address, count): unshared memory has no waiters; shared, futex wake (FUTEX_WAKE_PRIVATE,
+      ;; syscall 98; a count of 2^31 or more wakes everyone)
       ((eq op 65024)
-       (call pop l 0)
-       (call pop l 1)
-       (call arm64.mov_imm c 32 0 0i64)
-       (call push l 0)
+       (if (get l L.shared)
+           (block
+             (call pop l 9)
+             (call pop l 1)
+             (call emit_address l offset)
+             (call check_aligned l)
+             (call arm64.mov_rr c 64 0 1)
+             (call arm64.mov_imm c 64 1 129i64)
+             (call arm64.mov_rr c 32 2 9)
+             (call arm64.cmp_ri c 32 2 0)
+             (let small:i32 (call arm64.b_cond c (call arm64.cc_ge)))
+             (call arm64.mov_imm c 32 2 2147483647i64)
+             (call arm64.patch_cond c small (call buf.len c))
+             (call arm64.mov_imm c 64 3 0i64)
+             (call arm64.mov_imm c 64 4 0i64)
+             (call arm64.mov_imm c 64 5 0i64)
+             (call runtime_arm64.emit_syscall c 98)
+             (call push l 0))
+           (block
+             (call pop l 0)
+             (call pop l 1)
+             (call arm64.mov_imm c 32 0 0i64)
+             (call push l 0)))
        true)
-      ;; wait32 on unshared memory traps
+      ;; wait32(address, expected, timeout ns, negative: forever): traps on unshared memory. Shared: futex
+      ;; wait, which sleeps only while the word still holds `expected`; 0 (woken), 1 (the word differed),
+      ;; 2 (timed out); an interrupted wait counts as woken (callers loop on their condition)
       ((eq op 65025)
-       (call pop l 0)
-       (call pop l 0)
-       (call pop l 0)
-       (call arm64.mov_imm c 32 0 (i64.extend_s (call trap_wait_unshared)))
-       (call emit_trap l)
-       (call push l 0)
+       (if (get l L.shared)
+           (call emit_futex_wait l offset)
+           (block
+             (call pop l 0)
+             (call pop l 0)
+             (call pop l 0)
+             (call arm64.mov_imm c 32 0 (i64.extend_s (call trap_wait_unshared)))
+             (call emit_trap l)
+             (call push l 0)))
        true)
       (else false)))
+
+  ;; The shared wait32 (see atomic_op): the timeout (x9), the expected value (x10) and the address
+  ;; are popped; the result is pushed. The timeout, if there is one, is a timespec on the stack
+  ;; for the call (x14 says whether).
+  (fn emit_futex_wait [l:(ptr L) offset:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (call pop l 9)
+    (call pop l 10)
+    (call pop l 1)
+    (call emit_address l offset)
+    (call check_aligned l)
+    (call arm64.mov_rr c 64 0 1)
+    (call arm64.mov_imm c 64 1 128i64)
+    (call arm64.mov_rr c 32 2 10)
+    (call arm64.mov_imm c 64 14 0i64)
+    (call arm64.mov_imm c 64 3 0i64)
+    (call arm64.cmp_ri c 64 9 0)
+    (let forever:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_imm c 64 11 1000000000i64)
+    (call arm64.udiv c 64 12 9 11)
+    (call arm64.msub c 64 13 12 11 9)
+    (call arm64.sub_ri c 64 31 31 16)
+    (call arm64.str_x c 12 31 0)
+    (call arm64.str_x c 13 31 8)
+    (call arm64.mov_sp c 64 3 31)
+    (call arm64.mov_imm c 64 14 1i64)
+    (call arm64.patch_cond c forever (call buf.len c))
+    (call arm64.mov_imm c 64 4 0i64)
+    (call arm64.mov_imm c 64 5 0i64)
+    (call runtime_arm64.emit_syscall c 98)
+    (let none:i32 (call arm64.cbz c 64 14))
+    (call arm64.add_ri c 64 31 31 16)
+    (call arm64.patch_cond c none (call buf.len c))
+    ;; -EAGAIN (11): the word differed -> 1; -ETIMEDOUT (110) -> 2; else 0
+    (call arm64.mov_rr c 64 1 0)
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.mov_imm c 64 2 -11i64)
+    (call arm64.cmp_rr c 64 1 2)
+    (call arm64.mov_imm c 64 3 1i64)
+    (call arm64.csel c 64 0 3 0 (call arm64.cc_eq))
+    (call arm64.mov_imm c 64 2 -110i64)
+    (call arm64.cmp_rr c 64 1 2)
+    (call arm64.mov_imm c 64 3 2i64)
+    (call arm64.csel c 64 0 3 0 (call arm64.cc_eq))
+    (call push l 0))
+
+  ;; memory.init (passive segment `seg`): pops the length, the source offset, and the destination;
+  ;; traps if either range is out of bounds, then copies.
+  (fn emit_memory_init [l:(ptr L) seg:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (req (lt seg (call (vec.len i32) (get l L.seg_lens))))
+    (call pop l 3)
+    (call pop l 2)
+    (call pop l 1)
+    (call arm64.mov_rr c 32 3 3)
+    (call arm64.mov_rr c 32 2 2)
+    (call arm64.mov_rr c 32 1 1)
+    (call arm64.add_rrr c 64 4 2 3)
+    (call arm64.mov_imm c 64 5 (i64.extend_s (call (vec.at i32) (get l L.seg_lens) seg)))
+    (call arm64.cmp_rr c 64 4 5)
+    (call trap_if l (call arm64.cc_hi) (call trap_out_of_bounds))
+    (call arm64.add_rrr c 64 6 1 3)
+    (call arm64.mov_imm c 64 7 (i64.extend_s (get l L.mem_pages)))
+    (call arm64.ldr_x c 7 7 0)
+    (call arm64.lsl_ri c 64 7 7 16)
+    (call arm64.cmp_rr c 64 6 7)
+    (call trap_if l (call arm64.cc_hi) (call trap_out_of_bounds))
+    (call arm64.add_rrr c 64 9 28 1)
+    (call arm64.mov_imm c 64 10 (i64.extend_s (call (vec.at i32) (get l L.seg_addrs) seg)))
+    (call arm64.add_rrr c 64 10 10 2)
+    (call arm64.mov_imm c 64 4 0i64)
+    (let top:i32 (call buf.len c))
+    (call arm64.cmp_rr c 64 4 3)
+    (let done:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call arm64.ldrb_uxtw c 5 10 4)
+    (call arm64.strb_uxtw c 5 9 4)
+    (call arm64.add_ri c 64 4 4 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_cond c done (call buf.len c)))
 
   ;; ===== Linear memory =====
 

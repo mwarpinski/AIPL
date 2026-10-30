@@ -108,9 +108,13 @@
   ;; The routine for an import, called as a wasm function is (its arguments on
   ;; the value stack, the last at [sp]): the result in x0. proc_exit, fd_write
   ;; and fd_read are here; any other is ENOSYS (52) until the WASI routines come.
-  (fn emit_import [l:(ptr lower_arm64.L) wa:(ptr wasi_arm64.W) pn:(ptr procs_arm64.N) sn:(ptr sockets_arm64.N) imp:(ptr wasm_reader.Import) sp_cell:i32 plain:i32] -> void
+  (fn emit_import [l:(ptr lower_arm64.L) wa:(ptr wasi_arm64.W) pn:(ptr procs_arm64.N) sn:(ptr sockets_arm64.N) th:(ptr Threads) imp:(ptr wasm_reader.Import) sp_cell:i32 plain:i32] -> void
     (let c:(ptr buf.Buf) (get l lower_arm64.L.code))
     (let name:str.Bytes (get imp wasm_reader.Import.name))
+    (when (and (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "wasi"))
+               (call str.bytes_eq name (call str.from_str "thread-spawn")))
+          (call emit_thread_spawn l th)
+          (return))
     (when (call wasi_arm64.emit_import c wa imp) (return))
     (when (and (neq pn (ptr.null procs_arm64.N))
                (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_sys_v1")))
@@ -521,6 +525,104 @@
               (return true))))
     false)
 
+  ;; What thread-spawn needs: the functions a new thread runs, the thread-id counter's cell, and the
+  ;; globals' initial values.
+  (struct Threads [start_fn:i32 thread_start:i32 tid_cell:i32 globals:(ptr (vec.Vec (ptr wasm_reader.Global)))])
+
+  ;; The stack each spawned thread gets (address space; pages appear on use), and the guard region at its
+  ;; low end, which faults: 64 KiB, a multiple of any page size, holding nothing. The thread's block
+  ;; (its globals, then its results area) follows it.
+  (fn thread_stack [] -> i32 8388608)
+  (fn guard [] -> i32 65536)
+
+  ;; The thread-id counter's cell in the data: 8 bytes, starting at 1.
+  (fn tid_cell_at [l:(ptr lower_arm64.L)] -> i32
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 8))
+    (call buf.push_byte b 1)
+    (for k 1 8 (call buf.push_byte b 0))
+    (call lower_arm64.data_bytes l (call buf.bytes b)))
+
+  (fn imports_thread_spawn [l:(ptr lower_arm64.L)] -> bool
+    (let imports:(ptr (vec.Vec (ptr wasm_reader.Import))) (get l lower_arm64.L.fimports))
+    (for i 0 (call (vec.len (ptr wasm_reader.Import)) imports)
+      (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) imports i))
+      (when (call str.bytes_eq (get imp wasm_reader.Import.name) (call str.from_str "thread-spawn")) (return true)))
+    false)
+
+  ;; thread-spawn(start_arg) -> tid (positive), or -1 if no thread could be made. The new thread's stack top
+  ;; holds [tid][start_arg], wasi_thread_start's arguments, in memory because the routines it calls use
+  ;; every register above x18; its thread pointer is its block (SETTLS), and it runs the start function,
+  ;; then wasi_thread_start(tid, start_arg), then exits (this thread only). A thread that traps or calls
+  ;; proc_exit ends the process (exit_group), as under aipl-run.
+  (fn emit_thread_spawn [l:(ptr lower_arm64.L) th:(ptr Threads)] -> void
+    (let c:(ptr buf.Buf) (get l lower_arm64.L.code))
+    (call arm64.ldr_w c 19 31 0)
+    ;; tid = fetch-and-add on the counter (starts at 1, as aipl-run's)
+    (call arm64.mov_imm c 64 9 (i64.extend_s (get th Threads.tid_cell)))
+    (let retry:i32 (call buf.len c))
+    (call arm64.ldaxr c 32 20 9)
+    (call arm64.add_ri c 32 10 20 1)
+    (call arm64.stlxr c 32 11 10 9)
+    (call arm64.patch_cond c (call arm64.cbnz c 32 11) retry)
+    ;; the stack: mmap(0, size, RW, PRIVATE|ANONYMOUS|NORESERVE|STACK, -1, 0)
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.mov_imm c 64 1 (i64.extend_s (call thread_stack)))
+    (call arm64.mov_imm c 64 2 3i64)
+    (call arm64.mov_imm c 64 3 147490i64)
+    (call arm64.mov_imm c 64 4 -1i64)
+    (call arm64.mov_imm c 64 5 0i64)
+    (call runtime_arm64.emit_syscall c 222)
+    (call arm64.mov_imm c 64 9 -4096i64)
+    (call arm64.cmp_rr c 64 0 9)
+    (let no_stack:i32 (call arm64.b_cond c (call arm64.cc_hi)))
+    (call arm64.mov_rr c 64 21 0)
+    ;; the guard region: mprotect(base, guard, PROT_NONE)
+    (call arm64.mov_imm c 64 1 (i64.extend_s (call guard)))
+    (call arm64.mov_imm c 64 2 0i64)
+    (call runtime_arm64.emit_syscall c 226)
+    ;; the thread's block above it, with the globals' initial values
+    (call arm64.mov_imm c 64 9 (i64.extend_s (call guard)))
+    (call arm64.add_rrr c 64 22 21 9)
+    (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get th Threads.globals))
+    (for i 0 (call (vec.len (ptr wasm_reader.Global)) gs)
+      (call arm64.mov_imm c 64 0 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
+      (call arm64.mov_imm c 64 10 (i64.extend_s (* 8 i)))
+      (call arm64.str_x_reg c 0 22 10))
+    ;; [tid][start_arg] at the top, the stack pointer on them
+    (call arm64.mov_imm c 64 9 (i64.extend_s (call thread_stack)))
+    (call arm64.add_rrr c 64 23 21 9)
+    (call arm64.sub_ri c 64 23 23 16)
+    (call arm64.str_x c 20 23 0)
+    (call arm64.str_x c 19 23 8)
+    ;; clone(VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|SETTLS, stack, 0, tls = the block, 0)
+    (call arm64.mov_imm c 64 0 855808i64)
+    (call arm64.mov_rr c 64 1 23)
+    (call arm64.mov_imm c 64 2 0i64)
+    (call arm64.mov_rr c 64 3 22)
+    (call arm64.mov_imm c 64 4 0i64)
+    (call runtime_arm64.emit_syscall c 220)
+    (call arm64.cmp_ri c 64 0 0)
+    (let failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (let child:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (call arm64.mov_rr c 32 0 20)
+    (call arm64.ret c)
+    (call arm64.patch_cond c failed (call buf.len c))
+    (call arm64.patch_cond c no_stack (call buf.len c))
+    (call arm64.mov_imm c 64 0 -1i64)
+    (call arm64.ret c)
+    ;; the new thread: its own instance's start function, then the work; then it exits
+    (call arm64.patch_cond c child (call buf.len c))
+    (call arm64.mov_imm c 64 29 0i64)
+    (when (gte (get th Threads.start_fn) 0) (call lower_arm64.emit_call l (get th Threads.start_fn)))
+    (call arm64.ldr_x c 0 31 0)
+    (call arm64.ldr_x c 1 31 8)
+    (call arm64.str_x_pre c 0 31 -16)
+    (call arm64.str_x_pre c 1 31 -16)
+    (call lower_arm64.emit_call l (get th Threads.thread_start))
+    (call arm64.mov_imm c 64 0 0i64)
+    (call runtime_arm64.emit_syscall c 93)
+    (call arm64.brk c 0))
+
   ;; What `serve` holds: the address, the connections to answer (-1: no end), and whether the
   ;; executable removes itself.
   (struct ServeOpts [address:str.Bytes requests:i32 temporary:bool])
@@ -588,6 +690,14 @@
     (for i 0 (call (vec.len (ptr wasm_reader.Global)) gs)
       (let v:i64 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
       (for k 0 8 (call buf.push_byte gb (i32.wrap (bitand (shru v (i64.extend_s (* 8 k))) 255i64)))))
+    ;; a threaded module keeps its globals and its results area in a block of its own per thread (the thread
+    ;; pointer points at it): here the main thread's, with the globals' initial values; a spawned thread's is
+    ;; made at its stack's low end
+    (let threaded:bool (call imports_thread_spawn l))
+    (put l lower_arm64.L.threaded threaded)
+    (when threaded
+          (put l lower_arm64.L.results_off (call buf.len gb))
+          (for k 0 (call lower_arm64.results_size) (call buf.push_byte gb 0)))
     (put l lower_arm64.L.globals (call lower_arm64.data_bytes l (call buf.bytes gb)))
     ;; the table: 16-byte entries [code address:u64][type id:i32][pad], an empty
     ;; one's type id -1 (filled in once the functions' addresses are known)
@@ -633,9 +743,20 @@
     (let seg_addrs:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
     (for i 0 (call (vec.len (ptr wasm_reader.Data)) datas)
       (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
-      (call (vec.push i32) seg_addrs (call lower_arm64.data_bytes l (unsafe (call str.bytes (get d wasm_reader.Data.addr) (get d wasm_reader.Data.len))))))
+      (call (vec.push i32) seg_addrs (call lower_arm64.data_bytes l (unsafe (call str.bytes (get d wasm_reader.Data.addr) (get d wasm_reader.Data.len)))))
+      (call (vec.push i32) (get l lower_arm64.L.seg_addrs) (call (vec.at i32) seg_addrs i))
+      (call (vec.push i32) (get l lower_arm64.L.seg_lens) (get d wasm_reader.Data.len)))
     ;; code: the trap routine, the start-up stub, the imports' routines, the functions
     (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
+    (when (neq lim (ptr.null wasm_reader.Limits)) (put l lower_arm64.L.shared (get lim wasm_reader.Limits.shared)))
+    (let th:(ptr Threads) (new Threads (call alloc.forever) [start_fn:(get w wasm_reader.Wasm.start)
+                                                             thread_start:(call export_func w "wasi_thread_start")
+                                                             tid_cell:(call tid_cell_at l)
+                                                             globals:gs]))
+    (when (and (lt (get th Threads.thread_start) 0) threaded)
+          (return (call failure (call str.from_str "a module importing thread-spawn must export wasi_thread_start"))))
+    (when (and serving threaded)
+          (return (call failure (call str.from_str "a threaded program cannot be served: each connection runs a fresh copy, and a thread would start in it"))))
     (let chain_cell:i32 (call lower_arm64.data_zeros l 8))
     (let positions_cell:i32 (call lower_arm64.data_zeros l 16))
     (let texts:(ptr backtrace_arm64.Texts)
@@ -654,6 +775,9 @@
     (call arm64.mov_sp c 64 0 31)
     (call arm64.mov_imm c 64 16 (i64.extend_s sp_cell))
     (call arm64.str_x c 0 16 0)
+    (when threaded
+          (call arm64.mov_imm c 64 0 (i64.extend_s (get l lower_arm64.L.globals)))
+          (call arm64.msr_tpidr c 0))
     (when (neq lim (ptr.null wasm_reader.Limits))
           (call emit_reserve_memory c)
           (call emit_commit_memory c (get lim wasm_reader.Limits.min))
@@ -678,7 +802,7 @@
     (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (+ nfuncs 1)))
     (for i 0 nimports
       (call (vec.push i32) starts (call buf.len c))
-      (call emit_import l wa pn sn (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell (get routines backtrace_arm64.Routines.plain)))
+      (call emit_import l wa pn sn th (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell (get routines backtrace_arm64.Routines.plain)))
     (for i nimports nfuncs
       (when (get l lower_arm64.L.failed) (break))
       (call (vec.push i32) starts (call buf.len c))

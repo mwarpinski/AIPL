@@ -98,6 +98,7 @@ pub fn run_env(exe: &[u8], args: &[&str], input: &[u8], env: &[(&str, &str)]) ->
 /// Starts the executable `exe` with `args` as a child process whose network is this machine's, to be
 /// talked to from the test (a server): where AArch64 code runs on this machine, directly or under
 /// qemu-user. None elsewhere, as a container on another machine is not on this one's network.
+#[allow(dead_code)] // test_native_arm64_programs.rs uses it; test_native_arm64.rs shares this module
 pub fn spawn(exe: &[u8], args: &[&str]) -> Option<std::process::Child> {
     use std::os::unix::fs::PermissionsExt;
     let how = available()?;

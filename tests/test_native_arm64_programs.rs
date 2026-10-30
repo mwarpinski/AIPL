@@ -210,7 +210,7 @@ fn sockets_serve_connections_and_refuse_what_was_not_granted() {
     // a port nothing is using now
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let at = format!("127.0.0.1:{port}");
-    let exe = build_all(&src, &[at.clone()], false, None);
+    let exe = build_all(&src, std::slice::from_ref(&at), false, None);
     let Some(mut server) = arm64::spawn(&exe, &[&at]) else {
         eprintln!("no AArch64 machine on this one's network to run on: not run");
         return;
@@ -295,4 +295,41 @@ fn a_serving_executable_answers_each_request_with_a_fresh_copy() {
     // the crashed copy's trap is on the host's standard error, with its call chain
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("Array index out of bounds") && err.contains("at handle (prog.aipl"), "{err}");
+}
+
+/// Threads (thread-spawn, a per-thread block behind the thread pointer, futex wait and wake, memory.init):
+/// tests/aipl/threads/threads_main.aipl, the workers tests/test_threads.rs runs under a wasi-threads host,
+/// from an AArch64 executable. Four threads share an atomic counter and a lock, join returns each result,
+/// concurrent allocations keep their contents, and two threads' prints arrive intact (their line breaks
+/// may interleave, as in every backend).
+#[test]
+fn threads_share_counters_locks_and_the_allocator() {
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/aipl/threads/threads_main.aipl")).unwrap();
+    let exe = build(&src);
+    let Some(out) = arm64::run(&exe, &[], b"") else {
+        eprintln!("no AArch64 machine to run on: not run");
+        return;
+    };
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(text.starts_with("atomic_counter 4000\njoin_results 25\nmutex_counter 4000\nconcurrent_alloc 4\n"), "{text}");
+    assert!(text.ends_with("concurrent_print 0\n"), "{text}");
+    assert_eq!(text.matches("one one one one one one").count(), 50, "{text}");
+    assert_eq!(text.matches("two two two two two two").count(), 50, "{text}");
+}
+
+/// examples/spectralnorm_par.aipl, whose matrix-vector products run on several threads, prints the sequential
+/// benchmark's result on 1, 3, and 8 threads.
+#[test]
+fn the_parallel_spectral_norm_matches_the_sequential_one() {
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/spectralnorm_par.aipl")).unwrap();
+    let exe = build(&src);
+    for threads in ["1", "3", "8"] {
+        let Some(out) = arm64::run(&exe, &["100", threads], b"") else {
+            eprintln!("no AArch64 machine to run on: not run");
+            return;
+        };
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1.274219991\n", "{threads} threads: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(out.status.code(), Some(0), "{threads} threads");
+    }
 }
