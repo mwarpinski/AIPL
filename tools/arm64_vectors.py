@@ -192,15 +192,54 @@ for off in (lit(-16), lit(16), lit(-512), lit(504)):
         G["memory"].append(op(name, [I_, N1, B_, off], lambda v, mn=mn: f"{mn} {X(64,v[0])}, {X(64,v[1])}, [{X(64,v[2],False)}, #{v[3]}]!"))
     for name, mn in (("stp_post", "stp"), ("ldp_post", "ldp")):
         G["memory"].append(op(name, [I_, N1, B_, off], lambda v, mn=mn: f"{mn} {X(64,v[0])}, {X(64,v[1])}, [{X(64,v[2],False)}], #{v[3]}"))
+# single registers with writeback: a stack's push and pop
+for off in (lit(-16), lit(16), lit(-256), lit(255), plus(mod(31, 8), -9)):
+    for name, mn in (("str_x_pre", "str"), ("ldr_x_pre", "ldr")):
+        G["memory"].append(op(name, [I_, B_, off], lambda v, mn=mn: f"{mn} {X(64,v[0])}, [{X(64,v[1],False)}, #{v[2]}]!"))
+    for name, mn in (("str_x_post", "str"), ("ldr_x_post", "ldr")):
+        G["memory"].append(op(name, [I_, B_, off], lambda v, mn=mn: f"{mn} {X(64,v[0])}, [{X(64,v[1],False)}], #{v[2]}"))
 # the stack pointer as a base, once
 G["memory"] += [
     op("str_x", [lit(5), lit(31), lit(16)], lambda v: "str x5, [sp, #16]", per="once"),
     op("ldr_x", [lit(5), lit(31), lit(8)], lambda v: "ldr x5, [sp, #8]", per="once"),
     op("stp_pre", [lit(29), lit(30), lit(31), lit(-16)], lambda v: "stp x29, x30, [sp, #-16]!", per="once"),
     op("ldp_post", [lit(29), lit(30), lit(31), lit(16)], lambda v: "ldp x29, x30, [sp], #16", per="once"),
+    op("str_x_pre", [lit(0), lit(31), lit(-16)], lambda v: "str x0, [sp, #-16]!", per="once"),
+    op("ldr_x_post", [lit(0), lit(31), lit(16)], lambda v: "ldr x0, [sp], #16", per="once"),
     op("ldr_x_uxtw", [lit(5), lit(28), lit(6)], lambda v: "ldr x5, [x28, w6, uxtw]", per="once"),
     op("str_w_uxtw", [lit(5), lit(28), lit(31)], lambda v: "str w5, [x28, wzr, uxtw]", per="once"),
 ]
+
+# floating point: the registers v0-v30 as s (ft 0) and d (ft 1)
+def V(ft, n): return f"{'d' if ft else 's'}{n}"
+G["float"] = []
+for ft in (0, 1):
+    G["float"] += [
+        op("fmov_to_fp", [lit(ft), I_, Q1], lambda v: f"fmov {V(v[0],v[1])}, {X(64 if v[0] else 32, v[2])}"),
+        op("fmov_from_fp", [lit(ft), Q1, I_], lambda v: f"fmov {X(64 if v[0] else 32, v[1])}, {V(v[0],v[2])}"),
+        op("fcmp", [lit(ft), I_, Q1], lambda v: f"fcmp {V(v[0],v[1])}, {V(v[0],v[2])}"),
+    ]
+    for n in ("fmul", "fdiv", "fadd", "fsub", "fmax", "fmin"):
+        G["float"].append(op(n, [lit(ft), I_, Q1, Q2], lambda v, n=n: f"{n} {V(v[0],v[1])}, {V(v[0],v[2])}, {V(v[0],v[3])}"))
+    for n, m in (("fmov_rr", "fmov"), ("fabs", "fabs"), ("fneg", "fneg"), ("fsqrt", "fsqrt"), ("frintn", "frintn"), ("frintp", "frintp"), ("frintm", "frintm"), ("frintz", "frintz")):
+        G["float"].append(op(n, [lit(ft), Q1, I_], lambda v, m=m: f"{m} {V(v[0],v[1])}, {V(v[0],v[2])}"))
+    for sz in (32, 64):
+        for n in ("fcvtzs", "fcvtzu"):
+            G["float"].append(op(n, [lit(sz), lit(ft), I_, Q1], lambda v, n=n: f"{n} {X(v[0],v[2])}, {V(v[1],v[3])}"))
+        for n in ("scvtf", "ucvtf"):
+            G["float"].append(op(n, [lit(sz), lit(ft), I_, Q1], lambda v, n=n: f"{n} {V(v[1],v[2])}, {X(v[0],v[3])}"))
+G["float"] += [
+    op("fcvt_to_double", [I_, Q1], lambda v: f"fcvt {V(1,v[0])}, {V(0,v[1])}"),
+    op("fcvt_to_single", [Q1, I_], lambda v: f"fcvt {V(0,v[0])}, {V(1,v[1])}"),
+]
+
+# acquire/release and exclusive access, the base register never the register moved
+G["atomic"] = []
+for sz in (64, 32):
+    for n in ("ldar", "stlr", "ldaxr"):
+        G["atomic"].append(op(n, [lit(sz), I_, B_], lambda v, n=n: f"{n} {X(v[0],v[1])}, [{X(64,v[2],False)}]"))
+    G["atomic"].append(op("stlxr", [lit(sz), N1, I_, B_], lambda v: f"stlxr {X(32,v[1])}, {X(v[0],v[2])}, [{X(64,v[3],False)}]"))
+G["atomic"].append(op("clrex", [], lambda v: "clrex", per="once"))
 
 # mov_imm: the movz/movn/movk sequence it writes, for these values
 MOV_VALUES = [0, 1, 65535, 65536, 4294967295, -1, -2, -65536, -65537, 305419896, 81985529216486895,
@@ -330,7 +369,7 @@ def moves_asm():
     return lines
 
 def build():
-    groups = ["moves", "alu_reg", "muldiv", "alu_imm", "shift_ext", "conditional", "memory"]
+    groups = ["moves", "alu_reg", "muldiv", "alu_imm", "shift_ext", "conditional", "memory", "float", "atomic"]
     asm = {n: (moves_asm() if n == "moves" else asm_group(n)) for n in groups}
     asm["branches"] = BRANCH_ASM
     asm["system"] = SYSTEM_ASM
