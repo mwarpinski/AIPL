@@ -289,11 +289,10 @@
                 (return 1))
           (set! bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
     (when (and exe (or (eq target 2) (and (eq target 0) (call host_is_arm64))))
-          ;; an AArch64 executable (--allow-run is accepted: the process operations answer
-          ;; "not supported" there yet)
+          ;; an AArch64 executable (--allow-run is accepted; the grants are only those)
           (when (or sandbox listened (gt (call buf.len serve) 0))
                 (return (call fail_bytes "--target arm64: --sandbox, --listen, and --serve are not built for AArch64 yet" (call str.from_str ""))))
-          (let o:(ptr native_arm64.Output) (call native_arm64.compile bytes))
+          (let o:(ptr native_arm64.Output) (call native_arm64.compile_with bytes (call buf.bytes listen)))
           (when (not (get o native_arm64.Output.ok)) (return (call fail_bytes "native backend: " (get o native_arm64.Output.error))))
           (set! bytes (get o native_arm64.Output.exe))
           (set! exe_done true))

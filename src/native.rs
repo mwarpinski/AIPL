@@ -76,23 +76,33 @@ fn run_backend((engine, module): &(Engine, Module), wasm: &[u8], sandbox: bool, 
 /// docs/design/ARM64_PLAN.md), or the backend's error. It runs where AArch64
 /// code does; this only builds it.
 pub fn executable_arm64(wasm: &[u8]) -> Result<Vec<u8>, String> {
-    static BACKEND: OnceLock<Result<(Engine, Module), String>> = OnceLock::new();
-    let t = crate::selfhost::toolchain("native/native_arm64", &BACKEND).map_err(|e| format!("native arm64 backend: {e}"))?;
-    let wasm = wasm.to_vec();
-    crate::selfhost::on_big_stack(move || run_arm64(t, &wasm))
+    executable_arm64_with(wasm, &[])
 }
 
-fn run_arm64((engine, module): &(Engine, Module), wasm: &[u8]) -> Result<Vec<u8>, String> {
+/// `executable_arm64` with the programs it may start fixed in it (`--allow-run`, as `run:PROGRAM` lines).
+pub fn executable_arm64_with(wasm: &[u8], grants: &[String]) -> Result<Vec<u8>, String> {
+    static BACKEND: OnceLock<Result<(Engine, Module), String>> = OnceLock::new();
+    let t = crate::selfhost::toolchain("native/native_arm64", &BACKEND).map_err(|e| format!("native arm64 backend: {e}"))?;
+    let (wasm, grants) = (wasm.to_vec(), grants.to_vec());
+    crate::selfhost::on_big_stack(move || run_arm64(t, &wasm, &grants))
+}
+
+fn run_arm64((engine, module): &(Engine, Module), wasm: &[u8], grants: &[String]) -> Result<Vec<u8>, String> {
     let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).map_err(|e| e.to_string())?;
     let mut store = Store::new(engine, WasiCtxBuilder::new().inherit_stderr().build_p1());
     let inst = linker.instantiate(&mut store, module).map_err(|e| e.to_string())?;
     let alloc = inst.get_typed_func::<i32, i32>(&mut store, "host_alloc").map_err(|e| e.to_string())?;
-    let compile = inst.get_typed_func::<(i32, i32), i64>(&mut store, "compile_at").map_err(|e| e.to_string())?;
+    let compile = inst.get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "compile_with_at").map_err(|e| e.to_string())?;
     let mem = inst.get_memory(&mut store, "memory").ok_or("native arm64 backend: no memory")?;
     let addr = alloc.call(&mut store, wasm.len() as i32 + 8).map_err(|e| e.to_string())?;
     mem.write(&mut store, addr as usize, wasm).map_err(|e| e.to_string())?;
-    let out = compile.call(&mut store, (addr, wasm.len() as i32)).map_err(|e| format!("native arm64 backend trapped: {e}"))? as u32 as usize;
+    let text: String = grants.iter().map(|g| format!("{g}\n")).collect();
+    let gaddr = alloc.call(&mut store, text.len() as i32 + 8).map_err(|e| e.to_string())?;
+    mem.write(&mut store, gaddr as usize, text.as_bytes()).map_err(|e| e.to_string())?;
+    let out = compile
+        .call(&mut store, (addr, wasm.len() as i32, gaddr, text.len() as i32))
+        .map_err(|e| format!("native arm64 backend trapped: {e}"))? as u32 as usize;
     // native_arm64.Output starts [addr:i32 len:i32 ok:bool]
     let data = mem.data(&store);
     let word = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;

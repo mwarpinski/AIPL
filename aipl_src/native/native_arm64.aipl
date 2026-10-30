@@ -19,6 +19,7 @@
   (import runtime_arm64)
   (import wasi_arm64)
   (import backtrace_arm64)
+  (import procs_arm64)
 
   ;; The result of a compile: the ELF image, or the reason there is none. Its
   ;; first fields are what a host reads (native.aipl's Output has the same).
@@ -105,9 +106,13 @@
   ;; The routine for an import, called as a wasm function is (its arguments on
   ;; the value stack, the last at [sp]): the result in x0. proc_exit, fd_write
   ;; and fd_read are here; any other is ENOSYS (52) until the WASI routines come.
-  (fn emit_import [c:(ptr buf.Buf) wa:(ptr wasi_arm64.W) imp:(ptr wasm_reader.Import) sp_cell:i32 plain:i32] -> void
+  (fn emit_import [l:(ptr lower_arm64.L) wa:(ptr wasi_arm64.W) pn:(ptr procs_arm64.N) imp:(ptr wasm_reader.Import) sp_cell:i32 plain:i32] -> void
+    (let c:(ptr buf.Buf) (get l lower_arm64.L.code))
     (let name:str.Bytes (get imp wasm_reader.Import.name))
     (when (call wasi_arm64.emit_import c wa imp) (return))
+    (when (and (neq pn (ptr.null procs_arm64.N))
+               (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_sys_v1")))
+          (when (call procs_arm64.emit_import l pn wa name) (return)))
     (cond
       ((call str.is name "args_sizes_get") (call emit_strings_sizes c sp_cell false))
       ((call str.is name "args_get") (call emit_strings_get c sp_cell false))
@@ -465,7 +470,56 @@
   (fn compile_at [addr:i32 len:i32] -> (ptr Output) (pub)
     (unsafe (call compile (call str.bytes addr len))))
 
+  ;; compile_at with the grants, `run:PROGRAM` lines (--allow-run): the programs the executable
+  ;; may start. Another line (a --listen address) is refused: sockets are not built for AArch64 yet.
+  (fn compile_with_at [addr:i32 len:i32 gaddr:i32 glen:i32] -> (ptr Output) (pub)
+    (unsafe (call compile_with (call str.bytes addr len) (call str.bytes gaddr glen))))
+
   (fn compile [wasm:str.Bytes] -> (ptr Output) (pub)
+    (call compile_with wasm (call str.from_str "")))
+
+  ;; The programs the grants name (the `run:` lines), or why the grants cannot be had.
+  (fn split_grants [text:str.Bytes runs:(ptr (vec.Vec str.Bytes)) problem:(ptr buf.Buf)] -> void
+    (let start:i32 0)
+    (let n:i32 (get text str.Bytes.len))
+    (for i 0 (+ n 1)
+      (when (or (eq i n) (eq (call str.byte_at text i) 10))
+        (let line:str.Bytes (call str.slice text start (- i start)))
+        (set! start (+ i 1))
+        (let len:i32 (get line str.Bytes.len))
+        (when (gt len 0)
+          (if (and (gte len 4)
+                   (and (and (eq (call str.byte_at line 0) 114) (eq (call str.byte_at line 1) 117))
+                        (and (eq (call str.byte_at line 2) 110) (eq (call str.byte_at line 3) 58))))
+              (block
+                (let program:str.Bytes (call str.slice line 4 (- len 4)))
+                (if (gt (get program str.Bytes.len) (call procs_arm64.max_grant))
+                    (block
+                      (call buf.push_str problem "--allow-run ")
+                      (call buf.push_bytes problem program)
+                      (call buf.push_str problem ": the program's path is longer than 256 bytes, the most a native executable's grant holds"))
+                    (call (vec.push str.Bytes) runs program)))
+              (block
+                (call buf.push_str problem "--target arm64: --listen is not built for AArch64 yet")))))))
+
+  ;; Whether the module imports one of aipl_sys_v1's process operations.
+  (fn imports_procs [l:(ptr lower_arm64.L)] -> bool
+    (let imports:(ptr (vec.Vec (ptr wasm_reader.Import))) (get l lower_arm64.L.fimports))
+    (for i 0 (call (vec.len (ptr wasm_reader.Import)) imports)
+      (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) imports i))
+      (when (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_sys_v1"))
+        (let name:str.Bytes (get imp wasm_reader.Import.name))
+        (when (or (or (call str.is name "spawn") (call str.is name "stream"))
+                  (or (or (call str.is name "read") (call str.is name "write"))
+                      (or (call str.is name "close") (or (call str.is name "wait") (call str.is name "exec")))))
+              (return true))))
+    false)
+
+  (fn compile_with [wasm:str.Bytes grants:str.Bytes] -> (ptr Output) (pub)
+    (let problem:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let runs:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
+    (call split_grants grants runs problem)
+    (when (gt (call buf.len problem) 0) (return (call failure (call buf.bytes problem))))
     (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
     (when (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))))
     (let entry_fn:i32 (call export_func w "_start"))
@@ -480,6 +534,7 @@
     (let wa:(ptr wasi_arm64.W) (call wasi_arm64.make l))
     ;; the stack pointer as the process started: the arguments and the environment
     (let sp_cell:i32 (call lower_arm64.data_zeros l 8))
+    (let pn:(ptr procs_arm64.N) (if (call imports_procs l) (call procs_arm64.make l runs sp_cell) (ptr.null procs_arm64.N)))
     (put l lower_arm64.L.results (call lower_arm64.data_zeros l (call lower_arm64.results_size)))
     (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get w wasm_reader.Wasm.globals))
     (let gb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
@@ -572,7 +627,7 @@
     (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (+ nfuncs 1)))
     (for i 0 nimports
       (call (vec.push i32) starts (call buf.len c))
-      (call emit_import c wa (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell (get routines backtrace_arm64.Routines.plain)))
+      (call emit_import l wa pn (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell (get routines backtrace_arm64.Routines.plain)))
     (for i nimports nfuncs
       (when (get l lower_arm64.L.failed) (break))
       (call (vec.push i32) starts (call buf.len c))

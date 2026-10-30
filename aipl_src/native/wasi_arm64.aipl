@@ -78,13 +78,13 @@
 
   ;; ===== Building blocks =====
 
-  (fn imm [c:(ptr buf.Buf) rd:i32 v:i32] -> void
+  (fn imm [c:(ptr buf.Buf) rd:i32 v:i32] -> void (pub)
     (call arm64.mov_imm c 64 rd (i64.extend_s v)))
 
   ;; x(reg) = argument i of n, an i32 (zero-extended) or an i64
-  (fn arg_w [c:(ptr buf.Buf) n:i32 i:i32 reg:i32] -> void
+  (fn arg_w [c:(ptr buf.Buf) n:i32 i:i32 reg:i32] -> void (pub)
     (call arm64.ldr_w c reg 27 (* 16 (- (- n 1) i))))
-  (fn arg_x [c:(ptr buf.Buf) n:i32 i:i32 reg:i32] -> void
+  (fn arg_x [c:(ptr buf.Buf) n:i32 i:i32 reg:i32] -> void (pub)
     (call arm64.ldr_x c reg 27 (* 16 (- (- n 1) i))))
 
   (fn patch_all [c:(ptr buf.Buf) at:(ptr (vec.Vec i32))] -> void (pub)
@@ -96,7 +96,7 @@
 
   ;; Branches to `faults` unless [addr, addr + len) is inside memory (addr and
   ;; len zero-extended registers; clobbers x12 and x15).
-  (fn check [c:(ptr buf.Buf) w:(ptr W) addr:i32 len:i32 faults:(ptr (vec.Vec i32))] -> void
+  (fn check [c:(ptr buf.Buf) w:(ptr W) addr:i32 len:i32 faults:(ptr (vec.Vec i32))] -> void (pub)
     (call imm c 15 (get w W.pages_cell))
     (call arm64.ldr_x c 15 15 0)
     (call arm64.lsl_ri c 64 15 15 16)
@@ -126,14 +126,26 @@
     (call arm64.patch_cond c off (call buf.len c)))
 
   ;; the start and the ends of a routine
-  (fn prologue [c:(ptr buf.Buf)] -> void
+  (fn prologue [c:(ptr buf.Buf)] -> void (pub)
     (call arm64.mov_sp c 64 27 31)
     (call arm64.mov_rr c 64 26 30))
 
-  (fn ret_errno [c:(ptr buf.Buf) errno:i32] -> void
+  (fn ret_errno [c:(ptr buf.Buf) errno:i32] -> void (pub)
     (call arm64.mov_sp c 64 31 27)
     (call imm c 0 errno)
     (call arm64.br c 26))
+
+  ;; return x0 as it is
+  (fn ret_x0 [c:(ptr buf.Buf)] -> void (pub)
+    (call arm64.mov_sp c 64 31 27)
+    (call arm64.br c 26))
+
+  ;; x0 = a Linux result (-errno): minus the WASI errno, through the shared tail (the way
+  ;; aipl_sys_v1's imports report an error)
+  (fn ret_negated [c:(ptr buf.Buf) w:(ptr W)] -> void (pub)
+    (call arm64.mov_sp c 64 31 27)
+    (call arm64.mov_rr c 64 30 26)
+    (call arm64.b_to c (get w W.t_negated)))
 
   ;; x0 = a Linux result (-errno): the WASI errno through the shared tail
   (fn ret_linux [c:(ptr buf.Buf) w:(ptr W)] -> void
@@ -554,7 +566,7 @@
     (call arm64.csel c 64 dst 6 dst (call arm64.cc_eq)))
 
   ;; n bytes from host address x(src) to x(dst) (all registers, kept; clobbers x3 and x4)
-  (fn copy_bytes [c:(ptr buf.Buf) dst:i32 src:i32 n:i32] -> void
+  (fn copy_bytes [c:(ptr buf.Buf) dst:i32 src:i32 n:i32] -> void (pub)
     (call imm c 4 0)
     (let top:i32 (call buf.len c))
     (call arm64.cmp_rr c 64 4 n)

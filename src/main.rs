@@ -513,13 +513,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // `output` holds the module; replace it with the executable
                 let wasm = fs::read(&output)?;
                 if target.as_deref() == Some("arm64") {
-                    // --allow-run is accepted: the process operations are not built for AArch64 yet
-                    // and answer "not supported", so a grant changes nothing
+                    // --allow-run is accepted, as `run:PROGRAM` lines in `listen`
                     if sandbox || listen.iter().any(|g| !g.starts_with("run:")) || serve.is_some() {
                         let _ = fs::remove_file(&output);
                         return Err("--target arm64: --sandbox, --listen, and --serve are not built for AArch64 yet".into());
                     }
-                    let exe_bytes = aipl_core::native::executable_arm64(&wasm).inspect_err(|_| {
+                    let exe_bytes = aipl_core::native::executable_arm64_with(&wasm, &listen).inspect_err(|_| {
                         let _ = fs::remove_file(&output);
                     })?;
                     write_replacing(&output, &exe_bytes)?;
