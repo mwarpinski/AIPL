@@ -102,3 +102,19 @@ fn a_trap_prints_its_reason_and_call_chain() {
     );
     assert_eq!(out.status.code(), Some(134));
 }
+
+/// A load outside memory faults, and the SIGSEGV handler makes it a trap at that instruction:
+/// the x86-64 build's text and call chain.
+#[test]
+fn a_wild_load_is_an_out_of_bounds_trap() {
+    let src = "(module prog\n  (fn peek [a:i32] -> i32 (unsafe (mem.load32 a)))\n  (fn main [] -> i32 (call peek -16)))\n";
+    let exe = build(src);
+    let Some(out) = arm64::run(&exe, &[], b"") else {
+        eprintln!("no AArch64 machine to run on: not run");
+        return;
+    };
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    let (_, rest) = err.split_once(": ").expect("argv[0] and the reason");
+    assert_eq!(rest, "wasm trap: out of bounds memory access\n  at peek (prog.aipl:2:35)\n  at main (prog.aipl:3:22)\n");
+    assert_eq!(out.status.code(), Some(134));
+}

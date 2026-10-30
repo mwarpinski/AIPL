@@ -70,6 +70,7 @@
   (fn trap_table_oob [] -> i32 (pub) 6)
   (fn trap_null_element [] -> i32 (pub) 7)
   (fn trap_bad_signature [] -> i32 (pub) 8)
+  (fn trap_out_of_bounds [] -> i32 (pub) 10)
 
   (fn results_size [] -> i32 (pub) 64)
 

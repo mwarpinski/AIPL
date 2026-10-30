@@ -67,6 +67,24 @@
     (call arm64.mov_imm c 64 2 3i64)
     (call runtime_arm64.emit_syscall c 226))
 
+  ;; rt_sigaction(SIGSEGV, {handler, SA_SIGINFO, no restorer, empty mask}, 0, 8): a load or store
+  ;; outside the committed memory ends in the handler (backtrace_arm64.aipl)
+  (fn emit_install_fault_handler [c:(ptr buf.Buf) handler:i32] -> void
+    (call arm64.sub_ri c 64 31 31 32)
+    (let at:i32 (call arm64.adr c 0))
+    (call arm64.patch_adr c at handler)
+    (call arm64.str_x c 0 31 0)
+    (call arm64.mov_imm c 64 1 4i64)
+    (call arm64.str_x c 1 31 8)
+    (call arm64.str_x c 31 31 16)
+    (call arm64.str_x c 31 31 24)
+    (call arm64.mov_imm c 64 0 11i64)
+    (call arm64.mov_sp c 64 1 31)
+    (call arm64.mov_imm c 64 2 0i64)
+    (call arm64.mov_imm c 64 3 8i64)
+    (call runtime_arm64.emit_syscall c 134)
+    (call arm64.add_ri c 64 31 31 32))
+
   ;; copy len bytes from address `src` to x28 + `dest`
   (fn emit_copy [c:(ptr buf.Buf) src:i32 dest:i32 len:i32] -> void
     (when (gt len 0)
@@ -492,6 +510,7 @@
     (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: uninitialized element"))
     (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: indirect call type mismatch"))
     (call (vec.push str.Bytes) reasons (call str.from_str "exit with invalid exit status outside of [0..126)"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: out of bounds memory access"))
     (let tb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (for i 0 (call (vec.len str.Bytes) reasons)
       (let t:str.Bytes (call (vec.at str.Bytes) reasons i))
@@ -522,7 +541,7 @@
                open:(call lower_arm64.data_text l " (") colon:(call lower_arm64.data_text l ":")
                close:(call lower_arm64.data_text l ")")]))
     (let routines:(ptr backtrace_arm64.Routines)
-         (call backtrace_arm64.emit_routines c texts (call lower_arm64.trap_unreachable) (neq lim (ptr.null wasm_reader.Limits))))
+         (call backtrace_arm64.emit_routines c texts (call lower_arm64.trap_unreachable) (call lower_arm64.trap_out_of_bounds) (neq lim (ptr.null wasm_reader.Limits))))
     (put l lower_arm64.L.trap_routine (get routines backtrace_arm64.Routines.trap))
     (put l lower_arm64.L.unreachable_routine (get routines backtrace_arm64.Routines.unreachable))
     (let entry:i32 (call buf.len c))
@@ -532,6 +551,7 @@
     (when (neq lim (ptr.null wasm_reader.Limits))
           (call emit_reserve_memory c)
           (call emit_commit_memory c (get lim wasm_reader.Limits.min))
+          (call emit_install_fault_handler c (get routines backtrace_arm64.Routines.handler))
           (call arm64.mov_imm c 64 16 (i64.extend_s (get l lower_arm64.L.mem_pages)))
           (call arm64.mov_imm c 64 0 (i64.extend_s (get lim wasm_reader.Limits.min)))
           (call arm64.str_x c 0 16 0)

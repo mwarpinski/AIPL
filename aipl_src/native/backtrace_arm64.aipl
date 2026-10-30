@@ -26,7 +26,7 @@
                  (pub open:i32) (pub colon:i32) (pub close:i32)] (pub))
 
   ;; Where the routines begin.
-  (struct Routines [(pub plain:i32) (pub trap:i32) (pub unreachable:i32)] (pub))
+  (struct Routines [(pub plain:i32) (pub trap:i32) (pub unreachable:i32) (pub handler:i32)] (pub))
 
   (fn imm [c:(ptr buf.Buf) rd:i32 v:i32] -> void
     (call arm64.mov_imm c 64 rd (i64.extend_s v)))
@@ -233,13 +233,27 @@
     (call imm c 0 reason)
     (call arm64.b_to c trap))
 
-  ;; Emits the three routines.
-  (fn emit_routines [c:(ptr buf.Buf) t:(ptr Texts) unreachable_reason:i32 has_memory:bool] -> (ptr Routines) (pub)
+  ;; The SIGSEGV handler (installed by the start-up stub): a load or store outside the
+  ;; committed memory faulted. It runs with x0 = the signal, x1 = the siginfo, x2 = the
+  ;; ucontext, whose machine context holds the interrupted x29 (at 416) and pc (at 440);
+  ;; it goes on as a trap at the next instruction, as if the instruction had called the
+  ;; trap routine (`trap` + 4 is past its saving of the place).
+  (fn emit_fault_handler [c:(ptr buf.Buf) trap:i32 reason:i32] -> void
+    (call arm64.ldr_x c 20 2 440)
+    (call arm64.add_ri c 64 20 20 4)
+    (call arm64.ldr_x c 29 2 416)
+    (call imm c 0 reason)
+    (call arm64.b_to c (+ trap 4)))
+
+  ;; Emits the routines.
+  (fn emit_routines [c:(ptr buf.Buf) t:(ptr Texts) unreachable_reason:i32 fault_reason:i32 has_memory:bool] -> (ptr Routines) (pub)
     (let plain:i32 (call buf.len c))
     (call emit_plain c t)
     (let trap:i32 (call buf.len c))
     (let message_at:i32 (call emit_trap c t))
     (let unreachable:i32 (call buf.len c))
     (call emit_unreachable c t trap message_at unreachable_reason has_memory)
-    (new Routines (call alloc.forever) [plain:plain trap:trap unreachable:unreachable]))
+    (let handler:i32 (call buf.len c))
+    (call emit_fault_handler c trap fault_reason)
+    (new Routines (call alloc.forever) [plain:plain trap:trap unreachable:unreachable handler:handler]))
 )
