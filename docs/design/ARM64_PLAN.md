@@ -1,6 +1,6 @@
 # Native ARM64 backend: implementation plan
 
-**Status: proposed (2026-10-25).** A design for adding native ARM64 (AArch64) execution to AIPL, beginning with Linux AArch64 ELF, while retaining the launcher bundle on macOS Darwin. No code has been written; implementation awaits owner approval.
+**Status: approved 2026-10-29, under way (NA1 and NA2 done).** A design for adding native ARM64 (AArch64) execution to AIPL, beginning with Linux AArch64 ELF, while retaining the launcher bundle on macOS Darwin. The owner approved the plan with the recommended answers to section 6: Linux AArch64 ELF first with the launcher bundle staying the macOS answer; 64 KiB segment alignment for ARM64 only (x86-64's bytes do not change); a sibling `lower_arm64.aipl`; inline division checks; and GitHub's `ubuntu-24.04-arm` runner in the workflow.
 
 Written following the Apple Silicon port and investigation documented in `docs/APPLE_SILICON_REPORT.md` and following the structure of `docs/design/NATIVE_BACKEND_PLAN.md`.
 
@@ -8,8 +8,8 @@ Written following the Apple Silicon port and investigation documented in `docs/A
 
 | Step | What | Status |
 |---|---|---|
-| NA1 | Plan approval & design freeze | **Proposed** (this document) |
-| NA2 | `aipl_src/native/arm64.aipl`: AArch64 32-bit instruction encoder | Not started |
+| NA1 | Plan approval & design freeze | **Done** (2026-10-29) |
+| NA2 | `aipl_src/native/arm64.aipl`: AArch64 32-bit instruction encoder | **Done** (integer, memory, branch, and system forms; floating point waits for NA8) |
 | NA3 | ELF writer updates in `aipl_src/native/elf.aipl`: 64 KiB page alignment & segment 0 at file offset 0 | Not started |
 | NA4 | `runtime_arm64.aipl`: AArch64 Linux syscalls, start-up stub, trap routine, fault handler | Not started |
 | NA5 | `lower_arm64.aipl`: Baseline instruction lowerer for integer arithmetic, locals, constants, memory | Not started |
@@ -214,7 +214,7 @@ Like the original NE1–NE18 tasks in `docs/design/NATIVE_BACKEND_PLAN.md`, each
 
 1. **NA1: Plan Approval**: Owner reviews and approves this design.
 2. **NA2: `arm64.aipl` Encoder**: Implement basic integer arithmetic, data transfer, and branch instructions.
-   *Done when*: Rust unit test checks byte-exact instruction words against `keystone-engine` or `aarch64-linux-gnu-as`.
+   *Done when*: a test checks byte-exact instruction words against an assembler. **Done 2026-10-29**: against Apple's (`clang -arch arm64` on the Mac mini, read back with `otool`), 9,289 words over registers x0-x30 in nine groups (moves and `mov_imm`'s movz/movn/movk sequences, register ALU, multiply and divide, immediate ALU, shifts and extensions, conditional select and compare, loads and stores in every addressing form the lowering needs, branches with patching, system). `tools/arm64_vectors.py` writes the forms as encoder calls and as assembly in one place and regenerates the test region of arm64.aipl (`ssh pennylane` by default); tests/test_native_arm64.rs runs it in the VM and compiled to wasm, on any machine.
 3. **NA3: `elf.aipl` 64 KiB Alignment**: Update ELF writer to support 64 KiB pages and segment 0 at file offset 0.
    *Done when*: Minimal static exit binary runs cleanly on Linux AArch64 and passes Rosetta 2 `ElfMapper` check.
 4. **NA4: `runtime_arm64.aipl`**: Implement AArch64 syscall wrappers, start-up code, `argv[0]` handling, and trap routine.

@@ -1,0 +1,874 @@
+;; arm64: an AArch64 machine-code encoder (native ARM64 backend task NA2,
+;; docs/design/ARM64_PLAN.md). One function per instruction form the lowering
+;; needs, each appending its one 32-bit little-endian word to a code buffer
+;; (std/buf): every A64 instruction is four bytes.
+;;
+;; Registers are numbered as the hardware numbers them: x0-x30 (w0-w30 for 32
+;; bits) are 0-30, and 31 is the stack pointer `sp` or the zero register `zr`,
+;; whichever the instruction form means by it (the immediate forms of add and
+;; sub, and the loads and stores, take sp; the others take zr). `sz` is the
+;; operand size in bits, 32 or 64. A 32-bit write clears the register's upper
+;; half. Operand order is the assembler's: destination first.
+;;
+;; Branches to labels take word offsets: the emitting function returns the
+;; buffer position of the instruction, and `patch_b`, `patch_cond`, or
+;; `patch_adr` point it at its target once that is known.
+;;
+;;   (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+;;   (call arm64.add_rrr c 64 0 1 2)       ;; add x0, x1, x2
+;;   (call arm64.movz c 64 3 4660 16)      ;; movz x3, #0x1234, lsl #16
+;;   (call arm64.ret c)
+(module arm64
+  (import alloc) (import str)
+  (import buf)
+  (import vec)
+
+  ;; (hi << 16) | lo: words with the high bit set, from decimal halves
+  (fn w [hi:i32 lo:i32] -> i32 (bitor (shl hi 16) lo))
+
+  ;; The instruction word `v`, little-endian.
+  (fn emit [c:(ptr buf.Buf) v:i32] -> void (pub)
+    (call buf.push_byte c (bitand v 255))
+    (call buf.push_byte c (bitand (shru v 8) 255))
+    (call buf.push_byte c (bitand (shru v 16) 255))
+    (call buf.push_byte c (bitand (shru v 24) 255)))
+
+  (fn sf [sz:i32] -> i32
+    (req (or (eq sz 32) (eq sz 64)))
+    (if (eq sz 64) (shl 1 31) 0))
+
+  ;; a register field: 0-31
+  (fn r [x:i32] -> i32
+    (req (and (gte x 0) (lte x 31)))
+    x)
+
+  ;; ===== Condition codes (b.cond, csel, ccmp) =====
+  (fn cc_eq [] -> i32 (pub) 0)  (fn cc_ne [] -> i32 (pub) 1)
+  (fn cc_hs [] -> i32 (pub) 2)  (fn cc_lo [] -> i32 (pub) 3)
+  (fn cc_mi [] -> i32 (pub) 4)  (fn cc_pl [] -> i32 (pub) 5)
+  (fn cc_vs [] -> i32 (pub) 6)  (fn cc_vc [] -> i32 (pub) 7)
+  (fn cc_hi [] -> i32 (pub) 8)  (fn cc_ls [] -> i32 (pub) 9)
+  (fn cc_ge [] -> i32 (pub) 10) (fn cc_lt [] -> i32 (pub) 11)
+  (fn cc_gt [] -> i32 (pub) 12) (fn cc_le [] -> i32 (pub) 13)
+  (fn cc_al [] -> i32 (pub) 14)
+
+  ;; The opposite condition (every pair differs in the low bit).
+  (fn invert [cc:i32] -> i32 (pub)
+    (req (and (gte cc 0) (lte cc 13)))
+    (^ cc 1))
+
+  ;; ===== Move wide =====
+
+  ;; sf opc(2) 100101 hw imm16 rd: movn opc 0, movz opc 2, movk opc 3
+  (fn move_wide [c:(ptr buf.Buf) sz:i32 opc:i32 rd:i32 imm16:i32 shift:i32] -> void
+    (req (and (gte imm16 0) (lte imm16 65535)))
+    (req (or (eq shift 0) (or (eq shift 16) (or (and (eq sz 64) (eq shift 32)) (and (eq sz 64) (eq shift 48))))))
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl opc 29)
+                   (bitor (shl 37 23)
+                    (bitor (shl (shru shift 4) 21)
+                     (bitor (shl imm16 5) (call r rd))))))))
+
+  ;; movz rd, #imm16, lsl #shift (0, 16, 32, 48): the rest of rd is zero
+  (fn movz [c:(ptr buf.Buf) sz:i32 rd:i32 imm16:i32 shift:i32] -> void (pub) (call move_wide c sz 2 rd imm16 shift))
+  ;; movk: keeps the rest of rd
+  (fn movk [c:(ptr buf.Buf) sz:i32 rd:i32 imm16:i32 shift:i32] -> void (pub) (call move_wide c sz 3 rd imm16 shift))
+  ;; movn: rd = not (imm16 << shift)
+  (fn movn [c:(ptr buf.Buf) sz:i32 rd:i32 imm16:i32 shift:i32] -> void (pub) (call move_wide c sz 0 rd imm16 shift))
+
+  ;; The halfword `k` (0-3) of v.
+  (fn half [v:i64 k:i32] -> i32 (i32.wrap (bitand (shru v (i64.extend_s (* 16 k))) 65535i64)))
+
+  ;; rd = the constant v (for sz 32, its low 32 bits), in as few movz/movn and
+  ;; movk as it takes: movz if more halfwords are zero than all ones, else movn.
+  (fn mov_imm [c:(ptr buf.Buf) sz:i32 rd:i32 v:i64] -> void (pub)
+    (let n:i32 (if (eq sz 64) 4 2))
+    (let zeros:i32 0)
+    (let ones:i32 0)
+    (for k 0 n
+      (when (eq (call half v k) 0) (set! zeros (+ zeros 1)))
+      (when (eq (call half v k) 65535) (set! ones (+ ones 1))))
+    (let fill:i32 (if (gt ones zeros) 65535 0))
+    ;; the first halfword that is not `fill` starts the sequence
+    (let first:i32 -1)
+    (for k 0 n
+      (when (and (lt first 0) (neq (call half v k) fill)) (set! first k)))
+    (when (lt first 0)
+          ;; all `fill`: movz #0 or movn #0 (all ones)
+          (if (eq fill 0) (call movz c sz rd 0 0) (call movn c sz rd 0 0))
+          (return))
+    (if (eq fill 0)
+        (call movz c sz rd (call half v first) (* 16 first))
+        (call movn c sz rd (^ (call half v first) 65535) (* 16 first)))
+    (for k (+ first 1) n
+      (when (neq (call half v k) fill)
+            (call movk c sz rd (call half v k) (* 16 k)))))
+
+  ;; ===== Add and subtract =====
+
+  ;; sf op S 01011 shift 0 rm imm6 rn rd; shifted register, no shift. rd, rn, rm
+  ;; 31 is zr (the register forms never take sp).
+  (fn addsub_rrr [c:(ptr buf.Buf) sz:i32 op:i32 s:i32 rd:i32 rn:i32 rm:i32] -> void
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl op 30)
+                   (bitor (shl s 29)
+                    (bitor (shl 11 24)
+                     (bitor (shl (call r rm) 16)
+                      (bitor (shl (call r rn) 5) (call r rd)))))))))
+  (fn add_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call addsub_rrr c sz 0 0 rd rn rm))
+  (fn sub_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call addsub_rrr c sz 1 0 rd rn rm))
+  (fn adds_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call addsub_rrr c sz 0 1 rd rn rm))
+  (fn subs_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call addsub_rrr c sz 1 1 rd rn rm))
+  ;; cmp rn, rm (subs zr, rn, rm), cmn
+  (fn cmp_rr [c:(ptr buf.Buf) sz:i32 rn:i32 rm:i32] -> void (pub) (call addsub_rrr c sz 1 1 31 rn rm))
+  (fn cmn_rr [c:(ptr buf.Buf) sz:i32 rn:i32 rm:i32] -> void (pub) (call addsub_rrr c sz 0 1 31 rn rm))
+  ;; neg rd, rm (sub rd, zr, rm)
+  (fn neg [c:(ptr buf.Buf) sz:i32 rd:i32 rm:i32] -> void (pub) (call addsub_rrr c sz 1 0 rd 31 rm))
+
+  ;; sf op S 100010 sh imm12 rn rd: add or sub of a 12-bit immediate (shifted
+  ;; left 12 if `lsl12`). rn 31 is sp; rd 31 is sp, or zr when S is set.
+  (fn addsub_ri [c:(ptr buf.Buf) sz:i32 op:i32 s:i32 rd:i32 rn:i32 imm12:i32 lsl12:bool] -> void
+    (req (and (gte imm12 0) (lte imm12 4095)))
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl op 30)
+                   (bitor (shl s 29)
+                    (bitor (shl 34 23)
+                     (bitor (shl (if lsl12 1 0) 22)
+                      (bitor (shl imm12 10)
+                       (bitor (shl (call r rn) 5) (call r rd))))))))))
+  (fn add_ri [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 imm12:i32] -> void (pub) (call addsub_ri c sz 0 0 rd rn imm12 false))
+  (fn sub_ri [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 imm12:i32] -> void (pub) (call addsub_ri c sz 1 0 rd rn imm12 false))
+  (fn add_ri12 [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 imm12:i32] -> void (pub) (call addsub_ri c sz 0 0 rd rn imm12 true))
+  (fn sub_ri12 [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 imm12:i32] -> void (pub) (call addsub_ri c sz 1 0 rd rn imm12 true))
+  (fn adds_ri [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 imm12:i32] -> void (pub) (call addsub_ri c sz 0 1 rd rn imm12 false))
+  (fn subs_ri [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 imm12:i32] -> void (pub) (call addsub_ri c sz 1 1 rd rn imm12 false))
+  ;; cmp rn, #imm12 (subs zr, rn, #imm12)
+  (fn cmp_ri [c:(ptr buf.Buf) sz:i32 rn:i32 imm12:i32] -> void (pub) (call addsub_ri c sz 1 1 31 rn imm12 false))
+  ;; mov rd, rn where either is sp (add rd, rn, #0)
+  (fn mov_sp [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32] -> void (pub) (call addsub_ri c sz 0 0 rd rn 0 false))
+
+  ;; ===== Logical (shifted register, no shift) =====
+
+  ;; sf opc(2) 01010 shift n rm imm6 rn rd: and 0, orr 1, eor 2, ands 3; n
+  ;; inverts rm (bic, orn, eon, bics)
+  (fn logic_rrr [c:(ptr buf.Buf) sz:i32 opc:i32 n:i32 rd:i32 rn:i32 rm:i32] -> void
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl opc 29)
+                   (bitor (shl 10 24)
+                    (bitor (shl n 21)
+                     (bitor (shl (call r rm) 16)
+                      (bitor (shl (call r rn) 5) (call r rd)))))))))
+  (fn and_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call logic_rrr c sz 0 0 rd rn rm))
+  (fn orr_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call logic_rrr c sz 1 0 rd rn rm))
+  (fn eor_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call logic_rrr c sz 2 0 rd rn rm))
+  (fn ands_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call logic_rrr c sz 3 0 rd rn rm))
+  (fn bic_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call logic_rrr c sz 0 1 rd rn rm))
+  (fn orn_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call logic_rrr c sz 1 1 rd rn rm))
+  (fn eon_rrr [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call logic_rrr c sz 2 1 rd rn rm))
+  ;; tst rn, rm (ands zr, rn, rm)
+  (fn tst_rr [c:(ptr buf.Buf) sz:i32 rn:i32 rm:i32] -> void (pub) (call logic_rrr c sz 3 0 31 rn rm))
+  ;; mov rd, rm (orr rd, zr, rm); mvn rd, rm (orn rd, zr, rm)
+  (fn mov_rr [c:(ptr buf.Buf) sz:i32 rd:i32 rm:i32] -> void (pub) (call logic_rrr c sz 1 0 rd 31 rm))
+  (fn mvn [c:(ptr buf.Buf) sz:i32 rd:i32 rm:i32] -> void (pub) (call logic_rrr c sz 1 1 rd 31 rm))
+
+  ;; ===== Multiply, divide, shift by register, count =====
+
+  ;; sf 0 0 11010110 rm opcode(6) rn rd
+  (fn dp2 [c:(ptr buf.Buf) sz:i32 opcode:i32 rd:i32 rn:i32 rm:i32] -> void
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl 214 21)
+                   (bitor (shl (call r rm) 16)
+                    (bitor (shl opcode 10)
+                     (bitor (shl (call r rn) 5) (call r rd))))))))
+  (fn udiv [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call dp2 c sz 2 rd rn rm))
+  (fn sdiv [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call dp2 c sz 3 rd rn rm))
+  (fn lslv [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call dp2 c sz 8 rd rn rm))
+  (fn lsrv [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call dp2 c sz 9 rd rn rm))
+  (fn asrv [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call dp2 c sz 10 rd rn rm))
+  (fn rorv [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call dp2 c sz 11 rd rn rm))
+
+  ;; sf 00 11011 000 rm o0 ra rn rd: madd (rd = ra + rn * rm), msub (ra - rn * rm)
+  (fn dp3 [c:(ptr buf.Buf) sz:i32 o0:i32 rd:i32 rn:i32 rm:i32 ra:i32] -> void
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl 216 21)
+                   (bitor (shl (call r rm) 16)
+                    (bitor (shl o0 15)
+                     (bitor (shl (call r ra) 10)
+                      (bitor (shl (call r rn) 5) (call r rd)))))))))
+  (fn madd [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32 ra:i32] -> void (pub) (call dp3 c sz 0 rd rn rm ra))
+  (fn msub [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32 ra:i32] -> void (pub) (call dp3 c sz 1 rd rn rm ra))
+  ;; mul rd, rn, rm (madd with zr)
+  (fn mul [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32] -> void (pub) (call dp3 c sz 0 rd rn rm 31))
+
+  ;; sf 1 0 11010110 00000 opcode rn rd: rbit 0, rev 2 (32) or 3 (64), clz 4
+  (fn dp1 [c:(ptr buf.Buf) sz:i32 opcode:i32 rd:i32 rn:i32] -> void
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl 726 21)
+                   (bitor (shl opcode 10)
+                    (bitor (shl (call r rn) 5) (call r rd)))))))
+  (fn rbit [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32] -> void (pub) (call dp1 c sz 0 rd rn))
+  (fn clz [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32] -> void (pub) (call dp1 c sz 4 rd rn))
+
+  ;; ===== Bitfields: shifts and extensions by immediate =====
+
+  ;; sf opc(2) 100110 n immr imms rn rd: sbfm 0, bfm 1, ubfm 2 (n = sf)
+  (fn bitfield [c:(ptr buf.Buf) sz:i32 opc:i32 rd:i32 rn:i32 immr:i32 imms:i32] -> void
+    (req (and (gte immr 0) (lt immr sz)))
+    (req (and (gte imms 0) (lt imms sz)))
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl opc 29)
+                   (bitor (shl 38 23)
+                    (bitor (shl (if (eq sz 64) 1 0) 22)
+                     (bitor (shl immr 16)
+                      (bitor (shl imms 10)
+                       (bitor (shl (call r rn) 5) (call r rd))))))))))
+  ;; lsl rd, rn, #sh (ubfm), lsr (ubfm), asr (sbfm), for 0 < sh < sz (lsr, asr: 0 <= sh)
+  (fn lsl_ri [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 sh:i32] -> void (pub)
+    (req (and (gt sh 0) (lt sh sz)))
+    (call bitfield c sz 2 rd rn (- sz sh) (- (- sz 1) sh)))
+  (fn lsr_ri [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 sh:i32] -> void (pub) (call bitfield c sz 2 rd rn sh (- sz 1)))
+  (fn asr_ri [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 sh:i32] -> void (pub) (call bitfield c sz 0 rd rn sh (- sz 1)))
+  ;; sign and zero extension of the low 8, 16, or (sxtw) 32 bits
+  (fn sxtb [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32] -> void (pub) (call bitfield c sz 0 rd rn 0 7))
+  (fn sxth [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32] -> void (pub) (call bitfield c sz 0 rd rn 0 15))
+  (fn sxtw [c:(ptr buf.Buf) rd:i32 rn:i32] -> void (pub) (call bitfield c 64 0 rd rn 0 31))
+  (fn uxtb [c:(ptr buf.Buf) rd:i32 rn:i32] -> void (pub) (call bitfield c 32 2 rd rn 0 7))
+  (fn uxth [c:(ptr buf.Buf) rd:i32 rn:i32] -> void (pub) (call bitfield c 32 2 rd rn 0 15))
+
+  ;; ===== Conditional select and compare =====
+
+  ;; sf op 0 11010100 rm cond 0 o2 rn rd: csel (op 0, o2 0), csinc (0, 1), csinv (1, 0), csneg (1, 1)
+  (fn csel_op [c:(ptr buf.Buf) sz:i32 op:i32 o2:i32 rd:i32 rn:i32 rm:i32 cc:i32] -> void
+    (req (and (gte cc 0) (lte cc 15)))
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl op 30)
+                   (bitor (shl 212 21)
+                    (bitor (shl (call r rm) 16)
+                     (bitor (shl cc 12)
+                      (bitor (shl o2 10)
+                       (bitor (shl (call r rn) 5) (call r rd))))))))))
+  (fn csel [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32 cc:i32] -> void (pub) (call csel_op c sz 0 0 rd rn rm cc))
+  (fn csinc [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32 cc:i32] -> void (pub) (call csel_op c sz 0 1 rd rn rm cc))
+  (fn csinv [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32 cc:i32] -> void (pub) (call csel_op c sz 1 0 rd rn rm cc))
+  (fn csneg [c:(ptr buf.Buf) sz:i32 rd:i32 rn:i32 rm:i32 cc:i32] -> void (pub) (call csel_op c sz 1 1 rd rn rm cc))
+  ;; cset rd, cc: 1 if the condition holds, else 0 (csinc rd, zr, zr, !cc)
+  (fn cset [c:(ptr buf.Buf) sz:i32 rd:i32 cc:i32] -> void (pub) (call csel_op c sz 0 1 rd 31 31 (call invert cc)))
+
+  ;; ccmp rn, rm|#imm5, #nzcv, cc: if the condition holds, compare as cmp does; else set the flags to nzcv
+  (fn ccmp_rr [c:(ptr buf.Buf) sz:i32 rn:i32 rm:i32 nzcv:i32 cc:i32] -> void (pub)
+    (req (and (gte nzcv 0) (lte nzcv 15)))
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl 489 22)
+                   (bitor (shl (call r rm) 16)
+                    (bitor (shl cc 12)
+                     (bitor (shl (call r rn) 5) nzcv)))))))
+  (fn ccmp_ri [c:(ptr buf.Buf) sz:i32 rn:i32 imm5:i32 nzcv:i32 cc:i32] -> void (pub)
+    (req (and (gte nzcv 0) (lte nzcv 15)))
+    (req (and (gte imm5 0) (lte imm5 31)))
+    (call emit c (bitor (call sf sz)
+                  (bitor (shl 489 22)
+                   (bitor (shl imm5 16)
+                    (bitor (shl cc 12)
+                     (bitor (shl 1 11)
+                      (bitor (shl (call r rn) 5) nzcv))))))))
+
+  ;; ===== Loads and stores =====
+
+  ;; size(2) 111 v 01 opc(2) imm12 rn rt: base register plus an unsigned
+  ;; offset, in units of the access size. rn 31 is sp.
+  (fn mem_uimm [c:(ptr buf.Buf) size:i32 v:i32 opc:i32 rt:i32 rn:i32 imm12:i32] -> void
+    (req (and (gte imm12 0) (lte imm12 4095)))
+    (call emit c (bitor (shl size 30)
+                  (bitor (shl 7 27)
+                   (bitor (shl v 26)
+                    (bitor (shl 1 24)
+                     (bitor (shl opc 22)
+                      (bitor (shl imm12 10)
+                       (bitor (shl (call r rn) 5) (call r rt))))))))))
+  ;; size(2) 111 v 00 opc(2) 0 imm9 00 rn rt: the unscaled offset, -256 to 255 bytes
+  (fn mem_unscaled [c:(ptr buf.Buf) size:i32 v:i32 opc:i32 rt:i32 rn:i32 imm9:i32] -> void
+    (req (and (gte imm9 -256) (lte imm9 255)))
+    (call emit c (bitor (shl size 30)
+                  (bitor (shl 7 27)
+                   (bitor (shl v 26)
+                    (bitor (shl opc 22)
+                     (bitor (shl (bitand imm9 511) 12)
+                      (bitor (shl (call r rn) 5) (call r rt)))))))))
+  ;; size(2) 111 v 00 opc(2) 1 rm option s 10 rn rt: base plus a register, extended and
+  ;; optionally scaled by the access size (s): option 2 uxtw, 3 lsl, 6 sxtw, 7 sxtx
+  (fn mem_reg [c:(ptr buf.Buf) size:i32 v:i32 opc:i32 rt:i32 rn:i32 rm:i32 option:i32 scaled:bool] -> void
+    (call emit c (bitor (shl size 30)
+                  (bitor (shl 7 27)
+                   (bitor (shl v 26)
+                    (bitor (shl opc 22)
+                     (bitor (shl 1 21)
+                      (bitor (shl (call r rm) 16)
+                       (bitor (shl option 13)
+                        (bitor (shl (if scaled 1 0) 12)
+                         (bitor (shl 2 10)
+                          (bitor (shl (call r rn) 5) (call r rt)))))))))))))
+
+  ;; the integer loads and stores: opc 0 stores, 1 loads zero-extended, 2 loads
+  ;; sign-extended to 64 bits, 3 loads sign-extended to 32 bits; size 0 byte,
+  ;; 1 halfword, 2 word, 3 doubleword.
+  (fn str_x [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 3 0 0 rt rn (/ off 8)))
+  (fn ldr_x [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 3 0 1 rt rn (/ off 8)))
+  (fn str_w [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 2 0 0 rt rn (/ off 4)))
+  (fn ldr_w [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 2 0 1 rt rn (/ off 4)))
+  (fn strh [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 1 0 0 rt rn (/ off 2)))
+  (fn ldrh [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 1 0 1 rt rn (/ off 2)))
+  (fn strb [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 0 0 0 rt rn off))
+  (fn ldrb [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 0 0 1 rt rn off))
+  ;; ldrsb/ldrsh/ldrsw into x (sz 64) or (byte, half) w (sz 32)
+  (fn ldrsb [c:(ptr buf.Buf) sz:i32 rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 0 0 (if (eq sz 64) 2 3) rt rn off))
+  (fn ldrsh [c:(ptr buf.Buf) sz:i32 rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 1 0 (if (eq sz 64) 2 3) rt rn (/ off 2)))
+  (fn ldrsw [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_uimm c 2 0 2 rt rn (/ off 4)))
+  ;; the unscaled forms (ldur, stur, ...): any byte offset from -256 to 255
+  (fn stur_x [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_unscaled c 3 0 0 rt rn off))
+  (fn ldur_x [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_unscaled c 3 0 1 rt rn off))
+  (fn stur_w [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_unscaled c 2 0 0 rt rn off))
+  (fn ldur_w [c:(ptr buf.Buf) rt:i32 rn:i32 off:i32] -> void (pub) (call mem_unscaled c 2 0 1 rt rn off))
+  ;; register offsets: [rn, rm, uxtw] (the 32-bit wasm address in rm, zero-extended)
+  (fn ldr_x_uxtw [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 3 0 1 rt rn rm 2 false))
+  (fn str_x_uxtw [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 3 0 0 rt rn rm 2 false))
+  (fn ldr_w_uxtw [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 2 0 1 rt rn rm 2 false))
+  (fn str_w_uxtw [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 2 0 0 rt rn rm 2 false))
+  (fn ldrh_uxtw [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 1 0 1 rt rn rm 2 false))
+  (fn strh_uxtw [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 1 0 0 rt rn rm 2 false))
+  (fn ldrb_uxtw [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 0 0 1 rt rn rm 2 false))
+  (fn strb_uxtw [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 0 0 0 rt rn rm 2 false))
+  (fn ldrsb_uxtw [c:(ptr buf.Buf) sz:i32 rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 0 0 (if (eq sz 64) 2 3) rt rn rm 2 false))
+  (fn ldrsh_uxtw [c:(ptr buf.Buf) sz:i32 rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 1 0 (if (eq sz 64) 2 3) rt rn rm 2 false))
+  (fn ldrsw_uxtw [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 2 0 2 rt rn rm 2 false))
+  ;; [rn, rm] with rm a 64-bit register (lsl #0)
+  (fn ldr_x_reg [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 3 0 1 rt rn rm 3 false))
+  (fn str_x_reg [c:(ptr buf.Buf) rt:i32 rn:i32 rm:i32] -> void (pub) (call mem_reg c 3 0 0 rt rn rm 3 false))
+
+  ;; opc(2) 101 v 0 type(3) l imm7 rt2 rn rt: a pair of x registers; the offset
+  ;; is a multiple of 8, -512 to 504. type 1 post-index, 2 offset, 3 pre-index.
+  (fn pair [c:(ptr buf.Buf) kind:i32 l:i32 rt:i32 rt2:i32 rn:i32 off:i32] -> void
+    (req (and (and (gte off -512) (lte off 504)) (eq (% off 8) 0)))
+    (call emit c (bitor (shl 2 30)
+                  (bitor (shl 5 27)
+                   (bitor (shl kind 23)
+                    (bitor (shl l 22)
+                     (bitor (shl (bitand (/ off 8) 127) 15)
+                      (bitor (shl (call r rt2) 10)
+                       (bitor (shl (call r rn) 5) (call r rt))))))))))
+  ;; stp rt, rt2, [rn, #off]; ldp; the pre-index ([rn, #off]!) and post-index ([rn], #off) forms
+  (fn stp [c:(ptr buf.Buf) rt:i32 rt2:i32 rn:i32 off:i32] -> void (pub) (call pair c 2 0 rt rt2 rn off))
+  (fn ldp [c:(ptr buf.Buf) rt:i32 rt2:i32 rn:i32 off:i32] -> void (pub) (call pair c 2 1 rt rt2 rn off))
+  (fn stp_pre [c:(ptr buf.Buf) rt:i32 rt2:i32 rn:i32 off:i32] -> void (pub) (call pair c 3 0 rt rt2 rn off))
+  (fn ldp_pre [c:(ptr buf.Buf) rt:i32 rt2:i32 rn:i32 off:i32] -> void (pub) (call pair c 3 1 rt rt2 rn off))
+  (fn stp_post [c:(ptr buf.Buf) rt:i32 rt2:i32 rn:i32 off:i32] -> void (pub) (call pair c 1 0 rt rt2 rn off))
+  (fn ldp_post [c:(ptr buf.Buf) rt:i32 rt2:i32 rn:i32 off:i32] -> void (pub) (call pair c 1 1 rt rt2 rn off))
+
+  ;; ===== Branches =====
+  ;; The instruction at buffer position `at`, and the bits of it a patch sets.
+  (fn word_at [c:(ptr buf.Buf) at:i32] -> i32
+    (req (and (gte at 0) (lte (+ at 4) (call buf.len c))))
+    (unsafe (mem.load32 (+ (get c buf.Buf.data) at))))
+
+  (fn set_word [c:(ptr buf.Buf) at:i32 v:i32] -> void
+    (unsafe (let p:i32 (+ (get c buf.Buf.data) at))
+    (for k 0 4
+      (mem.store8 (+ p k) (bitand (shru v (* 8 k)) 255)))))
+
+  ;; b and bl take a 26-bit word offset (imm26); the instruction is emitted
+  ;; with offset 0 and its position returned, for patch_b.
+  (fn b [c:(ptr buf.Buf)] -> i32 (pub)
+    (let at:i32 (call buf.len c))
+    (call emit c (call w 5120 0))
+    at)
+  (fn bl [c:(ptr buf.Buf)] -> i32 (pub)
+    (let at:i32 (call buf.len c))
+    (call emit c (call w 37888 0))
+    at)
+
+  ;; Points the b or bl at buffer position `at` to position `target`, forward or backward.
+  (fn patch_b [c:(ptr buf.Buf) at:i32 target:i32] -> void (pub)
+    (req (eq (% (- target at) 4) 0))
+    (req (and (gte (/ (- target at) 4) -33554432) (lte (/ (- target at) 4) 33554431)))
+    (let off:i32 (/ (- target at) 4))
+    (call set_word c at (bitor (bitand (call word_at c at) -67108864) (bitand off 67108863))))
+
+  ;; b target for a target already in the buffer
+  (fn b_to [c:(ptr buf.Buf) target:i32] -> void (pub)
+    (call patch_b c (call b c) target))
+
+  ;; b.cond, cbz, cbnz take a 19-bit word offset (imm19, bits 5-23): emitted
+  ;; with offset 0, the position returned, for patch_cond.
+  (fn b_cond [c:(ptr buf.Buf) cc:i32] -> i32 (pub)
+    (req (and (gte cc 0) (lte cc 15)))
+    (let at:i32 (call buf.len c))
+    (call emit c (bitor (call w 21504 0) cc))
+    at)
+  ;; sf 011010 op imm19 rt: cbz op 0, cbnz op 1
+  (fn cbz [c:(ptr buf.Buf) sz:i32 rt:i32] -> i32 (pub)
+    (let at:i32 (call buf.len c))
+    (call emit c (bitor (call sf sz) (bitor (call w 13312 0) (call r rt))))
+    at)
+  (fn cbnz [c:(ptr buf.Buf) sz:i32 rt:i32] -> i32 (pub)
+    (let at:i32 (call buf.len c))
+    (call emit c (bitor (call sf sz) (bitor (call w 13568 0) (call r rt))))
+    at)
+  (fn patch_cond [c:(ptr buf.Buf) at:i32 target:i32] -> void (pub)
+    (req (eq (% (- target at) 4) 0))
+    (req (and (gte (/ (- target at) 4) -262144) (lte (/ (- target at) 4) 262143)))
+    (let off:i32 (/ (- target at) 4))
+    (call set_word c at (bitor (bitand (call word_at c at) -16777185) (shl (bitand off 524287) 5))))
+
+  ;; adr rd, label: rd = the address of buffer position `target` (relative to
+  ;; the instruction): emitted with offset 0, patched by patch_adr (a byte
+  ;; offset of 21 bits, immlo in bits 29-30 and immhi in bits 5-23).
+  (fn adr [c:(ptr buf.Buf) rd:i32] -> i32 (pub)
+    (let at:i32 (call buf.len c))
+    (call emit c (bitor (call w 4096 0) (call r rd)))
+    at)
+  (fn patch_adr [c:(ptr buf.Buf) at:i32 target:i32] -> void (pub)
+    (req (and (gte (- target at) -1048576) (lte (- target at) 1048575)))
+    (let off:i32 (- target at))
+    (call set_word c at (bitor (bitand (call word_at c at) -1627389921)
+                          (bitor (shl (bitand off 3) 29) (shl (bitand (shru off 2) 524287) 5)))))
+
+  ;; br rn, blr rn (call), ret (through x30, or rn)
+  (fn br [c:(ptr buf.Buf) rn:i32] -> void (pub) (call emit c (bitor (call w 54815 0) (shl (call r rn) 5))))
+  (fn blr [c:(ptr buf.Buf) rn:i32] -> void (pub) (call emit c (bitor (call w 54847 0) (shl (call r rn) 5))))
+  (fn ret_r [c:(ptr buf.Buf) rn:i32] -> void (pub) (call emit c (bitor (call w 54879 0) (shl (call r rn) 5))))
+  (fn ret [c:(ptr buf.Buf)] -> void (pub) (call ret_r c 30))
+
+  ;; ===== System =====
+
+  ;; svc #imm16: the system call (the number in x8, arguments in x0-x5, the result in x0)
+  (fn svc [c:(ptr buf.Buf) imm16:i32] -> void (pub)
+    (req (and (gte imm16 0) (lte imm16 65535)))
+    (call emit c (bitor (call w 54272 1) (shl imm16 5))))
+  ;; brk #imm16: a breakpoint trap; udf #imm16: the permanently undefined instruction
+  (fn brk [c:(ptr buf.Buf) imm16:i32] -> void (pub)
+    (req (and (gte imm16 0) (lte imm16 65535)))
+    (call emit c (bitor (call w 54304 0) (shl imm16 5))))
+  (fn udf [c:(ptr buf.Buf) imm16:i32] -> void (pub)
+    (req (and (gte imm16 0) (lte imm16 65535)))
+    (call emit c imm16))
+  (fn nop [c:(ptr buf.Buf)] -> void (pub) (call emit c (call w 54531 8223)))
+  ;; dmb ish (a full barrier among the cores), isb
+  (fn dmb_ish [c:(ptr buf.Buf)] -> void (pub) (call emit c (call w 54531 15295)))
+  (fn isb [c:(ptr buf.Buf)] -> void (pub) (call emit c (call w 54531 16351)))
+
+  ;; ===== Self-tests =====
+
+  ;; The buffer as lowercase hex, eight digits per instruction, no separators,
+  ;; each word as it is written in the assembler's output (most significant
+  ;; digit first), so a vector reads like an assembler listing.
+  (fn hex [c:(ptr buf.Buf)] -> str.Bytes
+    (unsafe (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ 2 (* 2 (call buf.len c)))))
+    (for k 0 (/ (call buf.len c) 4)
+      (let v:i32 (mem.load32 (+ (get c buf.Buf.data) (* 4 k))))
+      (for d 0 8
+        (call buf.push_byte out (call hex_digit (bitand (shru v (- 28 (* 4 d))) 15)))))
+    (call buf.bytes out)))
+
+  (fn hex_digit [d:i32] -> i32 (if (lt d 10) (+ 48 d) (+ 87 d)))
+
+  ;; 1 if the buffer holds exactly `expected` (hex), else prints both and 0.
+  (fn check [name:str c:(ptr buf.Buf) expected:str] -> i32
+    (unsafe (let got:str.Bytes (call hex c))
+    (if (call str.bytes_eq got (call str.from_str expected))
+        1
+        (block
+          (sys.print "arm64 test failed:" name "got:")
+          (call buf.clear c)
+          (call buf.push_bytes c got)
+          (call buf.push_byte c 10)
+          (call buf.push_str c "want:")
+          (call buf.push_byte c 10)
+          (call buf.push_str c expected)
+          (call buf.push_byte c 10)
+          (fs.write 1 (get c buf.Buf.data) (call buf.len c))
+          0))))
+
+  ;; ARM64_TESTS_BEGIN
+  ;; Test vectors are the output of Apple's assembler (clang -arch arm64, on a
+  ;; Mac, read back with otool) for the same instruction sequences, pasted in
+  ;; as hex; they are never produced by this encoder (python3
+  ;; tools/arm64_vectors.py regenerates this whole region). Each loop covers every
+  ;; register x0-x30. q(r) = (7r + 3) mod 31 pairs each register with a
+  ;; different one, so every register also appears in the other operands.
+  (fn q [r:i32] -> i32 (% (+ (* r 7) 3) 31))
+
+  (fn test_moves [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (for i 0 31
+      (call movz c 64 i (* (% i 31) 1000) (* (% i 4) 16))
+      (call movk c 64 (call q i) (+ (* (% i 31) 1000) 7) (* (% i 4) 16))
+      (call movn c 64 (call q (call q i)) (+ (* (% i 31) 1000) 3) (* (% i 4) 16))
+      (call movz c 64 i 65535 0)
+      (call movz c 32 i (* (% i 31) 1000) (* (% i 2) 16))
+      (call movk c 32 (call q i) (+ (* (% i 31) 1000) 7) (* (% i 2) 16))
+      (call movn c 32 (call q (call q i)) (+ (* (% i 31) 1000) 3) (* (% i 2) 16))
+      (call movz c 32 i 65535 0)
+      (call mov_imm c 64 i 0i64)
+      (call mov_imm c 64 i 1i64)
+      (call mov_imm c 64 i 65535i64)
+      (call mov_imm c 64 i 65536i64)
+      (call mov_imm c 64 i 4294967295i64)
+      (call mov_imm c 64 i -1i64)
+      (call mov_imm c 64 i -2i64)
+      (call mov_imm c 64 i -65536i64)
+      (call mov_imm c 64 i -65537i64)
+      (call mov_imm c 64 i 305419896i64)
+      (call mov_imm c 64 i 81985529216486895i64)
+      (call mov_imm c 64 i -81985529216486896i64)
+      (call mov_imm c 64 i 4886718345i64)
+      (call mov_imm c 64 i 281470681808895i64)
+      (call mov_imm c 64 i -281470681808896i64)
+      (call mov_imm c 64 i 281474976776192i64)
+      (call mov_imm c 64 i 281474976710656i64)
+      (call mov_imm c 32 i 0i64)
+      (call mov_imm c 32 i 1i64)
+      (call mov_imm c 32 i 65535i64)
+      (call mov_imm c 32 i 65536i64)
+      (call mov_imm c 32 i 4294967295i64)
+      (call mov_imm c 32 i -1i64)
+      (call mov_imm c 32 i -2i64)
+      (call mov_imm c 32 i -65536i64)
+      (call mov_imm c 32 i -65537i64)
+      (call mov_imm c 32 i 305419896i64))
+    (call check "moves" c "d2800000f28000e392800078d29fffe052800000728000e312800078529fffe0d2800000d2800020d29fffe0d2a00020d29fffe0f2bfffe09280000092800020929fffe092a00020d28acf00f2a24680d299bde0f2b13560f2c8ace0f2e02460d2864200f2aeca80f2d75300f2ffdb80d28cf120f2a468a0f2c00020d29fffe0f2dfffe0d2bfffe0f2ffffe0d2a00020f2e00020d2e000205280000052800020529fffe052a0002012800000128000001280002052bfffe012a00020528acf0072a24680d2a07d01f2a07dea92a07d6bd29fffe152a07d0172a07dea12a07d6b529fffe1d2800001d2800021d29fffe1d2a00021d29fffe1f2bfffe19280000192800021929fffe192a00021d28acf01f2a24681d299bde1f2b13561f2c8ace1f2e02461d2864201f2aeca81f2d75301f2ffdb81d28cf121f2a468a1f2c00021d29fffe1f2dfffe1d2bfffe1f2ffffe1d2a00021f2e00021d2e000215280000152800021529fffe152a0002112800001128000011280002152bfffe112a00021528acf0172a24681d2c0fa02f2c0faf192c0fa7dd29fffe25280fa027280faf11280fa7d529fffe2d2800002d2800022d29fffe2d2a00022d29fffe2f2bfffe29280000292800022929fffe292a00022d28acf02f2a24682d299bde2f2b13562f2c8ace2f2e02462d2864202f2aeca82f2d75302f2ffdb82d28cf122f2a468a2f2c00022d29fffe2f2dfffe2d2bfffe2f2ffffe2d2a00022f2e00022d2e000225280000252800022529fffe252a0002212800002128000021280002252bfffe212a00022528acf0272a24682d2e17703f2e177f892e17770d29fffe352a1770372a177f812a17770529fffe3d2800003d2800023d29fffe3d2a00023d29fffe3f2bfffe39280000392800023929fffe392a00023d28acf03f2a24683d299bde3f2b13563f2c8ace3f2e02463d2864203f2aeca83f2d75303f2ffdb83d28cf123f2a468a3f2c00023d29fffe3f2dfffe3d2bfffe3f2ffffe3d2a00023f2e00023d2e000235280000352800023529fffe352a0002312800003128000031280002352bfffe312a00023528acf0372a24683d281f404f281f4e09281f463d29fffe45281f4047281f4e01281f463529fffe4d2800004d2800024d29fffe4d2a00024d29fffe4f2bfffe49280000492800024929fffe492a00024d28acf04f2a24684d299bde4f2b13564f2c8ace4f2e02464d2864204f2aeca84f2d75304f2ffdb84d28cf124f2a468a4f2c00024d29fffe4f2dfffe4d2bfffe4f2ffffe4d2a00024f2e00024d2e000245280000452800024529fffe452a0002412800004128000041280002452bfffe412a00024528acf0472a24684d2a27105f2a271e792a27175d29fffe552a2710572a271e712a27175529fffe5d2800005d2800025d29fffe5d2a00025d29fffe5f2bfffe59280000592800025929fffe592a00025d28acf05f2a24685d299bde5f2b13565f2c8ace5f2e02465d2864205f2aeca85f2d75305f2ffdb85d28cf125f2a468a5f2c00025d29fffe5f2dfffe5d2bfffe5f2ffffe5d2a00025f2e00025d2e000255280000552800025529fffe552a0002512800005128000051280002552bfffe512a00025528acf0572a24685d2c2ee06f2c2eeee92c2ee68d29fffe65282ee067282eeee1282ee68529fffe6d2800006d2800026d29fffe6d2a00026d29fffe6f2bfffe69280000692800026929fffe692a00026d28acf06f2a24686d299bde6f2b13566f2c8ace6f2e02466d2864206f2aeca86f2d75306f2ffdb86d28cf126f2a468a6f2c00026d29fffe6f2dfffe6d2bfffe6f2ffffe6d2a00026f2e00026d2e000265280000652800026529fffe652a0002612800006128000061280002652bfffe612a00026528acf0672a24686d2e36b07f2e36bf592e36b7ad29fffe752a36b0772a36bf512a36b7a529fffe7d2800007d2800027d29fffe7d2a00027d29fffe7f2bfffe79280000792800027929fffe792a00027d28acf07f2a24687d299bde7f2b13567f2c8ace7f2e02467d2864207f2aeca87f2d75307f2ffdb87d28cf127f2a468a7f2c00027d29fffe7f2dfffe7d2bfffe7f2ffffe7d2a00027f2e00027d2e000275280000752800027529fffe752a0002712800007128000071280002752bfffe712a00027528acf0772a24687d283e808f283e8fc9283e86dd29fffe85283e8087283e8fc1283e86d529fffe8d2800008d2800028d29fffe8d2a00028d29fffe8f2bfffe89280000892800028929fffe892a00028d28acf08f2a24688d299bde8f2b13568f2c8ace8f2e02468d2864208f2aeca88f2d75308f2ffdb88d28cf128f2a468a8f2c00028d29fffe8f2dfffe8d2bfffe8f2ffffe8d2a00028f2e00028d2e000285280000852800028529fffe852a0002812800008128000081280002852bfffe812a00028528acf0872a24688d2a46509f2a465e492a46560d29fffe952a4650972a465e412a46560529fffe9d2800009d2800029d29fffe9d2a00029d29fffe9f2bfffe99280000992800029929fffe992a00029d28acf09f2a24689d299bde9f2b13569f2c8ace9f2e02469d2864209f2aeca89f2d75309f2ffdb89d28cf129f2a468a9f2c00029d29fffe9f2dfffe9d2bfffe9f2ffffe9d2a00029f2e00029d2e000295280000952800029529fffe952a0002912800009128000091280002952bfffe912a00029528acf0972a24689d2c4e20af2c4e2eb92c4e272d29fffea5284e20a7284e2eb1284e272529fffead280000ad280002ad29fffead2a0002ad29fffeaf2bfffea9280000a9280002a929fffea92a0002ad28acf0af2a2468ad299bdeaf2b1356af2c8aceaf2e0246ad286420af2aeca8af2d7530af2ffdb8ad28cf12af2a468aaf2c0002ad29fffeaf2dfffead2bfffeaf2ffffead2a0002af2e0002ad2e0002a5280000a5280002a529fffea52a0002a1280000a1280000a1280002a52bfffea12a0002a528acf0a72a2468ad2e55f0bf2e55ff292e55f65d29fffeb52a55f0b72a55ff212a55f65529fffebd280000bd280002bd29fffebd2a0002bd29fffebf2bfffeb9280000b9280002b929fffeb92a0002bd28acf0bf2a2468bd299bdebf2b1356bf2c8acebf2e0246bd286420bf2aeca8bf2d7530bf2ffdb8bd28cf12bf2a468abf2c0002bd29fffebf2dfffebd2bfffebf2ffffebd2a0002bf2e0002bd2e0002b5280000b5280002b529fffeb52a0002b1280000b1280000b1280002b52bfffeb12a0002b528acf0b72a2468bd285dc0cf285dcf99285dc77d29fffec5285dc0c7285dcf91285dc77529fffecd280000cd280002cd29fffecd2a0002cd29fffecf2bfffec9280000c9280002c929fffec92a0002cd28acf0cf2a2468cd299bdecf2b1356cf2c8acecf2e0246cd286420cf2aeca8cf2d7530cf2ffdb8cd28cf12cf2a468acf2c0002cd29fffecf2dfffecd2bfffecf2ffffecd2a0002cf2e0002cd2e0002c5280000c5280002c529fffec52a0002c1280000c1280000c1280002c52bfffec12a0002c528acf0c72a2468cd2a6590df2a659e192a6596ad29fffed52a6590d72a659e112a6596a529fffedd280000dd280002dd29fffedd2a0002dd29fffedf2bfffed9280000d9280002d929fffed92a0002dd28acf0df2a2468dd299bdedf2b1356df2c8acedf2e0246dd286420df2aeca8df2d7530df2ffdb8dd28cf12df2a468adf2c0002dd29fffedf2dfffedd2bfffedf2ffffedd2a0002df2e0002dd2e0002d5280000d5280002d529fffed52a0002d1280000d1280000d1280002d52bfffed12a0002d528acf0d72a2468dd2c6d60ef2c6d6e892c6d67cd29fffee5286d60e7286d6e81286d67c529fffeed280000ed280002ed29fffeed2a0002ed29fffeef2bfffee9280000e9280002e929fffee92a0002ed28acf0ef2a2468ed299bdeef2b1356ef2c8aceef2e0246ed286420ef2aeca8ef2d7530ef2ffdb8ed28cf12ef2a468aef2c0002ed29fffeef2dfffeed2bfffeef2ffffeed2a0002ef2e0002ed2e0002e5280000e5280002e529fffee52a0002e1280000e1280000e1280002e52bfffee12a0002e528acf0e72a2468ed2e7530ff2e753ef92e7536fd29fffef52a7530f72a753ef12a7536f529fffefd280000fd280002fd29fffefd2a0002fd29fffeff2bfffef9280000f9280002f929fffef92a0002fd28acf0ff2a2468fd299bdeff2b1356ff2c8aceff2e0246fd286420ff2aeca8ff2d7530ff2ffdb8fd28cf12ff2a468aff2c0002fd29fffeff2dfffefd2bfffeff2ffffefd2a0002ff2e0002fd2e0002f5280000f5280002f529fffef52a0002f1280000f1280000f1280002f52bfffef12a0002f528acf0f72a2468fd287d010f287d0f69287d062d29ffff05287d0107287d0f61287d062529ffff0d2800010d2800030d29ffff0d2a00030d29ffff0f2bffff09280001092800030929ffff092a00030d28acf10f2a24690d299bdf0f2b13570f2c8acf0f2e02470d2864210f2aeca90f2d75310f2ffdb90d28cf130f2a468b0f2c00030d29ffff0f2dffff0d2bffff0f2fffff0d2a00030f2e00030d2e000305280001052800030529ffff052a0003012800010128000101280003052bffff012a00030528acf1072a24690d2a84d11f2a84dfd92a84d74d29ffff152a84d1172a84dfd12a84d74529ffff1d2800011d2800031d29ffff1d2a00031d29ffff1f2bffff19280001192800031929ffff192a00031d28acf11f2a24691d299bdf1f2b13571f2c8acf1f2e02471d2864211f2aeca91f2d75311f2ffdb91d28cf131f2a468b1f2c00031d29ffff1f2dffff1d2bffff1f2fffff1d2a00031f2e00031d2e000315280001152800031529ffff152a0003112800011128000111280003152bffff112a00031528acf1172a24691d2c8ca12f2c8cae592c8ca67d29ffff25288ca127288cae51288ca67529ffff2d2800012d2800032d29ffff2d2a00032d29ffff2f2bffff29280001292800032929ffff292a00032d28acf12f2a24692d299bdf2f2b13572f2c8acf2f2e02472d2864212f2aeca92f2d75312f2ffdb92d28cf132f2a468b2f2c00032d29ffff2f2dffff2d2bffff2f2fffff2d2a00032f2e00032d2e000325280001252800032529ffff252a0003212800012128000121280003252bffff212a00032528acf1272a24692d2e94713f2e947ec92e94779d29ffff352a9471372a947ec12a94779529ffff3d2800013d2800033d29ffff3d2a00033d29ffff3f2bffff39280001392800033929ffff392a00033d28acf13f2a24693d299bdf3f2b13573f2c8acf3f2e02473d2864213f2aeca93f2d75313f2ffdb93d28cf133f2a468b3f2c00033d29ffff3f2dffff3d2bffff3f2fffff3d2a00033f2e00033d2e000335280001352800033529ffff352a0003312800013128000131280003352bffff312a00033528acf1372a24693d289c414f289c4f39289c46cd29ffff45289c4147289c4f31289c46c529ffff4d2800014d2800034d29ffff4d2a00034d29ffff4f2bffff49280001492800034929ffff492a00034d28acf14f2a24694d299bdf4f2b13574f2c8acf4f2e02474d2864214f2aeca94f2d75314f2ffdb94d28cf134f2a468b4f2c00034d29ffff4f2dffff4d2bffff4f2fffff4d2a00034f2e00034d2e000345280001452800034529ffff452a0003412800014128000141280003452bffff412a00034528acf1472a24694d2aa4115f2aa41fa92aa417ed29ffff552aa411572aa41fa12aa417e529ffff5d2800015d2800035d29ffff5d2a00035d29ffff5f2bffff59280001592800035929ffff592a00035d28acf15f2a24695d299bdf5f2b13575f2c8acf5f2e02475d2864215f2aeca95f2d75315f2ffdb95d28cf135f2a468b5f2c00035d29ffff5f2dffff5d2bffff5f2fffff5d2a00035f2e00035d2e000355280001552800035529ffff552a0003512800015128000151280003552bffff512a00035528acf1572a24695d2cabe16f2cabee292cabe71d29ffff6528abe16728abee2128abe71529ffff6d2800016d2800036d29ffff6d2a00036d29ffff6f2bffff69280001692800036929ffff692a00036d28acf16f2a24696d299bdf6f2b13576f2c8acf6f2e02476d2864216f2aeca96f2d75316f2ffdb96d28cf136f2a468b6f2c00036d29ffff6f2dffff6d2bffff6f2fffff6d2a00036f2e00036d2e000365280001652800036529ffff652a0003612800016128000161280003652bffff612a00036528acf1672a24696d2eb3b17f2eb3be992eb3b64d29ffff752ab3b1772ab3be912ab3b64529ffff7d2800017d2800037d29ffff7d2a00037d29ffff7f2bffff79280001792800037929ffff792a00037d28acf17f2a24697d299bdf7f2b13577f2c8acf7f2e02477d2864217f2aeca97f2d75317f2ffdb97d28cf137f2a468b7f2c00037d29ffff7f2dffff7d2bffff7f2fffff7d2a00037f2e00037d2e000375280001752800037529ffff752a0003712800017128000171280003752bffff712a00037528acf1772a24697d28bb818f28bb8f0928bb876d29ffff8528bb818728bb8f0128bb876529ffff8d2800018d2800038d29ffff8d2a00038d29ffff8f2bffff89280001892800038929ffff892a00038d28acf18f2a24698d299bdf8f2b13578f2c8acf8f2e02478d2864218f2aeca98f2d75318f2ffdb98d28cf138f2a468b8f2c00038d29ffff8f2dffff8d2bffff8f2fffff8d2a00038f2e00038d2e000385280001852800038529ffff852a0003812800018128000181280003852bffff812a00038528acf1872a24698d2ac3519f2ac35f792ac3569d29ffff952ac351972ac35f712ac3569529ffff9d2800019d2800039d29ffff9d2a00039d29ffff9f2bffff99280001992800039929ffff992a00039d28acf19f2a24699d299bdf9f2b13579f2c8acf9f2e02479d2864219f2aeca99f2d75319f2ffdb99d28cf139f2a468b9f2c00039d29ffff9f2dffff9d2bffff9f2fffff9d2a00039f2e00039d2e000395280001952800039529ffff952a0003912800019128000191280003952bffff912a00039528acf1972a24699d2ccb21af2ccb2fe92ccb27bd29ffffa528cb21a728cb2fe128cb27b529ffffad280001ad280003ad29ffffad2a0003ad29ffffaf2bffffa9280001a9280003a929ffffa92a0003ad28acf1af2a2469ad299bdfaf2b1357af2c8acfaf2e0247ad286421af2aeca9af2d7531af2ffdb9ad28cf13af2a468baf2c0003ad29ffffaf2dffffad2bffffaf2fffffad2a0003af2e0003ad2e0003a5280001a5280003a529ffffa52a0003a1280001a1280001a1280003a52bffffa12a0003a528acf1a72a2469ad2ed2f1bf2ed2fe692ed2f6ed29ffffb52ad2f1b72ad2fe612ad2f6e529ffffbd280001bd280003bd29ffffbd2a0003bd29ffffbf2bffffb9280001b9280003b929ffffb92a0003bd28acf1bf2a2469bd299bdfbf2b1357bf2c8acfbf2e0247bd286421bf2aeca9bf2d7531bf2ffdb9bd28cf13bf2a468bbf2c0003bd29ffffbf2dffffbd2bffffbf2fffffbd2a0003bf2e0003bd2e0003b5280001b5280003b529ffffb52a0003b1280001b1280001b1280003b52bffffb12a0003b528acf1b72a2469bd28dac1cf28daced928dac61d29ffffc528dac1c728daced128dac61529ffffcd280001cd280003cd29ffffcd2a0003cd29ffffcf2bffffc9280001c9280003c929ffffc92a0003cd28acf1cf2a2469cd299bdfcf2b1357cf2c8acfcf2e0247cd286421cf2aeca9cf2d7531cf2ffdb9cd28cf13cf2a468bcf2c0003cd29ffffcf2dffffcd2bffffcf2fffffcd2a0003cf2e0003cd2e0003c5280001c5280003c529ffffc52a0003c1280001c1280001c1280003c52bffffc12a0003c528acf1c72a2469cd2ae291df2ae29f492ae2973d29ffffd52ae291d72ae29f412ae2973529ffffdd280001dd280003dd29ffffdd2a0003dd29ffffdf2bffffd9280001d9280003d929ffffd92a0003dd28acf1df2a2469dd299bdfdf2b1357df2c8acfdf2e0247dd286421df2aeca9df2d7531df2ffdb9dd28cf13df2a468bdf2c0003dd29ffffdf2dffffdd2bffffdf2fffffdd2a0003df2e0003dd2e0003d5280001d5280003d529ffffd52a0003d1280001d1280001d1280003d52bffffd12a0003d528acf1d72a2469dd2cea61ef2cea6fb92cea666d29ffffe528ea61e728ea6fb128ea666529ffffed280001ed280003ed29ffffed2a0003ed29ffffef2bffffe9280001e9280003e929ffffe92a0003ed28acf1ef2a2469ed299bdfef2b1357ef2c8acfef2e0247ed286421ef2aeca9ef2d7531ef2ffdb9ed28cf13ef2a468bef2c0003ed29ffffef2dffffed2bffffef2fffffed2a0003ef2e0003ed2e0003e5280001e5280003e529ffffe52a0003e1280001e1280001e1280003e52bffffe12a0003e528acf1e72a2469e"))
+
+  (fn test_alu_reg [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (for i 0 31
+      (call add_rrr c 64 i (call q i) (call q (call q i)))
+      (call add_rrr c 32 (call q i) i (call q (call q i)))
+      (call sub_rrr c 64 i (call q i) (call q (call q i)))
+      (call sub_rrr c 32 (call q i) i (call q (call q i)))
+      (call adds_rrr c 64 i (call q i) (call q (call q i)))
+      (call adds_rrr c 32 (call q i) i (call q (call q i)))
+      (call subs_rrr c 64 i (call q i) (call q (call q i)))
+      (call subs_rrr c 32 (call q i) i (call q (call q i)))
+      (call and_rrr c 64 i (call q i) (call q (call q i)))
+      (call and_rrr c 32 (call q i) i (call q (call q i)))
+      (call orr_rrr c 64 i (call q i) (call q (call q i)))
+      (call orr_rrr c 32 (call q i) i (call q (call q i)))
+      (call eor_rrr c 64 i (call q i) (call q (call q i)))
+      (call eor_rrr c 32 (call q i) i (call q (call q i)))
+      (call ands_rrr c 64 i (call q i) (call q (call q i)))
+      (call ands_rrr c 32 (call q i) i (call q (call q i)))
+      (call bic_rrr c 64 i (call q i) (call q (call q i)))
+      (call bic_rrr c 32 (call q i) i (call q (call q i)))
+      (call orn_rrr c 64 i (call q i) (call q (call q i)))
+      (call orn_rrr c 32 (call q i) i (call q (call q i)))
+      (call eon_rrr c 64 i (call q i) (call q (call q i)))
+      (call eon_rrr c 32 (call q i) i (call q (call q i)))
+      (call cmp_rr c 64 i (call q i))
+      (call cmn_rr c 64 i (call q i))
+      (call tst_rr c 64 i (call q i))
+      (call neg c 64 i (call q i))
+      (call mvn c 64 i (call q i))
+      (call mov_rr c 64 i (call q i))
+      (call cmp_rr c 32 i (call q i))
+      (call cmn_rr c 32 i (call q i))
+      (call tst_rr c 32 i (call q i))
+      (call neg c 32 i (call q i))
+      (call mvn c 32 i (call q i))
+      (call mov_rr c 32 i (call q i)))
+    (call add_rrr c 64 5 31 31)
+    (call sub_rrr c 32 31 5 6)
+    (call mov_rr c 64 31 7)
+    (call cmp_rr c 64 31 7)
+    (call check "alu_reg" c "8b1800600b180003cb1800604b180003ab1800602b180003eb1800606b1800038a1800600a180003aa1800602a180003ca1800604a180003ea1800606a1800038a3800600a380003aa3800602a380003ca3800604a380003eb03001fab03001fea03001fcb0303e0aa2303e0aa0303e06b03001f2b03001f6a03001f4b0303e02a2303e02a0303e08b0b01410b0b002acb0b01414b0b002aab0b01412b0b002aeb0b01416b0b002a8a0b01410a0b002aaa0b01412a0b002aca0b01414a0b002aea0b01416a0b002a8a2b01410a2b002aaa2b01412a2b002aca2b01414a2b002aeb0a003fab0a003fea0a003fcb0a03e1aa2a03e1aa0a03e16b0a003f2b0a003f6a0a003f4b0a03e12a2a03e12a0a03e18b1d02220b1d0051cb1d02224b1d0051ab1d02222b1d0051eb1d02226b1d00518a1d02220a1d0051aa1d02222a1d0051ca1d02224a1d0051ea1d02226a1d00518a3d02220a3d0051aa3d02222a3d0051ca3d02224a3d0051eb11005fab11005fea11005fcb1103e2aa3103e2aa1103e26b11005f2b11005f6a11005f4b1103e22a3103e22a1103e28b1003030b100078cb1003034b100078ab1003032b100078eb1003036b1000788a1003030a100078aa1003032a100078ca1003034a100078ea1003036a1000788a3003030a300078aa3003032a300078ca3003034a300078eb18007fab18007fea18007fcb1803e3aa3803e3aa1803e36b18007f2b18007f6a18007f4b1803e32a3803e32a1803e38b0300040b030080cb0300044b030080ab0300042b030080eb0300046b0300808a0300040a030080aa0300042a030080ca0300044a030080ea0300046a0300808a2300040a230080aa2300042a230080ca2300044a230080eb00009fab00009fea00009fcb0003e4aa2003e4aa0003e46b00009f2b00009f6a00009f4b0003e42a2003e42a0003e48b1500e50b1500a7cb1500e54b1500a7ab1500e52b1500a7eb1500e56b1500a78a1500e50a1500a7aa1500e52a1500a7ca1500e54a1500a7ea1500e56a1500a78a3500e50a3500a7aa3500e52a3500a7ca3500e54a3500a7eb0700bfab0700bfea0700bfcb0703e5aa2703e5aa0703e56b0700bf2b0700bf6a0700bf4b0703e52a2703e52a0703e58b0801c60b0800cecb0801c64b0800ceab0801c62b0800ceeb0801c66b0800ce8a0801c60a0800ceaa0801c62a0800ceca0801c64a0800ceea0801c66a0800ce8a2801c60a2800ceaa2801c62a2800ceca2801c64a2800ceeb0e00dfab0e00dfea0e00dfcb0e03e6aa2e03e6aa0e03e66b0e00df2b0e00df6a0e00df4b0e03e62a2e03e62a0e03e68b1a02a70b1a00f5cb1a02a74b1a00f5ab1a02a72b1a00f5eb1a02a76b1a00f58a1a02a70a1a00f5aa1a02a72a1a00f5ca1a02a74a1a00f5ea1a02a76a1a00f58a3a02a70a3a00f5aa3a02a72a3a00f5ca3a02a74a3a00f5eb1500ffab1500ffea1500ffcb1503e7aa3503e7aa1503e76b1500ff2b1500ff6a1500ff4b1503e72a3503e72a1503e78b0d03880b0d011ccb0d03884b0d011cab0d03882b0d011ceb0d03886b0d011c8a0d03880a0d011caa0d03882a0d011cca0d03884a0d011cea0d03886a0d011c8a2d03880a2d011caa2d03882a2d011cca2d03884a2d011ceb1c011fab1c011fea1c011fcb1c03e8aa3c03e8aa1c03e86b1c011f2b1c011f6a1c011f4b1c03e82a3c03e82a1c03e88b0000890b000124cb0000894b000124ab0000892b000124eb0000896b0001248a0000890a000124aa0000892a000124ca0000894a000124ea0000896a0001248a2000890a200124aa2000892a200124ca2000894a200124eb04013fab04013fea04013fcb0403e9aa2403e9aa0403e96b04013f2b04013f6a04013f4b0403e92a2403e92a0403e98b12016a0b12014bcb12016a4b12014bab12016a2b12014beb12016a6b12014b8a12016a0a12014baa12016a2a12014bca12016a4a12014bea12016a6a12014b8a32016a0a32014baa32016a2a32014bca32016a4a32014beb0b015fab0b015fea0b015fcb0b03eaaa2b03eaaa0b03ea6b0b015f2b0b015f6a0b015f4b0b03ea2a2b03ea2a0b03ea8b05024b0b050172cb05024b4b050172ab05024b2b050172eb05024b6b0501728a05024b0a050172aa05024b2a050172ca05024b4a050172ea05024b6a0501728a25024b0a250172aa25024b2a250172ca25024b4a250172eb12017fab12017fea12017fcb1203ebaa3203ebaa1203eb6b12017f2b12017f6a12017f4b1203eb2a3203eb2a1203eb8b17032c0b170199cb17032c4b170199ab17032c2b170199eb17032c6b1701998a17032c0a170199aa17032c2a170199ca17032c4a170199ea17032c6a1701998a37032c0a370199aa37032c2a370199ca37032c4a370199eb19019fab19019fea19019fcb1903ecaa3903ecaa1903ec6b19019f2b19019f6a19019f4b1903ec2a3903ec2a1903ec8b0a002d0b0a01a1cb0a002d4b0a01a1ab0a002d2b0a01a1eb0a002d6b0a01a18a0a002d0a0a01a1aa0a002d2a0a01a1ca0a002d4a0a01a1ea0a002d6a0a01a18a2a002d0a2a01a1aa2a002d2a2a01a1ca2a002d4a2a01a1eb0101bfab0101bfea0101bfcb0103edaa2103edaa0103ed6b0101bf2b0101bf6a0101bf4b0103ed2a2103ed2a0103ed8b1c010e0b1c01c8cb1c010e4b1c01c8ab1c010e2b1c01c8eb1c010e6b1c01c88a1c010e0a1c01c8aa1c010e2a1c01c8ca1c010e4a1c01c8ea1c010e6a1c01c88a3c010e0a3c01c8aa3c010e2a3c01c8ca3c010e4a3c01c8eb0801dfab0801dfea0801dfcb0803eeaa2803eeaa0803ee6b0801df2b0801df6a0801df4b0803ee2a2803ee2a0803ee8b0f01ef0b0f01efcb0f01ef4b0f01efab0f01ef2b0f01efeb0f01ef6b0f01ef8a0f01ef0a0f01efaa0f01ef2a0f01efca0f01ef4a0f01efea0f01ef6a0f01ef8a2f01ef0a2f01efaa2f01ef2a2f01efca2f01ef4a2f01efeb0f01ffab0f01ffea0f01ffcb0f03efaa2f03efaa0f03ef6b0f01ff2b0f01ff6a0f01ff4b0f03ef2a2f03ef2a0f03ef8b0202d00b020216cb0202d04b020216ab0202d02b020216eb0202d06b0202168a0202d00a020216aa0202d02a020216ca0202d04a020216ea0202d06a0202168a2202d00a220216aa2202d02a220216ca2202d04a220216eb16021fab16021fea16021fcb1603f0aa3603f0aa1603f06b16021f2b16021f6a16021f4b1603f02a3603f02a1603f08b1403b10b14023dcb1403b14b14023dab1403b12b14023deb1403b16b14023d8a1403b10a14023daa1403b12a14023dca1403b14a14023dea1403b16a14023d8a3403b10a34023daa3403b12a34023dca3403b14a34023deb1d023fab1d023fea1d023fcb1d03f1aa3d03f1aa1d03f16b1d023f2b1d023f6a1d023f4b1d03f12a3d03f12a1d03f18b0700b20b070245cb0700b24b070245ab0700b22b070245eb0700b26b0702458a0700b20a070245aa0700b22a070245ca0700b24a070245ea0700b26a0702458a2700b20a270245aa2700b22a270245ca2700b24a270245eb05025fab05025fea05025fcb0503f2aa2503f2aa0503f26b05025f2b05025f6a05025f4b0503f22a2503f22a0503f28b1901930b19026ccb1901934b19026cab1901932b19026ceb1901936b19026c8a1901930a19026caa1901932a19026cca1901934a19026cea1901936a19026c8a3901930a39026caa3901932a39026cca3901934a39026ceb0c027fab0c027fea0c027fcb0c03f3aa2c03f3aa0c03f36b0c027f2b0c027f6a0c027f4b0c03f32a2c03f32a0c03f38b0c02740b0c0293cb0c02744b0c0293ab0c02742b0c0293eb0c02746b0c02938a0c02740a0c0293aa0c02742a0c0293ca0c02744a0c0293ea0c02746a0c02938a2c02740a2c0293aa2c02742a2c0293ca2c02744a2c0293eb13029fab13029fea13029fcb1303f4aa3303f4aa1303f46b13029f2b13029f6a13029f4b1303f42a3303f42a1303f48b1e03550b1e02bacb1e03554b1e02baab1e03552b1e02baeb1e03556b1e02ba8a1e03550a1e02baaa1e03552a1e02baca1e03554a1e02baea1e03556a1e02ba8a3e03550a3e02baaa3e03552a3e02baca3e03554a3e02baeb1a02bfab1a02bfea1a02bfcb1a03f5aa3a03f5aa1a03f56b1a02bf2b1a02bf6a1a02bf4b1a03f52a3a03f52a1a03f58b1100560b1102c2cb1100564b1102c2ab1100562b1102c2eb1100566b1102c28a1100560a1102c2aa1100562a1102c2ca1100564a1102c2ea1100566a1102c28a3100560a3102c2aa3100562a3102c2ca3100564a3102c2eb0202dfab0202dfea0202dfcb0203f6aa2203f6aa0203f66b0202df2b0202df6a0202df4b0203f62a2203f62a0203f68b0401370b0402e9cb0401374b0402e9ab0401372b0402e9eb0401376b0402e98a0401370a0402e9aa0401372a0402e9ca0401374a0402e9ea0401376a0402e98a2401370a2402e9aa2401372a2402e9ca2401374a2402e9eb0902ffab0902ffea0902ffcb0903f7aa2903f7aa0903f76b0902ff2b0902ff6a0902ff4b0903f72a2903f72a0903f78b1602180b160310cb1602184b160310ab1602182b160310eb1602186b1603108a1602180a160310aa1602182a160310ca1602184a160310ea1602186a1603108a3602180a360310aa3602182a360310ca3602184a360310eb10031fab10031fea10031fcb1003f8aa3003f8aa1003f86b10031f2b10031f6a10031f4b1003f82a3003f82a1003f88b0902f90b090337cb0902f94b090337ab0902f92b090337eb0902f96b0903378a0902f90a090337aa0902f92a090337ca0902f94a090337ea0902f96a0903378a2902f90a290337aa2902f92a290337ca2902f94a290337eb17033fab17033fea17033fcb1703f9aa3703f9aa1703f96b17033f2b17033f6a17033f4b1703f92a3703f92a1703f98b1b03da0b1b035ecb1b03da4b1b035eab1b03da2b1b035eeb1b03da6b1b035e8a1b03da0a1b035eaa1b03da2a1b035eca1b03da4a1b035eea1b03da6a1b035e8a3b03da0a3b035eaa3b03da2a3b035eca3b03da4a3b035eeb1e035fab1e035fea1e035fcb1e03faaa3e03faaa1e03fa6b1e035f2b1e035f6a1e035f4b1e03fa2a3e03fa2a1e03fa8b0e00db0b0e0366cb0e00db4b0e0366ab0e00db2b0e0366eb0e00db6b0e03668a0e00db0a0e0366aa0e00db2a0e0366ca0e00db4a0e0366ea0e00db6a0e03668a2e00db0a2e0366aa2e00db2a2e0366ca2e00db4a2e0366eb06037fab06037fea06037fcb0603fbaa2603fbaa0603fb6b06037f2b06037f6a06037f4b0603fb2a2603fb2a0603fb8b0101bc0b01038dcb0101bc4b01038dab0101bc2b01038deb0101bc6b01038d8a0101bc0a01038daa0101bc2a01038dca0101bc4a01038dea0101bc6a01038d8a2101bc0a21038daa2101bc2a21038dca2101bc4a21038deb0d039fab0d039fea0d039fcb0d03fcaa2d03fcaa0d03fc6b0d039f2b0d039f6a0d039f4b0d03fc2a2d03fc2a0d03fc8b13029d0b1303b4cb13029d4b1303b4ab13029d2b1303b4eb13029d6b1303b48a13029d0a1303b4aa13029d2a1303b4ca13029d4a1303b4ea13029d6a1303b48a33029d0a3303b4aa33029d2a3303b4ca33029d4a3303b4eb1403bfab1403bfea1403bfcb1403fdaa3403fdaa1403fd6b1403bf2b1403bf6a1403bf4b1403fd2a3403fd2a1403fd8b06037e0b0603dbcb06037e4b0603dbab06037e2b0603dbeb06037e6b0603db8a06037e0a0603dbaa06037e2a0603dbca06037e4a0603dbea06037e6a0603db8a26037e0a2603dbaa26037e2a2603dbca26037e4a2603dbeb1b03dfab1b03dfea1b03dfcb1b03feaa3b03feaa1b03fe6b1b03df2b1b03df6a1b03df4b1b03fe2a3b03fe2a1b03fe8b1f03e54b0600bfaa0703ffeb0703ff"))
+
+  (fn test_muldiv [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (for i 0 31
+      (call udiv c 64 i (call q i) (call q (call q i)))
+      (call udiv c 32 (call q i) i (call q (call q i)))
+      (call sdiv c 64 i (call q i) (call q (call q i)))
+      (call sdiv c 32 (call q i) i (call q (call q i)))
+      (call lslv c 64 i (call q i) (call q (call q i)))
+      (call lslv c 32 (call q i) i (call q (call q i)))
+      (call lsrv c 64 i (call q i) (call q (call q i)))
+      (call lsrv c 32 (call q i) i (call q (call q i)))
+      (call asrv c 64 i (call q i) (call q (call q i)))
+      (call asrv c 32 (call q i) i (call q (call q i)))
+      (call rorv c 64 i (call q i) (call q (call q i)))
+      (call rorv c 32 (call q i) i (call q (call q i)))
+      (call mul c 64 i (call q i) (call q (call q i)))
+      (call mul c 32 (call q i) i (call q (call q i)))
+      (call madd c 64 i (call q i) (call q (call q i)) (call q (call q (call q i))))
+      (call msub c 64 (call q i) i (call q (call q i)) (call q (call q (call q i))))
+      (call clz c 64 i (call q i))
+      (call rbit c 64 (call q i) i)
+      (call madd c 32 i (call q i) (call q (call q i)) (call q (call q (call q i))))
+      (call msub c 32 (call q i) i (call q (call q i)) (call q (call q (call q i))))
+      (call clz c 32 i (call q i))
+      (call rbit c 32 (call q i) i))
+    (call check "muldiv" c "9ad808601ad808039ad80c601ad80c039ad820601ad820039ad824601ad824039ad828601ad828039ad82c601ad82c039b187c601b187c039b1840609b18c003dac01060dac000031b1840601b18c0035ac010605ac000039acb09411acb082a9acb0d411acb0c2a9acb21411acb202a9acb25411acb242a9acb29411acb282a9acb2d411acb2c2a9b0b7d411b0b7c2a9b0b49419b0bc82adac01141dac0002a1b0b49411b0bc82a5ac011415ac0002a9add0a221add08519add0e221add0c519add22221add20519add26221add24519add2a221add28519add2e221add2c519b1d7e221b1d7c519b1d52229b1dd051dac01222dac000511b1d52221b1dd0515ac012225ac000519ad00b031ad008789ad00f031ad00c789ad023031ad020789ad027031ad024789ad02b031ad028789ad02f031ad02c789b107f031b107c789b105b039b10d878dac01303dac000781b105b031b10d8785ac013035ac000789ac308041ac308809ac30c041ac30c809ac320041ac320809ac324041ac324809ac328041ac328809ac32c041ac32c809b037c041b037c809b0360049b03e080dac01004dac000801b0360041b03e0805ac010045ac000809ad508e51ad508a79ad50ce51ad50ca79ad520e51ad520a79ad524e51ad524a79ad528e51ad528a79ad52ce51ad52ca79b157ce51b157ca79b1568e59b15e8a7dac010e5dac000a71b1568e51b15e8a75ac010e55ac000a79ac809c61ac808ce9ac80dc61ac80cce9ac821c61ac820ce9ac825c61ac824ce9ac829c61ac828ce9ac82dc61ac82cce9b087dc61b087cce9b0871c69b08f0cedac011c6dac000ce1b0871c61b08f0ce5ac011c65ac000ce9ada0aa71ada08f59ada0ea71ada0cf59ada22a71ada20f59ada26a71ada24f59ada2aa71ada28f59ada2ea71ada2cf59b1a7ea71b1a7cf59b1a7aa79b1af8f5dac012a7dac000f51b1a7aa71b1af8f55ac012a75ac000f59acd0b881acd091c9acd0f881acd0d1c9acd23881acd211c9acd27881acd251c9acd2b881acd291c9acd2f881acd2d1c9b0d7f881b0d7d1c9b0d07889b0d851cdac01388dac0011c1b0d07881b0d851c5ac013885ac0011c9ac008891ac009249ac00c891ac00d249ac020891ac021249ac024891ac025249ac028891ac029249ac02c891ac02d249b007c891b007d249b000c899b008d24dac01089dac001241b000c891b008d245ac010895ac001249ad2096a1ad2094b9ad20d6a1ad20d4b9ad2216a1ad2214b9ad2256a1ad2254b9ad2296a1ad2294b9ad22d6a1ad22d4b9b127d6a1b127d4b9b12156a9b12954bdac0116adac0014b1b12156a1b12954b5ac0116a5ac0014b9ac50a4b1ac509729ac50e4b1ac50d729ac5224b1ac521729ac5264b1ac525729ac52a4b1ac529729ac52e4b1ac52d729b057e4b1b057d729b051e4b9b059d72dac0124bdac001721b051e4b1b059d725ac0124b5ac001729ad70b2c1ad709999ad70f2c1ad70d999ad7232c1ad721999ad7272c1ad725999ad72b2c1ad729999ad72f2c1ad72d999b177f2c1b177d999b17272c9b17a599dac0132cdac001991b17272c1b17a5995ac0132c5ac001999aca082d1aca09a19aca0c2d1aca0da19aca202d1aca21a19aca242d1aca25a19aca282d1aca29a19aca2c2d1aca2da19b0a7c2d1b0a7da19b0a2c2d9b0aada1dac0102ddac001a11b0a2c2d1b0aada15ac0102d5ac001a19adc090e1adc09c89adc0d0e1adc0dc89adc210e1adc21c89adc250e1adc25c89adc290e1adc29c89adc2d0e1adc2dc89b1c7d0e1b1c7dc89b1c350e9b1cb5c8dac0110edac001c81b1c350e1b1cb5c85ac0110e5ac001c89acf09ef1acf09ef9acf0def1acf0def9acf21ef1acf21ef9acf25ef1acf25ef9acf29ef1acf29ef9acf2def1acf2def9b0f7def1b0f7def9b0f3def9b0fbdefdac011efdac001ef1b0f3def1b0fbdef5ac011ef5ac001ef9ac20ad01ac20a169ac20ed01ac20e169ac222d01ac222169ac226d01ac226169ac22ad01ac22a169ac22ed01ac22e169b027ed01b027e169b0246d09b02c616dac012d0dac002161b0246d01b02c6165ac012d05ac002169ad40bb11ad40a3d9ad40fb11ad40e3d9ad423b11ad4223d9ad427b11ad4263d9ad42bb11ad42a3d9ad42fb11ad42e3d9b147fb11b147e3d9b144fb19b14ce3ddac013b1dac0023d1b144fb11b14ce3d5ac013b15ac0023d9ac708b21ac70a459ac70cb21ac70e459ac720b21ac722459ac724b21ac726459ac728b21ac72a459ac72cb21ac72e459b077cb21b077e459b0754b29b07d645dac010b2dac002451b0754b21b07d6455ac010b25ac002459ad909931ad90a6c9ad90d931ad90e6c9ad921931ad9226c9ad925931ad9266c9ad929931ad92a6c9ad92d931ad92e6c9b197d931b197e6c9b195d939b19de6cdac01193dac0026c1b195d931b19de6c5ac011935ac0026c9acc0a741acc0a939acc0e741acc0e939acc22741acc22939acc26741acc26939acc2a741acc2a939acc2e741acc2e939b0c7e741b0c7e939b0c66749b0ce693dac01274dac002931b0c66741b0ce6935ac012745ac002939ade0b551ade0aba9ade0f551ade0eba9ade23551ade22ba9ade27551ade26ba9ade2b551ade2aba9ade2f551ade2eba9b1e7f551b1e7eba9b1e6f559b1eeebadac01355dac002ba1b1e6f551b1eeeba5ac013555ac002ba9ad108561ad10ac29ad10c561ad10ec29ad120561ad122c29ad124561ad126c29ad128561ad12ac29ad12c561ad12ec29b117c561b117ec29b1174569b11f6c2dac01056dac002c21b1174561b11f6c25ac010565ac002c29ac409371ac40ae99ac40d371ac40ee99ac421371ac422e99ac425371ac426e99ac429371ac42ae99ac42d371ac42ee99b047d371b047ee99b0401379b0482e9dac01137dac002e91b0401371b0482e95ac011375ac002e99ad60a181ad60b109ad60e181ad60f109ad622181ad623109ad626181ad627109ad62a181ad62b109ad62e181ad62f109b167e181b167f109b160a189b168b10dac01218dac003101b160a181b168b105ac012185ac003109ac90af91ac90b379ac90ef91ac90f379ac922f91ac923379ac926f91ac927379ac92af91ac92b379ac92ef91ac92f379b097ef91b097f379b0912f99b099337dac012f9dac003371b0912f91b0993375ac012f95ac003379adb0bda1adb0b5e9adb0fda1adb0f5e9adb23da1adb235e9adb27da1adb275e9adb2bda1adb2b5e9adb2fda1adb2f5e9b1b7fda1b1b7f5e9b1b1bda9b1b9b5edac013dadac0035e1b1b1bda1b1b9b5e5ac013da5ac0035e9ace08db1ace0b669ace0cdb1ace0f669ace20db1ace23669ace24db1ace27669ace28db1ace2b669ace2cdb1ace2f669b0e7cdb1b0e7f669b0e20db9b0ea366dac010dbdac003661b0e20db1b0ea3665ac010db5ac003669ac109bc1ac10b8d9ac10dbc1ac10f8d9ac121bc1ac1238d9ac125bc1ac1278d9ac129bc1ac12b8d9ac12dbc1ac12f8d9b017dbc1b017f8d9b0129bc9b01ab8ddac011bcdac0038d1b0129bc1b01ab8d5ac011bc5ac0038d9ad30a9d1ad30bb49ad30e9d1ad30fb49ad3229d1ad323b49ad3269d1ad327b49ad32a9d1ad32bb49ad32e9d1ad32fb49b137e9d1b137fb49b13329d9b13b3b4dac0129ddac003b41b13329d1b13b3b45ac0129d5ac003b49ac60b7e1ac60bdb9ac60f7e1ac60fdb9ac6237e1ac623db9ac6277e1ac627db9ac62b7e1ac62bdb9ac62f7e1ac62fdb9b067f7e1b067fdb9b063b7e9b06bbdbdac0137edac003db1b063b7e1b06bbdb5ac0137e5ac003db"))
+
+  (fn test_alu_imm [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (for i 0 31
+      (call add_ri c 64 i (call q i) 0)
+      (call add_ri c 64 i (call q i) 1)
+      (call add_ri c 64 i (call q i) 4095)
+      (call add_ri c 64 i (call q i) (+ (* (% i 31) 97) 7))
+      (call sub_ri c 64 i (call q i) 0)
+      (call sub_ri c 64 i (call q i) 1)
+      (call sub_ri c 64 i (call q i) 4095)
+      (call sub_ri c 64 i (call q i) (+ (* (% i 31) 97) 7))
+      (call add_ri12 c 64 i (call q i) (+ (* (% i 31) 100) 1))
+      (call sub_ri12 c 64 i (call q i) (+ (* (% i 31) 100) 1))
+      (call adds_ri c 64 i (call q i) 0)
+      (call adds_ri c 64 i (call q i) 4095)
+      (call adds_ri c 64 i (call q i) (+ (* (% i 31) 97) 7))
+      (call subs_ri c 64 i (call q i) 0)
+      (call subs_ri c 64 i (call q i) 4095)
+      (call subs_ri c 64 i (call q i) (+ (* (% i 31) 97) 7))
+      (call cmp_ri c 64 i (+ (* (% i 31) 97) 3))
+      (call add_ri c 32 i (call q i) 0)
+      (call add_ri c 32 i (call q i) 1)
+      (call add_ri c 32 i (call q i) 4095)
+      (call add_ri c 32 i (call q i) (+ (* (% i 31) 97) 7))
+      (call sub_ri c 32 i (call q i) 0)
+      (call sub_ri c 32 i (call q i) 1)
+      (call sub_ri c 32 i (call q i) 4095)
+      (call sub_ri c 32 i (call q i) (+ (* (% i 31) 97) 7))
+      (call add_ri12 c 32 i (call q i) (+ (* (% i 31) 100) 1))
+      (call sub_ri12 c 32 i (call q i) (+ (* (% i 31) 100) 1))
+      (call adds_ri c 32 i (call q i) 0)
+      (call adds_ri c 32 i (call q i) 4095)
+      (call adds_ri c 32 i (call q i) (+ (* (% i 31) 97) 7))
+      (call subs_ri c 32 i (call q i) 0)
+      (call subs_ri c 32 i (call q i) 4095)
+      (call subs_ri c 32 i (call q i) (+ (* (% i 31) 97) 7))
+      (call cmp_ri c 32 i (+ (* (% i 31) 97) 3))
+      (call mov_sp c 64 i (call q i)))
+    (call add_ri c 64 31 31 16)
+    (call sub_ri c 64 31 31 32)
+    (call add_ri c 64 5 31 8)
+    (call mov_sp c 64 31 5)
+    (call mov_sp c 64 5 31)
+    (call check "alu_imm" c "9100006091000460913ffc6091001c60d1000060d1000460d13ffc60d1001c6091400460d1400460b1000060b13ffc60b1001c60f1000060f13ffc60f1001c60f1000c1f1100006011000460113ffc6011001c605100006051000460513ffc6051001c60114004605140046031000060313ffc6031001c6071000060713ffc6071001c6071000c1f910000609100014191000541913ffd419101a141d1000141d1000541d13ffd41d101a14191419541d1419541b1000141b13ffd41b101a141f1000141f13ffd41f101a141f101903f1100014111000541113ffd411101a1415100014151000541513ffd415101a141114195415141954131000141313ffd413101a14171000141713ffd417101a1417101903f910001419100022291000622913ffe2291032622d1000222d1000622d13ffe22d103262291432622d1432622b1000222b13ffe22b1032622f1000222f13ffe22f1032622f103145f1100022211000622113ffe22110326225100022251000622513ffe2251032622114326225143262231000222313ffe223103262271000222713ffe22710326227103145f910002229100030391000703913fff039104ab03d1000303d1000703d13fff03d104ab039144b703d144b703b1000303b13fff03b104ab03f1000303f13fff03f104ab03f104987f1100030311000703113fff031104ab035100030351000703513fff035104ab031144b7035144b70331000303313fff033104ab0371000303713fff037104ab037104987f910003039100000491000404913ffc0491062c04d1000004d1000404d13ffc04d1062c0491464404d1464404b1000004b13ffc04b1062c04f1000004f13ffc04f1062c04f1061c9f1100000411000404113ffc0411062c045100000451000404513ffc0451062c04114644045146440431000004313ffc0431062c0471000004713ffc0471062c0471061c9f91000004910000e5910004e5913ffce59107b0e5d10000e5d10004e5d13ffce5d107b0e59147d4e5d147d4e5b10000e5b13ffce5b107b0e5f10000e5f13ffce5f107b0e5f107a0bf110000e5110004e5113ffce51107b0e5510000e5510004e5513ffce55107b0e51147d4e55147d4e5310000e5313ffce53107b0e5710000e5713ffce57107b0e57107a0bf910000e5910001c6910005c6913ffdc6910935c6d10001c6d10005c6d13ffdc6d10935c6914965c6d14965c6b10001c6b13ffdc6b10935c6f10001c6f13ffdc6f10935c6f10924df110001c6110005c6113ffdc6110935c6510001c6510005c6513ffdc6510935c6114965c6514965c6310001c6313ffdc6310935c6710001c6713ffdc6710935c6710924df910001c6910002a7910006a7913ffea7910abaa7d10002a7d10006a7d13ffea7d10abaa7914af6a7d14af6a7b10002a7b13ffea7b10abaa7f10002a7f13ffea7f10abaa7f10aa8ff110002a7110006a7113ffea7110abaa7510002a7510006a7513ffea7510abaa7114af6a7514af6a7310002a7313ffea7310abaa7710002a7713ffea7710abaa7710aa8ff910002a79100038891000788913fff88910c3f88d1000388d1000788d13fff88d10c3f88914c8788d14c8788b1000388b13fff88b10c3f88f1000388f13fff88f10c3f88f10c2d1f1100038811000788113fff88110c3f885100038851000788513fff88510c3f88114c8788514c878831000388313fff88310c3f8871000388713fff88710c3f88710c2d1f910003889100008991000489913ffc89910dc089d1000089d1000489d13ffc89d10dc089914e1489d14e1489b1000089b13ffc89b10dc089f1000089f13ffc89f10dc089f10db13f1100008911000489113ffc89110dc0895100008951000489513ffc89510dc089114e1489514e148931000089313ffc89310dc08971000089713ffc89710dc089710db13f910000899100016a9100056a913ffd6a910f456ad100016ad100056ad13ffd6ad10f456a914fa56ad14fa56ab100016ab13ffd6ab10f456af100016af13ffd6af10f456af10f355f1100016a1100056a113ffd6a110f456a5100016a5100056a513ffd6a510f456a114fa56a514fa56a3100016a313ffd6a310f456a7100016a713ffd6a710f456a710f355f9100016a9100024b9100064b913ffe4b9110ca4bd100024bd100064bd13ffe4bd110ca4b9151364bd151364bb100024bb13ffe4bb110ca4bf100024bf13ffe4bf110ca4bf110b97f1100024b1100064b113ffe4b1110ca4b5100024b5100064b513ffe4b5110ca4b1151364b5151364b3100024b313ffe4b3110ca4b7100024b713ffe4b7110ca4b7110b97f9100024b9100032c9100072c913fff2c91124f2cd100032cd100072cd13fff2cd1124f2c9152c72cd152c72cb100032cb13fff2cb1124f2cf100032cf13fff2cf1124f2cf1123d9f1100032c1100072c113fff2c11124f2c5100032c5100072c513fff2c51124f2c1152c72c5152c72c3100032c313fff2c31124f2c7100032c713fff2c71124f2c71123d9f9100032c9100002d9100042d913ffc2d9113d02dd100002dd100042dd13ffc2dd113d02d9154542dd154542db100002db13ffc2db113d02df100002df13ffc2df113d02df113c1bf1100002d1100042d113ffc2d1113d02d5100002d5100042d513ffc2d5113d02d1154542d5154542d3100002d313ffc2d3113d02d7100002d713ffc2d7113d02d7113c1bf9100002d9100010e9100050e913ffd0e9115550ed100010ed100050ed13ffd0ed115550e9155e50ed155e50eb100010eb13ffd0eb115550ef100010ef13ffd0ef115550ef11545df1100010e1100050e113ffd0e1115550e5100010e5100050e513ffd0e5115550e1155e50e5155e50e3100010e313ffd0e3115550e7100010e713ffd0e7115550e711545df9100010e910001ef910005ef913ffdef9116d9efd10001efd10005efd13ffdefd116d9ef915775efd15775efb10001efb13ffdefb116d9eff10001eff13ffdeff116d9eff116c9ff110001ef110005ef113ffdef1116d9ef510001ef510005ef513ffdef5116d9ef115775ef515775ef310001ef313ffdef3116d9ef710001ef713ffdef7116d9ef7116c9ff910001ef910002d0910006d0913ffed091185ed0d10002d0d10006d0d13ffed0d1185ed0915906d0d15906d0b10002d0b13ffed0b1185ed0f10002d0f13ffed0f1185ed0f1184e1f110002d0110006d0113ffed011185ed0510002d0510006d0513ffed051185ed0115906d0515906d0310002d0313ffed031185ed0710002d0713ffed071185ed071184e1f910002d0910003b1910007b1913fffb19119e3b1d10003b1d10007b1d13fffb1d119e3b1915a97b1d15a97b1b10003b1b13fffb1b119e3b1f10003b1f13fffb1f119e3b1f119d23f110003b1110007b1113fffb11119e3b1510003b1510007b1513fffb15119e3b1115a97b1515a97b1310003b1313fffb13119e3b1710003b1713fffb17119e3b17119d23f910003b1910000b2910004b2913ffcb2911b64b2d10000b2d10004b2d13ffcb2d11b64b2915c24b2d15c24b2b10000b2b13ffcb2b11b64b2f10000b2f13ffcb2f11b64b2f11b565f110000b2110004b2113ffcb2111b64b2510000b2510004b2513ffcb2511b64b2115c24b2515c24b2310000b2313ffcb2311b64b2710000b2713ffcb2711b64b2711b565f910000b29100019391000593913ffd93911ce993d1000193d1000593d13ffd93d11ce993915db593d15db593b1000193b13ffd93b11ce993f1000193f13ffd93f11ce993f11cda7f1100019311000593113ffd93111ce9935100019351000593513ffd93511ce993115db593515db59331000193313ffd93311ce99371000193713ffd93711ce993711cda7f910001939100027491000674913ffe74911e6e74d1000274d1000674d13ffe74d11e6e74915f4674d15f4674b1000274b13ffe74b11e6e74f1000274f13ffe74f11e6e74f11e5e9f1100027411000674113ffe74111e6e745100027451000674513ffe74511e6e74115f4674515f467431000274313ffe74311e6e7471000274713ffe74711e6e74711e5e9f910002749100035591000755913fff55911ff355d1000355d1000755d13fff55d11ff3559160d755d160d755b1000355b13fff55b11ff355f1000355f13fff55f11ff355f11fe2bf1100035511000755113fff55111ff3555100035551000755513fff55511ff3551160d7555160d75531000355313fff55311ff35571000355713fff55711ff355711fe2bf910003559100005691000456913ffc5691217456d1000056d1000456d13ffc56d121745691626456d1626456b1000056b13ffc56b1217456f1000056f13ffc56f1217456f12166df1100005611000456113ffc56112174565100005651000456513ffc5651217456116264565162645631000056313ffc563121745671000056713ffc5671217456712166df910000569100013791000537913ffd379122f937d1000137d1000537d13ffd37d122f9379163f537d163f537b1000137b13ffd37b122f937f1000137f13ffd37f122f937f122eaff1100013711000537113ffd371122f9375100013751000537513ffd375122f9371163f5375163f53731000137313ffd373122f93771000137713ffd377122f9377122eaff910001379100021891000618913ffe1891247e18d1000218d1000618d13ffe18d1247e1891658618d1658618b1000218b13ffe18b1247e18f1000218f13ffe18f1247e18f1246f1f1100021811000618113ffe1811247e185100021851000618513ffe1851247e18116586185165861831000218313ffe1831247e1871000218713ffe1871247e1871246f1f91000218910002f9910006f9913ffef9912602f9d10002f9d10006f9d13ffef9d12602f9916716f9d16716f9b10002f9b13ffef9b12602f9f10002f9f13ffef9f12602f9f125f33f110002f9110006f9113ffef9112602f9510002f9510006f9513ffef9512602f9116716f9516716f9310002f9313ffef9312602f9710002f9713ffef9712602f97125f33f910002f9910003da910007da913fffda912787dad10003dad10007dad13fffdad12787da9168a7dad168a7dab10003dab13fffdab12787daf10003daf13fffdaf12787daf127775f110003da110007da113fffda112787da510003da510007da513fffda512787da1168a7da5168a7da310003da313fffda312787da710003da713fffda712787da7127775f910003da910000db910004db913ffcdb912908dbd10000dbd10004dbd13ffcdbd12908db916a34dbd16a34dbb10000dbb13ffcdbb12908dbf10000dbf13ffcdbf12908dbf128fb7f110000db110004db113ffcdb112908db510000db510004db513ffcdb512908db116a34db516a34db310000db313ffcdb312908db710000db713ffcdb712908db7128fb7f910000db910001bc910005bc913ffdbc912a8dbcd10001bcd10005bcd13ffdbcd12a8dbc916bc5bcd16bc5bcb10001bcb13ffdbcb12a8dbcf10001bcf13ffdbcf12a8dbcf12a7f9f110001bc110005bc113ffdbc112a8dbc510001bc510005bc513ffdbc512a8dbc116bc5bc516bc5bc310001bc313ffdbc312a8dbc710001bc713ffdbc712a8dbc712a7f9f910001bc9100029d9100069d913ffe9d912c129dd100029dd100069dd13ffe9dd12c129d916d569dd16d569db100029db13ffe9db12c129df100029df13ffe9df12c129df12c03bf1100029d1100069d113ffe9d112c129d5100029d5100069d513ffe9d512c129d116d569d516d569d3100029d313ffe9d312c129d7100029d713ffe9d712c129d712c03bf9100029d9100037e9100077e913fff7e912d977ed100037ed100077ed13fff7ed12d977e916ee77ed16ee77eb100037eb13fff7eb12d977ef100037ef13fff7ef12d977ef12d87df1100037e1100077e113fff7e112d977e5100037e5100077e513fff7e512d977e116ee77e516ee77e3100037e313fff7e312d977e7100037e713fff7e712d977e712d87df9100037e910043ffd10083ff910023e5910000bf910003e5"))
+
+  (fn test_shift_ext [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (for i 0 31
+      (call lsl_ri c 64 i (call q i) 1)
+      (call lsl_ri c 64 i (call q i) 5)
+      (call lsl_ri c 64 i (call q i) 32)
+      (call lsl_ri c 64 i (call q i) 63)
+      (call lsr_ri c 64 i (call q i) 0)
+      (call asr_ri c 64 (call q i) i 0)
+      (call lsr_ri c 64 i (call q i) 1)
+      (call asr_ri c 64 (call q i) i 1)
+      (call lsr_ri c 64 i (call q i) 5)
+      (call asr_ri c 64 (call q i) i 5)
+      (call lsr_ri c 64 i (call q i) 32)
+      (call asr_ri c 64 (call q i) i 32)
+      (call lsr_ri c 64 i (call q i) 63)
+      (call asr_ri c 64 (call q i) i 63)
+      (call sxtb c 64 i (call q i))
+      (call sxth c 64 (call q i) i)
+      (call lsl_ri c 32 i (call q i) 1)
+      (call lsl_ri c 32 i (call q i) 5)
+      (call lsl_ri c 32 i (call q i) 16)
+      (call lsl_ri c 32 i (call q i) 31)
+      (call lsr_ri c 32 i (call q i) 0)
+      (call asr_ri c 32 (call q i) i 0)
+      (call lsr_ri c 32 i (call q i) 1)
+      (call asr_ri c 32 (call q i) i 1)
+      (call lsr_ri c 32 i (call q i) 5)
+      (call asr_ri c 32 (call q i) i 5)
+      (call lsr_ri c 32 i (call q i) 16)
+      (call asr_ri c 32 (call q i) i 16)
+      (call lsr_ri c 32 i (call q i) 31)
+      (call asr_ri c 32 (call q i) i 31)
+      (call sxtb c 32 i (call q i))
+      (call sxth c 32 (call q i) i)
+      (call sxtw c i (call q i))
+      (call uxtb c (call q i) i)
+      (call uxth c i (call q i)))
+    (call check "shift_ext" c "d37ff860d37be860d3607c60d3410060d340fc609340fc03d341fc609341fc03d345fc609345fc03d360fc609360fc03d37ffc60937ffc0393401c6093403c03531f7860531b686053103c605301006053007c6013007c0353017c6013017c0353057c6013057c0353107c6013107c03531f7c60131f7c0313001c6013003c0393407c6053001c0353003c60d37ff941d37be941d3607d41d3410141d340fd419340fc2ad341fd419341fc2ad345fd419345fc2ad360fd419360fc2ad37ffd41937ffc2a93401d4193403c2a531f7941531b694153103d415301014153007d4113007c2a53017d4113017c2a53057d4113057c2a53107d4113107c2a531f7d41131f7c2a13001d4113003c2a93407d4153001c2a53003d41d37ffa22d37bea22d3607e22d3410222d340fe229340fc51d341fe229341fc51d345fe229345fc51d360fe229360fc51d37ffe22937ffc5193401e2293403c51531f7a22531b6a2253103e225301022253007e2213007c5153017e2213017c5153057e2213057c5153107e2213107c51531f7e22131f7c5113001e2213003c5193407e2253001c5153003e22d37ffb03d37beb03d3607f03d3410303d340ff039340fc78d341ff039341fc78d345ff039345fc78d360ff039360fc78d37fff03937ffc7893401f0393403c78531f7b03531b6b0353103f035301030353007f0313007c7853017f0313017c7853057f0313057c7853107f0313107c78531f7f03131f7c7813001f0313003c7893407f0353001c7853003f03d37ff804d37be804d3607c04d3410004d340fc049340fc80d341fc049341fc80d345fc049345fc80d360fc049360fc80d37ffc04937ffc8093401c0493403c80531f7804531b680453103c045301000453007c0413007c8053017c0413017c8053057c0413057c8053107c0413107c80531f7c04131f7c8013001c0413003c8093407c0453001c8053003c04d37ff8e5d37be8e5d3607ce5d34100e5d340fce59340fca7d341fce59341fca7d345fce59345fca7d360fce59360fca7d37ffce5937ffca793401ce593403ca7531f78e5531b68e553103ce5530100e553007ce513007ca753017ce513017ca753057ce513057ca753107ce513107ca7531f7ce5131f7ca713001ce513003ca793407ce553001ca753003ce5d37ff9c6d37be9c6d3607dc6d34101c6d340fdc69340fcced341fdc69341fcced345fdc69345fcced360fdc69360fcced37ffdc6937ffcce93401dc693403cce531f79c6531b69c653103dc6530101c653007dc613007cce53017dc613017cce53057dc613057cce53107dc613107cce531f7dc6131f7cce13001dc613003cce93407dc653001cce53003dc6d37ffaa7d37beaa7d3607ea7d34102a7d340fea79340fcf5d341fea79341fcf5d345fea79345fcf5d360fea79360fcf5d37ffea7937ffcf593401ea793403cf5531f7aa7531b6aa753103ea7530102a753007ea713007cf553017ea713017cf553057ea713057cf553107ea713107cf5531f7ea7131f7cf513001ea713003cf593407ea753001cf553003ea7d37ffb88d37beb88d3607f88d3410388d340ff889340fd1cd341ff889341fd1cd345ff889345fd1cd360ff889360fd1cd37fff88937ffd1c93401f8893403d1c531f7b88531b6b8853103f885301038853007f8813007d1c53017f8813017d1c53057f8813057d1c53107f8813107d1c531f7f88131f7d1c13001f8813003d1c93407f8853001d1c53003f88d37ff889d37be889d3607c89d3410089d340fc899340fd24d341fc899341fd24d345fc899345fd24d360fc899360fd24d37ffc89937ffd2493401c8993403d24531f7889531b688953103c895301008953007c8913007d2453017c8913017d2453057c8913057d2453107c8913107d24531f7c89131f7d2413001c8913003d2493407c8953001d2453003c89d37ff96ad37be96ad3607d6ad341016ad340fd6a9340fd4bd341fd6a9341fd4bd345fd6a9345fd4bd360fd6a9360fd4bd37ffd6a937ffd4b93401d6a93403d4b531f796a531b696a53103d6a5301016a53007d6a13007d4b53017d6a13017d4b53057d6a13057d4b53107d6a13107d4b531f7d6a131f7d4b13001d6a13003d4b93407d6a53001d4b53003d6ad37ffa4bd37bea4bd3607e4bd341024bd340fe4b9340fd72d341fe4b9341fd72d345fe4b9345fd72d360fe4b9360fd72d37ffe4b937ffd7293401e4b93403d72531f7a4b531b6a4b53103e4b5301024b53007e4b13007d7253017e4b13017d7253057e4b13057d7253107e4b13107d72531f7e4b131f7d7213001e4b13003d7293407e4b53001d7253003e4bd37ffb2cd37beb2cd3607f2cd341032cd340ff2c9340fd99d341ff2c9341fd99d345ff2c9345fd99d360ff2c9360fd99d37fff2c937ffd9993401f2c93403d99531f7b2c531b6b2c53103f2c5301032c53007f2c13007d9953017f2c13017d9953057f2c13057d9953107f2c13107d99531f7f2c131f7d9913001f2c13003d9993407f2c53001d9953003f2cd37ff82dd37be82dd3607c2dd341002dd340fc2d9340fda1d341fc2d9341fda1d345fc2d9345fda1d360fc2d9360fda1d37ffc2d937ffda193401c2d93403da1531f782d531b682d53103c2d5301002d53007c2d13007da153017c2d13017da153057c2d13057da153107c2d13107da1531f7c2d131f7da113001c2d13003da193407c2d53001da153003c2dd37ff90ed37be90ed3607d0ed341010ed340fd0e9340fdc8d341fd0e9341fdc8d345fd0e9345fdc8d360fd0e9360fdc8d37ffd0e937ffdc893401d0e93403dc8531f790e531b690e53103d0e5301010e53007d0e13007dc853017d0e13017dc853057d0e13057dc853107d0e13107dc8531f7d0e131f7dc813001d0e13003dc893407d0e53001dc853003d0ed37ff9efd37be9efd3607defd34101efd340fdef9340fdefd341fdef9341fdefd345fdef9345fdefd360fdef9360fdefd37ffdef937ffdef93401def93403def531f79ef531b69ef53103def530101ef53007def13007def53017def13017def53057def13057def53107def13107def531f7def131f7def13001def13003def93407def53001def53003defd37ffad0d37bead0d3607ed0d34102d0d340fed09340fe16d341fed09341fe16d345fed09345fe16d360fed09360fe16d37ffed0937ffe1693401ed093403e16531f7ad0531b6ad053103ed0530102d053007ed013007e1653017ed013017e1653057ed013057e1653107ed013107e16531f7ed0131f7e1613001ed013003e1693407ed053001e1653003ed0d37ffbb1d37bebb1d3607fb1d34103b1d340ffb19340fe3dd341ffb19341fe3dd345ffb19345fe3dd360ffb19360fe3dd37fffb1937ffe3d93401fb193403e3d531f7bb1531b6bb153103fb1530103b153007fb113007e3d53017fb113017e3d53057fb113057e3d53107fb113107e3d531f7fb1131f7e3d13001fb113003e3d93407fb153001e3d53003fb1d37ff8b2d37be8b2d3607cb2d34100b2d340fcb29340fe45d341fcb29341fe45d345fcb29345fe45d360fcb29360fe45d37ffcb2937ffe4593401cb293403e45531f78b2531b68b253103cb2530100b253007cb213007e4553017cb213017e4553057cb213057e4553107cb213107e45531f7cb2131f7e4513001cb213003e4593407cb253001e4553003cb2d37ff993d37be993d3607d93d3410193d340fd939340fe6cd341fd939341fe6cd345fd939345fe6cd360fd939360fe6cd37ffd93937ffe6c93401d9393403e6c531f7993531b699353103d935301019353007d9313007e6c53017d9313017e6c53057d9313057e6c53107d9313107e6c531f7d93131f7e6c13001d9313003e6c93407d9353001e6c53003d93d37ffa74d37bea74d3607e74d3410274d340fe749340fe93d341fe749341fe93d345fe749345fe93d360fe749360fe93d37ffe74937ffe9393401e7493403e93531f7a74531b6a7453103e745301027453007e7413007e9353017e7413017e9353057e7413057e9353107e7413107e93531f7e74131f7e9313001e7413003e9393407e7453001e9353003e74d37ffb55d37beb55d3607f55d3410355d340ff559340febad341ff559341febad345ff559345febad360ff559360febad37fff55937ffeba93401f5593403eba531f7b55531b6b5553103f555301035553007f5513007eba53017f5513017eba53057f5513057eba53107f5513107eba531f7f55131f7eba13001f5513003eba93407f5553001eba53003f55d37ff856d37be856d3607c56d3410056d340fc569340fec2d341fc569341fec2d345fc569345fec2d360fc569360fec2d37ffc56937ffec293401c5693403ec2531f7856531b685653103c565301005653007c5613007ec253017c5613017ec253057c5613057ec253107c5613107ec2531f7c56131f7ec213001c5613003ec293407c5653001ec253003c56d37ff937d37be937d3607d37d3410137d340fd379340fee9d341fd379341fee9d345fd379345fee9d360fd379360fee9d37ffd37937ffee993401d3793403ee9531f7937531b693753103d375301013753007d3713007ee953017d3713017ee953057d3713057ee953107d3713107ee9531f7d37131f7ee913001d3713003ee993407d3753001ee953003d37d37ffa18d37bea18d3607e18d3410218d340fe189340ff10d341fe189341ff10d345fe189345ff10d360fe189360ff10d37ffe18937fff1093401e1893403f10531f7a18531b6a1853103e185301021853007e1813007f1053017e1813017f1053057e1813057f1053107e1813107f10531f7e18131f7f1013001e1813003f1093407e1853001f1053003e18d37ffaf9d37beaf9d3607ef9d34102f9d340fef99340ff37d341fef99341ff37d345fef99345ff37d360fef99360ff37d37ffef9937fff3793401ef993403f37531f7af9531b6af953103ef9530102f953007ef913007f3753017ef913017f3753057ef913057f3753107ef913107f37531f7ef9131f7f3713001ef913003f3793407ef953001f3753003ef9d37ffbdad37bebdad3607fdad34103dad340ffda9340ff5ed341ffda9341ff5ed345ffda9345ff5ed360ffda9360ff5ed37fffda937fff5e93401fda93403f5e531f7bda531b6bda53103fda530103da53007fda13007f5e53017fda13017f5e53057fda13057f5e53107fda13107f5e531f7fda131f7f5e13001fda13003f5e93407fda53001f5e53003fdad37ff8dbd37be8dbd3607cdbd34100dbd340fcdb9340ff66d341fcdb9341ff66d345fcdb9345ff66d360fcdb9360ff66d37ffcdb937fff6693401cdb93403f66531f78db531b68db53103cdb530100db53007cdb13007f6653017cdb13017f6653057cdb13057f6653107cdb13107f66531f7cdb131f7f6613001cdb13003f6693407cdb53001f6653003cdbd37ff9bcd37be9bcd3607dbcd34101bcd340fdbc9340ff8dd341fdbc9341ff8dd345fdbc9345ff8dd360fdbc9360ff8dd37ffdbc937fff8d93401dbc93403f8d531f79bc531b69bc53103dbc530101bc53007dbc13007f8d53017dbc13017f8d53057dbc13057f8d53107dbc13107f8d531f7dbc131f7f8d13001dbc13003f8d93407dbc53001f8d53003dbcd37ffa9dd37bea9dd3607e9dd341029dd340fe9d9340ffb4d341fe9d9341ffb4d345fe9d9345ffb4d360fe9d9360ffb4d37ffe9d937fffb493401e9d93403fb4531f7a9d531b6a9d53103e9d5301029d53007e9d13007fb453017e9d13017fb453057e9d13057fb453107e9d13107fb4531f7e9d131f7fb413001e9d13003fb493407e9d53001fb453003e9dd37ffb7ed37beb7ed3607f7ed341037ed340ff7e9340ffdbd341ff7e9341ffdbd345ff7e9345ffdbd360ff7e9360ffdbd37fff7e937fffdb93401f7e93403fdb531f7b7e531b6b7e53103f7e5301037e53007f7e13007fdb53017f7e13017fdb53057f7e13057fdb53107f7e13107fdb531f7f7e131f7fdb13001f7e13003fdb93407f7e53001fdb53003f7e"))
+
+  (fn test_conditional [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (for i 0 31
+      (call csel c 64 i (call q i) (call q (call q i)) (% i 14))
+      (call csinc c 64 i (call q i) (call q (call q i)) (% i 14))
+      (call csinv c 64 i (call q i) (call q (call q i)) (% i 14))
+      (call csneg c 64 i (call q i) (call q (call q i)) (% i 14))
+      (call cset c 64 i (% (+ i 3) 14))
+      (call ccmp_rr c 64 i (call q i) (% i 16) (% (+ i 5) 14))
+      (call ccmp_ri c 64 (call q i) i (% i 16) (% (+ i 9) 14))
+      (call csel c 32 i (call q i) (call q (call q i)) (% i 14))
+      (call csinc c 32 i (call q i) (call q (call q i)) (% i 14))
+      (call csinv c 32 i (call q i) (call q (call q i)) (% i 14))
+      (call csneg c 32 i (call q i) (call q (call q i)) (% i 14))
+      (call cset c 32 i (% (+ i 3) 14))
+      (call ccmp_rr c 32 i (call q i) (% i 16) (% (+ i 5) 14))
+      (call ccmp_ri c 32 (call q i) i (% i 16) (% (+ i 9) 14)))
+    (call check "conditional" c "9a9800609a980460da980060da9804609a9f27e0fa435000fa4098601a9800601a9804605a9800605a9804601a9f27e07a4350007a4098609a8b11419a8b1541da8b1141da8b15419a9f57e1fa4a6021fa41a9411a8b11411a8b15415a8b11415a8b15411a9f57e17a4a60217a41a9419a9d22229a9d2622da9d2222da9d26229a9f47e2fa517042fa42ba221a9d22221a9d26225a9d22225a9d26221a9f47e27a5170427a42ba229a9033039a903703da903303da9037039a9f77e3fa588063fa43cb031a9033031a9037035a9033035a9037031a9f77e37a5880637a43cb039a8340049a834404da834004da8344049a9f67e4fa409084fa44d8041a8340041a8344045a8340045a8344041a9f67e47a4090847a44d8049a9550e59a9554e5da9550e5da9554e59a9f97e5fa47a0a5fa4508e51a9550e51a9554e55a9550e55a9554e51a9f97e57a47a0a57a4508e59a8861c69a8865c6da8861c6da8865c69a9f87e6fa4eb0c6fa4619c61a8861c61a8865c65a8861c65a8865c61a9f87e67a4eb0c67a4619c69a9a72a79a9a76a7da9a72a7da9a76a79a9fb7e7fa55c0e7fa472aa71a9a72a71a9a76a75a9a72a75a9a76a71a9fb7e77a55c0e77a472aa79a8d83889a8d8788da8d8388da8d87889a9fa7e8fa5cd108fa483b881a8d83881a8d87885a8d83885a8d87881a9fa7e87a5cd1087a483b889a8090899a809489da809089da8094899a9fd7e9fa440129fa4948891a8090891a8094895a8090895a8094891a9fd7e97a4401297a4948899a92a16a9a92a56ada92a16ada92a56a9a9fc7eafa4b114afa4a596a1a92a16a1a92a56a5a92a16a5a92a56a1a9fc7ea7a4b114a7a4a596a9a85b24b9a85b64bda85b24bda85b64b9a9f17ebfa52216bfa4b6a4b1a85b24b1a85b64b5a85b24b5a85b64b1a9f17eb7a52216b7a4b6a4b9a97c32c9a97c72cda97c32cda97c72c9a9f07ecfa59318cfa4c7b2c1a97c32c1a97c72c5a97c32c5a97c72c1a9f07ec7a59318c7a4c7b2c9a8ad02d9a8ad42dda8ad02dda8ad42d9a9f37edfa4141adfa4d882d1a8ad02d1a8ad42d5a8ad02d5a8ad42d1a9f37ed7a4141ad7a4d882d9a9c010e9a9c050eda9c010eda9c050e9a9f27eefa4851cefa4e990e1a9c010e1a9c050e5a9c010e5a9c050e1a9f27ee7a4851ce7a4e990e9a8f11ef9a8f15efda8f11efda8f15ef9a9f57effa4f61effa4fa9ef1a8f11ef1a8f15ef5a8f11ef5a8f15ef1a9f57ef7a4f61ef7a4fa9ef9a8222d09a8226d0da8222d0da8226d09a9f47f0fa567200fa50bac01a8222d01a8226d05a8222d05a8226d01a9f47f07a5672007a50bac09a9433b19a9437b1da9433b1da9437b19a9f77f1fa5d8221fa51cba11a9433b11a9437b15a9433b15a9437b11a9f77f17a5d82217a51cba19a8740b29a8744b2da8740b2da8744b29a9f67f2fa459242fa52d8a21a8740b21a8744b25a8740b25a8744b21a9f67f27a4592427a52d8a29a9951939a995593da995193da9955939a9f97f3fa4ca263fa5309831a9951931a9955935a9951935a9955931a9f97f37a4ca2637a5309839a8c62749a8c6674da8c6274da8c66749a9f87f4fa53b284fa541a641a8c62741a8c66745a8c62745a8c66741a9f87f47a53b2847a541a649a9e73559a9e7755da9e7355da9e77559a9fb7f5fa5ac2a5fa552b451a9e73551a9e77555a9e73555a9e77551a9fb7f57a5ac2a57a552b459a9180569a918456da918056da9184569a9fa7f6fa42d2c6fa5638461a9180561a9184565a9180565a9184561a9fa7f67a42d2c67a5638469a8491379a849537da849137da8495379a9fd7f7fa4902e7fa5749271a8491371a8495375a8491375a8495371a9fd7f77a4902e77a5749279a96a2189a96a618da96a218da96a6189a9fc7f8fa501308fa585a081a96a2181a96a6185a96a2185a96a6181a9fc7f87a5013087a585a089a89b2f99a89b6f9da89b2f9da89b6f99a9f17f9fa572329fa596ae91a89b2f91a89b6f95a89b2f95a89b6f91a9f17f97a5723297a596ae99a9bc3da9a9bc7dada9bc3dada9bc7da9a9f07fafa5e334afa5a7bca1a9bc3da1a9bc7da5a9bc3da5a9bc7da1a9f07fa7a5e334a7a5a7bca9a8ed0db9a8ed4dbda8ed0dbda8ed4db9a9f37fbfa46436bfa5b88cb1a8ed0db1a8ed4db5a8ed0db5a8ed4db1a9f37fb7a46436b7a5b88cb9a8101bc9a8105bcda8101bcda8105bc9a9f27fcfa4d538cfa5c99ac1a8101bc1a8105bc5a8101bc5a8105bc1a9f27fc7a4d538c7a5c99ac9a93129d9a93169dda93129dda93169d9a9f57fdfa5463adfa5daa8d1a93129d1a93169d5a93129d5a93169d1a9f57fd7a5463ad7a5daa8d9a86237e9a86277eda86237eda86277e9a9f47fefa5b73cefa5ebb6e1a86237e1a86277e5a86237e5a86277e1a9f47fe7a5b73ce7a5ebb6e"))
+
+  (fn test_memory [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (for i 0 31
+      (call str_x c i (% (+ i 7) 31) 0)
+      (call str_x c i (% (+ i 7) 31) 8)
+      (call str_x c i (% (+ i 7) 31) 32760)
+      (call str_x c i (% (+ i 7) 31) (* (% i 16) 8))
+      (call ldr_x c i (% (+ i 7) 31) 0)
+      (call ldr_x c i (% (+ i 7) 31) 8)
+      (call ldr_x c i (% (+ i 7) 31) 32760)
+      (call ldr_x c i (% (+ i 7) 31) (* (% i 16) 8))
+      (call str_w c i (% (+ i 7) 31) 0)
+      (call str_w c i (% (+ i 7) 31) 4)
+      (call str_w c i (% (+ i 7) 31) 16380)
+      (call str_w c i (% (+ i 7) 31) (* (% i 16) 4))
+      (call ldr_w c i (% (+ i 7) 31) 0)
+      (call ldr_w c i (% (+ i 7) 31) 4)
+      (call ldr_w c i (% (+ i 7) 31) 16380)
+      (call ldr_w c i (% (+ i 7) 31) (* (% i 16) 4))
+      (call strh c i (% (+ i 7) 31) 0)
+      (call strh c i (% (+ i 7) 31) 2)
+      (call strh c i (% (+ i 7) 31) 8190)
+      (call strh c i (% (+ i 7) 31) (* (% i 16) 2))
+      (call ldrh c i (% (+ i 7) 31) 0)
+      (call ldrh c i (% (+ i 7) 31) 2)
+      (call ldrh c i (% (+ i 7) 31) 8190)
+      (call ldrh c i (% (+ i 7) 31) (* (% i 16) 2))
+      (call strb c i (% (+ i 7) 31) 0)
+      (call strb c i (% (+ i 7) 31) 1)
+      (call strb c i (% (+ i 7) 31) 4095)
+      (call strb c i (% (+ i 7) 31) (% i 16))
+      (call ldrb c i (% (+ i 7) 31) 0)
+      (call ldrb c i (% (+ i 7) 31) 1)
+      (call ldrb c i (% (+ i 7) 31) 4095)
+      (call ldrb c i (% (+ i 7) 31) (% i 16))
+      (call ldrsw c i (% (+ i 7) 31) 0)
+      (call ldrsw c i (% (+ i 7) 31) 4)
+      (call ldrsw c i (% (+ i 7) 31) 16380)
+      (call ldrsw c i (% (+ i 7) 31) (* (% i 16) 4))
+      (call ldrsb c 64 i (% (+ i 7) 31) 0)
+      (call ldrsb c 64 i (% (+ i 7) 31) 1)
+      (call ldrsb c 64 i (% (+ i 7) 31) 4095)
+      (call ldrsb c 64 i (% (+ i 7) 31) (% i 16))
+      (call ldrsh c 64 i (% (+ i 7) 31) 0)
+      (call ldrsh c 64 i (% (+ i 7) 31) 2)
+      (call ldrsh c 64 i (% (+ i 7) 31) 8190)
+      (call ldrsh c 64 i (% (+ i 7) 31) (* (% i 16) 2))
+      (call ldrsb c 32 i (% (+ i 7) 31) 0)
+      (call ldrsb c 32 i (% (+ i 7) 31) 1)
+      (call ldrsb c 32 i (% (+ i 7) 31) 4095)
+      (call ldrsb c 32 i (% (+ i 7) 31) (% i 16))
+      (call ldrsh c 32 i (% (+ i 7) 31) 0)
+      (call ldrsh c 32 i (% (+ i 7) 31) 2)
+      (call ldrsh c 32 i (% (+ i 7) 31) 8190)
+      (call ldrsh c 32 i (% (+ i 7) 31) (* (% i 16) 2))
+      (call stur_x c i (% (+ i 7) 31) -256)
+      (call stur_x c i (% (+ i 7) 31) -1)
+      (call stur_x c i (% (+ i 7) 31) 255)
+      (call stur_x c i (% (+ i 7) 31) (+ i -15))
+      (call ldur_x c i (% (+ i 7) 31) -256)
+      (call ldur_x c i (% (+ i 7) 31) -1)
+      (call ldur_x c i (% (+ i 7) 31) 255)
+      (call ldur_x c i (% (+ i 7) 31) (+ i -15))
+      (call stur_w c i (% (+ i 7) 31) -256)
+      (call stur_w c i (% (+ i 7) 31) -1)
+      (call stur_w c i (% (+ i 7) 31) 255)
+      (call stur_w c i (% (+ i 7) 31) (+ i -15))
+      (call ldur_w c i (% (+ i 7) 31) -256)
+      (call ldur_w c i (% (+ i 7) 31) -1)
+      (call ldur_w c i (% (+ i 7) 31) 255)
+      (call ldur_w c i (% (+ i 7) 31) (+ i -15))
+      (call ldr_x_uxtw c i (% (+ i 7) 31) (call q (call q i)))
+      (call str_x_uxtw c i (% (+ i 7) 31) (call q (call q i)))
+      (call ldr_w_uxtw c i (% (+ i 7) 31) (call q (call q i)))
+      (call str_w_uxtw c i (% (+ i 7) 31) (call q (call q i)))
+      (call ldrh_uxtw c i (% (+ i 7) 31) (call q (call q i)))
+      (call strh_uxtw c i (% (+ i 7) 31) (call q (call q i)))
+      (call ldrb_uxtw c i (% (+ i 7) 31) (call q (call q i)))
+      (call strb_uxtw c i (% (+ i 7) 31) (call q (call q i)))
+      (call ldrsw_uxtw c i (% (+ i 7) 31) (call q (call q i)))
+      (call ldrsb_uxtw c 64 i (% (+ i 7) 31) (call q (call q i)))
+      (call ldrsh_uxtw c 64 i (% (+ i 7) 31) (call q (call q i)))
+      (call ldrsb_uxtw c 32 i (% (+ i 7) 31) (call q (call q i)))
+      (call ldrsh_uxtw c 32 i (% (+ i 7) 31) (call q (call q i)))
+      (call ldr_x_reg c i (% (+ i 7) 31) (call q (call q i)))
+      (call str_x_reg c i (% (+ i 7) 31) (call q (call q i)))
+      (call stp c i (% (+ i 1) 31) (% (+ i 7) 31) -512)
+      (call ldp c i (% (+ i 1) 31) (% (+ i 7) 31) -512)
+      (call stp c i (% (+ i 1) 31) (% (+ i 7) 31) 0)
+      (call ldp c i (% (+ i 1) 31) (% (+ i 7) 31) 0)
+      (call stp c i (% (+ i 1) 31) (% (+ i 7) 31) 8)
+      (call ldp c i (% (+ i 1) 31) (% (+ i 7) 31) 8)
+      (call stp c i (% (+ i 1) 31) (% (+ i 7) 31) 504)
+      (call ldp c i (% (+ i 1) 31) (% (+ i 7) 31) 504)
+      (call stp c i (% (+ i 1) 31) (% (+ i 7) 31) (* (% i 8) 8))
+      (call ldp c i (% (+ i 1) 31) (% (+ i 7) 31) (* (% i 8) 8))
+      (call stp_pre c i (% (+ i 1) 31) (% (+ i 7) 31) -16)
+      (call ldp_pre c i (% (+ i 1) 31) (% (+ i 7) 31) -16)
+      (call stp_post c i (% (+ i 1) 31) (% (+ i 7) 31) -16)
+      (call ldp_post c i (% (+ i 1) 31) (% (+ i 7) 31) -16)
+      (call stp_pre c i (% (+ i 1) 31) (% (+ i 7) 31) 16)
+      (call ldp_pre c i (% (+ i 1) 31) (% (+ i 7) 31) 16)
+      (call stp_post c i (% (+ i 1) 31) (% (+ i 7) 31) 16)
+      (call ldp_post c i (% (+ i 1) 31) (% (+ i 7) 31) 16)
+      (call stp_pre c i (% (+ i 1) 31) (% (+ i 7) 31) -512)
+      (call ldp_pre c i (% (+ i 1) 31) (% (+ i 7) 31) -512)
+      (call stp_post c i (% (+ i 1) 31) (% (+ i 7) 31) -512)
+      (call ldp_post c i (% (+ i 1) 31) (% (+ i 7) 31) -512)
+      (call stp_pre c i (% (+ i 1) 31) (% (+ i 7) 31) 504)
+      (call ldp_pre c i (% (+ i 1) 31) (% (+ i 7) 31) 504)
+      (call stp_post c i (% (+ i 1) 31) (% (+ i 7) 31) 504)
+      (call ldp_post c i (% (+ i 1) 31) (% (+ i 7) 31) 504))
+    (call str_x c 5 31 16)
+    (call ldr_x c 5 31 8)
+    (call stp_pre c 29 30 31 -16)
+    (call ldp_post c 29 30 31 16)
+    (call ldr_x_uxtw c 5 28 6)
+    (call str_w_uxtw c 5 28 31)
+    (call check "memory" c "f90000e0f90004e0f93ffce0f90000e0f94000e0f94004e0f97ffce0f94000e0b90000e0b90004e0b93ffce0b90000e0b94000e0b94004e0b97ffce0b94000e0790000e0790004e0793ffce0790000e0794000e0794004e0797ffce0794000e0390000e0390004e0393ffce0390000e0394000e0394004e0397ffce0394000e0b98000e0b98004e0b9bffce0b98000e0398000e0398004e039bffce0398000e0798000e0798004e079bffce0798000e039c000e039c004e039fffce039c000e079c000e079c004e079fffce079c000e0f81000e0f81ff0e0f80ff0e0f81f10e0f85000e0f85ff0e0f84ff0e0f85f10e0b81000e0b81ff0e0b80ff0e0b81f10e0b85000e0b85ff0e0b84ff0e0b85f10e0f87848e0f83848e0b87848e0b83848e0787848e0783848e0387848e0383848e0b8b848e038b848e078b848e038f848e078f848e0f87868e0f83868e0a92004e0a96004e0a90004e0a94004e0a90084e0a94084e0a91f84e0a95f84e0a90004e0a94004e0a9bf04e0a9ff04e0a8bf04e0a8ff04e0a98104e0a9c104e0a88104e0a8c104e0a9a004e0a9e004e0a8a004e0a8e004e0a99f84e0a9df84e0a89f84e0a8df84e0f9000101f9000501f93ffd01f9000501f9400101f9400501f97ffd01f9400501b9000101b9000501b93ffd01b9000501b9400101b9400501b97ffd01b94005017900010179000501793ffd01790005017940010179400501797ffd01794005013900010139000501393ffd01390005013940010139400501397ffd0139400501b9800101b9800501b9bffd01b9800501398001013980050139bffd0139800501798001017980050179bffd017980050139c0010139c0050139fffd0139c0050179c0010179c0050179fffd0179c00501f8100101f81ff101f80ff101f81f2101f8500101f85ff101f84ff101f85f2101b8100101b81ff101b80ff101b81f2101b8500101b85ff101b84ff101b85f2101f86b4901f82b4901b86b4901b82b4901786b4901782b4901386b4901382b4901b8ab490138ab490178ab490138eb490178eb4901f86b6901f82b6901a9200901a9600901a9000901a9400901a9008901a9408901a91f8901a95f8901a9008901a9408901a9bf0901a9ff0901a8bf0901a8ff0901a9810901a9c10901a8810901a8c10901a9a00901a9e00901a8a00901a8e00901a99f8901a9df8901a89f8901a8df8901f9000122f9000522f93ffd22f9000922f9400122f9400522f97ffd22f9400922b9000122b9000522b93ffd22b9000922b9400122b9400522b97ffd22b94009227900012279000522793ffd22790009227940012279400522797ffd22794009223900012239000522393ffd22390009223940012239400522397ffd2239400922b9800122b9800522b9bffd22b9800922398001223980052239bffd2239800922798001227980052279bffd227980092239c0012239c0052239fffd2239c0092279c0012279c0052279fffd2279c00922f8100122f81ff122f80ff122f81f3122f8500122f85ff122f84ff122f85f3122b8100122b81ff122b80ff122b81f3122b8500122b85ff122b84ff122b85f3122f87d4922f83d4922b87d4922b83d4922787d4922783d4922387d4922383d4922b8bd492238bd492278bd492238fd492278fd4922f87d6922f83d6922a9200d22a9600d22a9000d22a9400d22a9008d22a9408d22a91f8d22a95f8d22a9010d22a9410d22a9bf0d22a9ff0d22a8bf0d22a8ff0d22a9810d22a9c10d22a8810d22a8c10d22a9a00d22a9e00d22a8a00d22a8e00d22a99f8d22a9df8d22a89f8d22a8df8d22f9000143f9000543f93ffd43f9000d43f9400143f9400543f97ffd43f9400d43b9000143b9000543b93ffd43b9000d43b9400143b9400543b97ffd43b9400d437900014379000543793ffd4379000d437940014379400543797ffd4379400d433900014339000543393ffd4339000d433940014339400543397ffd4339400d43b9800143b9800543b9bffd43b9800d43398001433980054339bffd4339800d43798001437980054379bffd4379800d4339c0014339c0054339fffd4339c00d4379c0014379c0054379fffd4379c00d43f8100143f81ff143f80ff143f81f4143f8500143f85ff143f84ff143f85f4143b8100143b81ff143b80ff143b81f4143b8500143b85ff143b84ff143b85f4143f8704943f8304943b8704943b830494378704943783049433870494338304943b8b0494338b0494378b0494338f0494378f04943f8706943f8306943a9201143a9601143a9001143a9401143a9009143a9409143a91f9143a95f9143a9019143a9419143a9bf1143a9ff1143a8bf1143a8ff1143a9811143a9c11143a8811143a8c11143a9a01143a9e01143a8a01143a8e01143a99f9143a9df9143a89f9143a8df9143f9000164f9000564f93ffd64f9001164f9400164f9400564f97ffd64f9401164b9000164b9000564b93ffd64b9001164b9400164b9400564b97ffd64b94011647900016479000564793ffd64790011647940016479400564797ffd64794011643900016439000564393ffd64390011643940016439400564397ffd6439401164b9800164b9800564b9bffd64b9801164398001643980056439bffd6439801164798001647980056479bffd647980116439c0016439c0056439fffd6439c0116479c0016479c0056479fffd6479c01164f8100164f81ff164f80ff164f81f5164f8500164f85ff164f84ff164f85f5164b8100164b81ff164b80ff164b81f5164b8500164b85ff164b84ff164b85f5164f8634964f8234964b8634964b823496478634964782349643863496438234964b8a3496438a3496478a3496438e3496478e34964f8636964f8236964a9201564a9601564a9001564a9401564a9009564a9409564a91f9564a95f9564a9021564a9421564a9bf1564a9ff1564a8bf1564a8ff1564a9811564a9c11564a8811564a8c11564a9a01564a9e01564a8a01564a8e01564a99f9564a9df9564a89f9564a8df9564f9000185f9000585f93ffd85f9001585f9400185f9400585f97ffd85f9401585b9000185b9000585b93ffd85b9001585b9400185b9400585b97ffd85b94015857900018579000585793ffd85790015857940018579400585797ffd85794015853900018539000585393ffd85390015853940018539400585397ffd8539401585b9800185b9800585b9bffd85b9801585398001853980058539bffd8539801585798001857980058579bffd857980158539c0018539c0058539fffd8539c0158579c0018579c0058579fffd8579c01585f8100185f81ff185f80ff185f81f6185f8500185f85ff185f84ff185f85f6185b8100185b81ff185b80ff185b81f6185b8500185b85ff185b84ff185b85f6185f8754985f8354985b8754985b835498578754985783549853875498538354985b8b5498538b5498578b5498538f5498578f54985f8756985f8356985a9201985a9601985a9001985a9401985a9009985a9409985a91f9985a95f9985a9029985a9429985a9bf1985a9ff1985a8bf1985a8ff1985a9811985a9c11985a8811985a8c11985a9a01985a9e01985a8a01985a8e01985a99f9985a9df9985a89f9985a8df9985f90001a6f90005a6f93ffda6f90019a6f94001a6f94005a6f97ffda6f94019a6b90001a6b90005a6b93ffda6b90019a6b94001a6b94005a6b97ffda6b94019a6790001a6790005a6793ffda6790019a6794001a6794005a6797ffda6794019a6390001a6390005a6393ffda6390019a6394001a6394005a6397ffda6394019a6b98001a6b98005a6b9bffda6b98019a6398001a6398005a639bffda6398019a6798001a6798005a679bffda6798019a639c001a639c005a639fffda639c019a679c001a679c005a679fffda679c019a6f81001a6f81ff1a6f80ff1a6f81f71a6f85001a6f85ff1a6f84ff1a6f85f71a6b81001a6b81ff1a6b80ff1a6b81f71a6b85001a6b85ff1a6b84ff1a6b85f71a6f86849a6f82849a6b86849a6b82849a6786849a6782849a6386849a6382849a6b8a849a638a849a678a849a638e849a678e849a6f86869a6f82869a6a9201da6a9601da6a9001da6a9401da6a9009da6a9409da6a91f9da6a95f9da6a9031da6a9431da6a9bf1da6a9ff1da6a8bf1da6a8ff1da6a9811da6a9c11da6a8811da6a8c11da6a9a01da6a9e01da6a8a01da6a8e01da6a99f9da6a9df9da6a89f9da6a8df9da6f90001c7f90005c7f93ffdc7f9001dc7f94001c7f94005c7f97ffdc7f9401dc7b90001c7b90005c7b93ffdc7b9001dc7b94001c7b94005c7b97ffdc7b9401dc7790001c7790005c7793ffdc779001dc7794001c7794005c7797ffdc779401dc7390001c7390005c7393ffdc739001dc7394001c7394005c7397ffdc739401dc7b98001c7b98005c7b9bffdc7b9801dc7398001c7398005c739bffdc739801dc7798001c7798005c779bffdc779801dc739c001c739c005c739fffdc739c01dc779c001c779c005c779fffdc779c01dc7f81001c7f81ff1c7f80ff1c7f81f81c7f85001c7f85ff1c7f84ff1c7f85f81c7b81001c7b81ff1c7b80ff1c7b81f81c7b85001c7b85ff1c7b84ff1c7b85f81c7f87a49c7f83a49c7b87a49c7b83a49c7787a49c7783a49c7387a49c7383a49c7b8ba49c738ba49c778ba49c738fa49c778fa49c7f87a69c7f83a69c7a92021c7a96021c7a90021c7a94021c7a900a1c7a940a1c7a91fa1c7a95fa1c7a903a1c7a943a1c7a9bf21c7a9ff21c7a8bf21c7a8ff21c7a98121c7a9c121c7a88121c7a8c121c7a9a021c7a9e021c7a8a021c7a8e021c7a99fa1c7a9dfa1c7a89fa1c7a8dfa1c7f90001e8f90005e8f93ffde8f90021e8f94001e8f94005e8f97ffde8f94021e8b90001e8b90005e8b93ffde8b90021e8b94001e8b94005e8b97ffde8b94021e8790001e8790005e8793ffde8790021e8794001e8794005e8797ffde8794021e8390001e8390005e8393ffde8390021e8394001e8394005e8397ffde8394021e8b98001e8b98005e8b9bffde8b98021e8398001e8398005e839bffde8398021e8798001e8798005e879bffde8798021e839c001e839c005e839fffde839c021e879c001e879c005e879fffde879c021e8f81001e8f81ff1e8f80ff1e8f81f91e8f85001e8f85ff1e8f84ff1e8f85f91e8b81001e8b81ff1e8b80ff1e8b81f91e8b85001e8b85ff1e8b84ff1e8b85f91e8f86d49e8f82d49e8b86d49e8b82d49e8786d49e8782d49e8386d49e8382d49e8b8ad49e838ad49e878ad49e838ed49e878ed49e8f86d69e8f82d69e8a92025e8a96025e8a90025e8a94025e8a900a5e8a940a5e8a91fa5e8a95fa5e8a90025e8a94025e8a9bf25e8a9ff25e8a8bf25e8a8ff25e8a98125e8a9c125e8a88125e8a8c125e8a9a025e8a9e025e8a8a025e8a8e025e8a99fa5e8a9dfa5e8a89fa5e8a8dfa5e8f9000209f9000609f93ffe09f9002609f9400209f9400609f97ffe09f9402609b9000209b9000609b93ffe09b9002609b9400209b9400609b97ffe09b94026097900020979000609793ffe09790026097940020979400609797ffe09794026093900020939000609393ffe09390026093940020939400609397ffe0939402609b9800209b9800609b9bffe09b9802609398002093980060939bffe0939802609798002097980060979bffe097980260939c0020939c0060939fffe0939c0260979c0020979c0060979fffe0979c02609f8100209f81ff209f80ff209f81fa209f8500209f85ff209f84ff209f85fa209b8100209b81ff209b80ff209b81fa209b8500209b85ff209b84ff209b85fa209f8604a09f8204a09b8604a09b8204a0978604a0978204a0938604a0938204a09b8a04a0938a04a0978a04a0938e04a0978e04a09f8606a09f8206a09a9202a09a9602a09a9002a09a9402a09a900aa09a940aa09a91faa09a95faa09a900aa09a940aa09a9bf2a09a9ff2a09a8bf2a09a8ff2a09a9812a09a9c12a09a8812a09a8c12a09a9a02a09a9e02a09a8a02a09a8e02a09a99faa09a9dfaa09a89faa09a8dfaa09f900022af900062af93ffe2af9002a2af940022af940062af97ffe2af9402a2ab900022ab900062ab93ffe2ab9002a2ab940022ab940062ab97ffe2ab9402a2a7900022a7900062a793ffe2a79002a2a7940022a7940062a797ffe2a79402a2a3900022a3900062a393ffe2a39002a2a3940022a3940062a397ffe2a39402a2ab980022ab980062ab9bffe2ab9802a2a3980022a3980062a39bffe2a39802a2a7980022a7980062a79bffe2a79802a2a39c0022a39c0062a39fffe2a39c02a2a79c0022a79c0062a79fffe2a79c02a2af810022af81ff22af80ff22af81fb22af850022af85ff22af84ff22af85fb22ab810022ab81ff22ab80ff22ab81fb22ab850022ab85ff22ab84ff22ab85fb22af8724a2af8324a2ab8724a2ab8324a2a78724a2a78324a2a38724a2a38324a2ab8b24a2a38b24a2a78b24a2a38f24a2a78f24a2af8726a2af8326a2aa9202e2aa9602e2aa9002e2aa9402e2aa900ae2aa940ae2aa91fae2aa95fae2aa9012e2aa9412e2aa9bf2e2aa9ff2e2aa8bf2e2aa8ff2e2aa9812e2aa9c12e2aa8812e2aa8c12e2aa9a02e2aa9e02e2aa8a02e2aa8e02e2aa99fae2aa9dfae2aa89fae2aa8dfae2af900024bf900064bf93ffe4bf9002e4bf940024bf940064bf97ffe4bf9402e4bb900024bb900064bb93ffe4bb9002e4bb940024bb940064bb97ffe4bb9402e4b7900024b7900064b793ffe4b79002e4b7940024b7940064b797ffe4b79402e4b3900024b3900064b393ffe4b39002e4b3940024b3940064b397ffe4b39402e4bb980024bb980064bb9bffe4bb9802e4b3980024b3980064b39bffe4b39802e4b7980024b7980064b79bffe4b79802e4b39c0024b39c0064b39fffe4b39c02e4b79c0024b79c0064b79fffe4b79c02e4bf810024bf81ff24bf80ff24bf81fc24bf850024bf85ff24bf84ff24bf85fc24bb810024bb81ff24bb80ff24bb81fc24bb850024bb85ff24bb84ff24bb85fc24bf8654a4bf8254a4bb8654a4bb8254a4b78654a4b78254a4b38654a4b38254a4bb8a54a4b38a54a4b78a54a4b38e54a4b78e54a4bf8656a4bf8256a4ba920324ba960324ba900324ba940324ba900b24ba940b24ba91fb24ba95fb24ba901b24ba941b24ba9bf324ba9ff324ba8bf324ba8ff324ba981324ba9c1324ba881324ba8c1324ba9a0324ba9e0324ba8a0324ba8e0324ba99fb24ba9dfb24ba89fb24ba8dfb24bf900026cf900066cf93ffe6cf900326cf940026cf940066cf97ffe6cf940326cb900026cb900066cb93ffe6cb900326cb940026cb940066cb97ffe6cb940326c7900026c7900066c793ffe6c7900326c7940026c7940066c797ffe6c7940326c3900026c3900066c393ffe6c3900326c3940026c3940066c397ffe6c3940326cb980026cb980066cb9bffe6cb980326c3980026c3980066c39bffe6c3980326c7980026c7980066c79bffe6c7980326c39c0026c39c0066c39fffe6c39c0326c79c0026c79c0066c79fffe6c79c0326cf810026cf81ff26cf80ff26cf81fd26cf850026cf85ff26cf84ff26cf85fd26cb810026cb81ff26cb80ff26cb81fd26cb850026cb85ff26cb84ff26cb85fd26cf8774a6cf8374a6cb8774a6cb8374a6c78774a6c78374a6c38774a6c38374a6cb8b74a6c38b74a6c78b74a6c38f74a6c78f74a6cf8776a6cf8376a6ca920366ca960366ca900366ca940366ca900b66ca940b66ca91fb66ca95fb66ca902366ca942366ca9bf366ca9ff366ca8bf366ca8ff366ca981366ca9c1366ca881366ca8c1366ca9a0366ca9e0366ca8a0366ca8e0366ca99fb66ca9dfb66ca89fb66ca8dfb66cf900028df900068df93ffe8df900368df940028df940068df97ffe8df940368db900028db900068db93ffe8db900368db940028db940068db97ffe8db940368d7900028d7900068d793ffe8d7900368d7940028d7940068d797ffe8d7940368d3900028d3900068d393ffe8d3900368d3940028d3940068d397ffe8d3940368db980028db980068db9bffe8db980368d3980028d3980068d39bffe8d3980368d7980028d7980068d79bffe8d7980368d39c0028d39c0068d39fffe8d39c0368d79c0028d79c0068d79fffe8d79c0368df810028df81ff28df80ff28df81fe28df850028df85ff28df84ff28df85fe28db810028db81ff28db80ff28db81fe28db850028db85ff28db84ff28db85fe28df86a4a8df82a4a8db86a4a8db82a4a8d786a4a8d782a4a8d386a4a8d382a4a8db8aa4a8d38aa4a8d78aa4a8d38ea4a8d78ea4a8df86a6a8df82a6a8da9203a8da9603a8da9003a8da9403a8da900ba8da940ba8da91fba8da95fba8da902ba8da942ba8da9bf3a8da9ff3a8da8bf3a8da8ff3a8da9813a8da9c13a8da8813a8da8c13a8da9a03a8da9e03a8da8a03a8da8e03a8da99fba8da9dfba8da89fba8da8dfba8df90002aef90006aef93ffeaef9003aaef94002aef94006aef97ffeaef9403aaeb90002aeb90006aeb93ffeaeb9003aaeb94002aeb94006aeb97ffeaeb9403aae790002ae790006ae793ffeae79003aae794002ae794006ae797ffeae79403aae390002ae390006ae393ffeae39003aae394002ae394006ae397ffeae39403aaeb98002aeb98006aeb9bffeaeb9803aae398002ae398006ae39bffeae39803aae798002ae798006ae79bffeae79803aae39c002ae39c006ae39fffeae39c03aae79c002ae79c006ae79fffeae79c03aaef81002aef81ff2aef80ff2aef81ff2aef85002aef85ff2aef84ff2aef85ff2aeb81002aeb81ff2aeb80ff2aeb81ff2aeb85002aeb85ff2aeb84ff2aeb85ff2aef87c4aaef83c4aaeb87c4aaeb83c4aae787c4aae783c4aae387c4aae383c4aaeb8bc4aae38bc4aae78bc4aae38fc4aae78fc4aaef87c6aaef83c6aaea9203eaea9603eaea9003eaea9403eaea900beaea940beaea91fbeaea95fbeaea9033eaea9433eaea9bf3eaea9ff3eaea8bf3eaea8ff3eaea9813eaea9c13eaea8813eaea8c13eaea9a03eaea9e03eaea8a03eaea8e03eaea99fbeaea9dfbeaea89fbeaea8dfbeaef90002cff90006cff93ffecff9003ecff94002cff94006cff97ffecff9403ecfb90002cfb90006cfb93ffecfb9003ecfb94002cfb94006cfb97ffecfb9403ecf790002cf790006cf793ffecf79003ecf794002cf794006cf797ffecf79403ecf390002cf390006cf393ffecf39003ecf394002cf394006cf397ffecf39403ecfb98002cfb98006cfb9bffecfb9803ecf398002cf398006cf39bffecf39803ecf798002cf798006cf79bffecf79803ecf39c002cf39c006cf39fffecf39c03ecf79c002cf79c006cf79fffecf79c03ecff81002cff81ff2cff80ff2cff80002cff85002cff85ff2cff84ff2cff84002cfb81002cfb81ff2cfb80ff2cfb80002cfb85002cfb85ff2cfb84ff2cfb84002cff86f4acff82f4acfb86f4acfb82f4acf786f4acf782f4acf386f4acf382f4acfb8af4acf38af4acf78af4acf38ef4acf78ef4acff86f6acff82f6acfa92042cfa96042cfa90042cfa94042cfa900c2cfa940c2cfa91fc2cfa95fc2cfa903c2cfa943c2cfa9bf42cfa9ff42cfa8bf42cfa8ff42cfa98142cfa9c142cfa88142cfa8c142cfa9a042cfa9e042cfa8a042cfa8e042cfa99fc2cfa9dfc2cfa89fc2cfa8dfc2cff90002f0f90006f0f93ffef0f90002f0f94002f0f94006f0f97ffef0f94002f0b90002f0b90006f0b93ffef0b90002f0b94002f0b94006f0b97ffef0b94002f0790002f0790006f0793ffef0790002f0794002f0794006f0797ffef0794002f0390002f0390006f0393ffef0390002f0394002f0394006f0397ffef0394002f0b98002f0b98006f0b9bffef0b98002f0398002f0398006f039bffef0398002f0798002f0798006f079bffef0798002f039c002f039c006f039fffef039c002f079c002f079c006f079fffef079c002f0f81002f0f81ff2f0f80ff2f0f80012f0f85002f0f85ff2f0f84ff2f0f84012f0b81002f0b81ff2f0b80ff2f0b80012f0b85002f0b85ff2f0b84ff2f0b84012f0f8624af0f8224af0b8624af0b8224af078624af078224af038624af038224af0b8a24af038a24af078a24af038e24af078e24af0f8626af0f8226af0a92046f0a96046f0a90046f0a94046f0a900c6f0a940c6f0a91fc6f0a95fc6f0a90046f0a94046f0a9bf46f0a9ff46f0a8bf46f0a8ff46f0a98146f0a9c146f0a88146f0a8c146f0a9a046f0a9e046f0a8a046f0a8e046f0a99fc6f0a9dfc6f0a89fc6f0a8dfc6f0f9000311f9000711f93fff11f9000711f9400311f9400711f97fff11f9400711b9000311b9000711b93fff11b9000711b9400311b9400711b97fff11b94007117900031179000711793fff11790007117940031179400711797fff11794007113900031139000711393fff11390007113940031139400711397fff1139400711b9800311b9800711b9bfff11b9800711398003113980071139bfff1139800711798003117980071179bfff117980071139c0031139c0071139ffff1139c0071179c0031179c0071179ffff1179c00711f8100311f81ff311f80ff311f8002311f8500311f85ff311f84ff311f8402311b8100311b81ff311b80ff311b8002311b8500311b85ff311b84ff311b8402311f8744b11f8344b11b8744b11b8344b1178744b1178344b1138744b1138344b11b8b44b1138b44b1178b44b1138f44b1178f44b11f8746b11f8346b11a9204b11a9604b11a9004b11a9404b11a900cb11a940cb11a91fcb11a95fcb11a900cb11a940cb11a9bf4b11a9ff4b11a8bf4b11a8ff4b11a9814b11a9c14b11a8814b11a8c14b11a9a04b11a9e04b11a8a04b11a8e04b11a99fcb11a9dfcb11a89fcb11a8dfcb11f9000332f9000732f93fff32f9000b32f9400332f9400732f97fff32f9400b32b9000332b9000732b93fff32b9000b32b9400332b9400732b97fff32b9400b327900033279000732793fff3279000b327940033279400732797fff3279400b323900033239000732393fff3239000b323940033239400732397fff3239400b32b9800332b9800732b9bfff32b9800b32398003323980073239bfff3239800b32798003327980073279bfff3279800b3239c0033239c0073239ffff3239c00b3279c0033279c0073279ffff3279c00b32f8100332f81ff332f80ff332f8003332f8500332f85ff332f84ff332f8403332b8100332b81ff332b80ff332b8003332b8500332b85ff332b84ff332b8403332f8674b32f8274b32b8674b32b8274b3278674b3278274b3238674b3238274b32b8a74b3238a74b3278a74b3238e74b3278e74b32f8676b32f8276b32a9204f32a9604f32a9004f32a9404f32a900cf32a940cf32a91fcf32a95fcf32a9014f32a9414f32a9bf4f32a9ff4f32a8bf4f32a8ff4f32a9814f32a9c14f32a8814f32a8c14f32a9a04f32a9e04f32a8a04f32a8e04f32a99fcf32a9dfcf32a89fcf32a8dfcf32f9000353f9000753f93fff53f9000f53f9400353f9400753f97fff53f9400f53b9000353b9000753b93fff53b9000f53b9400353b9400753b97fff53b9400f537900035379000753793fff5379000f537940035379400753797fff5379400f533900035339000753393fff5339000f533940035339400753397fff5339400f53b9800353b9800753b9bfff53b9800f53398003533980075339bfff5339800f53798003537980075379bfff5379800f5339c0035339c0075339ffff5339c00f5379c0035379c0075379ffff5379c00f53f8100353f81ff353f80ff353f8004353f8500353f85ff353f84ff353f8404353b8100353b81ff353b80ff353b8004353b8500353b85ff353b84ff353b8404353f8794b53f8394b53b8794b53b8394b5378794b5378394b5338794b5338394b53b8b94b5338b94b5378b94b5338f94b5378f94b53f8796b53f8396b53a9205353a9605353a9005353a9405353a900d353a940d353a91fd353a95fd353a901d353a941d353a9bf5353a9ff5353a8bf5353a8ff5353a9815353a9c15353a8815353a8c15353a9a05353a9e05353a8a05353a8e05353a99fd353a9dfd353a89fd353a8dfd353f9000374f9000774f93fff74f9001374f9400374f9400774f97fff74f9401374b9000374b9000774b93fff74b9001374b9400374b9400774b97fff74b94013747900037479000774793fff74790013747940037479400774797fff74794013743900037439000774393fff74390013743940037439400774397fff7439401374b9800374b9800774b9bfff74b9801374398003743980077439bfff7439801374798003747980077479bfff747980137439c0037439c0077439ffff7439c0137479c0037479c0077479ffff7479c01374f8100374f81ff374f80ff374f8005374f8500374f85ff374f84ff374f8405374b8100374b81ff374b80ff374b8005374b8500374b85ff374b84ff374b8405374f86c4b74f82c4b74b86c4b74b82c4b74786c4b74782c4b74386c4b74382c4b74b8ac4b7438ac4b7478ac4b7438ec4b7478ec4b74f86c6b74f82c6b74a9205774a9605774a9005774a9405774a900d774a940d774a91fd774a95fd774a9025774a9425774a9bf5774a9ff5774a8bf5774a8ff5774a9815774a9c15774a8815774a8c15774a9a05774a9e05774a8a05774a8e05774a99fd774a9dfd774a89fd774a8dfd774f9000395f9000795f93fff95f9001795f9400395f9400795f97fff95f9401795b9000395b9000795b93fff95b9001795b9400395b9400795b97fff95b94017957900039579000795793fff95790017957940039579400795797fff95794017953900039539000795393fff95390017953940039539400795397fff9539401795b9800395b9800795b9bfff95b9801795398003953980079539bfff9539801795798003957980079579bfff957980179539c0039539c0079539ffff9539c0179579c0039579c0079579ffff9579c01795f8100395f81ff395f80ff395f8006395f8500395f85ff395f84ff395f8406395b8100395b81ff395b80ff395b8006395b8500395b85ff395b84ff395b8406395f87e4b95f83e4b95b87e4b95b83e4b95787e4b95783e4b95387e4b95383e4b95b8be4b9538be4b9578be4b9538fe4b9578fe4b95f87e6b95f83e6b95a9205b95a9605b95a9005b95a9405b95a900db95a940db95a91fdb95a95fdb95a902db95a942db95a9bf5b95a9ff5b95a8bf5b95a8ff5b95a9815b95a9c15b95a8815b95a8c15b95a9a05b95a9e05b95a8a05b95a8e05b95a99fdb95a9dfdb95a89fdb95a8dfdb95f90003b6f90007b6f93fffb6f9001bb6f94003b6f94007b6f97fffb6f9401bb6b90003b6b90007b6b93fffb6b9001bb6b94003b6b94007b6b97fffb6b9401bb6790003b6790007b6793fffb679001bb6794003b6794007b6797fffb679401bb6390003b6390007b6393fffb639001bb6394003b6394007b6397fffb639401bb6b98003b6b98007b6b9bfffb6b9801bb6398003b6398007b639bfffb639801bb6798003b6798007b679bfffb679801bb639c003b639c007b639ffffb639c01bb679c003b679c007b679ffffb679c01bb6f81003b6f81ff3b6f80ff3b6f80073b6f85003b6f85ff3b6f84ff3b6f84073b6b81003b6b81ff3b6b80ff3b6b80073b6b85003b6b85ff3b6b84ff3b6b84073b6f8714bb6f8314bb6b8714bb6b8314bb678714bb678314bb638714bb638314bb6b8b14bb638b14bb678b14bb638f14bb678f14bb6f8716bb6f8316bb6a9205fb6a9605fb6a9005fb6a9405fb6a900dfb6a940dfb6a91fdfb6a95fdfb6a9035fb6a9435fb6a9bf5fb6a9ff5fb6a8bf5fb6a8ff5fb6a9815fb6a9c15fb6a8815fb6a8c15fb6a9a05fb6a9e05fb6a8a05fb6a8e05fb6a99fdfb6a9dfdfb6a89fdfb6a8dfdfb6f90003d7f90007d7f93fffd7f9001fd7f94003d7f94007d7f97fffd7f9401fd7b90003d7b90007d7b93fffd7b9001fd7b94003d7b94007d7b97fffd7b9401fd7790003d7790007d7793fffd779001fd7794003d7794007d7797fffd779401fd7390003d7390007d7393fffd739001fd7394003d7394007d7397fffd739401fd7b98003d7b98007d7b9bfffd7b9801fd7398003d7398007d739bfffd739801fd7798003d7798007d779bfffd779801fd739c003d739c007d739ffffd739c01fd779c003d779c007d779ffffd779c01fd7f81003d7f81ff3d7f80ff3d7f80083d7f85003d7f85ff3d7f84ff3d7f84083d7b81003d7b81ff3d7b80ff3d7b80083d7b85003d7b85ff3d7b84ff3d7b84083d7f8644bd7f8244bd7b8644bd7b8244bd778644bd778244bd738644bd738244bd7b8a44bd738a44bd778a44bd738e44bd778e44bd7f8646bd7f8246bd7a92063d7a96063d7a90063d7a94063d7a900e3d7a940e3d7a91fe3d7a95fe3d7a903e3d7a943e3d7a9bf63d7a9ff63d7a8bf63d7a8ff63d7a98163d7a9c163d7a88163d7a8c163d7a9a063d7a9e063d7a8a063d7a8e063d7a99fe3d7a9dfe3d7a89fe3d7a8dfe3d7f9000018f9000418f93ffc18f9002018f9400018f9400418f97ffc18f9402018b9000018b9000418b93ffc18b9002018b9400018b9400418b97ffc18b94020187900001879000418793ffc18790020187940001879400418797ffc18794020183900001839000418393ffc18390020183940001839400418397ffc1839402018b9800018b9800418b9bffc18b9802018398000183980041839bffc1839802018798000187980041879bffc187980201839c0001839c0041839fffc1839c0201879c0001879c0041879fffc1879c02018f8100018f81ff018f80ff018f8009018f8500018f85ff018f84ff018f8409018b8100018b81ff018b80ff018b8009018b8500018b85ff018b84ff018b8409018f8764818f8364818b8764818b836481878764818783648183876481838364818b8b6481838b6481878b6481838f6481878f64818f8766818f8366818a9206418a9606418a9006418a9406418a900e418a940e418a91fe418a95fe418a9006418a9406418a9bf6418a9ff6418a8bf6418a8ff6418a9816418a9c16418a8816418a8c16418a9a06418a9e06418a8a06418a8e06418a99fe418a9dfe418a89fe418a8dfe418f9000039f9000439f93ffc39f9002439f9400039f9400439f97ffc39f9402439b9000039b9000439b93ffc39b9002439b9400039b9400439b97ffc39b94024397900003979000439793ffc39790024397940003979400439797ffc39794024393900003939000439393ffc39390024393940003939400439397ffc3939402439b9800039b9800439b9bffc39b9802439398000393980043939bffc3939802439798000397980043979bffc397980243939c0003939c0043939fffc3939c0243979c0003979c0043979fffc3979c02439f8100039f81ff039f80ff039f800a039f8500039f85ff039f84ff039f840a039b8100039b81ff039b80ff039b800a039b8500039b85ff039b84ff039b840a039f8694839f8294839b8694839b829483978694839782948393869483938294839b8a9483938a9483978a9483938e9483978e94839f8696839f8296839a9206839a9606839a9006839a9406839a900e839a940e839a91fe839a95fe839a900e839a940e839a9bf6839a9ff6839a8bf6839a8ff6839a9816839a9c16839a8816839a8c16839a9a06839a9e06839a8a06839a8e06839a99fe839a9dfe839a89fe839a8dfe839f900005af900045af93ffc5af900285af940005af940045af97ffc5af940285ab900005ab900045ab93ffc5ab900285ab940005ab940045ab97ffc5ab940285a7900005a7900045a793ffc5a7900285a7940005a7940045a797ffc5a7940285a3900005a3900045a393ffc5a3900285a3940005a3940045a397ffc5a3940285ab980005ab980045ab9bffc5ab980285a3980005a3980045a39bffc5a3980285a7980005a7980045a79bffc5a7980285a39c0005a39c0045a39fffc5a39c0285a79c0005a79c0045a79fffc5a79c0285af810005af81ff05af80ff05af800b05af850005af85ff05af84ff05af840b05ab810005ab81ff05ab80ff05ab800b05ab850005ab85ff05ab84ff05ab840b05af87b485af83b485ab87b485ab83b485a787b485a783b485a387b485a383b485ab8bb485a38bb485a78bb485a38fb485a78fb485af87b685af83b685aa9206c5aa9606c5aa9006c5aa9406c5aa900ec5aa940ec5aa91fec5aa95fec5aa9016c5aa9416c5aa9bf6c5aa9ff6c5aa8bf6c5aa8ff6c5aa9816c5aa9c16c5aa8816c5aa8c16c5aa9a06c5aa9e06c5aa8a06c5aa8e06c5aa99fec5aa9dfec5aa89fec5aa8dfec5af900007bf900047bf93ffc7bf9002c7bf940007bf940047bf97ffc7bf9402c7bb900007bb900047bb93ffc7bb9002c7bb940007bb940047bb97ffc7bb9402c7b7900007b7900047b793ffc7b79002c7b7940007b7940047b797ffc7b79402c7b3900007b3900047b393ffc7b39002c7b3940007b3940047b397ffc7b39402c7bb980007bb980047bb9bffc7bb9802c7b3980007b3980047b39bffc7b39802c7b7980007b7980047b79bffc7b79802c7b39c0007b39c0047b39fffc7b39c02c7b79c0007b79c0047b79fffc7b79c02c7bf810007bf81ff07bf80ff07bf800c07bf850007bf85ff07bf84ff07bf840c07bb810007bb81ff07bb80ff07bb800c07bb850007bb85ff07bb84ff07bb840c07bf86e487bf82e487bb86e487bb82e487b786e487b782e487b386e487b382e487bb8ae487b38ae487b78ae487b38ee487b78ee487bf86e687bf82e687ba920707ba960707ba900707ba940707ba900f07ba940f07ba91ff07ba95ff07ba901f07ba941f07ba9bf707ba9ff707ba8bf707ba8ff707ba981707ba9c1707ba881707ba8c1707ba9a0707ba9e0707ba8a0707ba8e0707ba99ff07ba9dff07ba89ff07ba8dff07bf900009cf900049cf93ffc9cf900309cf940009cf940049cf97ffc9cf940309cb900009cb900049cb93ffc9cb900309cb940009cb940049cb97ffc9cb940309c7900009c7900049c793ffc9c7900309c7940009c7940049c797ffc9c7940309c3900009c3900049c393ffc9c3900309c3940009c3940049c397ffc9c3940309cb980009cb980049cb9bffc9cb980309c3980009c3980049c39bffc9c3980309c7980009c7980049c79bffc9c7980309c39c0009c39c0049c39fffc9c39c0309c79c0009c79c0049c79fffc9c79c0309cf810009cf81ff09cf80ff09cf800d09cf850009cf85ff09cf84ff09cf840d09cb810009cb81ff09cb80ff09cb800d09cb850009cb85ff09cb84ff09cb840d09cf861489cf821489cb861489cb821489c7861489c7821489c3861489c3821489cb8a1489c38a1489c78a1489c38e1489c78e1489cf861689cf821689ca920749ca960749ca900749ca940749ca900f49ca940f49ca91ff49ca95ff49ca902749ca942749ca9bf749ca9ff749ca8bf749ca8ff749ca981749ca9c1749ca881749ca8c1749ca9a0749ca9e0749ca8a0749ca8e0749ca99ff49ca9dff49ca89ff49ca8dff49cf90000bdf90004bdf93ffcbdf90034bdf94000bdf94004bdf97ffcbdf94034bdb90000bdb90004bdb93ffcbdb90034bdb94000bdb94004bdb97ffcbdb94034bd790000bd790004bd793ffcbd790034bd794000bd794004bd797ffcbd794034bd390000bd390004bd393ffcbd390034bd394000bd394004bd397ffcbd394034bdb98000bdb98004bdb9bffcbdb98034bd398000bd398004bd39bffcbd398034bd798000bd798004bd79bffcbd798034bd39c000bd39c004bd39fffcbd39c034bd79c000bd79c004bd79fffcbd79c034bdf81000bdf81ff0bdf80ff0bdf800e0bdf85000bdf85ff0bdf84ff0bdf840e0bdb81000bdb81ff0bdb80ff0bdb800e0bdb85000bdb85ff0bdb84ff0bdb840e0bdf87348bdf83348bdb87348bdb83348bd787348bd783348bd387348bd383348bdb8b348bd38b348bd78b348bd38f348bd78f348bdf87368bdf83368bda92078bda96078bda90078bda94078bda900f8bda940f8bda91ff8bda95ff8bda902f8bda942f8bda9bf78bda9ff78bda8bf78bda8ff78bda98178bda9c178bda88178bda8c178bda9a078bda9e078bda8a078bda8e078bda99ff8bda9dff8bda89ff8bda8dff8bdf90000def90004def93ffcdef90038def94000def94004def97ffcdef94038deb90000deb90004deb93ffcdeb90038deb94000deb94004deb97ffcdeb94038de790000de790004de793ffcde790038de794000de794004de797ffcde794038de390000de390004de393ffcde390038de394000de394004de397ffcde394038deb98000deb98004deb9bffcdeb98038de398000de398004de39bffcde398038de798000de798004de79bffcde798038de39c000de39c004de39fffcde39c038de79c000de79c004de79fffcde79c038def81000def81ff0def80ff0def800f0def85000def85ff0def84ff0def840f0deb81000deb81ff0deb80ff0deb800f0deb85000deb85ff0deb84ff0deb840f0def86648def82648deb86648deb82648de786648de782648de386648de382648deb8a648de38a648de78a648de38e648de78e648def86668def82668dea92000dea96000dea90000dea94000dea90080dea94080dea91f80dea95f80dea90300dea94300dea9bf00dea9ff00dea8bf00dea8ff00dea98100dea9c100dea88100dea8c100dea9a000dea9e000dea8a000dea8e000dea99f80dea9df80dea89f80dea8df80def9000be5f94007e5a9bf7bfda8c17bfdf8664b85b83f4b85"))
+
+  (fn test_branches [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 2048))
+    (let start:i32 (call buf.len c))
+    (let fwd:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 32))
+    (call (vec.push i32) fwd (call b c))
+    (call (vec.push i32) fwd (call bl c))
+    (for cc 0 14 (call (vec.push i32) fwd (call b_cond c cc)))
+    (call (vec.push i32) fwd (call cbz c 64 3))
+    (call (vec.push i32) fwd (call cbnz c 64 4))
+    (call (vec.push i32) fwd (call cbz c 32 5))
+    (call (vec.push i32) fwd (call cbnz c 32 30))
+    (call b_to c start)
+    (let adr_at:i32 (call adr c 7))
+    (call br c 9)
+    (call blr c 10)
+    (call ret_r c 11)
+    (call ret c)
+    (let end:i32 (call buf.len c))
+    (call ret c)
+    (for k 0 (call (vec.len i32) fwd)
+      (let at:i32 (call (vec.at i32) fwd k))
+      (if (lt k 2) (call patch_b c at end) (call patch_cond c at end)))
+    (call patch_adr c adr_at end)
+    (call check "branches" c "1400001a9400001954000300540002e1540002c2540002a35400028454000265540002465400022754000208540001e9540001ca540001ab5400018c5400016db4000143b500012434000105350000fe17ffffec100000a7d61f0120d63f0140d65f0160d65f03c0d65f03c0"))
+
+  (fn test_system [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
+    (call svc c 0)
+    (call svc c 65535)
+    (call brk c 0)
+    (call brk c 1000)
+    (call udf c 0)
+    (call udf c 513)
+    (call nop c)
+    (call dmb_ish c)
+    (call isb c)
+    (call check "system" c "d4000001d41fffe1d4200000d4207d000000000000000201d503201fd5033bbfd5033fdf"))
+
+  (fn run_arm64_tests [] -> i32 (pub)
+    (+ (call test_moves) (+ (call test_alu_reg) (+ (call test_muldiv) (+ (call test_alu_imm) (+ (call test_shift_ext) (+ (call test_conditional) (+ (call test_memory) (+ (call test_branches) (call test_system))))))))))
+  ;; ARM64_TESTS_END
+)
