@@ -13,7 +13,7 @@ section 8: "the documentation check is rerun").
    the documents a reader meets first.
 3. The numbers that can be counted are the numbers written: the test files
    and the standard library's modules.
-4. bootstrap/README.md's seed hash is the checked-in seed's.
+4. bootstrap/README.md's seed hashes (x86-64 and AArch64) are the checked-in seeds'.
 5. Every `module.name` the documents write is exported by that module (asked
    of `aipl doc`), every `--flag` in the spec's command table is one a command
    takes, every form is in the spec, every "section N.X" and "AIPL_SPEC.md
@@ -147,7 +147,14 @@ def check_seed():
     if not m or not os.path.exists(seed):
         return ["bootstrap/README.md: no seed hash to check"]
     actual = hashlib.sha256(open(seed, "rb").read()).hexdigest()
-    return [] if actual == m.group(1) else [f"bootstrap/README.md: says the seed is sha256 {m.group(1)[:12]}..., it is {actual[:12]}..."]
+    found = [] if actual == m.group(1) else [f"bootstrap/README.md: says the seed is sha256 {m.group(1)[:12]}..., it is {actual[:12]}..."]
+    # the AArch64 seed's hash, on the line that says so
+    arm = os.path.join(ROOT, "bootstrap", "aipl-linux-aarch64")
+    a = re.search(r"AArch64 seed sha256 `([0-9a-f]{64})`", readme)
+    if not a or not os.path.exists(arm):
+        return found + ["bootstrap/README.md: no AArch64 seed hash to check"]
+    actual = hashlib.sha256(open(arm, "rb").read()).hexdigest()
+    return found if actual == a.group(1) else found + [f"bootstrap/README.md: says the AArch64 seed is sha256 {a.group(1)[:12]}..., it is {actual[:12]}..."]
 
 
 def check_comments(files):

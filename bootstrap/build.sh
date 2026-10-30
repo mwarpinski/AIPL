@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the aipl compiler from the checked-in seed, with no Rust
-# (Linux x86-64; bootstrap/README.md):
+# (Linux x86-64 or AArch64; bootstrap/README.md):
 #
 #   sh bootstrap/build.sh [OUT_DIR]        (default: target/bootstrap)
 #
@@ -12,7 +12,6 @@ set -eu
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${1:-$root/target/bootstrap}"
-seed="$root/bootstrap/aipl-linux-x86_64"
 
 say() { printf 'bootstrap: %s\n' "$1"; }
 err() {
@@ -20,9 +19,12 @@ err() {
     exit 1
 }
 
+# each machine's seed is an executable for it, and builds executables for it (the x86-64
+# seed predates --target, and builds x86-64 ones without it)
 case "$(uname -s)/$(uname -m)" in
-    Linux/x86_64) ;;
-    *) err "the seed is a Linux x86-64 executable; elsewhere, build with cargo (README.md, Install)" ;;
+    Linux/x86_64) seed="$root/bootstrap/aipl-linux-x86_64"; target="" ;;
+    Linux/aarch64 | Linux/arm64) seed="$root/bootstrap/aipl-linux-aarch64"; target="--target arm64" ;;
+    *) err "the seeds are Linux x86-64 and AArch64 executables; elsewhere, build with cargo (README.md, Install)" ;;
 esac
 [ -x "$seed" ] || err "no seed at $seed"
 
@@ -33,7 +35,7 @@ export AIPL_STD="$root/aipl_src/std/"
 # stage COMPILER OUTPUT: COMPILER builds the aipl command into OUTPUT
 # (executable: the compiler sets the bit, with fs.chmod).
 stage() {
-    "$1" compile --exe --allow-run "*" aipl_src/aipl.aipl -o "$2" >/dev/null || err "$(basename "$1") could not build $2"
+    "$1" compile --exe $target --allow-run "*" aipl_src/aipl.aipl -o "$2" >/dev/null || err "$(basename "$1") could not build $2"
 }
 
 stage "$seed" "$out/aipl-stage1"

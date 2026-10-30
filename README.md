@@ -188,8 +188,9 @@ too; a document that is not JSON is reported as `FILE:LINE:COLUMN: what`.
 ## Build AIPL with AIPL
 
 The compiler is written in AIPL, and on Linux x86-64 it compiles itself to a
-native executable in about 3 seconds. Without Rust, start from the
-checked-in seed. From the source directory, this script builds the compiler
+native executable in about 3 seconds (on Linux AArch64, which has its own
+seed and a baseline code generator, about 20). Without Rust, start from the
+checked-in seed for your machine. From the source directory, this script builds the compiler
 with the seed, builds it again with the result, and checks that a third build
 is identical (about 8 seconds):
 
@@ -200,7 +201,7 @@ sh bootstrap/build.sh               # the result is target/bootstrap/aipl
 The AIPL-built compiler does `compile` only (to `.wasm`, or with `--exe` to an
 executable), and it compiles every program to the same bytes as the Rust
 one, which stays as the referee: `cargo test` checks the seed's build byte for
-byte against it. [bootstrap/README.md](bootstrap/README.md) has the other
+byte against it (on AArch64 too, in CI). [bootstrap/README.md](bootstrap/README.md) has the other
 ways to start, where the compiler finds the library, and why.
 
 ## What works today
@@ -235,7 +236,7 @@ ways to start, where the compiler finds the library, and why.
   and native backend are written in AIPL, and produce the same bytes and the
   same error messages as the Rust implementation. The `aipl` command the
   installer builds is still the Rust one: the interpreter and the
-  WebAssembly runner are Rust, and other platforms have no seed yet.
+  WebAssembly runner are Rust, and macOS has no seed yet (Linux x86-64 and AArch64 do).
 
 **Memory safety.** Outside `(unsafe ...)`, every memory access is checked, in
 the interpreter and in compiled code: array indexes against the length,
@@ -265,9 +266,9 @@ is missing):
    macOS (Apple Silicon) port, and the final checks.
 2. **The standard library:** networking and starting processes, once WASI
    can, and time zones.
-3. **Rust out of the build path:** the seed builds the compiler on Linux
-   x86-64 today; next, a WebAssembly seed for other platforms and an
-   installer that needs no Rust. The Rust compiler stays as the referee.
+3. **Rust out of the build path:** the seeds build the compiler on Linux
+   x86-64 and AArch64 today; next, the process operations on AArch64, a
+   macOS seed (or a WebAssembly one), and an installer that needs no Rust. The Rust compiler stays as the referee.
 4. **Packages:** a registry with versioned packages, dependency resolution,
    and lock files.
 
