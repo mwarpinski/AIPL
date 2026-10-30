@@ -2,11 +2,27 @@
 //! directly on an AArch64 Linux machine, under qemu-user (`qemu-aarch64` or
 //! `qemu-aarch64-static` on the PATH), or on another machine over ssh in a
 //! `linux/arm64` Docker container (set AIPL_ARM64_SSH to the host, as
-//! `pennylane`: a Mac with Docker Desktop). With none of these there is
-//! nothing to run it on and `run` gives None, and the test says it did not.
+//! `pennylane`: a Mac with Docker Desktop), or, on a Mac, in a `linux/arm64`
+//! container started here. With none of these there is nothing to run it on
+//! and `run` gives None, and the test says it did not.
 
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
+
+/// A `docker` that runs `linux/arm64` containers on this machine (Docker
+/// Desktop on an Apple Silicon Mac), with the places Homebrew keeps it on the PATH.
+fn local_docker() -> bool {
+    static FOUND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            && Command::new("sh")
+                .args(["-c", "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; docker run --rm --platform linux/arm64 alpine true"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+    })
+}
 
 /// Where AArch64 executables can run, if anywhere.
 pub fn available() -> Option<String> {
@@ -17,6 +33,9 @@ pub fn available() -> Option<String> {
         if Command::new(q).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
             return Some(q.into());
         }
+    }
+    if local_docker() {
+        return Some("docker on this machine".into());
     }
     std::env::var("AIPL_ARM64_SSH").ok().filter(|h| !h.is_empty()).map(|h| format!("docker over ssh on {h}"))
 }
@@ -33,6 +52,11 @@ pub fn run(exe: &[u8], args: &[&str], input: &[u8]) -> Option<Output> {
     let mut cmd = if how == "this machine" {
         let mut c = Command::new(&path);
         c.args(args);
+        c
+    } else if how == "docker on this machine" {
+        let mut c = Command::new("sh");
+        c.args(["-c", "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; d=$1; shift; exec docker run --rm -i --platform linux/arm64 -v \"$d\":/w:ro alpine /w/prog \"$@\"", "sh"]);
+        c.arg(&dir).args(args);
         c
     } else if how.starts_with("qemu") {
         let mut c = Command::new(&how);
