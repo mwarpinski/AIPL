@@ -1,7 +1,7 @@
 # The stage-0 compiler
 
 `aipl-linux-x86_64` is the AIPL compiler as a native Linux x86-64
-executable: `aipl_src/aipl.aipl`, which joins the self-hosted toolchain
+executable (and `aipl-linux-aarch64` as an AArch64 one: see below): `aipl_src/aipl.aipl`, which joins the self-hosted toolchain
 (`driver.aipl`: resolve, type-check, compile to WebAssembly) and the
 native backend (`native/native.aipl`: WebAssembly to machine code). It is
 statically linked, needs nothing but the Linux kernel, and builds the next
@@ -10,6 +10,8 @@ version of itself:
 ```bash
 sh bootstrap/build.sh            # about 8 seconds; the result is target/bootstrap/aipl
 ```
+
+On Linux AArch64 the script uses `aipl-linux-aarch64` instead (see "On AArch64 Linux" below).
 
 The script has the seed build the current source (stage 1), stage 1 build
 it again (stage 2), and stage 2 build itself once more, which must give
@@ -66,9 +68,15 @@ aipl_src/aipl.aipl -o stage1` (the default `--target` on an AArch64 machine). Ru
 Linux, `stage1` compiles the compiler again to the same bytes (a fixed point) and every program
 in `examples/`, `benchmarks/`, and `tests/aipl` to the bytes the Rust command makes, with no
 Rust and no x86-64 machine on the second stage. `sh tools/arm64_bootstrap.sh HOST` checks it all
-over ssh on an Apple Silicon Mac with Docker (2 minutes). There is no AArch64 seed in the
-repository yet: its first stage is built on x86-64, and the process operations (`aipl run`,
-`test`, `watch`), sockets, threads, and `--sandbox` are not built for AArch64.
+over ssh on an Apple Silicon Mac with Docker (3 minutes).
+
+`aipl-linux-aarch64` is that compiler as a Linux AArch64 executable, the seed there: on an
+AArch64 Linux machine `sh bootstrap/build.sh` has it build the source (stage 1), stage 1
+build it again (stage 2), and stage 2 once more (a fixed point), as on x86-64, with no Rust.
+It is larger than the x86-64 seed (7.6 MB against 4 MB) because the AArch64 backend is a
+baseline one, every value in a stack slot (docs/design/ARM64_PLAN.md). The process operations
+(`aipl run`, `test`, `watch`), sockets, threads, and `--sandbox` are not built for AArch64 yet,
+so there the built `aipl` has `compile`, `verify`, `doc`, and `eval`'s checks but not those.
 
 ## Why the Rust compiler stays
 
@@ -137,6 +145,21 @@ storage types (`(arr u8)`, which the checked views need), `when`, `for`,
 `72a36ea2bdd10795c572916dd5f75ebbd3360984c1b8f841b61729edbe22e923`),
 built from the commit that added generation checks, whose source first
 used `ptr.make`.
+
+## Where the AArch64 seed came from
+
+Built 2026-10-30 by the Rust toolchain, from the source of commit ac88301, with
+`--allow-run '*'`:
+
+```bash
+cargo build --release
+./target/release/aipl compile --exe --target arm64 --allow-run '*' aipl_src/aipl.aipl -o bootstrap/aipl-linux-aarch64
+```
+
+AArch64 seed sha256 `8554dc536675403a6ee236d7a882179e32e90786526938af5bd2df1e0863ab76`.
+The self-hosted x86-64 command builds the same bytes, and so does the seed itself on AArch64 Linux
+(stage 2 is the seed), which `tools/arm64_bootstrap.sh` checks; `tests/test_bootstrap.rs` runs
+the seed's stages on AArch64 Linux as it does on x86-64.
 
 ## Replacing the seed
 

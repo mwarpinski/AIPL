@@ -43,7 +43,10 @@ fn run(cmd: &mut Command) -> Output {
 /// `compiler` builds the aipl command into `out`, which it makes executable
 /// itself (the self-hosted compiler with `fs.chmod`).
 fn build_aipl(compiler: &Path, out: &Path) {
-    let r = run(Command::new(compiler).args(["compile", "--exe", "--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(out));
+    // on AArch64 Linux the executable is for AArch64, which no compiler there builds by default (Rust's
+    // default is the launcher bundle) and every one knows how to build
+    let target: &[&str] = if cfg!(target_arch = "aarch64") { &["--target", "arm64"] } else { &[] };
+    let r = run(Command::new(compiler).args(["compile", "--exe"]).args(target).args(["--allow-run", "*", "aipl_src/aipl.aipl", "-o"]).arg(out));
     assert_eq!(r.status.code(), Some(0), "{}: {}", compiler.display(), String::from_utf8_lossy(&r.stderr));
     assert_executable(out, compiler);
 }
@@ -56,13 +59,13 @@ fn assert_executable(out: &Path, compiler: &Path) {
 }
 
 #[test]
-#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
-           ignore = "runs Linux x86-64 executables (the native seed)")]
+#[cfg_attr(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))),
+           ignore = "runs Linux x86-64 and AArch64 executables (the seeds)")]
 fn the_seed_builds_the_compiler_the_rust_toolchain_builds() {
     let dir = scratch("bootstrap_stages");
     let rust_built = dir.join("rust_built");
     build_aipl(Path::new(AIPL), &rust_built);
-    let seed = root().join("bootstrap/aipl-linux-x86_64");
+    let seed = root().join(if cfg!(target_arch = "aarch64") { "bootstrap/aipl-linux-aarch64" } else { "bootstrap/aipl-linux-x86_64" });
     let stages: Vec<PathBuf> = (1..=3).map(|n| dir.join(format!("stage{n}"))).collect();
     build_aipl(&seed, &stages[0]);
     build_aipl(&stages[0], &stages[1]);

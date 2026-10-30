@@ -7,6 +7,9 @@
 #    which must be stage 1's bytes: a fixed point on AArch64, with no Rust and no x86-64;
 # 3. stage 1 there compiles every program in examples/, benchmarks/, and tests/aipl to wasm,
 #    and each must be the bytes `aipl compile` makes here.
+# 4. also on HOST, `sh bootstrap/build.sh` builds the compiler from the checked-in AArch64 seed
+#    (bootstrap/aipl-linux-aarch64), and the result is the seed's own bytes (the seed is its
+#    own stage 2 while aipl_src/ is the source it was built from).
 # Exits 0 only if all of that holds. HOST keeps its files in ~/aipl-arm-self.
 set -u
 host=${1:?usage: sh tools/arm64_bootstrap.sh HOST}
@@ -29,8 +32,8 @@ while read -r f; do
 done < "$work/list.txt"
 
 echo "== sending to $host"
-ssh -o BatchMode=yes "$host" "mkdir -p ~/aipl-arm-self/out && rm -rf ~/aipl-arm-self/out/*.wasm ~/aipl-arm-self/aipl_src ~/aipl-arm-self/examples ~/aipl-arm-self/benchmarks ~/aipl-arm-self/tests" || exit 2
-rsync -rlR aipl_src examples benchmarks tests/aipl "$host":aipl-arm-self/ || exit 2
+ssh -o BatchMode=yes "$host" "mkdir -p ~/aipl-arm-self/out && rm -rf ~/aipl-arm-self/out/*.wasm ~/aipl-arm-self/seed_out ~/aipl-arm-self/bootstrap ~/aipl-arm-self/aipl_src ~/aipl-arm-self/examples ~/aipl-arm-self/benchmarks ~/aipl-arm-self/tests" || exit 2
+rsync -rlR aipl_src bootstrap examples benchmarks tests/aipl "$host":aipl-arm-self/ || exit 2
 scp -q "$work/stage1" "$work/list.txt" "$host":aipl-arm-self/ || exit 2
 
 echo "== on $host: stage 1 compiles itself, then the programs"
@@ -41,6 +44,8 @@ ssh -o BatchMode=yes "$host" '
     uname -m
     /w/stage1 compile --exe --target arm64 --allow-run \"*\" aipl_src/aipl.aipl -o stage2 > /dev/null || echo STAGE2-FAILED
     cmp stage1 stage2 && echo STAGE2-IDENTICAL
+    sh bootstrap/build.sh /w/seed_out > /dev/null && echo SEED-BUILT
+    cmp seed_out/aipl bootstrap/aipl-linux-aarch64 && echo SEED-IS-STAGE2
     while read f; do
       n=\$(echo \$f | tr / _)
       /w/stage1 compile \$f -o out/\$n.wasm > /dev/null 2>&1 || rm -f out/\$n.wasm
@@ -49,6 +54,8 @@ ssh -o BatchMode=yes "$host" '
 rsync -r "$host":aipl-arm-self/out/ "$work/out/" || exit 2
 ok=1
 grep -q '^aarch64' "$work/remote.log" || { echo "arm64_bootstrap: not an AArch64 machine"; ok=0; }
+grep -q '^SEED-BUILT' "$work/remote.log" || { echo "arm64_bootstrap: bootstrap/build.sh failed from the AArch64 seed"; ok=0; }
+grep -q '^SEED-IS-STAGE2' "$work/remote.log" || { echo "arm64_bootstrap: the seed does not rebuild itself (is it from this aipl_src?)"; ok=0; }
 grep -q '^STAGE2-IDENTICAL' "$work/remote.log" || { echo "arm64_bootstrap: stage 2 is not stage 1"; ok=0; }
 same=0
 for f in "$work"/ref/*.wasm; do

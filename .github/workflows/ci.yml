@@ -68,6 +68,8 @@ jobs:
         run: cargo test --release --no-fail-fast
       - name: AIPL test suite
         run: ./target/release/aipl test aipl_src/test_suite.aipl
+      - name: The AArch64 seed builds the compiler, and rebuilds it unchanged
+        run: sh bootstrap/build.sh
       - name: The compiler for AArch64 compiles itself
         run: |
           ./target/release/aipl compile --exe --target arm64 --allow-run '*' aipl_src/aipl.aipl -o target/stage1
