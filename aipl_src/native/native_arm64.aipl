@@ -17,6 +17,8 @@
   (import elf)
   (import lower_arm64)
   (import runtime_arm64)
+  (import wasi_arm64)
+  (import backtrace_arm64)
 
   ;; The result of a compile: the ELF image, or the reason there is none. Its
   ;; first fields are what a host reads (native.aipl's Output has the same).
@@ -45,22 +47,6 @@
       (when (eq (get imp wasm_reader.Import.kind) 2) (return (get imp wasm_reader.Import.limits))))
     (ptr.null wasm_reader.Limits))
 
-  ;; ===== The trap routine =====
-
-  ;; Reached by `b` with the reason's number in x0: writes the reason's text and a newline
-  ;; on standard error and exits with status 134, as a trap does under aipl-run.
-  (fn emit_trap_routine [c:(ptr buf.Buf) table:i32 nl:i32] -> void
-    (call arm64.lsl_ri c 64 0 0 4)
-    (call arm64.mov_imm c 64 16 (i64.extend_s table))
-    (call arm64.add_rrr c 64 16 16 0)
-    (call arm64.ldr_x c 1 16 0)
-    (call arm64.ldr_x c 2 16 8)
-    (call arm64.mov_imm c 64 0 2i64)
-    (call arm64.mov_imm c 64 8 (i64.extend_s (call runtime_arm64.sys_write)))
-    (call arm64.svc c 0)
-    (call runtime_arm64.emit_write c 2 nl 1)
-    (call runtime_arm64.emit_exit c 134))
-
   ;; ===== Start-up =====
 
   ;; mmap(0, 8 GiB, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0): x28 = the base
@@ -80,6 +66,24 @@
     (call arm64.mov_imm c 64 1 (* (i64.extend_s pages) 65536i64))
     (call arm64.mov_imm c 64 2 3i64)
     (call runtime_arm64.emit_syscall c 226))
+
+  ;; rt_sigaction(SIGSEGV, {handler, SA_SIGINFO, no restorer, empty mask}, 0, 8): a load or store
+  ;; outside the committed memory ends in the handler (backtrace_arm64.aipl)
+  (fn emit_install_fault_handler [c:(ptr buf.Buf) handler:i32] -> void
+    (call arm64.sub_ri c 64 31 31 32)
+    (let at:i32 (call arm64.adr c 0))
+    (call arm64.patch_adr c at handler)
+    (call arm64.str_x c 0 31 0)
+    (call arm64.mov_imm c 64 1 4i64)
+    (call arm64.str_x c 1 31 8)
+    (call arm64.str_x c 31 31 16)
+    (call arm64.str_x c 31 31 24)
+    (call arm64.mov_imm c 64 0 11i64)
+    (call arm64.mov_sp c 64 1 31)
+    (call arm64.mov_imm c 64 2 0i64)
+    (call arm64.mov_imm c 64 3 8i64)
+    (call runtime_arm64.emit_syscall c 134)
+    (call arm64.add_ri c 64 31 31 32))
 
   ;; copy len bytes from address `src` to x28 + `dest`
   (fn emit_copy [c:(ptr buf.Buf) src:i32 dest:i32 len:i32] -> void
@@ -101,8 +105,9 @@
   ;; The routine for an import, called as a wasm function is (its arguments on
   ;; the value stack, the last at [sp]): the result in x0. proc_exit, fd_write
   ;; and fd_read are here; any other is ENOSYS (52) until the WASI routines come.
-  (fn emit_import [c:(ptr buf.Buf) imp:(ptr wasm_reader.Import) sp_cell:i32] -> void
+  (fn emit_import [c:(ptr buf.Buf) wa:(ptr wasi_arm64.W) imp:(ptr wasm_reader.Import) sp_cell:i32 plain:i32] -> void
     (let name:str.Bytes (get imp wasm_reader.Import.name))
+    (when (call wasi_arm64.emit_import c wa imp) (return))
     (cond
       ((call str.is name "args_sizes_get") (call emit_strings_sizes c sp_cell false))
       ((call str.is name "args_get") (call emit_strings_get c sp_cell false))
@@ -110,14 +115,26 @@
       ((call str.is name "environ_get") (call emit_strings_get c sp_cell true))
       ((call str.is name "clock_time_get") (call emit_clock_time_get c))
       ((call str.is name "random_get") (call emit_random_get c))
+      ;; proc_exit(code): exit_group with the argument. As under wasmtime, a status outside
+      ;; 0..125 (unsigned) is an error (shells reserve 126 and up), reported with exit status
+      ;; 134 and no call chain.
       ((call str.is name "proc_exit")
-       (call arm64.ldr_x c 0 31 0)
+       (call arm64.ldr_w c 0 31 0)
+       (call arm64.cmp_ri c 32 0 126)
+       (let valid:i32 (call arm64.b_cond c (call arm64.cc_lo)))
+       (call arm64.mov_imm c 64 0 9i64)
+       (call arm64.b_to c plain)
+       (call arm64.patch_cond c valid (call buf.len c))
        (call runtime_arm64.emit_syscall c 94)
        (call arm64.brk c 0))
-      ((call str.is name "fd_write") (call emit_fd_io c 64))
-      ((call str.is name "fd_read") (call emit_fd_io c 63))
+      ((call str.is name "fd_write") (call emit_fd_io c wa 64))
+      ((call str.is name "fd_read") (call emit_fd_io c wa 63))
+      ;; an aipl_sys_v1 import not built yet is minus ENOSYS, as those imports report an error;
+      ;; any other WASI import, ENOSYS
       (else
-       (call arm64.mov_imm c 64 0 52i64)
+       (if (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_sys_v1"))
+           (call arm64.mov_imm c 64 0 -52i64)
+           (call arm64.mov_imm c 64 0 52i64))
        (call arm64.ret c))))
 
   ;; x11 = the first string pointer of the arguments, or of the environment, from
@@ -277,8 +294,10 @@
   ;; per iovec, the total stored at nwritten, the result 0 or an errno. A short
   ;; transfer ends it. The arguments: fd at [sp + 48], iovs at [sp + 32], the
   ;; count at [sp + 16], nwritten at [sp].
-  (fn emit_fd_io [c:(ptr buf.Buf) number:i32] -> void
-    (call arm64.ldr_x c 9 31 48)
+  (fn emit_fd_io [c:(ptr buf.Buf) wa:(ptr wasi_arm64.W) number:i32] -> void
+    (let badf:(ptr (vec.Vec i32)) (call wasi_arm64.new_list))
+    (call arm64.ldr_w c 9 31 48)
+    (call wasi_arm64.lookup c wa 9 9 badf)
     (call arm64.ldr_x c 10 31 32)
     (call arm64.ldr_x c 11 31 16)
     (call arm64.mov_rr c 32 10 10)
@@ -307,9 +326,19 @@
     (call arm64.str_w c 12 13 0)
     (call arm64.mov_imm c 64 0 0i64)
     (call arm64.ret c)
-    ;; an error: Linux errno 4 EINTR and the like are reported as 29 (WASI's io error)
+    ;; an error: reading a directory is EBADF (wasmtime's directory handles cannot be read; Linux
+    ;; says EISDIR); the others through the errno table
     (call arm64.patch_cond c failed_at (call buf.len c))
-    (call arm64.mov_imm c 64 0 29i64)
+    (when (eq number 63)
+          (call arm64.mov_imm c 64 4 -21i64)
+          (call arm64.cmp_rr c 64 0 4)
+          (let not_dir:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+          (call arm64.mov_imm c 64 0 8i64)
+          (call arm64.ret c)
+          (call arm64.patch_cond c not_dir (call buf.len c)))
+    (call wasi_arm64.jump_errno c wa)
+    (call wasi_arm64.patch_all c badf)
+    (call arm64.mov_imm c 64 0 8i64)
     (call arm64.ret c))
 
   ;; The type index of function `f` (imports first).
@@ -338,6 +367,99 @@
         (mem.store32 (+ entry 4) 0)
         (mem.store32 (+ entry 8) (call (vec.at i32) (get l lower_arm64.L.canon) (call type_index_of l w f)))))))
 
+  ;; ===== The call chain's tables (backtrace_arm64.aipl) =====
+
+  ;; The function table's place in the data, and which functions it covers.
+  (struct Chain [addr:i32 first:i32 last:i32 names:(arr i32) lens:(arr i32)])
+
+  ;; Whether a function's frame is shown in a call chain: it has a name, and is not
+  ;; generated (aipl-run's call_chain rule).
+  (fn shown [n:str.Bytes] -> bool
+    (unsafe (let len:i32 (get n str.Bytes.len))
+    (and (gt len 0)
+         (not (or (and (gte len 5) (call str.bytes_eq (call str.bytes (call str.addr n) 5) (call str.from_str "aipl.")))
+                  (or (call str.bytes_eq n (call str.from_str "_start")) (call str.bytes_eq n (call str.from_str "wasi_thread_start"))))))))
+
+  ;; Puts each defined function's name, and room for the table, in the data, and points `cell`
+  ;; at it. The entries are filled once the code's address is known (fill_chain_table): the
+  ;; data must be complete before then.
+  (fn reserve_chain_table [l:(ptr lower_arm64.L) w:(ptr wasm_reader.Wasm) nimports:i32 nfuncs:i32 cell:i32] -> (ptr Chain)
+    (unsafe (let ch:(ptr Chain) (new Chain (call alloc.forever) [addr:(zero i32)
+                                                                 first:nimports
+                                                                 last:(- nfuncs 1)
+                                                                 names:(arr.new i32 (call alloc.forever) (+ nfuncs 1))
+                                                                 lens:(arr.new i32 (call alloc.forever) (+ nfuncs 1))]))
+    (let ns:(ptr (vec.Vec (ptr wasm_reader.FnName))) (get w wasm_reader.Wasm.names))
+    (for k 0 (call (vec.len (ptr wasm_reader.FnName)) ns)
+      (let fn_name:(ptr wasm_reader.FnName) (call (vec.at (ptr wasm_reader.FnName)) ns k))
+      (let i:i32 (get fn_name wasm_reader.FnName.index))
+      (when (and (gte i nimports) (and (lt i nfuncs) (call shown (get fn_name wasm_reader.FnName.name))))
+            (arr.set i32 (get ch Chain.names) i (call lower_arm64.data_bytes l (get fn_name wasm_reader.FnName.name)))
+            (arr.set i32 (get ch Chain.lens) i (get (get fn_name wasm_reader.FnName.name) str.Bytes.len))))
+    (let n:i32 (- nfuncs nimports))
+    (let zeros:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (* 16 n) 8)))
+    (for k 0 (+ (* 16 n) 8) (call buf.push_byte zeros 0))
+    (put ch Chain.addr (call lower_arm64.data_bytes l (call buf.bytes zeros)))
+    (let data:(ptr buf.Buf) (get l lower_arm64.L.data))
+    (let cell_at:i32 (+ (get data buf.Buf.data) (- cell (call elf.data_vaddr_arm64))))
+    (mem.store32 cell_at (get ch Chain.addr))
+    (mem.store32 (+ cell_at 4) n)
+    ch))
+
+  ;; Fills the entries: each defined function's code [start, end) and name.
+  (fn fill_chain_table [l:(ptr lower_arm64.L) ch:(ptr Chain) starts:(ptr (vec.Vec i32)) code_end:i32] -> void
+    (unsafe (let data:(ptr buf.Buf) (get l lower_arm64.L.data))
+    (let code_vaddr:i32 (get (call elf.layout_arm64 (call buf.len data) 0) elf.Layout.code_vaddr))
+    (let base:i32 (+ (get data buf.Buf.data) (- (get ch Chain.addr) (call elf.data_vaddr_arm64))))
+    (for i (get ch Chain.first) (+ (get ch Chain.last) 1)
+      (let entry:i32 (+ base (* 16 (- i (get ch Chain.first)))))
+      (let end:i32 (if (lt i (get ch Chain.last)) (call (vec.at i32) starts (+ i 1)) code_end))
+      (mem.store32 entry (+ code_vaddr (call (vec.at i32) starts i)))
+      (mem.store32 (+ entry 4) (+ code_vaddr end))
+      (mem.store32 (+ entry 8) (arr.get i32 (get ch Chain.names) i))
+      (mem.store32 (+ entry 12) (arr.get i32 (get ch Chain.lens) i)))))
+
+  (fn push_word [b:(ptr buf.Buf) v:i32] -> void
+    (for k 0 4 (call buf.push_byte b (bitand (shru v (* 8 k)) 255))))
+
+  ;; Puts the line table's file names and room for the position entries in the data, and points
+  ;; `cell` at them: [entries, count, files], files being [address length] per name. Returns the
+  ;; entries' data address; fill_position_table fills them once the code's address is known.
+  (fn reserve_position_table [l:(ptr lower_arm64.L) w:(ptr wasm_reader.Wasm) cell:i32] -> i32
+    (unsafe (let data:(ptr buf.Buf) (get l lower_arm64.L.data))
+    (let names:(ptr (vec.Vec str.Bytes)) (get w wasm_reader.Wasm.line_files))
+    (let nfiles:i32 (call (vec.len str.Bytes) names))
+    (let addrs:(arr i32) (arr.new i32 (call alloc.forever) (+ nfiles 1)))
+    (for k 0 nfiles (arr.set i32 addrs k (call lower_arm64.data_bytes l (call (vec.at str.Bytes) names k))))
+    (let fb:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (* 8 nfiles) 8)))
+    (for k 0 nfiles
+      (call push_word fb (arr.get i32 addrs k))
+      (call push_word fb (get (call (vec.at str.Bytes) names k) str.Bytes.len)))
+    (for k 0 8 (call buf.push_byte fb 0))
+    (let files:i32 (call lower_arm64.data_bytes l (call buf.bytes fb)))
+    (let n:i32 (call (vec.len (ptr lower_arm64.NPos)) (get l lower_arm64.L.positions)))
+    (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (* 16 n) 8)))
+    (for k 0 (+ (* 16 n) 8) (call buf.push_byte eb 0))
+    (let entries:i32 (call lower_arm64.data_bytes l (call buf.bytes eb)))
+    (let cell_at:i32 (+ (get data buf.Buf.data) (- cell (call elf.data_vaddr_arm64))))
+    (mem.store32 cell_at entries)
+    (mem.store32 (+ cell_at 4) n)
+    (mem.store32 (+ cell_at 8) files)
+    entries))
+
+  (fn fill_position_table [l:(ptr lower_arm64.L) entries:i32] -> void
+    (unsafe (let data:(ptr buf.Buf) (get l lower_arm64.L.data))
+    (let code_vaddr:i32 (get (call elf.layout_arm64 (call buf.len data) 0) elf.Layout.code_vaddr))
+    (let base:i32 (+ (get data buf.Buf.data) (- entries (call elf.data_vaddr_arm64))))
+    (let ps:(ptr (vec.Vec (ptr lower_arm64.NPos))) (get l lower_arm64.L.positions))
+    (for k 0 (call (vec.len (ptr lower_arm64.NPos)) ps)
+      (let p:(ptr lower_arm64.NPos) (call (vec.at (ptr lower_arm64.NPos)) ps k))
+      (let at:i32 (+ base (* 16 k)))
+      (mem.store32 at (+ code_vaddr (get p lower_arm64.NPos.code)))
+      (mem.store32 (+ at 4) (get p lower_arm64.NPos.file))
+      (mem.store32 (+ at 8) (get p lower_arm64.NPos.line))
+      (mem.store32 (+ at 12) (get p lower_arm64.NPos.col)))))
+
   ;; ===== The compile =====
 
   (fn compile_at [addr:i32 len:i32] -> (ptr Output) (pub)
@@ -355,6 +477,7 @@
     (let nfuncs:i32 (+ nimports (call (vec.len i32) (get w wasm_reader.Wasm.funcs))))
     ;; data: the memory size cell, the results area, the globals
     (put l lower_arm64.L.mem_pages (call lower_arm64.data_zeros l 8))
+    (let wa:(ptr wasi_arm64.W) (call wasi_arm64.make l))
     ;; the stack pointer as the process started: the arguments and the environment
     (let sp_cell:i32 (call lower_arm64.data_zeros l 8))
     (put l lower_arm64.L.results (call lower_arm64.data_zeros l (call lower_arm64.results_size)))
@@ -390,6 +513,8 @@
     (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: undefined element: out of bounds table access"))
     (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: uninitialized element"))
     (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: indirect call type mismatch"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "exit with invalid exit status outside of [0..126)"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: out of bounds memory access"))
     (let tb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (for i 0 (call (vec.len str.Bytes) reasons)
       (let t:str.Bytes (call (vec.at str.Bytes) reasons i))
@@ -408,16 +533,29 @@
       (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
       (call (vec.push i32) seg_addrs (call lower_arm64.data_bytes l (unsafe (call str.bytes (get d wasm_reader.Data.addr) (get d wasm_reader.Data.len))))))
     ;; code: the trap routine, the start-up stub, the imports' routines, the functions
-    (put l lower_arm64.L.trap_routine (call buf.len c))
-    (call emit_trap_routine c table nl)
+    (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
+    (let chain_cell:i32 (call lower_arm64.data_zeros l 8))
+    (let positions_cell:i32 (call lower_arm64.data_zeros l 16))
+    (let texts:(ptr backtrace_arm64.Texts)
+         (new backtrace_arm64.Texts (call alloc.forever)
+              [reasons:table sp_cell:sp_cell chain:chain_cell positions:positions_cell
+               pages:(get l lower_arm64.L.mem_pages)
+               sep:(call lower_arm64.data_text l ": ") nl:nl at:(call lower_arm64.data_text l "  at ")
+               dots:(call lower_arm64.data_text l "  ... ") more:(call lower_arm64.data_text l " more\n")
+               open:(call lower_arm64.data_text l " (") colon:(call lower_arm64.data_text l ":")
+               close:(call lower_arm64.data_text l ")")]))
+    (let routines:(ptr backtrace_arm64.Routines)
+         (call backtrace_arm64.emit_routines c texts (call lower_arm64.trap_unreachable) (call lower_arm64.trap_out_of_bounds) (neq lim (ptr.null wasm_reader.Limits))))
+    (put l lower_arm64.L.trap_routine (get routines backtrace_arm64.Routines.trap))
+    (put l lower_arm64.L.unreachable_routine (get routines backtrace_arm64.Routines.unreachable))
     (let entry:i32 (call buf.len c))
     (call arm64.mov_sp c 64 0 31)
     (call arm64.mov_imm c 64 16 (i64.extend_s sp_cell))
     (call arm64.str_x c 0 16 0)
-    (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
     (when (neq lim (ptr.null wasm_reader.Limits))
           (call emit_reserve_memory c)
           (call emit_commit_memory c (get lim wasm_reader.Limits.min))
+          (call emit_install_fault_handler c (get routines backtrace_arm64.Routines.handler))
           (call arm64.mov_imm c 64 16 (i64.extend_s (get l lower_arm64.L.mem_pages)))
           (call arm64.mov_imm c 64 0 (i64.extend_s (get lim wasm_reader.Limits.min)))
           (call arm64.str_x c 0 16 0)
@@ -426,23 +564,30 @@
             (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
             (when (not (get d wasm_reader.Data.passive))
                   (call emit_copy c (call (vec.at i32) seg_addrs i) (get d wasm_reader.Data.offset) (get d wasm_reader.Data.len)))))
+    (call wasi_arm64.emit_preopens c wa)
     (when (gte (get w wasm_reader.Wasm.start) 0) (call lower_arm64.emit_call l (get w wasm_reader.Wasm.start)))
     (call lower_arm64.emit_call l entry_fn)
     (call runtime_arm64.emit_exit c 0)
+    (call wasi_arm64.emit_common c wa)
     (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (+ nfuncs 1)))
     (for i 0 nimports
       (call (vec.push i32) starts (call buf.len c))
-      (call emit_import c (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell))
+      (call emit_import c wa (call (vec.at (ptr wasm_reader.Import)) (get l lower_arm64.L.fimports) i) sp_cell (get routines backtrace_arm64.Routines.plain)))
     (for i nimports nfuncs
       (when (get l lower_arm64.L.failed) (break))
       (call (vec.push i32) starts (call buf.len c))
       (call lower_arm64.function l i (call (vec.at (ptr wasm_reader.Body)) (get w wasm_reader.Wasm.code) (- i nimports))))
     (when (get l lower_arm64.L.failed) (return (call failure (call buf.bytes (get l lower_arm64.L.msg)))))
+    (let code_end:i32 (call buf.len c))
+    (let chain:(ptr Chain) (call reserve_chain_table l w nimports nfuncs chain_cell))
+    (let positions:i32 (call reserve_position_table l w positions_cell))
     ;; every call now knows where its target starts
     (for i 0 (call (vec.len (ptr lower_arm64.Fixup)) (get l lower_arm64.L.fixups))
       (let f:(ptr lower_arm64.Fixup) (call (vec.at (ptr lower_arm64.Fixup)) (get l lower_arm64.L.fixups) i))
       (call arm64.patch_b c (get f lower_arm64.Fixup.at) (call (vec.at i32) starts (get f lower_arm64.Fixup.func))))
     (call fill_table l w starts)
+    (call fill_chain_table l chain starts code_end)
+    (call fill_position_table l positions)
     (let exe:str.Bytes (call buf.bytes (call elf.image_arm64 (call buf.bytes c) entry (call buf.bytes data) 0)))
     (new Output (call alloc.forever) [addr:(call str.addr exe) len:(get exe str.Bytes.len) ok:true error:(call str.from_str "") exe:exe]))
 )

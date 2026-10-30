@@ -69,3 +69,52 @@ fn loops_and_calls() {
 fn printing_through_wasi() {
     expect("(module t (fn main [] -> i32 (println \"hello {(+ 40 2)}\") 3))", "hello 42\n", 3);
 }
+
+/// Files, directories, listing, and file information (the descriptor table, path_open,
+/// fd_readdir, path_filestat_get, rename, unlink, mkdir, rmdir): the output the x86-64
+/// build prints, from tests/aipl/sys/files_dirs_stat.aipl.
+#[test]
+fn files_directories_listing_and_file_information() {
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/aipl/sys/files_dirs_stat.aipl")).unwrap();
+    let want = "mkdir ok\nwrite b ok\nwrite a ok\nmkdir sub ok\nread: a longer text\nentry a.txt\nentry b.txt\nentry sub\n\
+                d/a.txt: file 13\nd/b.txt: file 3\nd/sub: directory\nd/none: missing\nrename ok\nd/b.txt: missing\n\
+                d/c.txt: file 3\nrmdir full directory not empty\nremove a ok\nremove c ok\nremove missing no such file or directory\n\
+                rmdir sub ok\nrmdir ok\ngone\n";
+    expect(&src, want, 0);
+}
+
+/// A trap prints `<argv[0]>: <reason>` and the call chain with positions, and exits with 134,
+/// as the x86-64 build and aipl-run do (the output of `aipl compile --no-opt --exe` on this
+/// program, argv[0] left off: it is where the test put the executable).
+#[test]
+fn a_trap_prints_its_reason_and_call_chain() {
+    let src = "(module prog\n  (fn divide [a:i32 b:i32] -> i32 (/ a b))\n  (fn middle [a:i32] -> i32 (+ 1 (call divide a 0)))\n  (fn main [] -> i32 (call middle 7)))\n";
+    let exe = build(src);
+    let Some(out) = arm64::run(&exe, &[], b"") else {
+        eprintln!("no AArch64 machine to run on: not run");
+        return;
+    };
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    let (_, rest) = err.split_once(": ").expect("argv[0] and the reason");
+    assert_eq!(
+        rest,
+        "wasm trap: integer divide by zero\n  at divide (prog.aipl:2:35)\n  at middle (prog.aipl:3:34)\n  at main (prog.aipl:4:22)\n"
+    );
+    assert_eq!(out.status.code(), Some(134));
+}
+
+/// A load outside memory faults, and the SIGSEGV handler makes it a trap at that instruction:
+/// the x86-64 build's text and call chain.
+#[test]
+fn a_wild_load_is_an_out_of_bounds_trap() {
+    let src = "(module prog\n  (fn peek [a:i32] -> i32 (unsafe (mem.load32 a)))\n  (fn main [] -> i32 (call peek -16)))\n";
+    let exe = build(src);
+    let Some(out) = arm64::run(&exe, &[], b"") else {
+        eprintln!("no AArch64 machine to run on: not run");
+        return;
+    };
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    let (_, rest) = err.split_once(": ").expect("argv[0] and the reason");
+    assert_eq!(rest, "wasm trap: out of bounds memory access\n  at peek (prog.aipl:2:35)\n  at main (prog.aipl:3:22)\n");
+    assert_eq!(out.status.code(), Some(134));
+}

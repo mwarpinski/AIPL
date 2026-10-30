@@ -5,6 +5,9 @@
 # natively (tools/run_fuzz.py), and the repository's programs and 500
 # generated ones optimized against unoptimized (tools/opt_diff.py); the
 # fuzzers with fixed seeds. See DEVELOPING.md, "How to verify everything".
+# The arm64 job builds and tests on Linux AArch64 (GitHub's ubuntu-24.04-arm
+# runner), where the AArch64 backend's executables run as they are, and has
+# the compiler built for AArch64 compile itself there.
 name: CI
 
 on:
@@ -44,6 +47,32 @@ jobs:
         run: python3 tools/harness/harness.py selftest
       - name: The documentation, against the repository
         run: python3 tools/docs_check.py
+
+  arm64:
+    # AArch64 Linux: the Rust test suite (the AArch64 backend's executables run on this
+    # machine, tests/arm64), the AIPL suite, and the compiler built for AArch64
+    # compiling itself to the same bytes (docs/design/ARM64_PLAN.md).
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --release --no-fail-fast
+      - name: AIPL test suite
+        run: ./target/release/aipl test aipl_src/test_suite.aipl
+      - name: The compiler for AArch64 compiles itself
+        run: |
+          ./target/release/aipl compile --exe --target arm64 --allow-run '*' aipl_src/aipl.aipl -o target/stage1
+          ./target/stage1 compile --exe --target arm64 --allow-run '*' aipl_src/aipl.aipl -o target/stage2
+          cmp target/stage1 target/stage2
 
   install:
     # install.sh, as a user runs it: shellcheck, then a full install of

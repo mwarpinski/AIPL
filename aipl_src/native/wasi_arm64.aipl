@@ -1,0 +1,956 @@
+;; wasi_arm64: the WASI file functions as AArch64 routines over Linux system
+;; calls (native ARM64 backend, docs/design/ARM64_PLAN.md), wasi.aipl's
+;; counterpart for x86-64 and behaving as it does: a WASI descriptor is an
+;; index into a table of Linux descriptors (-1 closed; 0-2 stdio, 3 the working
+;; directory, 4 `/`); a path resolves beneath its directory descriptor
+;; (openat2 with RESOLVE_BENEATH, or plain openat where the kernel or a
+;; seccomp profile refuses openat2); Linux errors become WASI errnos through a
+;; table.
+;;
+;; A routine is called as a wasm function is (lower_arm64.aipl): its arguments
+;; each in a 16-byte slot on the value stack, the last at [sp], and its WASI
+;; errno in x0. The lowerer keeps nothing in x0-x27, so a routine may use them.
+;; On entry a routine saves sp in x27 and the return address in x26, so it can
+;; call the shared subroutines below with `bl` and lower sp for scratch space;
+;; it leaves through ret_errno or ret_linux, which restore both.
+;;
+;; Not yet as on x86-64: a guest pointer outside memory gives EFAULT (21),
+;; where wasmtime and the x86-64 build trap with a region message (the traps
+;; are NA6); --sandbox.
+(module wasi_arm64
+  (import alloc)
+  (import str)
+  (import buf)
+  (import vec)
+  (import arm64)
+  (import runtime_arm64)
+  (import lower_arm64)
+  (import wasm_reader)
+
+  ;; Data addresses, and the positions of the shared code.
+  (struct W [fd_table:i32 errno_table:i32 pages_cell:i32 dot:i32 root:i32
+             t_errno:i32 t_negated:i32 s_copy:i32 s_split:i32 s_openat2:i32] (pub))
+
+  (fn fd_slots [] -> i32 64)
+
+  ;; Linux flags (AArch64's differ from x86-64's for directories and links)
+  (fn o_path_dir_cloexec [] -> i32 2637824) ;; O_PATH | O_DIRECTORY | O_CLOEXEC
+
+  (fn push_u32 [b:(ptr buf.Buf) v:i32] -> void
+    (call buf.push_byte b (bitand v 255))
+    (call buf.push_byte b (bitand (shru v 8) 255))
+    (call buf.push_byte b (bitand (shru v 16) 255))
+    (call buf.push_byte b (bitand (shru v 24) 255)))
+
+  ;; Linux errno (0-63) -> WASI errno; anything unlisted is EIO (29). EXDEV (18)
+  ;; comes only from openat2's RESOLVE_BENEATH refusing a path that leaves its
+  ;; directory, which wasmtime reports as EPERM (63) (wasi.aipl's table).
+  (fn errno_bytes [] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (for e 0 64
+      (call buf.push_byte b
+        (cond ((eq e 0) 0)
+              ((eq e 1) 63)  ((eq e 2) 44)  ((eq e 4) 27)  ((eq e 5) 29)  ((eq e 9) 8)
+              ((eq e 11) 6)  ((eq e 12) 48) ((eq e 13) 2)  ((eq e 14) 21) ((eq e 16) 10)
+              ((eq e 17) 20) ((eq e 18) 63) ((eq e 20) 54) ((eq e 21) 31) ((eq e 22) 28)
+              ((eq e 24) 33) ((eq e 27) 22) ((eq e 28) 51) ((eq e 29) 70) ((eq e 30) 69)
+              ((eq e 32) 64) ((eq e 36) 37) ((eq e 39) 55) ((eq e 40) 32)
+              (else 29))))
+    b)
+
+  ;; The data the routines use. Call after the memory size cell exists.
+  (fn make [l:(ptr lower_arm64.L)] -> (ptr W) (pub)
+    (let fds:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+    (for i 0 (call fd_slots)
+      (call push_u32 fds (if (lte i 2) i -1)))
+    (let data:(ptr buf.Buf) (get l lower_arm64.L.data))
+    (let fd_table:i32 (call lower_arm64.data_bytes l (call buf.bytes fds)))
+    (let errno_table:i32 (call lower_arm64.data_bytes l (call buf.bytes (call errno_bytes))))
+    ;; the two paths, each with its NUL after it
+    (let dot:i32 (call lower_arm64.data_text l "."))
+    (call buf.push_byte data 0)
+    (let root:i32 (call lower_arm64.data_text l "/"))
+    (call buf.push_byte data 0)
+    (new W (call alloc.forever) [fd_table:fd_table errno_table:errno_table
+                                 pages_cell:(get l lower_arm64.L.mem_pages)
+                                 dot:dot root:root
+                                 t_errno:-1 t_negated:-1 s_copy:-1 s_split:-1 s_openat2:-1]))
+
+  ;; ===== Building blocks =====
+
+  (fn imm [c:(ptr buf.Buf) rd:i32 v:i32] -> void
+    (call arm64.mov_imm c 64 rd (i64.extend_s v)))
+
+  ;; x(reg) = argument i of n, an i32 (zero-extended) or an i64
+  (fn arg_w [c:(ptr buf.Buf) n:i32 i:i32 reg:i32] -> void
+    (call arm64.ldr_w c reg 27 (* 16 (- (- n 1) i))))
+  (fn arg_x [c:(ptr buf.Buf) n:i32 i:i32 reg:i32] -> void
+    (call arm64.ldr_x c reg 27 (* 16 (- (- n 1) i))))
+
+  (fn patch_all [c:(ptr buf.Buf) at:(ptr (vec.Vec i32))] -> void (pub)
+    (for k 0 (call (vec.len i32) at)
+      (call arm64.patch_cond c (call (vec.at i32) at k) (call buf.len c))))
+
+  (fn new_list [] -> (ptr (vec.Vec i32)) (pub)
+    (call (vec.make i32) (call alloc.default) 4))
+
+  ;; Branches to `faults` unless [addr, addr + len) is inside memory (addr and
+  ;; len zero-extended registers; clobbers x12 and x15).
+  (fn check [c:(ptr buf.Buf) w:(ptr W) addr:i32 len:i32 faults:(ptr (vec.Vec i32))] -> void
+    (call imm c 15 (get w W.pages_cell))
+    (call arm64.ldr_x c 15 15 0)
+    (call arm64.lsl_ri c 64 15 15 16)
+    (call arm64.add_rrr c 64 12 addr len)
+    (call arm64.cmp_rr c 64 12 15)
+    (call (vec.push i32) faults (call arm64.b_cond c (call arm64.cc_hi))))
+
+  ;; out = the Linux descriptor for WASI descriptor `fd` (registers, which may be
+  ;; the same); jumps whose positions join `badf` are for a descriptor that is
+  ;; out of range or closed. Clobbers x12 and x15.
+  (fn lookup [c:(ptr buf.Buf) w:(ptr W) fd:i32 out:i32 badf:(ptr (vec.Vec i32))] -> void (pub)
+    (call arm64.cmp_ri c 32 fd (call fd_slots))
+    (call (vec.push i32) badf (call arm64.b_cond c (call arm64.cc_hs)))
+    (call imm c 15 (get w W.fd_table))
+    (call arm64.lsl_ri c 32 12 fd 2)
+    (call arm64.ldr_w_uxtw c out 15 12)
+    (call arm64.cmp_ri c 32 out 0)
+    (call (vec.push i32) badf (call arm64.b_cond c (call arm64.cc_lt))))
+
+  ;; x20 |= linux if (reg & wasi) != 0 (clobbers x10 and x11)
+  (fn map_flag [c:(ptr buf.Buf) reg:i32 wasi:i32 linux:i32] -> void
+    (call imm c 10 wasi)
+    (call arm64.tst_rr c 32 reg 10)
+    (let off:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (call imm c 11 linux)
+    (call arm64.orr_rrr c 32 20 20 11)
+    (call arm64.patch_cond c off (call buf.len c)))
+
+  ;; the start and the ends of a routine
+  (fn prologue [c:(ptr buf.Buf)] -> void
+    (call arm64.mov_sp c 64 27 31)
+    (call arm64.mov_rr c 64 26 30))
+
+  (fn ret_errno [c:(ptr buf.Buf) errno:i32] -> void
+    (call arm64.mov_sp c 64 31 27)
+    (call imm c 0 errno)
+    (call arm64.br c 26))
+
+  ;; x0 = a Linux result (-errno): the WASI errno through the shared tail
+  (fn ret_linux [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (call arm64.mov_sp c 64 31 27)
+    (call arm64.mov_rr c 64 30 26)
+    (call arm64.b_to c (get w W.t_errno)))
+
+  ;; the tail of a routine that fails: x0 = a Linux result (-errno) goes to ret_linux,
+  ;; else success; then EFAULT and EBADF for the jumps in `faults` and `badf`
+  (fn finish [c:(ptr buf.Buf) w:(ptr W) faults:(ptr (vec.Vec i32)) badf:(ptr (vec.Vec i32))] -> void
+    (call arm64.cmp_ri c 64 0 0)
+    (let err:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call ret_errno c 0)
+    (call arm64.patch_cond c err (call buf.len c))
+    (call ret_linux c w)
+    (call patch_all c faults)
+    (call ret_errno c 21)
+    (call patch_all c badf)
+    (call ret_errno c 8))
+
+  ;; ===== Shared subroutines (called with bl; x30 is theirs) =====
+
+  ;; Jumps to the shared tail from a routine that has not touched x30: x0 = a Linux
+  ;; result (-errno) returns the WASI errno.
+  (fn jump_errno [c:(ptr buf.Buf) w:(ptr W)] -> void (pub)
+    (call arm64.b_to c (get w W.t_errno)))
+
+  ;; x0 = the Linux result (-errno) as a WASI errno; jumped to, not called
+  (fn emit_t_errno [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (call arm64.neg c 64 0 0)
+    (call arm64.cmp_ri c 64 0 (call fd_slots))
+    (let unlisted:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call imm c 1 (get w W.errno_table))
+    (call arm64.ldrb_uxtw c 0 1 0)
+    (call arm64.ret c)
+    (call arm64.patch_cond c unlisted (call buf.len c))
+    (call imm c 0 29)
+    (call arm64.ret c))
+
+  ;; x0 = a Linux result (-errno): minus the WASI errno, the way aipl_sys_v1's imports report
+  ;; an error; jumped to
+  (fn emit_t_negated [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (call arm64.neg c 64 0 0)
+    (call arm64.cmp_ri c 64 0 (call fd_slots))
+    (let unlisted:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call imm c 1 (get w W.errno_table))
+    (call arm64.ldrb_uxtw c 0 1 0)
+    (let listed:i32 (call arm64.b c))
+    (call arm64.patch_cond c unlisted (call buf.len c))
+    (call imm c 0 29)
+    (call arm64.patch_b c listed (call buf.len c))
+    (call arm64.neg c 64 0 0)
+    (call arm64.ret c))
+
+  ;; Copies the guest path (x13 = its address, x14 = its length, checked) to the
+  ;; stack as a NUL-terminated string, sp then pointing at it; the caller restores sp
+  ;; from x27. Keeps x13 and x14; clobbers x0-x4 and x15.
+  (fn emit_s_copy [c:(ptr buf.Buf)] -> void
+    (call arm64.add_ri c 64 15 14 16)
+    (call arm64.lsr_ri c 64 15 15 4)
+    (call arm64.lsl_ri c 64 15 15 4)
+    (call arm64.mov_sp c 64 0 31)
+    (call arm64.sub_rrr c 64 0 0 15)
+    (call arm64.mov_sp c 64 31 0)
+    (call arm64.mov_rr c 32 1 13)
+    (call arm64.add_rrr c 64 1 28 1)
+    (call imm c 4 0)
+    (let top:i32 (call buf.len c))
+    (call arm64.cmp_rr c 64 4 14)
+    (let done:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call arm64.ldrb_uxtw c 3 1 4)
+    (call arm64.strb_uxtw c 3 0 4)
+    (call arm64.add_ri c 64 4 4 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_cond c done (call buf.len c))
+    (call arm64.strb_uxtw c 31 0 4)
+    (call arm64.ret c))
+
+  ;; With the path's copy at sp (x14 its length): x1 = the directory part (the copy cut
+  ;; at its last '/', or "." when it has none) and x13 = the last component, for the
+  ;; calls that cannot resolve a path beneath a directory themselves (unlinkat, mkdirat,
+  ;; renameat), whose parent is opened that way instead. Clobbers x9-x11.
+  (fn emit_s_split [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (call arm64.mov_sp c 64 11 31)
+    (call arm64.mov_rr c 64 9 14)
+    (let top:i32 (call buf.len c))
+    (let no_slash:i32 (call arm64.cbz c 64 9))
+    (call arm64.sub_ri c 64 9 9 1)
+    (call arm64.ldrb_uxtw c 10 11 9)
+    (call arm64.cmp_ri c 32 10 47)
+    (call arm64.patch_cond c (call arm64.b_cond c (call arm64.cc_ne)) top)
+    (call arm64.strb_uxtw c 31 11 9)
+    (call arm64.mov_rr c 64 1 11)
+    (call arm64.add_rrr c 64 13 11 9)
+    (call arm64.add_ri c 64 13 13 1)
+    (call arm64.ret c)
+    (call arm64.patch_cond c no_slash (call buf.len c))
+    (call imm c 1 (get w W.dot))
+    (call arm64.mov_rr c 64 13 11)
+    (call arm64.ret c))
+
+  ;; openat2(x0 = dir fd, x1 = path, x2 = open flags), mode 0o666 when creating
+  ;; (openat2 refuses a mode otherwise), resolving beneath the directory; the
+  ;; result in x0. A kernel without openat2 (ENOSYS) or a profile that refuses
+  ;; it (EPERM) gets the same open as plain openat. Keeps x1 and x13; clobbers
+  ;; x0, x2-x5, and x8.
+  (fn emit_s_openat2 [c:(ptr buf.Buf)] -> void
+    ;; struct open_how { u64 flags; u64 mode; u64 resolve } on the stack;
+    ;; resolve = RESOLVE_BENEATH (8) | RESOLVE_NO_MAGICLINKS (2)
+    (call arm64.sub_ri c 64 31 31 32)
+    (call arm64.str_x c 2 31 0)
+    (call arm64.mov_rr c 64 5 0)
+    (call imm c 3 0)
+    (call imm c 4 64)
+    (call arm64.tst_rr c 32 2 4)
+    (let no_create:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (call imm c 3 438)
+    (call arm64.patch_cond c no_create (call buf.len c))
+    (call arm64.str_x c 3 31 8)
+    (call imm c 4 10)
+    (call arm64.str_x c 4 31 16)
+    (call arm64.mov_sp c 64 2 31)
+    (call imm c 3 24)
+    (call runtime_arm64.emit_syscall c 437)
+    (call imm c 4 -38)
+    (call arm64.cmp_rr c 64 0 4)
+    (let enosys:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (call imm c 4 -1)
+    (call arm64.cmp_rr c 64 0 4)
+    (let eperm:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (let done:i32 (call arm64.b c))
+    (call arm64.patch_cond c enosys (call buf.len c))
+    (call arm64.patch_cond c eperm (call buf.len c))
+    ;; openat(x0 = dir fd, x1 = path, x2 = flags, x3 = mode)
+    (call arm64.mov_rr c 64 0 5)
+    (call arm64.ldr_x c 2 31 0)
+    (call arm64.ldr_x c 3 31 8)
+    (call runtime_arm64.emit_syscall c 56)
+    (call arm64.patch_b c done (call buf.len c))
+    (call arm64.add_ri c 64 31 31 32)
+    (call arm64.ret c))
+
+  ;; The shared code, before the routines that use it.
+  (fn emit_common [c:(ptr buf.Buf) w:(ptr W)] -> void (pub)
+    (put w W.t_errno (call buf.len c))
+    (call emit_t_errno c w)
+    (put w W.t_negated (call buf.len c))
+    (call emit_t_negated c w)
+    (put w W.s_copy (call buf.len c))
+    (call emit_s_copy c)
+    (put w W.s_split (call buf.len c))
+    (call emit_s_split c w)
+    (put w W.s_openat2 (call buf.len c))
+    (call emit_s_openat2 c))
+
+  (fn call_shared [c:(ptr buf.Buf) target:i32] -> void
+    (call arm64.patch_b c (call arm64.bl c) target))
+
+  ;; ===== Start-up =====
+
+  ;; Descriptors 3 (the working directory) and 4 (`/`) are open before the program starts.
+  (fn emit_preopens [c:(ptr buf.Buf) w:(ptr W)] -> void (pub)
+    (call emit_preopen c w (get w W.dot) 3)
+    (call emit_preopen c w (get w W.root) 4))
+
+  ;; openat(AT_FDCWD, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC): the descriptor, or the
+  ;; negative errno, in the table's entry
+  (fn emit_preopen [c:(ptr buf.Buf) w:(ptr W) path:i32 slot:i32] -> void
+    (call imm c 0 -100)
+    (call imm c 1 path)
+    (call imm c 2 540672)
+    (call imm c 3 0)
+    (call runtime_arm64.emit_syscall c 56)
+    (call imm c 1 (get w W.fd_table))
+    (call arm64.str_w c 0 1 (* 4 slot)))
+
+  ;; ===== The routines =====
+
+  ;; fd_close(fd) -> errno. WASI 0-2 only free their slot: the process keeps its stdio,
+  ;; so a trap message still reaches standard error.
+  (fn emit_fd_close [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (let faults:(ptr (vec.Vec i32)) (call new_list))
+    (let badf:(ptr (vec.Vec i32)) (call new_list))
+    (call prologue c)
+    (call arg_w c 1 0 20)
+    (call lookup c w 20 21 badf)
+    (call arm64.cmp_ri c 32 20 2)
+    (let stdio:i32 (call arm64.b_cond c (call arm64.cc_ls)))
+    (call arm64.mov_rr c 64 0 21)
+    (call runtime_arm64.emit_syscall c 57)
+    (call arm64.cmp_ri c 64 0 0)
+    (let failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.patch_cond c stdio (call buf.len c))
+    (call imm c 12 (get w W.fd_table))
+    (call arm64.lsl_ri c 32 11 20 2)
+    (call imm c 10 -1)
+    (call arm64.str_w_uxtw c 10 12 11)
+    (call ret_errno c 0)
+    (call arm64.patch_cond c failed (call buf.len c))
+    (call ret_linux c w)
+    (call patch_all c faults)
+    (call patch_all c badf)
+    (call ret_errno c 8))
+
+  ;; path_open(dirfd, dirflags, path, path_len, oflags, rights_base:i64,
+  ;; rights_inheriting:i64, fdflags, fd_out) -> errno
+  (fn emit_path_open [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (let faults:(ptr (vec.Vec i32)) (call new_list))
+    (let badf:(ptr (vec.Vec i32)) (call new_list))
+    (call prologue c)
+    (call arg_w c 9 0 9)
+    (call lookup c w 9 24 badf)
+    (call arg_w c 9 2 13)
+    (call arg_w c 9 3 14)
+    (call check c w 13 14 faults)
+    ;; Linux flags in x20: O_CLOEXEC; O_RDWR with the write right (1 << 6)
+    (call imm c 20 524288)
+    (call arg_x c 9 5 9)
+    (call imm c 10 64)
+    (call arm64.tst_rr c 64 9 10)
+    (let read_only:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (call imm c 10 2)
+    (call arm64.orr_rrr c 32 20 20 10)
+    (call arm64.patch_cond c read_only (call buf.len c))
+    ;; oflags: CREAT 1 -> 0x40, DIRECTORY 2 -> 0x4000, EXCL 4 -> 0x80, TRUNC 8 -> 0x200
+    (call arg_w c 9 4 9)
+    (call map_flag c 9 1 64)
+    (call map_flag c 9 2 16384)
+    (call map_flag c 9 4 128)
+    (call map_flag c 9 8 512)
+    ;; fdflags: APPEND 1 -> 0x400
+    (call arg_w c 9 7 9)
+    (call map_flag c 9 1 1024)
+    ;; dirflags without SYMLINK_FOLLOW (1): O_NOFOLLOW (0x8000)
+    (call arg_w c 9 1 9)
+    (call imm c 10 1)
+    (call arm64.tst_rr c 32 9 10)
+    (let follow:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+    (call imm c 10 32768)
+    (call arm64.orr_rrr c 32 20 20 10)
+    (call arm64.patch_cond c follow (call buf.len c))
+    (call call_shared c (get w W.s_copy))
+    (call arm64.mov_sp c 64 1 31)
+    (call arm64.mov_rr c 64 0 24)
+    (call arm64.mov_rr c 64 2 20)
+    (call call_shared c (get w W.s_openat2))
+    (call arm64.mov_sp c 64 31 27)
+    (call arm64.cmp_ri c 64 0 0)
+    (let failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    ;; the lowest free WASI descriptor, claimed atomically (threads may open files at once)
+    (call arm64.mov_rr c 64 23 0)
+    (call imm c 9 (get w W.fd_table))
+    (call imm c 10 0)
+    (let top:i32 (call buf.len c))
+    (call arm64.cmp_ri c 32 10 (call fd_slots))
+    (let full:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call arm64.lsl_ri c 64 12 10 2)
+    (call arm64.add_rrr c 64 12 9 12)
+    (let retry:i32 (call buf.len c))
+    (call arm64.ldaxr c 32 11 12)
+    (call arm64.cmp_ri c 32 11 0)
+    (let occupied:i32 (call arm64.b_cond c (call arm64.cc_ge)))
+    (call arm64.stlxr c 32 6 23 12)
+    (call arm64.patch_cond c (call arm64.cbnz c 32 6) retry)
+    (let claimed:i32 (call arm64.b c))
+    (call arm64.patch_cond c occupied (call buf.len c))
+    (call arm64.clrex c)
+    (call arm64.add_ri c 32 10 10 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_b c claimed (call buf.len c))
+    (call arg_w c 9 8 9)
+    (call imm c 11 4)
+    (call check c w 9 11 faults)
+    (call arm64.str_w_uxtw c 10 28 9)
+    (call ret_errno c 0)
+    ;; no free descriptor: close the file again, EMFILE
+    (call arm64.patch_cond c full (call buf.len c))
+    (call arm64.mov_rr c 64 0 23)
+    (call runtime_arm64.emit_syscall c 57)
+    (call ret_errno c 33)
+    ;; O_DIRECTORY | O_NOFOLLOW on a symbolic link: Linux says ENOTDIR, wasmtime, which
+    ;; does not follow the link, ELOOP (32). readlinkat succeeds only on a link, so it
+    ;; tells the two apart.
+    (call arm64.patch_cond c failed (call buf.len c))
+    (call arm64.mov_rr c 64 22 0)
+    (call imm c 4 -20)
+    (call arm64.cmp_rr c 64 0 4)
+    (let plain1:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+    (call imm c 4 49152)
+    (call arm64.and_rrr c 32 5 20 4)
+    (call arm64.cmp_rr c 32 5 4)
+    (let plain2:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+    (call arg_w c 9 2 13)
+    (call arg_w c 9 3 14)
+    (call call_shared c (get w W.s_copy))
+    (call arm64.mov_sp c 64 1 31)
+    (call arm64.sub_ri c 64 31 31 16)
+    (call arm64.mov_sp c 64 2 31)
+    (call imm c 3 1)
+    (call arm64.mov_rr c 64 0 24)
+    (call runtime_arm64.emit_syscall c 78)
+    (call arm64.mov_sp c 64 31 27)
+    (call arm64.cmp_ri c 64 0 0)
+    (let not_link:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call ret_errno c 32)
+    (call arm64.patch_cond c not_link (call buf.len c))
+    (call arm64.mov_rr c 64 0 22)
+    (call arm64.patch_cond c plain1 (call buf.len c))
+    (call arm64.patch_cond c plain2 (call buf.len c))
+    (call ret_linux c w)
+    (call patch_all c faults)
+    (call ret_errno c 21)
+    (call patch_all c badf)
+    (call ret_errno c 8))
+
+  ;; path_unlink_file(dirfd, path, path_len) -> errno, and path_remove_directory and
+  ;; path_create_directory, which differ only in the system call and its third argument:
+  ;; unlinkat (35) with flags 0, unlinkat with AT_REMOVEDIR (512), mkdirat (34) with mode
+  ;; 0777 (511). None can resolve beneath a directory, so the parent directory is opened
+  ;; that way (O_PATH) and the last component dealt with inside it.
+  (fn emit_path_unlink [c:(ptr buf.Buf) w:(ptr W) sysno:i32 arg:i32] -> void
+    (let faults:(ptr (vec.Vec i32)) (call new_list))
+    (let badf:(ptr (vec.Vec i32)) (call new_list))
+    (call prologue c)
+    (call arg_w c 3 0 9)
+    (call lookup c w 9 24 badf)
+    (call arg_w c 3 1 13)
+    (call arg_w c 3 2 14)
+    (call check c w 13 14 faults)
+    (call call_shared c (get w W.s_copy))
+    (call call_shared c (get w W.s_split))
+    (call arm64.mov_rr c 64 0 24)
+    (call imm c 2 (call o_path_dir_cloexec))
+    (call call_shared c (get w W.s_openat2))
+    (call arm64.cmp_ri c 64 0 0)
+    (let no_parent:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_rr c 64 22 0)
+    (call arm64.mov_rr c 64 1 13)
+    (call imm c 2 arg)
+    (call runtime_arm64.emit_syscall c sysno)
+    (call arm64.mov_rr c 64 21 0)
+    (call arm64.mov_rr c 64 0 22)
+    (call runtime_arm64.emit_syscall c 57)
+    (call arm64.mov_rr c 64 0 21)
+    (call arm64.patch_cond c no_parent (call buf.len c))
+    (call arm64.mov_sp c 64 31 27)
+    (call finish c w faults badf))
+
+  ;; path_rename(old_fd, old_path, old_len, new_fd, new_path, new_len) -> errno. renameat
+  ;; cannot resolve beneath a directory either, so each path's parent is opened that way
+  ;; and renameat2 moves the last component between the two. The new path is handled
+  ;; first, its parent's descriptor kept in x22 and its last component in x21 while the
+  ;; old path is copied below it.
+  (fn emit_path_rename [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (let faults:(ptr (vec.Vec i32)) (call new_list))
+    (let badf:(ptr (vec.Vec i32)) (call new_list))
+    (call prologue c)
+    (call arg_w c 6 0 9)
+    (call lookup c w 9 24 badf)
+    (call arg_w c 6 3 9)
+    (call lookup c w 9 23 badf)
+    (call arg_w c 6 1 13)
+    (call arg_w c 6 2 14)
+    (call check c w 13 14 faults)
+    (call arg_w c 6 4 13)
+    (call arg_w c 6 5 14)
+    (call check c w 13 14 faults)
+    (call call_shared c (get w W.s_copy))
+    (call call_shared c (get w W.s_split))
+    (call arm64.mov_rr c 64 21 13)
+    (call arm64.mov_rr c 64 0 23)
+    (call imm c 2 (call o_path_dir_cloexec))
+    (call call_shared c (get w W.s_openat2))
+    (call arm64.cmp_ri c 64 0 0)
+    (let new_failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_rr c 64 22 0)
+    (call arg_w c 6 1 13)
+    (call arg_w c 6 2 14)
+    (call call_shared c (get w W.s_copy))
+    (call call_shared c (get w W.s_split))
+    (call arm64.mov_rr c 64 0 24)
+    (call imm c 2 (call o_path_dir_cloexec))
+    (call call_shared c (get w W.s_openat2))
+    (call arm64.cmp_ri c 64 0 0)
+    (let old_failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_rr c 64 20 0)
+    ;; renameat2(old parent, old name, new parent, new name, 0), then close both parents
+    (call arm64.mov_rr c 64 0 20)
+    (call arm64.mov_rr c 64 1 13)
+    (call arm64.mov_rr c 64 2 22)
+    (call arm64.mov_rr c 64 3 21)
+    (call imm c 4 0)
+    (call runtime_arm64.emit_syscall c 276)
+    (call arm64.mov_rr c 64 19 0)
+    (call arm64.mov_rr c 64 0 20)
+    (call runtime_arm64.emit_syscall c 57)
+    (call arm64.mov_rr c 64 0 22)
+    (call runtime_arm64.emit_syscall c 57)
+    (call arm64.mov_rr c 64 0 19)
+    (let finish_at:i32 (call arm64.b c))
+    ;; the old parent did not open: close the new one, keeping the error
+    (call arm64.patch_cond c old_failed (call buf.len c))
+    (call arm64.mov_rr c 64 19 0)
+    (call arm64.mov_rr c 64 0 22)
+    (call runtime_arm64.emit_syscall c 57)
+    (call arm64.mov_rr c 64 0 19)
+    (call arm64.patch_b c finish_at (call buf.len c))
+    (call arm64.patch_cond c new_failed (call buf.len c))
+    (call arm64.mov_sp c 64 31 27)
+    (call finish c w faults badf))
+
+  ;; x(dst) = the WASI filetype for the Linux value in x(src) when it is `from` (src, dst
+  ;; registers; dst keeps its value otherwise; clobbers x5 and x6)
+  (fn map_value [c:(ptr buf.Buf) src:i32 dst:i32 from:i32 to:i32] -> void
+    (call imm c 5 from)
+    (call arm64.cmp_rr c 32 src 5)
+    (call imm c 6 to)
+    (call arm64.csel c 64 dst 6 dst (call arm64.cc_eq)))
+
+  ;; n bytes from host address x(src) to x(dst) (all registers, kept; clobbers x3 and x4)
+  (fn copy_bytes [c:(ptr buf.Buf) dst:i32 src:i32 n:i32] -> void
+    (call imm c 4 0)
+    (let top:i32 (call buf.len c))
+    (call arm64.cmp_rr c 64 4 n)
+    (let done:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call arm64.ldrb_uxtw c 3 src 4)
+    (call arm64.strb_uxtw c 3 dst 4)
+    (call arm64.add_ri c 64 4 4 1)
+    (call arm64.b_to c top)
+    (call arm64.patch_cond c done (call buf.len c)))
+
+  ;; x(reg) = min(x(reg), x(left)) for the room that is left (clobbers x7)
+  (fn clamp [c:(ptr buf.Buf) reg:i32 limit:i32] -> void
+    (call arm64.cmp_rr c 64 reg limit)
+    (call arm64.csel c 64 reg reg limit (call arm64.cc_ls)))
+
+  ;; fd_readdir(fd, buf, buf_len, cookie:i64, bufused_ptr) -> errno. The directory is read
+  ;; from `cookie` (lseek to a d_off getdents64 gave, 0 for the start); each Linux dirent
+  ;; becomes a WASI one (d_next = d_off, d_ino, d_namlen, d_type), the last cut off when
+  ;; the buffer is full, as WASI allows. Registers: x24 the Linux fd, x22 the buffer (host
+  ;; address), x23 its length, x21 the bytes used, x20 a batch's length, x19 the offset in
+  ;; it, x25 a name's length; at sp a WASI header (24 bytes), at sp + 32 the batch (4096).
+  (fn emit_fd_readdir [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (let faults:(ptr (vec.Vec i32)) (call new_list))
+    (let badf:(ptr (vec.Vec i32)) (call new_list))
+    (call prologue c)
+    (call arg_w c 5 0 9)
+    (call lookup c w 9 24 badf)
+    (call arg_w c 5 1 13)
+    (call arg_w c 5 2 14)
+    (call check c w 13 14 faults)
+    (call arg_w c 5 4 9)
+    (call imm c 11 4)
+    (call check c w 9 11 faults)
+    ;; lseek(fd, cookie, SEEK_SET)
+    (call arm64.mov_rr c 64 0 24)
+    (call arg_x c 5 3 1)
+    (call imm c 2 0)
+    (call runtime_arm64.emit_syscall c 62)
+    (call arm64.cmp_ri c 64 0 0)
+    (let seek_failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call imm c 21 0)
+    (call arm64.add_rrr c 64 22 28 13)
+    (call arm64.mov_rr c 64 23 14)
+    (call arm64.sub_ri c 64 31 31 2064)
+    (call arm64.sub_ri c 64 31 31 2064)
+    ;; a batch: getdents64(fd, sp + 32, 4096); 0 is the end of the directory
+    (let batch:i32 (call buf.len c))
+    (call arm64.mov_rr c 64 0 24)
+    (call arm64.add_ri c 64 1 31 32)
+    (call imm c 2 4096)
+    (call runtime_arm64.emit_syscall c 61)
+    (call arm64.cmp_ri c 64 0 0)
+    (let read_failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (let at_end:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (call arm64.mov_rr c 64 20 0)
+    (call imm c 19 0)
+    ;; each entry of the batch: x9 = its address
+    (let entry:i32 (call buf.len c))
+    (call arm64.cmp_rr c 64 19 20)
+    (call arm64.patch_cond c (call arm64.b_cond c (call arm64.cc_hs)) batch)
+    (call arm64.mov_sp c 64 9 31)
+    (call arm64.add_ri c 64 9 9 32)
+    (call arm64.add_rrr c 64 9 9 19)
+    ;; the name's length: x25
+    (call arm64.add_ri c 64 10 9 19)
+    (call imm c 25 0)
+    (let measure:i32 (call buf.len c))
+    (call arm64.ldrb_uxtw c 3 10 25)
+    (let measured:i32 (call arm64.cbz c 32 3))
+    (call arm64.add_ri c 64 25 25 1)
+    (call arm64.b_to c measure)
+    (call arm64.patch_cond c measured (call buf.len c))
+    ;; the WASI header: d_next, d_ino, d_namlen, d_type, 3 zero bytes
+    (call arm64.ldr_x c 3 9 8)
+    (call arm64.str_x c 3 31 0)
+    (call arm64.ldr_x c 3 9 0)
+    (call arm64.str_x c 3 31 8)
+    (call arm64.str_x c 31 31 16)
+    (call arm64.str_w c 25 31 16)
+    ;; Linux DT_* to WASI's filetype
+    (call arm64.ldrb c 3 9 18)
+    (call imm c 4 0)
+    (call map_value c 3 4 4 3) (call map_value c 3 4 8 4) (call map_value c 3 4 10 7)
+    (call map_value c 3 4 2 2) (call map_value c 3 4 6 1) (call map_value c 3 4 12 6)
+    (call arm64.strb c 4 31 20)
+    ;; the header, then the name, as much as fits: x6 = the bytes to copy
+    (call arm64.sub_rrr c 64 7 23 21)
+    (call imm c 6 24)
+    (call clamp c 6 7)
+    (call arm64.add_rrr c 64 8 22 21)
+    (call arm64.mov_sp c 64 1 31)
+    (call copy_bytes c 8 1 6)
+    (call arm64.add_rrr c 64 21 21 6)
+    (call arm64.cmp_rr c 64 21 23)
+    (let full1:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call arm64.sub_rrr c 64 7 23 21)
+    (call arm64.mov_rr c 64 6 25)
+    (call clamp c 6 7)
+    (call arm64.add_rrr c 64 8 22 21)
+    (call arm64.add_ri c 64 1 9 19)
+    (call copy_bytes c 8 1 6)
+    (call arm64.add_rrr c 64 21 21 6)
+    (call arm64.cmp_rr c 64 21 23)
+    (let full2:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    ;; the next Linux entry: its reclen, a u16 at 16
+    (call arm64.ldrh c 3 9 16)
+    (call arm64.add_rrr c 64 19 19 3)
+    (call arm64.b_to c entry)
+    ;; done: *bufused = x21
+    (call arm64.patch_cond c at_end (call buf.len c))
+    (call arm64.patch_cond c full1 (call buf.len c))
+    (call arm64.patch_cond c full2 (call buf.len c))
+    (call arg_w c 5 4 9)
+    (call arm64.str_w_uxtw c 21 28 9)
+    (call ret_errno c 0)
+    (call arm64.patch_cond c read_failed (call buf.len c))
+    (call arm64.patch_cond c seek_failed (call buf.len c))
+    (call ret_linux c w)
+    (call patch_all c faults)
+    (call ret_errno c 21)
+    (call patch_all c badf)
+    (call ret_errno c 8))
+
+  ;; path_filestat_get(dirfd, flags, path, path_len, out) -> errno. The path is opened
+  ;; beneath dirfd (O_PATH, following symlinks with SYMLINK_FOLLOW), newfstatat(fd, "",
+  ;; AT_EMPTY_PATH) reads it, and the Linux stat becomes a WASI filestat: dev, ino,
+  ;; filetype, nlink, size, and the three times in nanoseconds. AArch64's `struct stat`
+  ;; has the mode at 16 and the link count at 20 (x86-64's at 24 and 16).
+  (fn emit_path_filestat [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (let faults:(ptr (vec.Vec i32)) (call new_list))
+    (let badf:(ptr (vec.Vec i32)) (call new_list))
+    (call prologue c)
+    (call arg_w c 5 0 9)
+    (call lookup c w 9 24 badf)
+    (call arg_w c 5 2 13)
+    (call arg_w c 5 3 14)
+    (call check c w 13 14 faults)
+    (call arg_w c 5 4 9)
+    (call imm c 11 64)
+    (call check c w 9 11 faults)
+    ;; O_PATH | O_CLOEXEC, and O_NOFOLLOW without SYMLINK_FOLLOW (1)
+    (call imm c 20 2621440)
+    (call arg_w c 5 1 9)
+    (call imm c 10 1)
+    (call arm64.tst_rr c 32 9 10)
+    (let follow:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+    (call imm c 10 32768)
+    (call arm64.orr_rrr c 32 20 20 10)
+    (call arm64.patch_cond c follow (call buf.len c))
+    (call call_shared c (get w W.s_copy))
+    (call arm64.mov_sp c 64 1 31)
+    (call arm64.mov_rr c 64 0 24)
+    (call arm64.mov_rr c 64 2 20)
+    (call call_shared c (get w W.s_openat2))
+    (call arm64.mov_sp c 64 31 27)
+    (call arm64.cmp_ri c 64 0 0)
+    (let open_failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    ;; newfstatat(fd, "", sp + 16, AT_EMPTY_PATH), the "" at sp; then close
+    (call arm64.mov_rr c 64 23 0)
+    (call arm64.sub_ri c 64 31 31 144)
+    (call arm64.str_x c 31 31 0)
+    (call arm64.mov_rr c 64 0 23)
+    (call arm64.mov_sp c 64 1 31)
+    (call arm64.add_ri c 64 2 31 16)
+    (call imm c 3 4096)
+    (call runtime_arm64.emit_syscall c 79)
+    (call arm64.mov_rr c 64 22 0)
+    (call arm64.mov_rr c 64 0 23)
+    (call runtime_arm64.emit_syscall c 57)
+    (call arm64.cmp_ri c 64 22 0)
+    (let stat_failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    ;; the WASI filestat at the guest's out (x25)
+    (call arg_w c 5 4 9)
+    (call arm64.add_rrr c 64 25 28 9)
+    (call arm64.ldr_x c 3 31 16)
+    (call arm64.str_x c 3 25 0)
+    (call arm64.ldr_x c 3 31 24)
+    (call arm64.str_x c 3 25 8)
+    (call arm64.ldr_w c 3 31 32)
+    (call imm c 5 61440)
+    (call arm64.and_rrr c 32 3 3 5)
+    (call imm c 4 0)
+    (call map_value c 3 4 16384 3) (call map_value c 3 4 32768 4) (call map_value c 3 4 40960 7)
+    (call map_value c 3 4 8192 2) (call map_value c 3 4 24576 1) (call map_value c 3 4 49152 6)
+    (call arm64.str_x c 31 25 16)
+    (call arm64.strb c 4 25 16)
+    (call arm64.ldr_w c 3 31 36)
+    (call arm64.str_x c 3 25 24)
+    (call arm64.ldr_x c 3 31 64)
+    (call arm64.str_x c 3 25 32)
+    (call emit_time c 88 40)
+    (call emit_time c 104 48)
+    (call emit_time c 120 56)
+    (call ret_errno c 0)
+    (call arm64.patch_cond c stat_failed (call buf.len c))
+    (call arm64.mov_rr c 64 0 22)
+    (call arm64.patch_cond c open_failed (call buf.len c))
+    (call ret_linux c w)
+    (call patch_all c faults)
+    (call ret_errno c 21)
+    (call patch_all c badf)
+    (call ret_errno c 8))
+
+  ;; [x25 + to] = seconds * 1e9 + nanoseconds, from the stat at sp + 16 (the seconds at
+  ;; sp + at, the nanoseconds after them)
+  (fn emit_time [c:(ptr buf.Buf) at:i32 to:i32] -> void
+    (call arm64.ldr_x c 3 31 at)
+    (call arm64.ldr_x c 4 31 (+ at 8))
+    (call imm c 5 1000000000)
+    (call arm64.madd c 64 3 3 5 4)
+    (call arm64.str_x c 3 25 to))
+
+  ;; poll_oneoff(subs, out, n, nevents) -> errno, for what a program asks to sleep: one
+  ;; subscription, a relative clock (the tag and the flags 0), the wait a nanosleep of its
+  ;; timeout. Another shape is EINVAL (n not 1) or ENOTSUP. The one event, the
+  ;; subscription's userdata with no error, is written to `out` and its count to `nevents`.
+  (fn emit_poll_oneoff [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (let faults:(ptr (vec.Vec i32)) (call new_list))
+    (let badf:(ptr (vec.Vec i32)) (call new_list))
+    (call prologue c)
+    (call arg_w c 4 0 9)
+    (call arg_w c 4 1 10)
+    (call arg_w c 4 2 13)
+    (call arg_w c 4 3 14)
+    (call arm64.cmp_ri c 32 13 1)
+    (let bad_n:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+    (call imm c 11 48)
+    (call check c w 9 11 faults)
+    (call imm c 11 32)
+    (call check c w 10 11 faults)
+    (call imm c 11 4)
+    (call check c w 14 11 faults)
+    (call arm64.add_rrr c 64 5 28 9)
+    (call arm64.ldrb c 3 5 8)
+    (let not_clock:i32 (call arm64.cbnz c 32 3))
+    (call arm64.ldrh c 3 5 40)
+    (let not_relative:i32 (call arm64.cbnz c 32 3))
+    ;; seconds and nanoseconds of the timeout, on the stack as a timespec
+    (call arm64.ldr_x c 3 5 24)
+    (call imm c 4 1000000000)
+    (call arm64.udiv c 64 6 3 4)
+    (call arm64.msub c 64 7 6 4 3)
+    (call arm64.sub_ri c 64 31 31 16)
+    (call arm64.str_x c 6 31 0)
+    (call arm64.str_x c 7 31 8)
+    (call arm64.mov_sp c 64 0 31)
+    (call imm c 1 0)
+    (call runtime_arm64.emit_syscall c 101)
+    (call arm64.mov_sp c 64 31 27)
+    ;; a wait cut short by a signal (EINTR, -4) ends the sleep early, as success
+    (call imm c 4 -4)
+    (call arm64.cmp_rr c 64 0 4)
+    (let interrupted:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (call arm64.cmp_ri c 64 0 0)
+    (let failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.patch_cond c interrupted (call buf.len c))
+    ;; the event: the subscription's userdata, then zeros (no error, a clock)
+    (call arm64.ldr_x c 3 5 0)
+    (call arm64.add_rrr c 64 6 28 10)
+    (call arm64.str_x c 3 6 0)
+    (call arm64.str_x c 31 6 8)
+    (call arm64.str_x c 31 6 16)
+    (call arm64.str_x c 31 6 24)
+    (call imm c 3 1)
+    (call arm64.add_rrr c 64 7 28 14)
+    (call arm64.str_w c 3 7 0)
+    (call ret_errno c 0)
+    (call arm64.patch_cond c failed (call buf.len c))
+    (call ret_linux c w)
+    (call arm64.patch_cond c bad_n (call buf.len c))
+    (call ret_errno c 28)
+    (call arm64.patch_cond c not_clock (call buf.len c))
+    (call arm64.patch_cond c not_relative (call buf.len c))
+    (call ret_errno c 58)
+    (call patch_all c faults)
+    (call ret_errno c 21)
+    (call patch_all c badf)
+    (call ret_errno c 8))
+
+  ;; aipl_sys_v1's chmod(dirfd, path, path_len, mode) -> 0, or minus the WASI errno
+  ;; (docs/design/SYS_PLAN.md). A mode with a bit outside 0o777 is EINVAL (-28) and a
+  ;; descriptor that is not open is EBADF (-8), as in src/sys.rs. The file is opened
+  ;; beneath its directory as path_open opens one, read-only and without blocking, then
+  ;; given its mode by fchmod and closed. A file the program may not read cannot be opened
+  ;; that way, so its parent is opened instead and fchmodat names the file in it, unless it
+  ;; is a symbolic link, which fchmodat would follow out of the directory unchecked.
+  (fn emit_sys_chmod [c:(ptr buf.Buf) w:(ptr W)] -> void
+    (let faults:(ptr (vec.Vec i32)) (call new_list))
+    (let badf:(ptr (vec.Vec i32)) (call new_list))
+    (call prologue c)
+    (call arg_w c 4 1 13)
+    (call arg_w c 4 2 14)
+    (call check c w 13 14 faults)
+    (call arg_w c 4 0 9)
+    (call lookup c w 9 24 badf)
+    (call arg_w c 4 3 20)
+    (call imm c 10 -512)
+    (call arm64.tst_rr c 32 20 10)
+    (let bad_mode:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+    (call call_shared c (get w W.s_copy))
+    ;; fd = openat2(dir, path, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
+    (call arm64.mov_sp c 64 1 31)
+    (call arm64.mov_rr c 64 0 24)
+    (call imm c 2 526592)
+    (call call_shared c (get w W.s_openat2))
+    (call arm64.cmp_ri c 64 0 0)
+    (let opened:i32 (call arm64.b_cond c (call arm64.cc_ge)))
+    (call imm c 4 -13)
+    (call arm64.cmp_rr c 64 0 4)
+    (let unreadable:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (let open_failed:i32 (call arm64.b c))
+    (call arm64.patch_cond c opened (call buf.len c))
+    ;; fchmod(fd, mode), then close the descriptor
+    (call arm64.mov_rr c 64 23 0)
+    (call arm64.mov_rr c 64 1 20)
+    (call runtime_arm64.emit_syscall c 52)
+    (call arm64.mov_rr c 64 22 0)
+    (call arm64.mov_rr c 64 0 23)
+    (call runtime_arm64.emit_syscall c 57)
+    (call arm64.mov_rr c 64 0 22)
+    (let chmodded:i32 (call arm64.b c))
+    (call arm64.patch_cond c unreadable (call buf.len c))
+    (call call_shared c (get w W.s_split))
+    (call arm64.mov_rr c 64 0 24)
+    (call imm c 2 (call o_path_dir_cloexec))
+    (call call_shared c (get w W.s_openat2))
+    (call arm64.cmp_ri c 64 0 0)
+    (let no_parent:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_rr c 64 23 0)
+    ;; newfstatat(parent, base, &stat, AT_SYMLINK_NOFOLLOW): st_mode is at 16
+    (call arm64.sub_ri c 64 31 31 144)
+    (call arm64.mov_rr c 64 0 23)
+    (call arm64.mov_rr c 64 1 13)
+    (call arm64.mov_sp c 64 2 31)
+    (call imm c 3 256)
+    (call runtime_arm64.emit_syscall c 79)
+    (call arm64.cmp_ri c 64 0 0)
+    (let stat_failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.ldr_w c 3 31 16)
+    (call imm c 5 61440)
+    (call arm64.and_rrr c 32 3 3 5)
+    (call imm c 5 40960)
+    (call arm64.cmp_rr c 32 3 5)
+    (let is_link:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    ;; fchmodat(parent, base, mode)
+    (call arm64.mov_rr c 64 0 23)
+    (call arm64.mov_rr c 64 1 13)
+    (call arm64.mov_rr c 64 2 20)
+    (call runtime_arm64.emit_syscall c 53)
+    (let done:i32 (call arm64.b c))
+    (call arm64.patch_cond c is_link (call buf.len c))
+    (call imm c 0 -13)
+    (call arm64.patch_cond c stat_failed (call buf.len c))
+    (call arm64.patch_b c done (call buf.len c))
+    ;; close the parent, keeping the result
+    (call arm64.mov_rr c 64 22 0)
+    (call arm64.mov_rr c 64 0 23)
+    (call runtime_arm64.emit_syscall c 57)
+    (call arm64.mov_rr c 64 0 22)
+    (call arm64.patch_cond c no_parent (call buf.len c))
+    (call arm64.patch_b c open_failed (call buf.len c))
+    (call arm64.patch_b c chmodded (call buf.len c))
+    (call arm64.mov_sp c 64 31 27)
+    (call arm64.cmp_ri c 64 0 0)
+    (let failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
+    (call ret_errno c 0)
+    (call arm64.patch_cond c failed (call buf.len c))
+    (call arm64.mov_rr c 64 30 26)
+    (call arm64.b_to c (get w W.t_negated))
+    (call patch_all c badf)
+    (call ret_errno c -8)
+    (call arm64.patch_cond c bad_mode (call buf.len c))
+    (call ret_errno c -28)
+    (call patch_all c faults)
+    (call ret_errno c -21))
+
+  ;; ===== Dispatch =====
+
+  ;; Emits the routine for the WASI import `name`; false if it is not one of these.
+  (fn emit_import [c:(ptr buf.Buf) w:(ptr W) imp:(ptr wasm_reader.Import)] -> bool (pub)
+    (let name:str.Bytes (get imp wasm_reader.Import.name))
+    (cond
+      ((call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_sys_v1"))
+       (cond ((call is name "chmod") (call emit_sys_chmod c w) true)
+             (else false)))
+      ((call is name "fd_readdir") (call emit_fd_readdir c w) true)
+      ((call is name "path_filestat_get") (call emit_path_filestat c w) true)
+      ((call is name "poll_oneoff") (call emit_poll_oneoff c w) true)
+      ((call is name "fd_close") (call emit_fd_close c w) true)
+      ((call is name "path_open") (call emit_path_open c w) true)
+      ((call is name "path_unlink_file") (call emit_path_unlink c w 35 0) true)
+      ((call is name "path_remove_directory") (call emit_path_unlink c w 35 512) true)
+      ((call is name "path_create_directory") (call emit_path_unlink c w 34 511) true)
+      ((call is name "path_rename") (call emit_path_rename c w) true)
+      (else false)))
+
+  (fn is [name:str.Bytes want:str] -> bool
+    (call str.bytes_eq name (call str.from_str want)))
+)

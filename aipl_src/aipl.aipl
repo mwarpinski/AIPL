@@ -5,7 +5,7 @@
 ;; builds the next version of itself with no Rust involved.
 ;;
 ;;   aipl compile FILE.aipl -o OUT.wasm
-;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... FILE.aipl -o OUT
+;;   aipl compile --exe [--target native|arm64] [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... FILE.aipl -o OUT
 ;;   aipl compile [--exe] --max-memory SIZE FILE.aipl -o OUT   (memory's limit, 1M to 2G)
 ;;   aipl compile --no-opt ...   (without the optimizer, codegen_opt.aipl; it runs by default)
 ;;   aipl verify FILE.aipl   (resolve and type-check; compile nothing)
@@ -31,6 +31,7 @@
   (import option)
   (import stdpath)
   (import native/native)
+  (import native/native_arm64)
   (import os)
   (import io)
   (import fs)
@@ -152,12 +153,23 @@
       ((call proc.exited status) status)
       (else (+ 128 (call proc.signal status)))))
 
+  ;; Whether this machine is AArch64: its kernel lists a "CPU architecture" line in
+  ;; /proc/cpuinfo, and an x86-64 one never does. Executables are built for it unless
+  ;; --target says otherwise.
+  (fn host_is_arm64 [] -> bool
+    (match_result (call io.read_file "/proc/cpuinfo")
+      (ok b (call str.contains b (call str.from_str "CPU architecture")))
+      (err e false)))
+
   ;; aipl compile ..., or aipl run ... (run_mode): the same flags, the file
   ;; the last of them, the program's own arguments after it, and no -o.
   (fn compile_command [n:i32 run_mode:bool] -> i32
     (let exe:bool run_mode)
     (let tests:bool false)
     (let sandbox:bool false)
+    ;; --target: 0 the machine's own, 1 native (x86-64), 2 arm64
+    (let target:i32 0)
+    (let listened:bool false)
     ;; the optimizer runs unless --no-opt (docs/design/OPT_PLAN.md)
     (let opt:bool true)
     ;; --listen grants, one ADDR:PORT a line (native.compile_with)
@@ -184,6 +196,12 @@
          (when (not (call str.is (call arg (+ i 1)) "main"))
                (return (call fail_bytes "this aipl evaluates a program's main only: for another function (-f) use the Rust aipl, which runs it in the VM: " (call arg (+ i 1)))))
          (set! i (+ i 1)))
+        ((call str.is a "--target")
+         (when (or run_mode (gte (+ i 1) n)) (return (call usage)))
+         (cond ((call str.is (call arg (+ i 1)) "native") (set! target 1))
+               ((call str.is (call arg (+ i 1)) "arm64") (set! target 2))
+               (else (return (call fail_bytes "--target: this aipl builds native executables only: expected native or arm64, not " (call arg (+ i 1))))))
+         (set! i (+ i 1)))
         ((call str.is a "--no-opt") (set! opt false))
         ((call str.is a "--sandbox") (set! sandbox true))
         ((call str.is a "--max-memory")
@@ -207,6 +225,7 @@
                (return (call fail_bytes "" (call buf.bytes m))))
          (call buf.push_bytes listen (call arg (+ i 1)))
          (call buf.push_byte listen 10)
+         (set! listened true)
          (set! i (+ i 1)))
         ((call str.is a "--allow-run")
          (when (gte (+ i 1) n) (return (call usage)))
@@ -251,6 +270,7 @@
     ;; aipl run x.wasm: the module is the program, to be built natively as it stands
     (let wasm_in:bool (and run_mode (call str.ends_with entry (call str.from_str ".wasm"))))
     (let bytes:str.Bytes (call str.from_str ""))
+    (let exe_done:bool false)
     (if wasm_in
         (set! bytes (match_result (call io.read_path entry) (ok t t) (err e (return (call fail_bytes "cannot read " entry)))))
         (block
@@ -268,7 +288,16 @@
                 (call io.eprintln " (AIPL_SPEC.md 6.4)")
                 (return 1))
           (set! bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
-    (when exe
+    (when (and exe (or (eq target 2) (and (eq target 0) (call host_is_arm64))))
+          ;; an AArch64 executable (--allow-run is accepted: the process operations answer
+          ;; "not supported" there yet)
+          (when (or sandbox listened (gt (call buf.len serve) 0))
+                (return (call fail_bytes "--target arm64: --sandbox, --listen, and --serve are not built for AArch64 yet" (call str.from_str ""))))
+          (let o:(ptr native_arm64.Output) (call native_arm64.compile bytes))
+          (when (not (get o native_arm64.Output.ok)) (return (call fail_bytes "native backend: " (get o native_arm64.Output.error))))
+          (set! bytes (get o native_arm64.Output.exe))
+          (set! exe_done true))
+    (when (and exe (not exe_done))
           (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen) (call buf.bytes serve)))
           (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
           (set! bytes (get o native.Output.exe)))
