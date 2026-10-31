@@ -74,9 +74,12 @@ pub fn run_env(exe: &[u8], args: &[&str], input: &[u8], env: &[(&str, &str)]) ->
         let host = std::env::var("AIPL_ARM64_SSH").unwrap();
         let quoted: Vec<String> = args.iter().map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect();
         let flags: String = env.iter().map(|(k, v)| format!("-e '{k}={v}' ")).collect();
+        // the program's standard input travels in the script, as hex (the executable takes ssh's own)
+        let hex: String = input.iter().map(|b| format!("{b:02x}")).collect();
+        let (feed, interactive, redirect) = if input.is_empty() { (String::new(), "", "") } else { (format!("printf '%s' {hex} | xxd -r -p > $d/in; "), "-i ", " < $d/in") };
         let script = format!(
-            "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; d=$(mktemp -d ~/aipl-arm64-XXXXXX); cat > $d/prog; chmod +x $d/prog; \
-             docker run --rm --platform linux/arm64 {flags}-v $d:/w -w /w alpine /w/prog {}; s=$?; rm -rf $d; exit $s",
+            "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; d=$(mktemp -d ~/aipl-arm64-XXXXXX); cat > $d/prog; chmod +x $d/prog; {feed}\
+             docker run --rm {interactive}--platform linux/arm64 {flags}-v $d:/w -w /w alpine /w/prog {}{redirect}; s=$?; rm -rf $d; exit $s",
             quoted.join(" ")
         );
         let mut c = Command::new("ssh");
@@ -85,7 +88,6 @@ pub fn run_env(exe: &[u8], args: &[&str], input: &[u8], env: &[(&str, &str)]) ->
         child.stdin.take().unwrap().write_all(exe).unwrap();
         let out = child.wait_with_output().unwrap();
         std::fs::remove_dir_all(&dir).ok();
-        let _ = input;
         return Some(out);
     };
     let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();

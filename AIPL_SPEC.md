@@ -1317,7 +1317,7 @@ Calls nest as deep as the stack allows. Running out of stack stops the program w
 | Backend | Room | Nested calls of a small function | Failure |
 |---|---|---|---|
 | `aipl-run` (wasm) | wasmtime's 512 KiB wasm stack | about 32,000 | `prog.wasm: wasm trap: call stack exhausted`, the call chain, exit 134 |
-| native executable | 8 MiB per thread, the main thread's included (its own stack, so `ulimit -s` does not matter), below a guard page | about 170,000 | the same, with the program's name |
+| native executable | 8 MiB per thread, the main thread's included (its own stack, so `ulimit -s` does not matter), below a guard page | about 170,000 (x86-64), about 70,000 (AArch64, whose frames are larger) | the same, with the program's name |
 | VM | 192 MiB of the thread's stack | about 40,000 | `Call stack exhausted calling 'f': calls are nested too deeply (a recursion that does not end?)` |
 
 A call's room is its frame: a function with many locals or deeply nested expressions gets fewer calls. Code meant to run under `aipl-run` should stay well below 30,000 nested calls; walk long lists and deep structures with `while`. In a native executable, each function's prologue compares the stack pointer, less the frame it is about to push, with a limit 256 KiB above the stack's low end and traps below it, which leaves room for the host routines and the trap's own output.

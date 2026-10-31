@@ -14,9 +14,11 @@
 ;; call the shared subroutines below with `bl` and lower sp for scratch space;
 ;; it leaves through ret_errno or ret_linux, which restore both.
 ;;
-;; Not yet as on x86-64: a guest pointer outside memory gives EFAULT (21),
-;; where wasmtime and the x86-64 build trap with a region message (the traps
-;; are NA6); --sandbox.
+;; A pointer the program passes is checked before use, as wasmtime and the x86-64 build do: out of
+;; bounds traps with `Pointer out of bounds: Region { start: S, len: L }`, then a misaligned
+;; out-parameter with `Pointer not aligned to N: ...` (check_trap, and the region routine in
+;; backtrace_arm64.aipl). The process and socket operations give EFAULT or a value instead, as
+;; their specification says.
 (module wasi_arm64
   (import alloc)
   (import str)
@@ -28,8 +30,8 @@
   (import wasm_reader)
 
   ;; Data addresses, and the positions of the shared code.
-  (struct W [fd_table:i32 errno_table:i32 pages_cell:i32 dot:i32 root:i32
-             t_errno:i32 t_negated:i32 s_copy:i32 s_split:i32 s_openat2:i32 sandbox:bool said:i32] (pub))
+  (struct W [fd_table:i32 errno_table:i32 (pub pages_cell:i32) dot:i32 root:i32
+             t_errno:i32 t_negated:i32 s_copy:i32 s_split:i32 s_openat2:i32 sandbox:bool said:i32 (pub region:i32)] (pub))
 
   (fn fd_slots [] -> i32 64)
 
@@ -75,7 +77,7 @@
     (new W (call alloc.forever) [fd_table:fd_table errno_table:errno_table
                                  pages_cell:(get l lower_arm64.L.mem_pages)
                                  dot:dot root:root
-                                 t_errno:-1 t_negated:-1 s_copy:-1 s_split:-1 s_openat2:-1 sandbox:sandbox said:said]))
+                                 t_errno:-1 t_negated:-1 s_copy:-1 s_split:-1 s_openat2:-1 sandbox:sandbox said:said region:-1]))
 
   ;; ===== Building blocks =====
 
@@ -104,6 +106,35 @@
     (call arm64.add_rrr c 64 12 addr len)
     (call arm64.cmp_rr c 64 12 15)
     (call (vec.push i32) faults (call arm64.b_cond c (call arm64.cc_hi))))
+
+  ;; Traps (backtrace_arm64.emit_region: the text wasmtime prints for a bad pointer) unless the region
+  ;; [addr, addr + len) is inside memory and, for align > 1, addr is a multiple of align: out of bounds
+  ;; first, then misaligned. addr and len are registers of zero-extended values. Clobbers x16 and x17 (and, on
+  ;; the way to the trap, x0-x2).
+  (fn check_trap [c:(ptr buf.Buf) w:(ptr W) addr:i32 len:i32 align:i32] -> void (pub)
+    (req (gte (get w W.region) 0))
+    (call imm c 17 (get w W.pages_cell))
+    (call arm64.ldr_x c 17 17 0)
+    (call arm64.lsl_ri c 64 17 17 16)
+    (call arm64.add_rrr c 64 16 addr len)
+    (call arm64.cmp_rr c 64 16 17)
+    (let in_bounds:i32 (call arm64.b_cond c (call arm64.cc_ls)))
+    (call trap_region c w addr len 0)
+    (call arm64.patch_cond c in_bounds (call buf.len c))
+    (when (gt align 1)
+          (call arm64.and_ri c 32 16 addr (i64.extend_s (- align 1)))
+          (let aligned:i32 (call arm64.cbz c 32 16))
+          (call trap_region c w addr len align)
+          (call arm64.patch_cond c aligned (call buf.len c))))
+
+  ;; Jumps to the region trap with the start, the length, and the kind (0, or the alignment)
+  (fn trap_region [c:(ptr buf.Buf) w:(ptr W) addr:i32 len:i32 kind:i32] -> void (pub)
+    (call arm64.mov_rr c 64 16 addr)
+    (call arm64.mov_rr c 64 17 len)
+    (call arm64.mov_rr c 32 1 16)
+    (call arm64.mov_rr c 32 2 17)
+    (call imm c 0 kind)
+    (call arm64.b_to c (get w W.region)))
 
   ;; out = the Linux descriptor for WASI descriptor `fd` (registers, which may be
   ;; the same); jumps whose positions join `badf` are for a descriptor that is
@@ -416,7 +447,7 @@
     (call lookup c w 9 24 badf)
     (call arg_w c 9 2 13)
     (call arg_w c 9 3 14)
-    (call check c w 13 14 faults)
+    (call check_trap c w 13 14 1)
     ;; Linux flags in x20: O_CLOEXEC; O_RDWR with the write right (1 << 6)
     (call imm c 20 524288)
     (call arg_x c 9 5 9)
@@ -474,7 +505,7 @@
     (call arm64.patch_b c claimed (call buf.len c))
     (call arg_w c 9 8 9)
     (call imm c 11 4)
-    (call check c w 9 11 faults)
+    (call check_trap c w 9 11 4)
     (call arm64.str_w_uxtw c 10 28 9)
     (call ret_errno c 0)
     ;; no free descriptor: close the file again, EMFILE
@@ -530,7 +561,7 @@
     (call lookup c w 9 24 badf)
     (call arg_w c 3 1 13)
     (call arg_w c 3 2 14)
-    (call check c w 13 14 faults)
+    (call check_trap c w 13 14 1)
     (call call_shared c (get w W.s_copy))
     (call call_shared c (get w W.s_split))
     (call arm64.mov_rr c 64 0 24)
@@ -565,10 +596,10 @@
     (call lookup c w 9 23 badf)
     (call arg_w c 6 1 13)
     (call arg_w c 6 2 14)
-    (call check c w 13 14 faults)
+    (call check_trap c w 13 14 1)
     (call arg_w c 6 4 13)
     (call arg_w c 6 5 14)
-    (call check c w 13 14 faults)
+    (call check_trap c w 13 14 1)
     (call call_shared c (get w W.s_copy))
     (call call_shared c (get w W.s_split))
     (call arm64.mov_rr c 64 21 13)
@@ -652,10 +683,10 @@
     (call lookup c w 9 24 badf)
     (call arg_w c 5 1 13)
     (call arg_w c 5 2 14)
-    (call check c w 13 14 faults)
+    (call check_trap c w 13 14 1)
     (call arg_w c 5 4 9)
     (call imm c 11 4)
-    (call check c w 9 11 faults)
+    (call check_trap c w 9 11 4)
     ;; lseek(fd, cookie, SEEK_SET)
     (call arm64.mov_rr c 64 0 24)
     (call arg_x c 5 3 1)
@@ -759,10 +790,10 @@
     (call lookup c w 9 24 badf)
     (call arg_w c 5 2 13)
     (call arg_w c 5 3 14)
-    (call check c w 13 14 faults)
+    (call check_trap c w 13 14 1)
     (call arg_w c 5 4 9)
     (call imm c 11 64)
-    (call check c w 9 11 faults)
+    (call check_trap c w 9 11 8)
     ;; O_PATH | O_CLOEXEC, and O_NOFOLLOW without SYMLINK_FOLLOW (1)
     (call imm c 20 2621440)
     (call arg_w c 5 1 9)
@@ -850,11 +881,11 @@
     (call arm64.cmp_ri c 32 13 1)
     (let bad_n:i32 (call arm64.b_cond c (call arm64.cc_ne)))
     (call imm c 11 48)
-    (call check c w 9 11 faults)
+    (call check_trap c w 9 11 1)
     (call imm c 11 32)
-    (call check c w 10 11 faults)
+    (call check_trap c w 10 11 1)
     (call imm c 11 4)
-    (call check c w 14 11 faults)
+    (call check_trap c w 14 11 1)
     (call arm64.add_rrr c 64 5 28 9)
     (call arm64.ldrb c 3 5 8)
     (let not_clock:i32 (call arm64.cbnz c 32 3))

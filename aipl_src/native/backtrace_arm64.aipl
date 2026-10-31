@@ -23,10 +23,12 @@
   ;; length]), the memory size cell (in pages), and the texts the output is made of.
   (struct Texts [(pub reasons:i32) (pub sp_cell:i32) (pub chain:i32) (pub positions:i32) (pub pages:i32)
                  (pub sep:i32) (pub nl:i32) (pub at:i32) (pub dots:i32) (pub more:i32)
-                 (pub open:i32) (pub colon:i32) (pub close:i32)] (pub))
+                 (pub open:i32) (pub colon:i32) (pub close:i32)
+                 (pub oob:i32) (pub oob_len:i32) (pub al4:i32) (pub al4_len:i32) (pub al8:i32) (pub al8_len:i32)
+                 (pub mid:i32) (pub mid_len:i32) (pub tail:i32) (pub tail_len:i32)] (pub))
 
   ;; Where the routines begin.
-  (struct Routines [(pub plain:i32) (pub trap:i32) (pub unreachable:i32) (pub handler:i32)] (pub))
+  (struct Routines [(pub plain:i32) (pub trap:i32) (pub unreachable:i32) (pub handler:i32) (pub region:i32)] (pub))
 
   (fn imm [c:(ptr buf.Buf) rd:i32 v:i32] -> void
     (call arm64.mov_imm c 64 rd (i64.extend_s v)))
@@ -245,6 +247,33 @@
     (call imm c 0 reason)
     (call arm64.b_to c (+ trap 4)))
 
+  ;; The region trap: a WASI function was given a bad pointer. Prints what wasmtime prints,
+  ;; `<argv[0]>: Pointer out of bounds: Region { start: S, len: L }` (or `Pointer not aligned to N: ...`),
+  ;; no call chain, and exits with 134. Reached by a jump with the start in x1, the length in x2, and in x0
+  ;; 0 (out of bounds) or the alignment (4 or 8).
+  (fn emit_region [c:(ptr buf.Buf) t:(ptr Texts)] -> void
+    (call arm64.mov_rr c 64 19 1)
+    (call arm64.mov_rr c 64 20 2)
+    (call arm64.mov_rr c 64 21 0)
+    (call write_argv0 c t)
+    (let not_oob:i32 (call arm64.cbnz c 32 21))
+    (call runtime_arm64.emit_write c 2 (get t Texts.oob) (get t Texts.oob_len))
+    (let j1:i32 (call arm64.b c))
+    (call arm64.patch_cond c not_oob (call buf.len c))
+    (call arm64.cmp_ri c 32 21 4)
+    (let not4:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+    (call runtime_arm64.emit_write c 2 (get t Texts.al4) (get t Texts.al4_len))
+    (let j2:i32 (call arm64.b c))
+    (call arm64.patch_cond c not4 (call buf.len c))
+    (call runtime_arm64.emit_write c 2 (get t Texts.al8) (get t Texts.al8_len))
+    (call arm64.patch_b c j1 (call buf.len c))
+    (call arm64.patch_b c j2 (call buf.len c))
+    (call write_decimal c 19)
+    (call runtime_arm64.emit_write c 2 (get t Texts.mid) (get t Texts.mid_len))
+    (call write_decimal c 20)
+    (call runtime_arm64.emit_write c 2 (get t Texts.tail) (get t Texts.tail_len))
+    (call runtime_arm64.emit_exit c 134))
+
   ;; Emits the routines.
   (fn emit_routines [c:(ptr buf.Buf) t:(ptr Texts) unreachable_reason:i32 fault_reason:i32 has_memory:bool] -> (ptr Routines) (pub)
     (let plain:i32 (call buf.len c))
@@ -255,5 +284,7 @@
     (call emit_unreachable c t trap message_at unreachable_reason has_memory)
     (let handler:i32 (call buf.len c))
     (call emit_fault_handler c trap fault_reason)
-    (new Routines (call alloc.forever) [plain:plain trap:trap unreachable:unreachable handler:handler]))
+    (let region:i32 (call buf.len c))
+    (call emit_region c t)
+    (new Routines (call alloc.forever) [plain:plain trap:trap unreachable:unreachable handler:handler region:region]))
 )

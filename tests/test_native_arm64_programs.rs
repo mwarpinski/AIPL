@@ -469,3 +469,37 @@ fn a_thread_running_out_of_stack_traps_and_one_that_fits_does_not() {
     assert!(rest.starts_with("wasm trap: call stack exhausted\n  at down\n  at down (prog.aipl:3:47)\n"), "{rest}");
     assert_eq!(out.status.code(), Some(134));
 }
+
+/// A pointer a WASI function is given must lie in memory: if it does not, the program traps with
+/// wasmtime's words and no call chain, exit status 134, as the x86-64 build does (the lengths are the
+/// regions' own); a read into a buffer outside memory reads first, so it traps with the bytes read as the
+/// length, and reads nothing without trapping.
+#[test]
+fn a_bad_pointer_to_a_wasi_function_traps_with_the_region() {
+    let cases: [(&str, &[u8], &str); 8] = [
+        ("(fs.write 1 -16 5)", b"", "Pointer out of bounds: Region { start: 4294967280, len: 5 }\n"),
+        ("(fs.write 1 100 2000000000)", b"", "Pointer out of bounds: Region { start: 100, len: 2000000000 }\n"),
+        ("(sys.random -16 8)", b"", "Pointer out of bounds: Region { start: 4294967280, len: 8 }\n"),
+        ("(sys.poll -16 -16 1 -16)", b"", "Pointer out of bounds: Region { start: 4294967280, len: 48 }\n"),
+        ("(fs.stat (str.ptr \".\") 1 -16)", b"", "Pointer out of bounds: Region { start: 4294967280, len: 64 }\n"),
+        ("(args.sizes (str.ptr \"01234567\") -16)", b"", "Pointer out of bounds: Region { start: 4294967280, len: 4 }\n"),
+        ("(fs.read 0 -16 5)", b"hello\n", "Pointer out of bounds: Region { start: 4294967280, len: 5 }\n"),
+        ("(env.sizes -16 -16)", b"", "Pointer out of bounds: Region { start: 4294967280, len: 4 }\n"),
+    ];
+    for (call, input, want) in cases {
+        let src = format!("(module prog\n  (fn main [] -> i32\n    (unsafe (let r:i32 {call}) (println \"result {{r}}\"))\n    0))\n");
+        let Some(out) = arm64::run(&build(&src), &[], input) else {
+            eprintln!("no AArch64 machine to run on: not run");
+            return;
+        };
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        let (_, rest) = err.split_once(": ").unwrap_or_else(|| panic!("{call}: argv[0] and the message in {err:?}, status {:?}, stdout {:?}", out.status.code(), String::from_utf8_lossy(&out.stdout)));
+        assert_eq!(rest, want, "{call}");
+        assert_eq!((String::from_utf8_lossy(&out.stdout).as_ref(), out.status.code()), ("", Some(134)), "{call}");
+    }
+    // nothing to read: no trap, 0 bytes
+    let src = "(module prog\n  (fn main [] -> i32\n    (unsafe (let r:i32 (fs.read 0 -16 5)) (println \"result {r}\"))\n    0))\n";
+    if let Some(out) = arm64::run(&build(src), &[], b"") {
+        assert_eq!((String::from_utf8_lossy(&out.stdout).as_ref(), out.status.code()), ("result 0\n", Some(0)));
+    }
+}
