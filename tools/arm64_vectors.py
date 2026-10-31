@@ -122,6 +122,7 @@ for sz, vals in ((64, (1, 255, 0xFFFF0000, 0xFFFFFFFE, 0x7FFFFFFFFFFFFFFF, 0x800
             G["alu_imm"].append(op(n, [lit(sz), I_, Q1, (f"{signed}i64", lambda i, v=v: v)],
                                    lambda v, m=m, sz=sz: f"{m} {X(sz,v[1],False)}, {X(sz,v[2])}, #{hex(v[3])}"))
 G["alu_imm"] += [
+    op("cmp_sp", [I_], lambda v: f"cmp sp, {X(64,v[0])}"),
     op("add_uxtw", [I_, B_, Q2], lambda v: f"add {X(64,v[0],False)}, {X(64,v[1],False)}, {X(32,v[2])}, uxtw"),
     op("add_uxtw", [lit(16), lit(28), lit(5)], lambda v: "add x16, x28, w5, uxtw", per="once"),
 ]

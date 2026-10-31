@@ -67,7 +67,7 @@
              (pub trap_routine:i32) (pub unreachable_routine:i32) (pub mem_max:i32)
              (read positions:(ptr (vec.Vec (ptr NPos))))
              (pub table_addr:i32) (pub table_size:i32) (read canon:(ptr (vec.Vec i32)))
-             (pub threaded:bool) (pub shared:bool) (pub results_off:i32)
+             (pub threaded:bool) (pub shared:bool) (pub results_off:i32) (pub stack_off:i32)
              (read seg_addrs:(ptr (vec.Vec i32))) (read seg_lens:(ptr (vec.Vec i32)))
              vn:i32 (read vkind:(arr i32)) (read vreg:(arr i32)) (read vval:(arr i64)) imask:i32 fmask:i32
              ltypes:(arr i32) lreg:(arr i32) nint:i32 nfp:i32 nsave:i32 lconst:(arr i32) lcval:(arr i64)
@@ -85,6 +85,7 @@
   (fn trap_null_element [] -> i32 (pub) 7)
   (fn trap_bad_signature [] -> i32 (pub) 8)
   (fn trap_out_of_bounds [] -> i32 (pub) 10)
+  (fn trap_stack_exhausted [] -> i32 (pub) 11)
 
   (fn results_size [] -> i32 (pub) 64)
 
@@ -120,6 +121,7 @@
                                                 threaded:false
                                                 shared:false
                                                 results_off:0
+                                                stack_off:0
                                                 seg_addrs:(call (vec.make i32) (call alloc.default) 4)
                                                 seg_lens:(call (vec.make i32) (call alloc.default) 4)
                                                 vn:0
@@ -842,6 +844,7 @@
     ;; in memory zeroed, the ones in registers zeroed there), and the parameters that live in registers
     (call arm64.stp_pre c 29 30 31 -16)
     (call arm64.mov_sp c 64 29 31)
+    (call emit_stack_check l (+ (get l L.nsave) (* 16 (get l L.ndecl))))
     (when (gt (get l L.nsave) 0)
           (call arm64.sub_ri c 64 31 31 (get l L.nsave))
           (call emit_saves l true))
@@ -892,6 +895,26 @@
         (set! next (+ next 1)))
       (put l L.at i)
       (call instr l nres ins)))
+
+  ;; The stack check: trap unless the frame about to be made ends above this thread's limit, which sits
+  ;; (native_arm64.stack_margin) above the stack's low end, leaving room below it for the operand stack, the
+  ;; routines for imports, and the trap's own. The thread pointer's block holds the limit at L.stack_off (0 until
+  ;; the start-up code has made the stack: no check then). A frame under 4 KiB is covered by the margin.
+  (fn emit_stack_check [l:(ptr L) frame:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (call arm64.mrs_tpidr c 16)
+    (call arm64.ldr_x c 16 16 (get l L.stack_off))
+    (if (lt frame 4096)
+        (call arm64.cmp_sp c 16)
+        (block
+          (call arm64.mov_imm c 64 9 (i64.extend_s frame))
+          (call arm64.mov_sp c 64 17 31)
+          (call arm64.sub_rrr c 64 17 17 9)
+          (call arm64.cmp_rr c 64 17 16)))
+    (let ok:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call arm64.mov_imm c 32 0 (i64.extend_s (call trap_stack_exhausted)))
+    (call emit_trap l)
+    (call arm64.patch_cond c ok (call buf.len c)))
 
   ;; ===== Guards =====
   ;; An `if` with no else whose body can never fall through (a bounds or contract check: the body calls the

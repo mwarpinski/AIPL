@@ -533,6 +533,10 @@
   ;; low end, which faults: 64 KiB, a multiple of any page size, holding nothing. The thread's block
   ;; (its globals, then its results area) follows it.
   (fn thread_stack [] -> i32 8388608)
+  ;; The stack limit sits this far above a stack's guard region: room for the deepest frame's operand stack,
+  ;; the routines for imports (fd_read and fd_write take 64 KiB), and the trap routines, so running out of
+  ;; stack traps with "call stack exhausted" instead of faulting.
+  (fn stack_margin [] -> i32 262144)
   (fn guard [] -> i32 65536)
 
   ;; The thread-id counter's cell in the data: 8 bytes, starting at 1.
@@ -548,6 +552,36 @@
       (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) imports i))
       (when (call str.bytes_eq (get imp wasm_reader.Import.name) (call str.from_str "thread-spawn")) (return true)))
     false)
+
+  ;; The main thread moves to a stack of its own, the size of a spawned thread's, so the depth at which a
+  ;; program runs out of stack is the same on every machine (the initial stack's size is the user's ulimit);
+  ;; its limit goes in `limit_cell`. If the stack cannot be mapped the limit stays 0 (no check) and the
+  ;; program runs on the stack it was given. Uses x0-x15.
+  (fn emit_main_stack [c:(ptr buf.Buf) limit_cell:i32] -> void
+    ;; mmap(0, size, RW, PRIVATE|ANONYMOUS|NORESERVE|STACK, -1, 0)
+    (call arm64.mov_imm c 64 0 0i64)
+    (call arm64.mov_imm c 64 1 (i64.extend_s (call thread_stack)))
+    (call arm64.mov_imm c 64 2 3i64)
+    (call arm64.mov_imm c 64 3 147490i64)
+    (call arm64.mov_imm c 64 4 -1i64)
+    (call arm64.mov_imm c 64 5 0i64)
+    (call runtime_arm64.emit_syscall c 222)
+    (call arm64.mov_imm c 64 9 -4096i64)
+    (call arm64.cmp_rr c 64 0 9)
+    (let no_stack:i32 (call arm64.b_cond c (call arm64.cc_hi)))
+    (call arm64.mov_rr c 64 14 0)
+    ;; the guard region at its low end: mprotect(base, guard, PROT_NONE)
+    (call arm64.mov_imm c 64 1 (i64.extend_s (call guard)))
+    (call arm64.mov_imm c 64 2 0i64)
+    (call runtime_arm64.emit_syscall c 226)
+    (call arm64.mov_imm c 64 9 (i64.extend_s (+ (call guard) (call stack_margin))))
+    (call arm64.add_rrr c 64 9 14 9)
+    (call arm64.mov_imm c 64 10 (i64.extend_s limit_cell))
+    (call arm64.str_x c 9 10 0)
+    (call arm64.mov_imm c 64 9 (i64.extend_s (call thread_stack)))
+    (call arm64.add_rrr c 64 9 14 9)
+    (call arm64.mov_sp c 64 31 9)
+    (call arm64.patch_cond c no_stack (call buf.len c)))
 
   ;; thread-spawn(start_arg) -> tid (positive), or -1 if no thread could be made. The new thread's stack top
   ;; holds [tid][start_arg], wasi_thread_start's arguments, in memory because the routines it calls use
@@ -590,6 +624,11 @@
       (call arm64.mov_imm c 64 0 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
       (call arm64.mov_imm c 64 10 (i64.extend_s (* 8 i)))
       (call arm64.str_x_reg c 0 15 10))
+    ;; its stack limit, in the block
+    (call arm64.mov_imm c 64 9 (i64.extend_s (+ (call guard) (call stack_margin))))
+    (call arm64.add_rrr c 64 9 14 9)
+    (call arm64.mov_imm c 64 10 (i64.extend_s (get l lower_arm64.L.stack_off)))
+    (call arm64.str_x_reg c 9 15 10)
     ;; [tid][start_arg] at the top, the stack pointer on them
     (call arm64.mov_imm c 64 9 (i64.extend_s (call thread_stack)))
     (call arm64.add_rrr c 64 10 14 9)
@@ -699,8 +738,13 @@
     (put l lower_arm64.L.threaded threaded)
     (when threaded
           (put l lower_arm64.L.results_off (call buf.len gb))
-          (for k 0 (call lower_arm64.results_size) (call buf.push_byte gb 0)))
+          (for k 0 (call lower_arm64.results_size) (call buf.push_byte gb 0))
+          ;; the stack limit, after the results
+          (put l lower_arm64.L.stack_off (call buf.len gb))
+          (for k 0 8 (call buf.push_byte gb 0)))
     (put l lower_arm64.L.globals (call lower_arm64.data_bytes l (call buf.bytes gb)))
+    ;; the thread pointer's block: a threaded module's (globals, results, limit), else just the limit
+    (let block:i32 (if threaded (get l lower_arm64.L.globals) (call lower_arm64.data_zeros l 8)))
     ;; the table: 16-byte entries [code address:u64][type id:i32][pad], an empty
     ;; one's type id -1 (filled in once the functions' addresses are known)
     (let tables:(ptr (vec.Vec (ptr wasm_reader.Table))) (get w wasm_reader.Wasm.tables))
@@ -729,6 +773,7 @@
     (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: indirect call type mismatch"))
     (call (vec.push str.Bytes) reasons (call str.from_str "exit with invalid exit status outside of [0..126)"))
     (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: out of bounds memory access"))
+    (call (vec.push str.Bytes) reasons (call str.from_str "wasm trap: call stack exhausted"))
     (let tb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (for i 0 (call (vec.len str.Bytes) reasons)
       (let t:str.Bytes (call (vec.at str.Bytes) reasons i))
@@ -788,9 +833,9 @@
     (call arm64.mov_sp c 64 0 31)
     (call arm64.mov_imm c 64 16 (i64.extend_s sp_cell))
     (call arm64.str_x c 0 16 0)
-    (when threaded
-          (call arm64.mov_imm c 64 0 (i64.extend_s (get l lower_arm64.L.globals)))
-          (call arm64.msr_tpidr c 0))
+    (call arm64.mov_imm c 64 0 (i64.extend_s block))
+    (call arm64.msr_tpidr c 0)
+    (call emit_main_stack c (+ block (get l lower_arm64.L.stack_off)))
     (when (neq lim (ptr.null wasm_reader.Limits))
           (call emit_reserve_memory c)
           (call emit_commit_memory c (get lim wasm_reader.Limits.min))

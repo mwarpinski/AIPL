@@ -424,3 +424,48 @@ fn constant_operands_give_what_the_x86_64_build_gives() {
     assert_eq!(got.status.code(), Some(0));
     assert!(got.stdout.len() > 2000, "the program printed little: {}", got.stdout.len());
 }
+
+/// Running out of stack is a trap, not a crash: the call chain's text as the x86-64 build prints it, the
+/// number of frames elided aside (a frame's size differs between the machines). A recursion that fits
+/// runs, on the main thread and on a spawned one.
+#[test]
+fn running_out_of_stack_is_a_trap() {
+    let src = "(module prog\n  (fn down [n:i32] -> i32 (if (eq n 0) 0 (+ 1 (call down (- n 1)))))\n  \
+               (fn main [] -> i32 (println \"{(call down 20000)}\") (println \"{(call down 100000000)}\") 0))\n";
+    let exe = build(src);
+    let Some(out) = arm64::run(&exe, &[], b"") else {
+        eprintln!("no AArch64 machine to run on: not run");
+        return;
+    };
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "20000\n");
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    let (_, rest) = err.split_once(": ").expect("argv[0] and the reason");
+    let lines: Vec<&str> = rest.lines().collect();
+    assert_eq!(lines[0], "wasm trap: call stack exhausted");
+    assert_eq!(lines[1], "  at down");
+    assert!(lines[2..33].iter().all(|l| *l == "  at down (prog.aipl:2:47)"), "{rest}");
+    assert!(lines[33].starts_with("  ... ") && lines[33].ends_with(" more"), "{rest}");
+    assert_eq!(lines.len(), 34);
+    assert_eq!(out.status.code(), Some(134));
+}
+
+#[test]
+fn a_thread_running_out_of_stack_traps_and_one_that_fits_does_not() {
+    let program = |n: &str| {
+        format!(
+            "(module prog\n  (import io)\n  (fn down [n:i32] -> i32 (if (eq n 0) 0 (+ 1 (call down (- n 1)))))\n  \
+             (fn work [n:i32] -> i32 (unsafe) (call down n))\n  \
+             (fn main [] -> i32 (unsafe)\n    (let a:i32 (thread.spawn (ref work) {n}))\n    (println \"joined {{(thread.join a)}}\")\n    0))\n"
+        )
+    };
+    let Some(out) = arm64::run(&build(&program("20000")), &[], b"") else {
+        eprintln!("no AArch64 machine to run on: not run");
+        return;
+    };
+    assert_eq!((String::from_utf8_lossy(&out.stdout).as_ref(), out.status.code()), ("joined 20000\n", Some(0)));
+    let out = arm64::run(&build(&program("100000000")), &[], b"").unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    let (_, rest) = err.split_once(": ").expect("argv[0] and the reason");
+    assert!(rest.starts_with("wasm trap: call stack exhausted\n  at down\n  at down (prog.aipl:3:47)\n"), "{rest}");
+    assert_eq!(out.status.code(), Some(134));
+}
