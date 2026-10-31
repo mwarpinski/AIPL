@@ -333,3 +333,25 @@ fn the_parallel_spectral_norm_matches_the_sequential_one() {
         assert_eq!(out.status.code(), Some(0), "{threads} threads");
     }
 }
+
+/// The benchmarks (benchmarks/, all but knucleotide, which reads standard input) print their expected output
+/// from AArch64 executables, with the arguments of `test_args`: they exercise the optimizer's float and integer
+/// registers, spills, and flushes (docs/design/ARM64_OPT_PLAN.md).
+#[test]
+fn the_benchmarks_print_their_expected_output() {
+    let bench = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    for name in ["binarytrees", "fannkuch", "mandelbrot", "nbody", "pidigits", "spectralnorm", "spigot"] {
+        let dir = bench.join(name);
+        let src = std::fs::read_to_string(dir.join(format!("{name}.aipl"))).unwrap();
+        let args = std::fs::read_to_string(dir.join("test_args")).unwrap();
+        let args: Vec<&str> = args.split_whitespace().collect();
+        let want = std::fs::read(dir.join("expected.txt")).unwrap();
+        let exe = build(&src);
+        let Some(out) = arm64::run(&exe, &args, b"") else {
+            eprintln!("no AArch64 machine to run on: not run");
+            return;
+        };
+        assert!(out.stdout == want, "{name}: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(out.status.code(), Some(0), "{name}");
+    }
+}
