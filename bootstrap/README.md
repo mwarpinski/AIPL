@@ -79,9 +79,9 @@ baseline one, every value in a stack slot (docs/design/ARM64_PLAN.md). The proce
 and threads (lower_arm64.aipl, native_arm64.aipl) are built for AArch64, so the `aipl` the script makes does what the x86-64 one does: `compile`,
 `verify`, `run`, `test`, `watch`, `eval`, `serve`, and `doc`, and the programs it builds may use threads. The
 commands that build a program and start it use the machine's own backend
-(native/hostnative.aipl). The seed itself is from before the process operations, so it cannot start a program (its
-stage 1 cannot, and stage 2 can): `build.sh`'s result is the compiler that can, and it is the
-bytes `tools/arm64_bootstrap.sh` finds the Rust-built compiler to be.
+(native/hostnative.aipl). The seed is built from the source it builds, so it is its own stage 2 (a fixed
+point): `build.sh`'s result is the seed's bytes, and the bytes `tools/arm64_bootstrap.sh` finds the Rust-built
+compiler to be.
 
 ## Why the Rust compiler stays
 
@@ -153,20 +153,21 @@ used `ptr.make`.
 
 ## Where the AArch64 seed came from
 
-Built 2026-10-30 by the Rust toolchain, from the source of commit ac88301, with
-`--allow-run '*'`:
+Built 2026-10-30 by the Rust toolchain, from the source of commit 207b1d7, with
+`--allow-run '*'`, so that it is the whole command (the process operations, sockets, `--sandbox`, and
+threads are all built for AArch64 by then):
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe --target arm64 --allow-run '*' aipl_src/aipl.aipl -o bootstrap/aipl-linux-aarch64
 ```
 
-AArch64 seed sha256 `8554dc536675403a6ee236d7a882179e32e90786526938af5bd2df1e0863ab76`.
+AArch64 seed sha256 `edc5ed45cdf04b35f884ae0992dad906c254c902bf9360b804bf9537c3f5fcbc`.
 The self-hosted x86-64 command builds the same bytes, and so does the seed itself on AArch64 Linux
-(at that commit stage 2 was the seed; the process operations since make later stages differ from
-it, as they should: `tools/arm64_bootstrap.sh` checks that the seed's chain builds the Rust-built
-compiler); `tests/test_bootstrap.rs` runs
-the seed's stages on AArch64 Linux as it does on x86-64.
+(stage 2 is the seed), which `tools/arm64_bootstrap.sh` checks; `tests/test_bootstrap.rs` runs the
+seed's stages on AArch64 Linux as it does on x86-64. The first AArch64 seed was built the same way
+from ac88301 (sha256 `8554dc536675403a6ee236d7a882179e32e90786526938af5bd2df1e0863ab76`); it
+predates the process operations, sockets, and threads, which is why it was refreshed.
 
 ## Replacing the seed
 

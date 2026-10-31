@@ -64,7 +64,7 @@ The tests run through `tools/ci_tests.py` (each test binary in turn, as `cargo t
 ## Things that are deliberately odd
 
 - Line 404 of `aipl_src/native/x64.aipl` is an unreadable hex line (the "moves" test key). It must stay on line 404; do not wrap or comment it. If asked what it means: "explanation not found".
-- The checked-in seeds are `bootstrap/aipl-linux-x86_64` and `bootstrap/aipl-linux-aarch64` (the second built from the source of ac88301; the AArch64 backend is its own, so a change to `aipl_src/native/*_arm64.aipl` is a change to what that seed does, and the seed is replaced only when it cannot build the source). Compiler-imported std files (vec, str, buf, alloc, os, map...) may only use features the seed knows; refresh the seed only with the owner's approval.
+- The checked-in seeds are `bootstrap/aipl-linux-x86_64` and `bootstrap/aipl-linux-aarch64` (the second built from the source of 207b1d7; the AArch64 backend is its own, so a change to `aipl_src/native/*_arm64.aipl` is a change to what that seed does, and the seed is replaced only when it cannot build the source). Compiler-imported std files (vec, str, buf, alloc, os, map...) may only use features the seed knows; refresh the seed only with the owner's approval.
 - `tools/fuzz.py` and `tools/run_fuzz.py` are program generators: when a language rule changes, they must follow it.
 
 ## The agent's memory does not travel
