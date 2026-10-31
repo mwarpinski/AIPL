@@ -554,6 +554,10 @@
     (req (and (gte imm16 0) (lte imm16 65535)))
     (call emit c imm16))
   (fn nop [c:(ptr buf.Buf)] -> void (pub) (call emit c (call w 54531 8223)))
+  ;; mrs xd, tpidr_el0 and msr tpidr_el0, xt: the thread pointer (each thread's own, set by clone's SETTLS)
+  (fn mrs_tpidr [c:(ptr buf.Buf) rd:i32] -> void (pub) (call emit c (bitor (call w 54587 53312) (call r rd))))
+  (fn msr_tpidr [c:(ptr buf.Buf) rt:i32] -> void (pub) (call emit c (bitor (call w 54555 53312) (call r rt))))
+
   ;; dmb ish (a full barrier among the cores), isb
   (fn dmb_ish [c:(ptr buf.Buf)] -> void (pub) (call emit c (call w 54531 15295)))
   (fn isb [c:(ptr buf.Buf)] -> void (pub) (call emit c (call w 54531 16351)))
@@ -1062,7 +1066,11 @@
     (call nop c)
     (call dmb_ish c)
     (call isb c)
-    (call check "system" c "d4000001d41fffe1d4200000d4207d000000000000000201d503201fd5033bbfd5033fdf"))
+    (call mrs_tpidr c 0)
+    (call mrs_tpidr c 17)
+    (call msr_tpidr c 1)
+    (call msr_tpidr c 30)
+    (call check "system" c "d4000001d41fffe1d4200000d4207d000000000000000201d503201fd5033bbfd5033fdfd53bd040d53bd051d51bd041d51bd05e"))
 
   (fn run_arm64_tests [] -> i32 (pub)
     (+ (call test_moves) (+ (call test_alu_reg) (+ (call test_muldiv) (+ (call test_alu_imm) (+ (call test_shift_ext) (+ (call test_conditional) (+ (call test_memory) (+ (call test_float) (+ (call test_atomic) (+ (call test_branches) (call test_system))))))))))))

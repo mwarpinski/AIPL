@@ -1,0 +1,93 @@
+;; Threads from a native executable (test_native_arm64_programs.rs; the same workers as tests/test_threads.rs
+;; runs under a wasi-threads host): four threads sharing an atomic counter, join returning each worker's
+;; result, a lock protecting a plain read-modify-write (futex wait and wake under contention), concurrent
+;; allocation (every block keeps what its thread wrote), and two threads printing at once.
+
+(module threads_main (import alloc)
+  (import io)
+  (struct Job [counter:i32 lock:i32 plain:i32])
+
+  ;; 1000 atomic increments of the shared counter
+  (fn add_worker [counter:i32] -> i32 (unsafe)
+    (for i 1 1001
+      (let _old:i32 (atomic.add counter 1)))
+    0)
+
+  (fn atomic_counter [] -> i32 (unsafe)
+    (let c:i32 (mem.alloc 4))
+    (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))
+    (for t 0 4
+      (arr.set i32 hs t (thread.spawn (ref add_worker) c)))
+    (for t 0 4
+      (let _r:i32 (thread.join (arr.get i32 hs t))))
+    (mem.load32 c))
+
+  ;; join returns each worker's result
+  (fn square [x:i32] -> i32 (unsafe) (* x x))
+  (fn join_results [] -> i32 (unsafe)
+    (let a:i32 (thread.spawn (ref square) 3))
+    (let b:i32 (thread.spawn (ref square) 4))
+    (+ (thread.join a) (thread.join b)))
+
+  ;; a lock protects a non-atomic read-modify-write
+  (fn locked_worker [job_addr:i32] -> i32 (unsafe)
+    (let job:(ptr Job) (ptr.cast Job job_addr))
+    (let lock:i32 (+ job_addr 4))
+    (for i 1 1001
+      (atomic.lock lock)
+      (put job Job.plain (+ (get job Job.plain) 1))
+      (atomic.unlock lock))
+    0)
+  (fn mutex_counter [] -> i32 (unsafe)
+    (let job:(ptr Job) (new Job (call alloc.forever) [counter:(zero i32) lock:(zero i32) plain:(zero i32)]))
+    (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))
+    (for t 0 4
+      (arr.set i32 hs t (thread.spawn (ref locked_worker) (ptr.addr job))))
+    (for t 0 4
+      (let _r:i32 (thread.join (arr.get i32 hs t))))
+    (get job Job.plain))
+
+  ;; concurrent allocation: every block keeps the value its thread wrote
+  (fn alloc_worker [tag:i32] -> i32 (unsafe)
+    (let blocks:(arr i32) (arr.new i32 (call alloc.forever) 500))
+    (for i 0 500
+      (let p:i32 (mem.alloc 8))
+      (mem.store32 p tag)
+      (mem.store32 (+ p 4) i)
+      (arr.set i32 blocks i p))
+    (let ok:i32 1)
+    (for i 0 500
+      (let p:i32 (arr.get i32 blocks i))
+      (when (not (and (eq (mem.load32 p) tag) (eq (mem.load32 (+ p 4)) i))) (set! ok 0)))
+    ok)
+  (fn concurrent_alloc [] -> i32 (unsafe)
+    (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))
+    (for t 0 4
+      (arr.set i32 hs t (thread.spawn (ref alloc_worker) (+ t 100))))
+    (let good:i32 0)
+    (for t 0 4
+      (set! good (+ good (thread.join (arr.get i32 hs t)))))
+    good)
+
+  ;; printing from several threads: each thread's text arrives intact
+  (fn print_worker [n:i32] -> i32 (unsafe)
+    (for i 1 51
+      (if (eq n 1) (sys.print "one one one one one one") (sys.print "two two two two two two")))
+    0)
+  (fn concurrent_print [] -> i32 (unsafe)
+    ;; leave the heap cursor unaligned: each thread's scratch block must still
+    ;; be aligned for WASI's out-parameters
+    (let _odd:i32 (mem.alloc 5))
+    (let a:i32 (thread.spawn (ref print_worker) 1))
+    (let b:i32 (thread.spawn (ref print_worker) 2))
+    (+ (thread.join a) (thread.join b)))
+  (fn show [label:str n:i32] -> void
+    (println "{label} {n}"))
+
+  (fn main [] -> i32 (unsafe)
+    (call show "atomic_counter" (call atomic_counter))
+    (call show "join_results" (call join_results))
+    (call show "mutex_counter" (call mutex_counter))
+    (call show "concurrent_alloc" (call concurrent_alloc))
+    (call show "concurrent_print" (call concurrent_print))
+    0))

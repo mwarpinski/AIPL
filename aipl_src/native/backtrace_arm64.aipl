@@ -40,7 +40,7 @@
 
   ;; The unsigned value in x(reg) to standard error in decimal, from a buffer on the stack
   ;; (clobbers x0-x8)
-  (fn write_decimal [c:(ptr buf.Buf) reg:i32] -> void
+  (fn write_decimal [c:(ptr buf.Buf) reg:i32] -> void (pub)
     (call arm64.sub_ri c 64 31 31 32)
     (call arm64.mov_rr c 64 3 reg)
     (call arm64.add_ri c 64 4 31 32)
@@ -60,7 +60,7 @@
 
   ;; `<argv[0]>: ` to standard error, or nothing if there is no argv[0]: the initial stack is
   ;; argc, argv[0], ... (clobbers x0-x2, x8-x13)
-  (fn write_argv0 [c:(ptr buf.Buf) t:(ptr Texts)] -> void
+  (fn write_argv0 [c:(ptr buf.Buf) t:(ptr Texts)] -> void (pub)
     (call imm c 9 (get t Texts.sp_cell))
     (call arm64.ldr_x c 9 9 0)
     (call arm64.ldr_x c 10 9 0)

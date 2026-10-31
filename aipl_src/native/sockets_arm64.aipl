@@ -1,0 +1,308 @@
+;; sockets_arm64: AIPL's own sockets, the `aipl_net_v1` imports (docs/design/NET_PLAN.md
+;; section 3), as AArch64 routines over Linux system calls (native ARM64 backend,
+;; docs/design/ARM64_PLAN.md): sockets.aipl's counterpart for x86-64, and behaving as it
+;; does (and as src/net.rs does, which the VM and aipl-run use; sockets.aipl's header states each
+;; operation's results). Called as wasi_arm64.aipl's routines are: the arguments on the value
+;; stack, the result in x0, sp saved in x27 and the return address in x26 (wasi_arm64.prologue);
+;; a routine keeps its parameters in x19-x25.
+;;
+;; AArch64's system calls: socket 198, setsockopt 208, bind 200, listen 201, accept4 242,
+;; sendto 206, shutdown 210; read and close as ever (63, 57). sockaddr_in and sockaddr_in6 are laid
+;; out as on x86-64.
+(module sockets_arm64
+  (import alloc)
+  (import str)
+  (import buf)
+  (import vec)
+  (import ip)
+  (import option)
+  (import arm64)
+  (import runtime_arm64)
+  (import lower_arm64)
+  (import wasi_arm64)
+
+  ;; An address and port an executable may listen on: `len` (4 or 16) bytes of `addr`.
+  (struct Grant [(pub len:i32) (pub port:i32) (pub addr:(arr u8))] (value) (pub))
+
+  ;; Data addresses the routines use: the grants, and a byte per Linux descriptor below `slots`,
+  ;; 1 while it is a socket opened here.
+  (struct N [grants:i32 table:i32] (pub))
+
+  (fn slots [] -> i32 1024)
+
+  (fn push_u32 [b:(ptr buf.Buf) v:i32] -> void
+    (call buf.push_byte b (bitand v 255))
+    (call buf.push_byte b (bitand (shru v 8) 255))
+    (call buf.push_byte b (bitand (shru v 16) 255))
+    (call buf.push_byte b (bitand (shru v 24) 255)))
+
+  ;; The grants in `text`, one ADDR:PORT a line (`flag`: `--listen` or `--serve`; std/ip's
+  ;; parse_endpoint); null, with the message in `problem`, for a line that is not one.
+  (fn parse_grants [flag:str text:str.Bytes problem:(ptr buf.Buf)] -> (ptr (vec.Vec Grant)) (pub)
+    (let out:(ptr (vec.Vec Grant)) (call (vec.make Grant) (call alloc.default) 4))
+    (let start:i32 0)
+    (let n:i32 (get text str.Bytes.len))
+    (for i 0 (+ n 1)
+      (when (or (eq i n) (eq (call str.byte_at text i) 10))
+        (let line:str.Bytes (call str.slice text start (- i start)))
+        (set! start (+ i 1))
+        (when (gt (get line str.Bytes.len) 0)
+          (match (call ip.parse_endpoint line)
+            ((option.Option ip.Endpoint) some [e]
+             (let a:ip.Addr (get e ip.Endpoint.addr))
+             (let bytes:(arr u8) (arr.new u8 (call alloc.forever) 16))
+             (for k 0 (call ip.len a) (arr.set u8 bytes k (call ip.byte_at a k)))
+             (call (vec.push Grant) out (make Grant [len:(call ip.len a)
+                                                     port:(get e ip.Endpoint.port)
+                                                     addr:bytes])))
+            ((option.Option ip.Endpoint) none
+             (call buf.push_str problem flag)
+             (call buf.push_byte problem 32)
+             (call buf.push_bytes problem line)
+             (call buf.push_str problem ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
+             (return (ptr.null (vec.Vec Grant))))))))
+    out)
+
+  ;; The grants as data, [count:u32] then [len:u32 port:u32 addr:16 bytes] each, and the socket table.
+  (fn make [l:(ptr lower_arm64.L) grants:(ptr (vec.Vec Grant))] -> (ptr N) (pub)
+    (let n:(ptr N) (new N (call alloc.forever) [grants:(zero i32) table:(zero i32)]))
+    (let g:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let count:i32 (call (vec.len Grant) grants))
+    (call push_u32 g count)
+    (for k 0 count
+      (let gr:Grant (call (vec.at Grant) grants k))
+      (call push_u32 g (get gr Grant.len))
+      (call push_u32 g (get gr Grant.port))
+      (for i 0 16
+        (call buf.push_byte g (if (lt i (get gr Grant.len)) (arr.get u8 (get gr Grant.addr) i) 0))))
+    (put n N.grants (call lower_arm64.data_bytes l (call buf.bytes g)))
+    (let t:(ptr buf.Buf) (call buf.make (call alloc.default) (call slots)))
+    (for i 0 (call slots) (call buf.push_byte t 0))
+    (put n N.table (call lower_arm64.data_bytes l (call buf.bytes t)))
+    n)
+
+  (fn imm [c:(ptr buf.Buf) rd:i32 v:i32] -> void
+    (call wasi_arm64.imm c rd v))
+
+  (fn new_list [] -> (ptr (vec.Vec i32))
+    (call wasi_arm64.new_list))
+
+  (fn patch_all [c:(ptr buf.Buf) at:(ptr (vec.Vec i32))] -> void
+    (call wasi_arm64.patch_all c at))
+
+  ;; Jumps to `fail` unless the descriptor in x(h) is a socket opened here (clobbers x9 and x10).
+  (fn emit_is_socket [c:(ptr buf.Buf) n:(ptr N) h:i32 fail:(ptr (vec.Vec i32))] -> void
+    (call arm64.cmp_ri c 32 h (call slots))
+    (call (vec.push i32) fail (call arm64.b_cond c (call arm64.cc_hs)))
+    (call imm c 9 (get n N.table))
+    (call arm64.ldrb_uxtw c 10 9 h)
+    (call (vec.push i32) fail (call arm64.cbz c 32 10)))
+
+  ;; Marks the descriptor in x(h) a socket, or, past the table, closes it and jumps to `fail`
+  ;; (clobbers x0, x9, x10).
+  (fn emit_mark [c:(ptr buf.Buf) n:(ptr N) h:i32 fail:(ptr (vec.Vec i32))] -> void
+    (call arm64.cmp_ri c 32 h (call slots))
+    (let fits:i32 (call arm64.b_cond c (call arm64.cc_lo)))
+    (call arm64.mov_rr c 64 0 h)
+    (call runtime_arm64.emit_syscall c 57)
+    (call (vec.push i32) fail (call arm64.b c))
+    (call arm64.patch_cond c fits (call buf.len c))
+    (call imm c 9 (get n N.table))
+    (call imm c 10 1)
+    (call arm64.strb_uxtw c 10 9 h))
+
+  ;; listen(addr, len, port) -> handle, -1, or -2 (not granted).
+  (fn emit_listen [c:(ptr buf.Buf) w:(ptr wasi_arm64.W) n:(ptr N)] -> void
+    (let fail:(ptr (vec.Vec i32)) (call new_list))
+    (let fail_pop:(ptr (vec.Vec i32)) (call new_list))
+    (let close_fail:(ptr (vec.Vec i32)) (call new_list))
+    (call wasi_arm64.prologue c)
+    (call wasi_arm64.arg_w c 3 0 19)
+    (call wasi_arm64.arg_w c 3 1 20)
+    (call wasi_arm64.arg_w c 3 2 21)
+    ;; 4 or 16 bytes, in memory; a port of 16 bits
+    (call arm64.cmp_ri c 32 20 4)
+    (let len_ok:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+    (call arm64.cmp_ri c 32 20 16)
+    (call (vec.push i32) fail (call arm64.b_cond c (call arm64.cc_ne)))
+    (call arm64.patch_cond c len_ok (call buf.len c))
+    (call wasi_arm64.check c w 19 20 fail)
+    (call imm c 10 65535)
+    (call arm64.cmp_rr c 32 21 10)
+    (call (vec.push i32) fail (call arm64.b_cond c (call arm64.cc_hi)))
+    ;; x1 = the address bytes (host); look for a grant naming them
+    (call arm64.add_rrr c 64 1 28 19)
+    (call imm c 3 (get n N.grants))
+    (call arm64.ldr_w c 2 3 0)
+    (call arm64.add_ri c 64 3 3 4)
+    (let next:i32 (call buf.len c))
+    (let none:i32 (call arm64.cbz c 32 2))
+    (let skip:(ptr (vec.Vec i32)) (call new_list))
+    (call arm64.ldr_w c 4 3 0)
+    (call arm64.cmp_rr c 32 4 20)
+    (call (vec.push i32) skip (call arm64.b_cond c (call arm64.cc_ne)))
+    (call arm64.ldr_w c 5 3 4)
+    (call arm64.cmp_rr c 32 5 21)
+    (call (vec.push i32) skip (call arm64.b_cond c (call arm64.cc_ne)))
+    (call imm c 9 0)
+    (let byte:i32 (call buf.len c))
+    (call arm64.cmp_rr c 32 9 20)
+    (let granted:i32 (call arm64.b_cond c (call arm64.cc_hs)))
+    (call arm64.ldrb_uxtw c 5 1 9)
+    (call arm64.add_ri c 64 6 3 8)
+    (call arm64.ldrb_uxtw c 7 6 9)
+    (call arm64.cmp_rr c 32 5 7)
+    (call (vec.push i32) skip (call arm64.b_cond c (call arm64.cc_ne)))
+    (call arm64.add_ri c 32 9 9 1)
+    (call arm64.b_to c byte)
+    (call patch_all c skip)
+    (call arm64.add_ri c 64 3 3 24)
+    (call arm64.sub_ri c 32 2 2 1)
+    (call arm64.b_to c next)
+    (call arm64.patch_cond c none (call buf.len c))
+    (call wasi_arm64.ret_errno c -2)
+    (call arm64.patch_cond c granted (call buf.len c))
+    ;; the socket address on the stack, zeroed: sockaddr_in (16 bytes) or sockaddr_in6 (28), the port
+    ;; in network order; 1 at sp+32 for setsockopt. x23 = family, x24 = the address's size.
+    (call arm64.sub_ri c 64 31 31 48)
+    (for k 0 6 (call arm64.str_x c 31 31 (* 8 k)))
+    (call arm64.lsr_ri c 32 11 21 8)
+    (call arm64.lsl_ri c 32 12 21 8)
+    (call arm64.orr_rrr c 32 11 11 12)
+    (call arm64.strh c 11 31 2)
+    (call arm64.cmp_ri c 32 20 4)
+    (let v6:i32 (call arm64.b_cond c (call arm64.cc_ne)))
+    (call imm c 23 2)
+    (call imm c 24 16)
+    (call arm64.ldr_w c 9 1 0)
+    (call arm64.str_w c 9 31 4)
+    (let built:i32 (call arm64.b c))
+    (call arm64.patch_cond c v6 (call buf.len c))
+    (call imm c 23 10)
+    (call imm c 24 28)
+    (call arm64.ldr_x c 9 1 0)
+    (call arm64.str_x c 9 31 8)
+    (call arm64.ldr_x c 9 1 8)
+    (call arm64.str_x c 9 31 16)
+    (call arm64.patch_b c built (call buf.len c))
+    (call arm64.strh c 23 31 0)
+    (call imm c 9 1)
+    (call arm64.str_w c 9 31 32)
+    ;; socket(family, SOCK_STREAM | SOCK_CLOEXEC, 0)
+    (call arm64.mov_rr c 64 0 23)
+    (call imm c 1 524289)
+    (call imm c 2 0)
+    (call runtime_arm64.emit_syscall c 198)
+    (call arm64.cmp_ri c 64 0 0)
+    (call (vec.push i32) fail_pop (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_rr c 64 22 0)
+    ;; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &1, 4), as Rust's bind does
+    (call arm64.mov_rr c 64 0 22)
+    (call imm c 1 1)
+    (call imm c 2 2)
+    (call arm64.add_ri c 64 3 31 32)
+    (call imm c 4 4)
+    (call runtime_arm64.emit_syscall c 208)
+    (call arm64.cmp_ri c 64 0 0)
+    (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt)))
+    ;; bind(fd, address, size); listen(fd, 128)
+    (call arm64.mov_rr c 64 0 22)
+    (call arm64.mov_sp c 64 1 31)
+    (call arm64.mov_rr c 64 2 24)
+    (call runtime_arm64.emit_syscall c 200)
+    (call arm64.cmp_ri c 64 0 0)
+    (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_rr c 64 0 22)
+    (call imm c 1 128)
+    (call runtime_arm64.emit_syscall c 201)
+    (call arm64.cmp_ri c 64 0 0)
+    (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt)))
+    (call emit_mark c n 22 fail_pop)
+    (call arm64.mov_rr c 64 0 22)
+    (call wasi_arm64.ret_x0 c)
+    (call patch_all c close_fail)
+    (call arm64.mov_rr c 64 0 22)
+    (call runtime_arm64.emit_syscall c 57)
+    (call patch_all c fail_pop)
+    (call patch_all c fail)
+    (call wasi_arm64.ret_errno c -1))
+
+  ;; accept(h) -> handle, or -1. Retried when a signal interrupts it, as Rust's accept is.
+  (fn emit_accept [c:(ptr buf.Buf) n:(ptr N)] -> void
+    (let fail:(ptr (vec.Vec i32)) (call new_list))
+    (call wasi_arm64.prologue c)
+    (call wasi_arm64.arg_w c 1 0 19)
+    (call emit_is_socket c n 19 fail)
+    (let again:i32 (call buf.len c))
+    (call arm64.mov_rr c 64 0 19)
+    (call imm c 1 0)
+    (call imm c 2 0)
+    (call imm c 3 524288)
+    (call runtime_arm64.emit_syscall c 242)
+    (call imm c 4 -4)
+    (call arm64.cmp_rr c 64 0 4)
+    (call arm64.patch_cond c (call arm64.b_cond c (call arm64.cc_eq)) again)
+    (call arm64.cmp_ri c 64 0 0)
+    (call (vec.push i32) fail (call arm64.b_cond c (call arm64.cc_lt)))
+    (call arm64.mov_rr c 64 22 0)
+    (call emit_mark c n 22 fail)
+    (call arm64.mov_rr c 64 0 22)
+    (call wasi_arm64.ret_x0 c)
+    (call patch_all c fail)
+    (call wasi_arm64.ret_errno c -1))
+
+  ;; recv(h, buf, max) -> bytes read, 0 at the end, or -1 (read(2)).
+  ;; send(h, buf, len) -> bytes written, or -1 (sendto(2), MSG_NOSIGNAL).
+  (fn emit_transfer [c:(ptr buf.Buf) w:(ptr wasi_arm64.W) n:(ptr N) sending:bool] -> void
+    (let fail:(ptr (vec.Vec i32)) (call new_list))
+    (call wasi_arm64.prologue c)
+    (call wasi_arm64.arg_w c 3 0 19)
+    (call wasi_arm64.arg_w c 3 1 20)
+    (call wasi_arm64.arg_w c 3 2 21)
+    (call emit_is_socket c n 19 fail)
+    (call wasi_arm64.check c w 20 21 fail)
+    (call arm64.mov_rr c 64 0 19)
+    (call arm64.add_rrr c 64 1 28 20)
+    (call arm64.mov_rr c 64 2 21)
+    (if sending
+        (block
+          (call imm c 3 16384)
+          (call imm c 4 0)
+          (call imm c 5 0)
+          (call runtime_arm64.emit_syscall c 206))
+        (call runtime_arm64.emit_syscall c 63))
+    (call arm64.cmp_ri c 64 0 0)
+    (call (vec.push i32) fail (call arm64.b_cond c (call arm64.cc_lt)))
+    (call wasi_arm64.ret_x0 c)
+    (call patch_all c fail)
+    (call wasi_arm64.ret_errno c -1))
+
+  ;; close(h) -> 0, or -1: shuts a connection down, then closes it.
+  (fn emit_close [c:(ptr buf.Buf) n:(ptr N)] -> void
+    (let fail:(ptr (vec.Vec i32)) (call new_list))
+    (call wasi_arm64.prologue c)
+    (call wasi_arm64.arg_w c 1 0 19)
+    (call emit_is_socket c n 19 fail)
+    (call arm64.strb_uxtw c 31 9 19)
+    (call arm64.mov_rr c 64 0 19)
+    (call imm c 1 2)
+    (call runtime_arm64.emit_syscall c 210)
+    (call arm64.mov_rr c 64 0 19)
+    (call runtime_arm64.emit_syscall c 57)
+    (call wasi_arm64.ret_errno c 0)
+    (call patch_all c fail)
+    (call wasi_arm64.ret_errno c -1))
+
+  ;; Emits the routine for aipl_net_v1 import `name`; false if it is not one.
+  (fn emit_import [c:(ptr buf.Buf) w:(ptr wasi_arm64.W) n:(ptr N) name:str.Bytes] -> bool (pub)
+    (cond
+      ((call is name "listen") (call emit_listen c w n) true)
+      ((call is name "accept") (call emit_accept c n) true)
+      ((call is name "recv") (call emit_transfer c w n false) true)
+      ((call is name "send") (call emit_transfer c w n true) true)
+      ((call is name "close") (call emit_close c n) true)
+      (else false)))
+
+  (fn is [name:str.Bytes want:str] -> bool
+    (call str.bytes_eq name (call str.from_str want)))
+)

@@ -8,8 +8,12 @@
 # 3. stage 1 there compiles every program in examples/, benchmarks/, and tests/aipl to wasm,
 #    and each must be the bytes `aipl compile` makes here.
 # 4. also on HOST, `sh bootstrap/build.sh` builds the compiler from the checked-in AArch64 seed
-#    (bootstrap/aipl-linux-aarch64), and the result is the seed's own bytes (the seed is its
-#    own stage 2 while aipl_src/ is the source it was built from).
+#    (bootstrap/aipl-linux-aarch64), and the result is stage 1's bytes: the same compiler built
+#    from the same source by an independent route, whether or not the seed is from this source.
+# 5. stage 1 there runs a program (`aipl run`, which builds it, starts it, and removes it) and a
+#    file of tests (`aipl test`, a fresh process per test), as it does on x86-64.
+# 6. there, a plain `compile --exe` (no --target) makes an AArch64 executable (ELF machine 183), as
+#    `run`, `test`, `eval`, and `serve` build theirs.
 # Exits 0 only if all of that holds. HOST keeps its files in ~/aipl-arm-self.
 set -u
 host=${1:?usage: sh tools/arm64_bootstrap.sh HOST}
@@ -45,7 +49,10 @@ ssh -o BatchMode=yes "$host" '
     /w/stage1 compile --exe --target arm64 --allow-run \"*\" aipl_src/aipl.aipl -o stage2 > /dev/null || echo STAGE2-FAILED
     cmp stage1 stage2 && echo STAGE2-IDENTICAL
     sh bootstrap/build.sh /w/seed_out > /dev/null && echo SEED-BUILT
-    cmp seed_out/aipl bootstrap/aipl-linux-aarch64 && echo SEED-IS-STAGE2
+    cmp seed_out/aipl stage1 && echo SEED-CHAIN-MATCHES
+    /w/stage1 compile --exe examples/quicksort.aipl -o q_default > /dev/null && [ \"\$(od -An -tu1 -j18 -N2 q_default | tr -s \" \" | sed \"s/^ //\")\" = \"183 0\" ] && echo DEFAULT-IS-AARCH64
+    [ \"\$(/w/stage1 run examples/quicksort.aipl)\" = \"median of 5000 random values: 502\" ] && echo RUN-WORKS
+    /w/stage1 test tests/aipl/testing/rows.aipl 2>&1 | tail -1 | grep -q \"7 tests: 3 passed, 4 failed\" && echo TEST-WORKS
     while read f; do
       n=\$(echo \$f | tr / _)
       /w/stage1 compile \$f -o out/\$n.wasm > /dev/null 2>&1 || rm -f out/\$n.wasm
@@ -55,7 +62,10 @@ rsync -r "$host":aipl-arm-self/out/ "$work/out/" || exit 2
 ok=1
 grep -q '^aarch64' "$work/remote.log" || { echo "arm64_bootstrap: not an AArch64 machine"; ok=0; }
 grep -q '^SEED-BUILT' "$work/remote.log" || { echo "arm64_bootstrap: bootstrap/build.sh failed from the AArch64 seed"; ok=0; }
-grep -q '^SEED-IS-STAGE2' "$work/remote.log" || { echo "arm64_bootstrap: the seed does not rebuild itself (is it from this aipl_src?)"; ok=0; }
+grep -q '^SEED-CHAIN-MATCHES' "$work/remote.log" || { echo "arm64_bootstrap: the seed's chain builds a different compiler than stage 1"; ok=0; }
+grep -q '^DEFAULT-IS-AARCH64' "$work/remote.log" || { echo "arm64_bootstrap: a plain compile --exe on AArch64 did not make an AArch64 executable"; ok=0; }
+grep -q '^RUN-WORKS' "$work/remote.log" || { echo "arm64_bootstrap: aipl run did not build and run a program"; ok=0; }
+grep -q '^TEST-WORKS' "$work/remote.log" || { echo "arm64_bootstrap: aipl test did not give the expected counts"; ok=0; }
 grep -q '^STAGE2-IDENTICAL' "$work/remote.log" || { echo "arm64_bootstrap: stage 2 is not stage 1"; ok=0; }
 same=0
 for f in "$work"/ref/*.wasm; do

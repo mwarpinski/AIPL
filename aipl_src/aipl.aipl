@@ -31,7 +31,7 @@
   (import option)
   (import stdpath)
   (import native/native)
-  (import native/native_arm64)
+  (import native/hostnative)
   (import os)
   (import io)
   (import fs)
@@ -153,14 +153,6 @@
       ((call proc.exited status) status)
       (else (+ 128 (call proc.signal status)))))
 
-  ;; Whether this machine is AArch64: its kernel lists a "CPU architecture" line in
-  ;; /proc/cpuinfo, and an x86-64 one never does. Executables are built for it unless
-  ;; --target says otherwise.
-  (fn host_is_arm64 [] -> bool
-    (match_result (call io.read_file "/proc/cpuinfo")
-      (ok b (call str.contains b (call str.from_str "CPU architecture")))
-      (err e false)))
-
   ;; aipl compile ..., or aipl run ... (run_mode): the same flags, the file
   ;; the last of them, the program's own arguments after it, and no -o.
   (fn compile_command [n:i32 run_mode:bool] -> i32
@@ -270,7 +262,6 @@
     ;; aipl run x.wasm: the module is the program, to be built natively as it stands
     (let wasm_in:bool (and run_mode (call str.ends_with entry (call str.from_str ".wasm"))))
     (let bytes:str.Bytes (call str.from_str ""))
-    (let exe_done:bool false)
     (if wasm_in
         (set! bytes (match_result (call io.read_path entry) (ok t t) (err e (return (call fail_bytes "cannot read " entry)))))
         (block
@@ -288,19 +279,12 @@
                 (call io.eprintln " (AIPL_SPEC.md 6.4)")
                 (return 1))
           (set! bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
-    (when (and exe (or (eq target 2) (and (eq target 0) (call host_is_arm64))))
-          ;; an AArch64 executable (--allow-run is accepted: the process operations answer
-          ;; "not supported" there yet)
-          (when (or sandbox listened (gt (call buf.len serve) 0))
-                (return (call fail_bytes "--target arm64: --sandbox, --listen, and --serve are not built for AArch64 yet" (call str.from_str ""))))
-          (let o:(ptr native_arm64.Output) (call native_arm64.compile bytes))
-          (when (not (get o native_arm64.Output.ok)) (return (call fail_bytes "native backend: " (get o native_arm64.Output.error))))
-          (set! bytes (get o native_arm64.Output.exe))
-          (set! exe_done true))
-    (when (and exe (not exe_done))
-          (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen) (call buf.bytes serve)))
-          (when (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))))
-          (set! bytes (get o native.Output.exe)))
+    (when exe
+          ;; an executable for this machine, or for the --target named; AArch64 builds take no more
+          ;; grants than --allow-run and --listen (sockets are there too: --serve as well)
+          (let o:(ptr hostnative.Built) (call hostnative.build bytes sandbox (call buf.bytes listen) (call buf.bytes serve) target))
+          (when (not (get o hostnative.Built.ok)) (return (call fail_bytes "native backend: " (get o hostnative.Built.error))))
+          (set! bytes (get o hostnative.Built.exe)))
     ;; Written beside the output and renamed into place, as the Rust command
     ;; does: a file that was run is never opened for writing again (Linux can
     ;; refuse with "Text file busy"; macOS kills a binary rewritten in place).

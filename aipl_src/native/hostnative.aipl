@@ -1,0 +1,33 @@
+;; hostnative: the native executable for a module, built for the machine the compiler runs on (Linux
+;; x86-64 or AArch64), or for the one `--target` names: native.aipl's backend for the one, native_arm64.aipl's
+;; for the other, behind one result type, so the commands that build a program and start it (`run`,
+;; `test`, `eval`, `serve`) work on both.
+(module hostnative
+  (import alloc)
+  (import str)
+  (import buf)
+  (import io)
+  (import native)
+  (import native_arm64)
+
+  ;; A backend's result: the executable, or why there is none.
+  (struct Built [(read ok:bool) (read error:str.Bytes) (read exe:str.Bytes)] (pub))
+
+  ;; Whether this machine is AArch64: its kernel lists a "CPU architecture" line in /proc/cpuinfo, and an
+  ;; x86-64 one never does.
+  (fn host_is_arm64 [] -> bool (pub)
+    (match_result (call io.read_file "/proc/cpuinfo")
+      (ok b (call str.contains b (call str.from_str "CPU architecture")))
+      (err e false)))
+
+  ;; `wasm` as an executable. `target`: 0 for this machine's own, 1 for x86-64, 2 for AArch64. The grants
+  ;; (`listen`: `run:PROGRAM` and ADDR:PORT lines) and `serve` are as native.compile_with takes them.
+  (fn build [wasm:str.Bytes sandbox:bool listen:str.Bytes serve:str.Bytes target:i32] -> (ptr Built) (pub)
+    (if (or (eq target 2) (and (eq target 0) (call host_is_arm64)))
+        (block
+          (let o:(ptr native_arm64.Output) (call native_arm64.compile_with wasm sandbox listen serve))
+          (new Built (call alloc.forever) [ok:(get o native_arm64.Output.ok) error:(get o native_arm64.Output.error) exe:(get o native_arm64.Output.exe)]))
+        (block
+          (let o:(ptr native.Output) (call native.compile_with wasm sandbox listen serve))
+          (new Built (call alloc.forever) [ok:(get o native.Output.ok) error:(get o native.Output.error) exe:(get o native.Output.exe)]))))
+)
