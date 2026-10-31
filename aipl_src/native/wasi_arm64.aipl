@@ -84,9 +84,9 @@
 
   ;; x(reg) = argument i of n, an i32 (zero-extended) or an i64
   (fn arg_w [c:(ptr buf.Buf) n:i32 i:i32 reg:i32] -> void (pub)
-    (call arm64.ldr_w c reg 27 (* 16 (- (- n 1) i))))
+    (call arm64.ldr_w c reg 27 (+ 64 (* 16 (- (- n 1) i)))))
   (fn arg_x [c:(ptr buf.Buf) n:i32 i:i32 reg:i32] -> void (pub)
-    (call arm64.ldr_x c reg 27 (* 16 (- (- n 1) i))))
+    (call arm64.ldr_x c reg 27 (+ 64 (* 16 (- (- n 1) i)))))
 
   (fn patch_all [c:(ptr buf.Buf) at:(ptr (vec.Vec i32))] -> void (pub)
     (for k 0 (call (vec.len i32) at)
@@ -126,31 +126,47 @@
     (call arm64.orr_rrr c 32 20 20 11)
     (call arm64.patch_cond c off (call buf.len c)))
 
-  ;; the start and the ends of a routine
+  ;; The start and the ends of a routine. Translated functions keep their locals in x19-x25, so a routine
+  ;; (which uses them freely) saves them in 64 bytes below the entry sp and gives them back as it returns.
+  ;; x27 is the sp below that area: where a routine resets sp to when it has used the stack for scratch,
+  ;; and the base its arguments (just above the area) and the saved registers are read from.
   (fn prologue [c:(ptr buf.Buf)] -> void (pub)
+    (call arm64.mov_rr c 64 26 30)
+    (call arm64.sub_ri c 64 31 31 64)
     (call arm64.mov_sp c 64 27 31)
-    (call arm64.mov_rr c 64 26 30))
+    (call arm64.stp c 19 20 27 0)
+    (call arm64.stp c 21 22 27 16)
+    (call arm64.stp c 23 24 27 32)
+    (call arm64.str_x c 25 27 48))
+
+  ;; x19-x25 as the prologue found them, and sp as the routine was entered with it
+  (fn leave [c:(ptr buf.Buf)] -> void (pub)
+    (call arm64.ldp c 19 20 27 0)
+    (call arm64.ldp c 21 22 27 16)
+    (call arm64.ldp c 23 24 27 32)
+    (call arm64.ldur_x c 25 27 48)
+    (call arm64.add_ri c 64 31 27 64))
 
   (fn ret_errno [c:(ptr buf.Buf) errno:i32] -> void (pub)
-    (call arm64.mov_sp c 64 31 27)
+    (call leave c)
     (call imm c 0 errno)
     (call arm64.br c 26))
 
   ;; return x0 as it is
   (fn ret_x0 [c:(ptr buf.Buf)] -> void (pub)
-    (call arm64.mov_sp c 64 31 27)
+    (call leave c)
     (call arm64.br c 26))
 
   ;; x0 = a Linux result (-errno): minus the WASI errno, through the shared tail (the way
   ;; aipl_sys_v1's imports report an error)
   (fn ret_negated [c:(ptr buf.Buf) w:(ptr W)] -> void (pub)
-    (call arm64.mov_sp c 64 31 27)
+    (call leave c)
     (call arm64.mov_rr c 64 30 26)
     (call arm64.b_to c (get w W.t_negated)))
 
   ;; x0 = a Linux result (-errno): the WASI errno through the shared tail
   (fn ret_linux [c:(ptr buf.Buf) w:(ptr W)] -> void
-    (call arm64.mov_sp c 64 31 27)
+    (call leave c)
     (call arm64.mov_rr c 64 30 26)
     (call arm64.b_to c (get w W.t_errno)))
 
@@ -974,6 +990,7 @@
     (let failed:i32 (call arm64.b_cond c (call arm64.cc_lt)))
     (call ret_errno c 0)
     (call arm64.patch_cond c failed (call buf.len c))
+    (call leave c)
     (call arm64.mov_rr c 64 30 26)
     (call arm64.b_to c (get w W.t_negated))
     (call patch_all c badf)

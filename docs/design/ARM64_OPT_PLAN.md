@@ -1,6 +1,6 @@
 # The AArch64 backend's optimizer
 
-Status: **phase 1 done** (2026-10-30); phases 2 and 3 to come. The baseline AArch64 backend (docs/design/ARM64_PLAN.md) does everything
+Status: **phases 1 and 2 done** (2026-10-30); phase 3 to come. The baseline AArch64 backend (docs/design/ARM64_PLAN.md) does everything
 the x86-64 one does and is slow: every wasm value is a 16-byte slot on the machine stack, every local is a
 frame slot, and a float operation moves its operands through integer registers. This plan makes it fast.
 The goal is the x86-64 backend's distance from C, not C's speed.
@@ -85,6 +85,35 @@ All eight benchmarks print their `expected.txt`; the compiler built this way com
 on AArch64 Linux and every repository program to the Rust command's bytes (`tools/arm64_bootstrap.sh`, which
 now takes 1m43s instead of 3 minutes: the compiler itself runs faster there).
 
+## Phase 2: done (2026-10-30)
+
+The locals a function uses most live in registers: integers in `x19`-`x25`, floats in `d8`-`d15`, chosen by use
+count with each enclosing loop weighting a use 8 times (to 4096). A function saves the ones it uses in a save
+area just below its frame pointer and restores them at every return; its declared locals still have frame slots
+(so `sp` arithmetic is unchanged), but only the ones in memory are zeroed there. A parameter that gets a register
+is loaded in the prologue. A `local.get` of a register local is a stack entry that refers to the register and emits
+nothing; a `local.set` or `tee` pops straight into the register, after sending any older reference to it to
+memory (`sync_local`), so it keeps the old value. A float operation never writes a register local (it copies
+first). The routines for imports use `x19`-`x25` freely, so `wasi_arm64.prologue` saves them below the entry
+`sp` and every exit restores them (`leave`); `x27` points below that area, so a routine's scratch space cannot
+overwrite it (a first version did, and `tests/test_native_arm64_programs.rs`'s file test caught it). The
+`thread-spawn` routine, which returns to translated code, now uses `x0`-`x15` only.
+
+| benchmark | C -O2 | phase 1 | phase 2 | ratio after phase 1 | ratio after phase 2 |
+|---|---|---|---|---|---|
+| binarytrees 16 | 0.14 s | 0.50 s | 0.39 s | 2.9x | 2.9x |
+| fannkuch 10 | 0.12 s | 1.00 s | 0.58 s | 8.2x | 4.8x |
+| knucleotide | 0.01 s | 0.05 s | 0.04 s | 7.7x | 6.7x |
+| mandelbrot 1000 | 0.03 s | 0.22 s | 0.12 s | 7.1x | 3.9x |
+| nbody 1000000 | 0.03 s | 0.44 s | 0.24 s | 13.8x | 7.6x |
+| spectralnorm 1000 | 0.03 s | 0.19 s | 0.19 s | 6.9x | 6.8x |
+| spigot 10000 | 0.93 s | 2.23 s | 1.57 s | 2.4x | 1.7x |
+
+(C's time varies a little between runs, so the ratios of the unchanged ones differ in the last digit.) The compiler
+builds itself on AArch64 in 4.6 s (22 s at the baseline, 6.0 s after phase 1) and is 6.0 MB (7.9 MB before). What
+is left is call-bound: `binarytrees` and `spectralnorm` spend their time in calls, whose arguments are still pushed
+as 16-byte stack slots; that is phase 3.
+
 ## Phases, each measured against the table above
 
 1. **The virtual stack, constants, typed registers, fused compare and branch, addressing** (locals still in
@@ -103,7 +132,7 @@ byte-identical to the x86-64 build's, and the table is re-measured.
   compiler compiling itself under the optimized code), the 107-program corpus, and
   `tools/arm64_fuzz.py` (the generated programs of `tools/run_fuzz.py` on AArch64 against x86-64: 3,000 cases
   at the end of phase 1, with trap messages compared, and a planted fault in float subtraction fails 41 of
-  300) are the net. The one difference it accepts is the sign of a default NaN (a 0/0 is negative on x86-64
+  300; 4,500 more after phase 2) are the net. The one difference it accepts is the sign of a default NaN (a 0/0 is negative on x86-64
   and positive on AArch64; wasm leaves it open).
 - The seed (`bootstrap/aipl-linux-aarch64`) contains the baseline backend. Its stage 2 is the optimized
   compiler, which differs from the seed until the seed is refreshed; that is the normal state, and is

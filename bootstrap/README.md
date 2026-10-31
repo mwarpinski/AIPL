@@ -73,9 +73,9 @@ over ssh on an Apple Silicon Mac with Docker (3 minutes).
 `aipl-linux-aarch64` is that compiler as a Linux AArch64 executable, the seed there: on an
 AArch64 Linux machine `sh bootstrap/build.sh` has it build the source (stage 1), stage 1
 build it again (stage 2), and stage 2 once more (a fixed point), as on x86-64, with no Rust.
-It is larger than the x86-64 seed (7.9 MB against 4 MB) because the AArch64 backend has only the first
-phase of an optimizer (docs/design/ARM64_OPT_PLAN.md); the seed itself is from before that
-phase, and builds the compiler with it. The process operations
+It is larger than the x86-64 seed (7.9 MB against 4 MB) because the AArch64 backend has only part of an
+optimizer (docs/design/ARM64_OPT_PLAN.md); the seed itself is from before it, and builds the compiler with it (a
+compiler built with it is 6.0 MB). The process operations
 (procs_arm64.aipl), sockets and `--serve` (sockets_arm64.aipl, fresh_arm64.aipl), and `--sandbox`
 and threads (lower_arm64.aipl, native_arm64.aipl) are built for AArch64, so the `aipl` the script makes does what the x86-64 one does: `compile`,
 `verify`, `run`, `test`, `watch`, `eval`, `serve`, and `doc`, and the programs it builds may use threads. The
