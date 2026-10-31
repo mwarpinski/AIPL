@@ -254,3 +254,206 @@ fn both_toolchains_compile_the_server_alike() {
     };
     assert_eq!(aipl_core::selfhost::compile_with_aipl(&echo()).unwrap(), rust);
 }
+
+// ===== Connecting out (docs/design/NET_PLAN.md step 5): net.connect and http.fetch =====
+
+fn fetch_demo() -> PathBuf {
+    root().join("tests/aipl/net/fetch_demo.aipl")
+}
+
+/// What a test server answers each connection, in order, and what the client must print.
+fn fetch_cases() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("HTTP/1.1 200 OK\r\nX-Test: abc\r\nContent-Length: 5\r\n\r\nhello", "status 200 OK\nx-test abc\nbody 5 hello\n"),
+        (
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+            "status 200 OK\nx-test none\nbody 11 hello world\n",
+        ),
+        ("HTTP/1.1 404 Not Found\r\nX-Test: n\r\n\r\nmissing", "status 404 Not Found\nx-test n\nbody 7 missing\n"),
+        ("HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nContent-Length: 0\r\n\r\n", "status 302 Found\nx-test none\nbody 0 \n"),
+        ("nonsense\r\n\r\n", "error a start line without spaces (400)\n"),
+        ("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc", "error the body ends early (400)\n"),
+    ]
+}
+
+/// A server in this process on `listener`: for each reply, accepts one connection, reads the request's
+/// head, writes the reply, and closes. The handle gives the request heads it saw.
+fn http_server_on(listener: TcpListener, replies: Vec<&'static str>) -> std::thread::JoinHandle<Vec<String>> {
+    std::thread::spawn(move || {
+        let mut heads = Vec::new();
+        for reply in replies {
+            let (mut s, _) = listener.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && s.read(&mut byte).map(|n| n == 1).unwrap_or(false) {
+                head.push(byte[0]);
+            }
+            heads.push(String::from_utf8_lossy(&head).into_owned());
+            let _ = s.write_all(reply.as_bytes());
+            let _ = s.shutdown(Shutdown::Both);
+        }
+        heads
+    })
+}
+
+/// A server on a port of the system's choosing.
+fn http_server(replies: Vec<&'static str>) -> (std::net::SocketAddr, std::thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = listener.local_addr().unwrap();
+    (at, http_server_on(listener, replies))
+}
+
+/// A backend's name, and how to start fetch_demo on a URL in it.
+type Client = (&'static str, Box<dyn Fn(&str) -> Command>);
+
+/// The commands that run fetch_demo on `url`, each backend granted `grant` (or none).
+fn fetch_commands(dir: &Path, grant: Option<&str>) -> Vec<Client> {
+    let wasm = dir.join("fetch.wasm");
+    let o = Command::new(AIPL).arg("compile").arg(fetch_demo()).arg("-o").arg(&wasm).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let exe = |name: &str, extra: &[&str]| {
+        let out = dir.join(name);
+        let mut c = Command::new(AIPL);
+        c.args(["compile", "--exe"]).args(extra);
+        if let Some(g) = grant {
+            c.args(["--allow-connect", g]);
+        }
+        let o = c.arg(fetch_demo()).arg("-o").arg(&out).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        out
+    };
+    let native = exe("fetch_native", &[]);
+    let bundle = exe("fetch_bundle", &["--target", "wasm"]);
+    let grant: Option<String> = grant.map(str::to_string);
+    let (g1, g2) = (grant.clone(), grant);
+    vec![
+        (
+            "VM",
+            Box::new(move |url: &str| {
+                let mut c = Command::new(AIPL);
+                c.arg("eval");
+                if let Some(g) = &g1 {
+                    c.args(["--allow-connect", g]);
+                }
+                c.arg(fetch_demo()).arg("--").arg(url);
+                c
+            }) as Box<dyn Fn(&str) -> Command>,
+        ),
+        (
+            "aipl-run",
+            Box::new(move |url: &str| {
+                let mut c = Command::new(RUNNER);
+                if let Some(g) = &g2 {
+                    c.args(["--allow-connect", g]);
+                }
+                c.arg(&wasm).arg(url);
+                c
+            }),
+        ),
+        ("native", Box::new(move |url: &str| { let mut c = Command::new(&native); c.arg(url); c })),
+        ("bundle", Box::new(move |url: &str| { let mut c = Command::new(&bundle); c.arg(url); c })),
+    ]
+}
+
+/// What a client run printed, less the VM's own status lines.
+fn printed(o: &std::process::Output) -> String {
+    String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect()
+}
+
+#[test]
+fn every_backend_fetches_the_same_bytes() {
+    let dir = scratch("fetch");
+    let cases = fetch_cases();
+    // the grant is fixed in the native executable and the bundle when they are compiled: the server's
+    // port is fixed first, by the one listener every backend's client goes to in turn
+    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let grant = format!("127.0.0.1:{port}");
+    let backends = fetch_commands(&dir, Some(&grant));
+    for (name, cmd) in &backends {
+        let listener = loop {
+            match TcpListener::bind(("127.0.0.1", port)) {
+                Ok(l) => break l,
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
+            }
+        };
+        let handle = http_server_on(listener, cases.iter().map(|(r, _)| *r).collect());
+        for (k, (_, want)) in cases.iter().enumerate() {
+            let o = cmd(&format!("http://{grant}/p{k}?x=1#frag")).output().unwrap();
+            assert_eq!(printed(&o), *want, "{name}, case {k}: {}", String::from_utf8_lossy(&o.stderr));
+        }
+        let heads = handle.join().unwrap();
+        for (k, head) in heads.iter().enumerate() {
+            assert_eq!(
+                *head,
+                format!("GET /p{k}?x=1 HTTP/1.1\r\nHost: {grant}\r\nConnection: close\r\nAccept: */*\r\n\r\n"),
+                "{name}, request {k}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_fetch_that_cannot_happen_says_why_in_every_backend() {
+    let dir = scratch("fetch_refused");
+    let (at, server) = http_server(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
+    let granted = format!("127.0.0.1:{}", at.port());
+    // a grant for another port, none at all, a port nothing listens on (granted), https, and a name
+    let silent = format!("127.0.0.1:{}", free_port("127.0.0.1"));
+    let cases: Vec<(Option<&str>, String, &str)> = vec![
+        (Some(&granted), format!("http://127.0.0.1:{}/", at.port() + 1), "error not granted: run the program with --allow-connect ADDR:PORT (0)\n"),
+        (None, format!("http://{granted}/"), "error not granted: run the program with --allow-connect ADDR:PORT (0)\n"),
+        (Some("127.0.0.1:*"), format!("http://{silent}/"), "error refused by the system (0)\n"),
+        (Some(&granted), format!("https://{granted}/"), "error https:// needs TLS, which AIPL does not have yet: use http://, or a TLS proxy in front (0)\n"),
+        (Some(&granted), "http://example.com/".to_string(), "error not an address: this reads http://ADDR[:PORT]/ (127.0.0.1:9000, [::1]:9000), not a name (there is no resolver yet) (0)\n"),
+        (Some(&granted), "ftp://127.0.0.1/".to_string(), "error not an http:// URL (0)\n"),
+    ];
+    for (grant, url, want) in &cases {
+        let sub = scratch(&format!("fetch_refused_{}", dir.file_name().unwrap().to_string_lossy().len() + url.len()));
+        for (name, cmd) in fetch_commands(&sub, grant.as_deref()) {
+            let o = cmd(url).output().unwrap();
+            assert_eq!(printed(&o), *want, "{name}, {url}: {}", String::from_utf8_lossy(&o.stderr));
+        }
+        let _ = std::fs::remove_dir_all(&sub);
+    }
+    // the one connection the server was waiting for: a wildcard grant lets the same client through
+    let sub = scratch("fetch_wild");
+    for (name, cmd) in fetch_commands(&sub, Some("127.0.0.1:*")).into_iter().take(1) {
+        let o = cmd(&format!("http://{granted}/")).output().unwrap();
+        assert_eq!(printed(&o), "status 200 OK\nx-test none\nbody 2 ok\n", "{name}");
+    }
+    let _ = server.join();
+    let _ = std::fs::remove_dir_all(&sub);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_malformed_connect_grant_is_refused_before_anything_runs() {
+    for bad in ["127.0.0.1", "example.com:80", "127.0.0.1:99999", "[::1]:x", "127.0.0.1:*:*"] {
+        let o = Command::new(AIPL).args(["eval", "--allow-connect", bad]).arg(fetch_demo()).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&o.stderr).trim(),
+            format!("Error: --allow-connect {bad}: expected ADDR:PORT or ADDR:*, as 127.0.0.1:8080 or [::1]:*"),
+            "{bad}"
+        );
+        let o = Command::new(AIPL).args(["compile", "--exe", "--allow-connect", bad]).arg(fetch_demo()).args(["-o", "/dev/null"]).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&o.stderr).trim(),
+            format!("Error: --allow-connect {bad}: expected ADDR:PORT or ADDR:*, as 127.0.0.1:8080 or [::1]:*"),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn both_toolchains_compile_the_client_alike() {
+    let rust = {
+        let m = aipl_core::resolver::Resolver::resolve(&fetch_demo()).unwrap();
+        aipl_core::checker::TypeChecker::new().check_module(&m).unwrap();
+        aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap()
+    };
+    assert_eq!(aipl_core::selfhost::compile_with_aipl(&fetch_demo()).unwrap(), rust);
+}

@@ -503,3 +503,66 @@ fn a_bad_pointer_to_a_wasi_function_traps_with_the_region() {
         assert_eq!((String::from_utf8_lossy(&out.stdout).as_ref(), out.status.code()), ("result 0\n", Some(0)));
     }
 }
+
+/// Connecting out (net.connect through http.fetch; tests/aipl/net/fetch_demo.aipl): the answers
+/// test_net.rs expects of every other backend from a server in this process, and what is refused when
+/// the grant (`--allow-connect`, fixed when the executable was built) does not name the address, or
+/// names it with another port. Where the server cannot be reached from the test (a container on another
+/// machine) the test says it did not run.
+#[test]
+fn fetching_connects_where_granted_and_only_there() {
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener};
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/aipl/net/fetch_demo.aipl")).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let at = format!("127.0.0.1:{port}");
+    let granted = build_all(&src, &[format!("connect:{at}")], false, None);
+    let wild = build_all(&src, &["connect:127.0.0.1:*".to_string()], false, None);
+    let other = build_all(&src, &[format!("connect:127.0.0.1:{}", port.wrapping_add(1))], false, None);
+    let ungranted = build(&src);
+    let cases = [
+        ("HTTP/1.1 200 OK\r\nX-Test: abc\r\nContent-Length: 5\r\n\r\nhello", "status 200 OK\nx-test abc\nbody 5 hello\n"),
+        ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n", "status 200 OK\nx-test none\nbody 11 hello world\n"),
+        ("HTTP/1.1 404 Not Found\r\nX-Test: n\r\n\r\nmissing", "status 404 Not Found\nx-test n\nbody 7 missing\n"),
+    ];
+    let url = format!("http://{at}/p?x=1");
+    let server = std::thread::spawn(move || {
+        let mut heads = Vec::new();
+        // the three exchanges, then the wildcard grant's
+        for reply in cases.iter().map(|c| c.0).chain(std::iter::once(cases[0].0)) {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && s.read(&mut byte).map(|n| n == 1).unwrap_or(false) {
+                head.push(byte[0]);
+            }
+            heads.push(String::from_utf8_lossy(&head).into_owned());
+            let _ = s.write_all(reply.as_bytes());
+            let _ = s.shutdown(Shutdown::Both);
+        }
+        heads
+    });
+    for (k, (_, want)) in cases.iter().enumerate() {
+        let Some(child) = arm64::spawn(&granted, &[&url]) else {
+            eprintln!("no AArch64 machine on this one's network to run on: not run");
+            // the server thread is left waiting; the test process ends with it
+            return;
+        };
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), *want, "case {k}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = arm64::spawn(&wild, &[&url]).unwrap().wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), cases[0].1);
+    let heads = server.join().unwrap();
+    assert_eq!(heads[0], format!("GET /p?x=1 HTTP/1.1\r\nHost: {at}\r\nConnection: close\r\nAccept: */*\r\n\r\n"));
+    // no grant, and a grant for another port: refused without connecting
+    for (name, exe) in [("no grant", &ungranted), ("another port", &other)] {
+        let out = arm64::spawn(exe, &[&url]).unwrap().wait_with_output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "error not granted: run the program with --allow-connect ADDR:PORT (0)\n",
+            "{name}"
+        );
+    }
+}

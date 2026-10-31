@@ -805,6 +805,9 @@ const FORMS: &[&str] = &[
     "M:(module m (fn main [] -> i32 (unsafe (net.recv 3 0 1i64))))",
     "M:(module m (fn main [] -> i32 (unsafe (net.send 3 0 1 2))))",
     "M:(module m (fn main [] -> i32 (unsafe (net.close 3))))",
+    "M:(module m (fn main [] -> i32 (net.connect 0 4 80)))",
+    "M:(module m (fn main [] -> i32 (unsafe (net.connect 0 4 80))))",
+    "M:(module m (fn main [] -> i32 (unsafe (net.connect 0 4))))",
     "M:(module m (fn main [] -> i32 (net.close 3)))",
     "M:(module m (fn main [] -> bool (unsafe (net.close 3))))",
     // (no_leak) in function types: branches and compared values meet at the

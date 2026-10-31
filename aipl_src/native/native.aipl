@@ -359,11 +359,31 @@
   (fn valid_grant [g:str.Bytes] -> bool (pub)
     (call (option.is_some ip.Endpoint) (call ip.parse_endpoint g)))
 
+  ;; Whether `g` is an --allow-connect grant: ADDR:PORT, or ADDR:* for any port (src/net.rs parse_connect_grant).
+  (fn valid_connect_grant [g:str.Bytes] -> bool (pub)
+    (call (option.is_some ip.Endpoint) (call ip.parse_endpoint (call wild_to_zero g))))
+
+  ;; `g` with a final `:*` (any port) made `:0`, so that parse_endpoint reads the address; `g` as it is otherwise.
+  (fn wild_to_zero [g:str.Bytes] -> str.Bytes
+    (let n:i32 (get g str.Bytes.len))
+    (if (and (gte n 2) (and (eq (call str.byte_at g (- n 2)) 58) (eq (call str.byte_at g (- n 1)) 42)))
+        (block
+          (let b:(ptr buf.Buf) (call buf.make (call alloc.forever) (+ n 1)))
+          (call buf.push_bytes b (call str.slice g 0 (- n 1)))
+          (call buf.push_byte b 48)
+          (call buf.bytes b))
+        g))
+
+  ;; Whether `g` ends in `:*`.
+  (fn is_wild [g:str.Bytes] -> bool
+    (let n:i32 (get g str.Bytes.len))
+    (and (gte n 2) (and (eq (call str.byte_at g (- n 2)) 58) (eq (call str.byte_at g (- n 1)) 42))))
+
   ;; Splits the grants in `text`, a line each, into the programs of the
   ;; `run:PROGRAM` lines (--allow-run), added to `runs`, and the rest, added
   ;; to `others` with their newlines; `problem` gets a message for a program
   ;; whose path is longer than procs.max_grant.
-  (fn split_grants [text:str.Bytes runs:(ptr (vec.Vec str.Bytes)) others:(ptr buf.Buf) problem:(ptr buf.Buf)] -> void
+  (fn split_grants [text:str.Bytes runs:(ptr (vec.Vec str.Bytes)) others:(ptr buf.Buf) connects:(ptr buf.Buf) problem:(ptr buf.Buf)] -> void
     (let start:i32 0)
     (let n:i32 (get text str.Bytes.len))
     (for i 0 (+ n 1)
@@ -382,14 +402,18 @@
                     (call buf.push_bytes problem program)
                     (call buf.push_str problem ": the program's path is longer than 256 bytes, the most a native executable's grant holds"))
                   (call (vec.push str.Bytes) runs program)))
-            (when (gt len 0)
-              (call buf.push_bytes others line)
-              (call buf.push_byte others 10))))))
+            (if (and (gte len 8) (call str.bytes_eq (call str.slice line 0 8) (call str.from_str "connect:")))
+                (block
+                  (call buf.push_bytes connects (call str.slice line 8 (- len 8)))
+                  (call buf.push_byte connects 10))
+                (when (gt len 0)
+                  (call buf.push_bytes others line)
+                  (call buf.push_byte others 10)))))))
 
   ;; The grants in `text`, one ADDR:PORT a line (`flag`: `--listen` or
   ;; `--serve`; std/ip's parse_endpoint); null, with the message in
   ;; `problem`, for a line that is not one.
-  (fn grants [flag:str text:str.Bytes problem:(ptr buf.Buf)] -> (ptr (vec.Vec sockets.Grant))
+  (fn grants [flag:str text:str.Bytes wild:bool problem:(ptr buf.Buf)] -> (ptr (vec.Vec sockets.Grant))
     (let out:(ptr (vec.Vec sockets.Grant)) (call (vec.make sockets.Grant) (call alloc.default) 4))
     (let start:i32 0)
     (let n:i32 (get text str.Bytes.len))
@@ -398,19 +422,19 @@
         (let line:str.Bytes (call str.slice text start (- i start)))
         (set! start (+ i 1))
         (when (gt (get line str.Bytes.len) 0)
-          (match (call ip.parse_endpoint line)
+          (match (call ip.parse_endpoint (if wild (call wild_to_zero line) line))
             ((option.Option ip.Endpoint) some [e]
              (let a:ip.Addr (get e ip.Endpoint.addr))
              (let bytes:(arr u8) (arr.new u8 (call alloc.forever) 16))
              (for k 0 (call ip.len a) (arr.set u8 bytes k (call ip.byte_at a k)))
              (call (vec.push sockets.Grant) out (make sockets.Grant [len:(call ip.len a)
-                                                                     port:(get e ip.Endpoint.port)
+                                                                     port:(if (and wild (call is_wild line)) (call sockets.any_port) (get e ip.Endpoint.port))
                                                                      addr:bytes])))
             ((option.Option ip.Endpoint) none
              (call buf.push_str problem flag)
              (call buf.push_byte problem 32)
              (call buf.push_bytes problem line)
-             (call buf.push_str problem ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
+             (call buf.push_str problem (if wild ": expected ADDR:PORT or ADDR:*, as 127.0.0.1:8080 or [::1]:*" ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080"))
              (return (ptr.null (vec.Vec sockets.Grant))))))))
     out)
 
@@ -447,15 +471,18 @@
     ;; the grants text holds `run:PROGRAM` lines (--allow-run) among the addresses
     (let runs:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
     (let addresses:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (call split_grants listen runs addresses problem)
+    (let connect_lines:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call split_grants listen runs addresses connect_lines problem)
     (when (gt (call buf.len problem) 0) (return (call failure (call buf.bytes problem))))
-    (let granted:(ptr (vec.Vec sockets.Grant)) (call grants "--listen" (call buf.bytes addresses) problem))
+    (let granted:(ptr (vec.Vec sockets.Grant)) (call grants "--listen" (call buf.bytes addresses) false problem))
     (when (eq granted (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))))
+    (let connecting:(ptr (vec.Vec sockets.Grant)) (call grants "--allow-connect" (call buf.bytes connect_lines) true problem))
+    (when (eq connecting (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))))
     ;; `serve` is an address, then (for `aipl serve`) " requests=N" and
     ;; " temporary": how many connections to answer, and whether the
     ;; executable removes itself as it starts
     (let opts:(ptr ServeOpts) (call serve_options serve))
-    (let served:(ptr (vec.Vec sockets.Grant)) (call grants "--serve" (get opts ServeOpts.address) problem))
+    (let served:(ptr (vec.Vec sockets.Grant)) (call grants "--serve" (get opts ServeOpts.address) false problem))
     (when (eq served (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))))
     (let serving:bool (gt (call (vec.len sockets.Grant) served) 0))
     (unsafe (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
@@ -512,7 +539,7 @@
     (let sep:i32 (call lower.data_text l ": "))
     (let nl:i32 (call lower.data_text l "\n"))
     (let wr:(ptr wasi.W) (call wasi.make l sandbox))
-    (let sk:(ptr sockets.N) (call sockets.make l granted))
+    (let sk:(ptr sockets.N) (call sockets.make l granted connecting))
     (let pr:(ptr procs.N) (if (call imports_procs l) (call procs.make l runs) (ptr.null procs.N)))
     (let table_problem:str (call reserve_table l w))
     (when (gt (str.len table_problem) 0) (return (call failure (call str.from_str table_problem))))

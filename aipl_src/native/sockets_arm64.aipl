@@ -7,7 +7,7 @@
 ;; a routine keeps its parameters in x19-x25.
 ;;
 ;; AArch64's system calls: socket 198, setsockopt 208, bind 200, listen 201, accept4 242,
-;; sendto 206, shutdown 210; read and close as ever (63, 57). sockaddr_in and sockaddr_in6 are laid
+;; connect 203, sendto 206, shutdown 210; read and close as ever (63, 57). sockaddr_in and sockaddr_in6 are laid
 ;; out as on x86-64.
 (module sockets_arm64
   (import alloc)
@@ -20,13 +20,17 @@
   (import runtime_arm64)
   (import lower_arm64)
   (import wasi_arm64)
+  (import wasm_reader)
 
   ;; An address and port an executable may listen on: `len` (4 or 16) bytes of `addr`.
   (struct Grant [(pub len:i32) (pub port:i32) (pub addr:(arr u8))] (value) (pub))
 
   ;; Data addresses the routines use: the grants, and a byte per Linux descriptor below `slots`,
   ;; 1 while it is a socket opened here.
-  (struct N [grants:i32 table:i32] (pub))
+  (struct N [grants:i32 connects:i32 table:i32] (pub))
+
+  ;; a connect grant's port that stands for any port
+  (fn any_port [] -> i32 (pub) 65536)
 
   (fn slots [] -> i32 1024)
 
@@ -36,9 +40,25 @@
     (call buf.push_byte b (bitand (shru v 16) 255))
     (call buf.push_byte b (bitand (shru v 24) 255)))
 
+  ;; `g` with a final `:*` (any port) made `:0`, so that parse_endpoint reads the address; `g` as it is otherwise.
+  (fn wild_to_zero [g:str.Bytes] -> str.Bytes
+    (let n:i32 (get g str.Bytes.len))
+    (if (call is_wild g)
+        (block
+          (let b:(ptr buf.Buf) (call buf.make (call alloc.forever) (+ n 1)))
+          (call buf.push_bytes b (call str.slice g 0 (- n 1)))
+          (call buf.push_byte b 48)
+          (call buf.bytes b))
+        g))
+
+  ;; Whether `g` ends in `:*`.
+  (fn is_wild [g:str.Bytes] -> bool
+    (let n:i32 (get g str.Bytes.len))
+    (and (gte n 2) (and (eq (call str.byte_at g (- n 2)) 58) (eq (call str.byte_at g (- n 1)) 42))))
+
   ;; The grants in `text`, one ADDR:PORT a line (`flag`: `--listen` or `--serve`; std/ip's
   ;; parse_endpoint); null, with the message in `problem`, for a line that is not one.
-  (fn parse_grants [flag:str text:str.Bytes problem:(ptr buf.Buf)] -> (ptr (vec.Vec Grant)) (pub)
+  (fn parse_grants [flag:str text:str.Bytes wild:bool problem:(ptr buf.Buf)] -> (ptr (vec.Vec Grant)) (pub)
     (let out:(ptr (vec.Vec Grant)) (call (vec.make Grant) (call alloc.default) 4))
     (let start:i32 0)
     (let n:i32 (get text str.Bytes.len))
@@ -47,25 +67,34 @@
         (let line:str.Bytes (call str.slice text start (- i start)))
         (set! start (+ i 1))
         (when (gt (get line str.Bytes.len) 0)
-          (match (call ip.parse_endpoint line)
+          (match (call ip.parse_endpoint (if wild (call wild_to_zero line) line))
             ((option.Option ip.Endpoint) some [e]
              (let a:ip.Addr (get e ip.Endpoint.addr))
              (let bytes:(arr u8) (arr.new u8 (call alloc.forever) 16))
              (for k 0 (call ip.len a) (arr.set u8 bytes k (call ip.byte_at a k)))
              (call (vec.push Grant) out (make Grant [len:(call ip.len a)
-                                                     port:(get e ip.Endpoint.port)
+                                                     port:(if (and wild (call is_wild line)) (call any_port) (get e ip.Endpoint.port))
                                                      addr:bytes])))
             ((option.Option ip.Endpoint) none
              (call buf.push_str problem flag)
              (call buf.push_byte problem 32)
              (call buf.push_bytes problem line)
-             (call buf.push_str problem ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
+             (call buf.push_str problem (if wild ": expected ADDR:PORT or ADDR:*, as 127.0.0.1:8080 or [::1]:*" ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080"))
              (return (ptr.null (vec.Vec Grant))))))))
     out)
 
-  ;; The grants as data, [count:u32] then [len:u32 port:u32 addr:16 bytes] each, and the socket table.
-  (fn make [l:(ptr lower_arm64.L) grants:(ptr (vec.Vec Grant))] -> (ptr N) (pub)
-    (let n:(ptr N) (new N (call alloc.forever) [grants:(zero i32) table:(zero i32)]))
+  ;; Whether the module imports aipl_net_v1's connect.
+  (fn imports_connect [l:(ptr lower_arm64.L)] -> bool
+    (let imports:(ptr (vec.Vec (ptr wasm_reader.Import))) (get l lower_arm64.L.fimports))
+    (for i 0 (call (vec.len (ptr wasm_reader.Import)) imports)
+      (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) imports i))
+      (when (and (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_net_v1"))
+                 (call is (get imp wasm_reader.Import.name) "connect"))
+        (return true)))
+    false)
+
+  ;; The grants as data, [count:u32] then [len:u32 port:u32 addr:16 bytes] each
+  (fn grant_table [l:(ptr lower_arm64.L) grants:(ptr (vec.Vec Grant))] -> i32
     (let g:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let count:i32 (call (vec.len Grant) grants))
     (call push_u32 g count)
@@ -75,7 +104,15 @@
       (call push_u32 g (get gr Grant.port))
       (for i 0 16
         (call buf.push_byte g (if (lt i (get gr Grant.len)) (arr.get u8 (get gr Grant.addr) i) 0))))
-    (put n N.grants (call lower_arm64.data_bytes l (call buf.bytes g)))
+    (call lower_arm64.data_bytes l (call buf.bytes g)))
+
+  ;; The tables the routines use: the grants (listen's and connect's), and the socket table.
+  (fn make [l:(ptr lower_arm64.L) grants:(ptr (vec.Vec Grant)) connects:(ptr (vec.Vec Grant))] -> (ptr N) (pub)
+    (let n:(ptr N) (new N (call alloc.forever) [grants:(zero i32) connects:(zero i32) table:(zero i32)]))
+    (put n N.grants (call grant_table l grants))
+    ;; connect's grants only for a module that imports connect: the data, and so the executable, of any other
+    ;; is what it was before connect existed
+    (when (call imports_connect l) (put n N.connects (call grant_table l connects)))
     (let t:(ptr buf.Buf) (call buf.make (call alloc.default) (call slots)))
     (for i 0 (call slots) (call buf.push_byte t 0))
     (put n N.table (call lower_arm64.data_bytes l (call buf.bytes t)))
@@ -111,8 +148,9 @@
     (call imm c 10 1)
     (call arm64.strb_uxtw c 10 9 h))
 
-  ;; listen(addr, len, port) -> handle, -1, or -2 (not granted).
-  (fn emit_listen [c:(ptr buf.Buf) w:(ptr wasi_arm64.W) n:(ptr N)] -> void
+  ;; listen(addr, len, port) -> handle, -1, or -2 (not granted); connect(addr, len, port) likewise, a
+  ;; connection to a granted address (a grant's port may be any).
+  (fn emit_listen [c:(ptr buf.Buf) w:(ptr wasi_arm64.W) n:(ptr N) connecting:bool] -> void
     (let fail:(ptr (vec.Vec i32)) (call new_list))
     (let fail_pop:(ptr (vec.Vec i32)) (call new_list))
     (let close_fail:(ptr (vec.Vec i32)) (call new_list))
@@ -132,7 +170,7 @@
     (call (vec.push i32) fail (call arm64.b_cond c (call arm64.cc_hi)))
     ;; x1 = the address bytes (host); look for a grant naming them
     (call arm64.add_rrr c 64 1 28 19)
-    (call imm c 3 (get n N.grants))
+    (call imm c 3 (if connecting (get n N.connects) (get n N.grants)))
     (call arm64.ldr_w c 2 3 0)
     (call arm64.add_ri c 64 3 3 4)
     (let next:i32 (call buf.len c))
@@ -141,9 +179,20 @@
     (call arm64.ldr_w c 4 3 0)
     (call arm64.cmp_rr c 32 4 20)
     (call (vec.push i32) skip (call arm64.b_cond c (call arm64.cc_ne)))
-    (call arm64.ldr_w c 5 3 4)
-    (call arm64.cmp_rr c 32 5 21)
-    (call (vec.push i32) skip (call arm64.b_cond c (call arm64.cc_ne)))
+    (if connecting
+        ;; the port, unless the grant's is any
+        (block
+          (call arm64.ldr_w c 5 3 4)
+          (call imm c 10 (call any_port))
+          (call arm64.cmp_rr c 32 5 10)
+          (let any:i32 (call arm64.b_cond c (call arm64.cc_eq)))
+          (call arm64.cmp_rr c 32 5 21)
+          (call (vec.push i32) skip (call arm64.b_cond c (call arm64.cc_ne)))
+          (call arm64.patch_cond c any (call buf.len c)))
+        (block
+          (call arm64.ldr_w c 5 3 4)
+          (call arm64.cmp_rr c 32 5 21)
+          (call (vec.push i32) skip (call arm64.b_cond c (call arm64.cc_ne)))))
     (call imm c 9 0)
     (let byte:i32 (call buf.len c))
     (call arm64.cmp_rr c 32 9 20)
@@ -196,27 +245,37 @@
     (call arm64.cmp_ri c 64 0 0)
     (call (vec.push i32) fail_pop (call arm64.b_cond c (call arm64.cc_lt)))
     (call arm64.mov_rr c 64 22 0)
-    ;; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &1, 4), as Rust's bind does
-    (call arm64.mov_rr c 64 0 22)
-    (call imm c 1 1)
-    (call imm c 2 2)
-    (call arm64.add_ri c 64 3 31 32)
-    (call imm c 4 4)
-    (call runtime_arm64.emit_syscall c 208)
-    (call arm64.cmp_ri c 64 0 0)
-    (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt)))
-    ;; bind(fd, address, size); listen(fd, 128)
-    (call arm64.mov_rr c 64 0 22)
-    (call arm64.mov_sp c 64 1 31)
-    (call arm64.mov_rr c 64 2 24)
-    (call runtime_arm64.emit_syscall c 200)
-    (call arm64.cmp_ri c 64 0 0)
-    (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt)))
-    (call arm64.mov_rr c 64 0 22)
-    (call imm c 1 128)
-    (call runtime_arm64.emit_syscall c 201)
-    (call arm64.cmp_ri c 64 0 0)
-    (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt)))
+    (if connecting
+        ;; connect(fd, address, size): 203
+        (block
+          (call arm64.mov_rr c 64 0 22)
+          (call arm64.mov_sp c 64 1 31)
+          (call arm64.mov_rr c 64 2 24)
+          (call runtime_arm64.emit_syscall c 203)
+          (call arm64.cmp_ri c 64 0 0)
+          (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt))))
+        (block
+          ;; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &1, 4), as Rust's bind does
+          (call arm64.mov_rr c 64 0 22)
+          (call imm c 1 1)
+          (call imm c 2 2)
+          (call arm64.add_ri c 64 3 31 32)
+          (call imm c 4 4)
+          (call runtime_arm64.emit_syscall c 208)
+          (call arm64.cmp_ri c 64 0 0)
+          (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt)))
+          ;; bind(fd, address, size); listen(fd, 128)
+          (call arm64.mov_rr c 64 0 22)
+          (call arm64.mov_sp c 64 1 31)
+          (call arm64.mov_rr c 64 2 24)
+          (call runtime_arm64.emit_syscall c 200)
+          (call arm64.cmp_ri c 64 0 0)
+          (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt)))
+          (call arm64.mov_rr c 64 0 22)
+          (call imm c 1 128)
+          (call runtime_arm64.emit_syscall c 201)
+          (call arm64.cmp_ri c 64 0 0)
+          (call (vec.push i32) close_fail (call arm64.b_cond c (call arm64.cc_lt)))))
     (call emit_mark c n 22 fail_pop)
     (call arm64.mov_rr c 64 0 22)
     (call wasi_arm64.ret_x0 c)
@@ -296,7 +355,8 @@
   ;; Emits the routine for aipl_net_v1 import `name`; false if it is not one.
   (fn emit_import [c:(ptr buf.Buf) w:(ptr wasi_arm64.W) n:(ptr N) name:str.Bytes] -> bool (pub)
     (cond
-      ((call is name "listen") (call emit_listen c w n) true)
+      ((call is name "listen") (call emit_listen c w n false) true)
+      ((call is name "connect") (call emit_listen c w n true) true)
       ((call is name "accept") (call emit_accept c n) true)
       ((call is name "recv") (call emit_transfer c w n false) true)
       ((call is name "send") (call emit_transfer c w n true) true)

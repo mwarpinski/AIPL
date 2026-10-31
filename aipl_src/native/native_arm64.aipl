@@ -532,7 +532,7 @@
     (call compile_with wasm false (call str.from_str "") (call str.from_str "")))
 
   ;; The programs the grants name (the `run:` lines), or why the grants cannot be had.
-  (fn split_grants [text:str.Bytes runs:(ptr (vec.Vec str.Bytes)) others:(ptr buf.Buf) problem:(ptr buf.Buf)] -> void
+  (fn split_grants [text:str.Bytes runs:(ptr (vec.Vec str.Bytes)) others:(ptr buf.Buf) connects:(ptr buf.Buf) problem:(ptr buf.Buf)] -> void
     (let start:i32 0)
     (let n:i32 (get text str.Bytes.len))
     (for i 0 (+ n 1)
@@ -552,9 +552,13 @@
                       (call buf.push_bytes problem program)
                       (call buf.push_str problem ": the program's path is longer than 256 bytes, the most a native executable's grant holds"))
                     (call (vec.push str.Bytes) runs program)))
-              (block
-                (call buf.push_bytes others line)
-                (call buf.push_byte others 10)))))))
+              (if (and (gte len 8) (call str.bytes_eq (call str.slice line 0 8) (call str.from_str "connect:")))
+                  (block
+                    (call buf.push_bytes connects (call str.slice line 8 (- len 8)))
+                    (call buf.push_byte connects 10))
+                  (block
+                    (call buf.push_bytes others line)
+                    (call buf.push_byte others 10))))))))
 
   ;; Whether the module imports one of aipl_sys_v1's process operations.
   (fn imports_procs [l:(ptr lower_arm64.L)] -> bool
@@ -743,14 +747,17 @@
     (let problem:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let runs:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
     (let addresses:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (call split_grants grants runs addresses problem)
+    (let connect_lines:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call split_grants grants runs addresses connect_lines problem)
     (when (gt (call buf.len problem) 0) (return (call failure (call buf.bytes problem))))
-    (let granted:(ptr (vec.Vec sockets_arm64.Grant)) (call sockets_arm64.parse_grants "--listen" (call buf.bytes addresses) problem))
+    (let granted:(ptr (vec.Vec sockets_arm64.Grant)) (call sockets_arm64.parse_grants "--listen" (call buf.bytes addresses) false problem))
     (when (eq granted (ptr.null (vec.Vec sockets_arm64.Grant))) (return (call failure (call buf.bytes problem))))
+    (let connecting:(ptr (vec.Vec sockets_arm64.Grant)) (call sockets_arm64.parse_grants "--allow-connect" (call buf.bytes connect_lines) true problem))
+    (when (eq connecting (ptr.null (vec.Vec sockets_arm64.Grant))) (return (call failure (call buf.bytes problem))))
     ;; `serve` is an address, then (for `aipl serve`) " requests=N" and " temporary": how many connections
     ;; to answer, and whether the executable removes itself as it starts
     (let opts:(ptr ServeOpts) (call serve_options serve))
-    (let served:(ptr (vec.Vec sockets_arm64.Grant)) (call sockets_arm64.parse_grants "--serve" (get opts ServeOpts.address) problem))
+    (let served:(ptr (vec.Vec sockets_arm64.Grant)) (call sockets_arm64.parse_grants "--serve" (get opts ServeOpts.address) false problem))
     (when (eq served (ptr.null (vec.Vec sockets_arm64.Grant))) (return (call failure (call buf.bytes problem))))
     (let serving:bool (gt (call (vec.len sockets_arm64.Grant) served) 0))
     (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
@@ -768,7 +775,7 @@
     ;; the stack pointer as the process started: the arguments and the environment
     (let sp_cell:i32 (call lower_arm64.data_zeros l 8))
     (let pn:(ptr procs_arm64.N) (if (call imports_procs l) (call procs_arm64.make l runs sp_cell) (ptr.null procs_arm64.N)))
-    (let sn:(ptr sockets_arm64.N) (if (call imports_net l) (call sockets_arm64.make l granted) (ptr.null sockets_arm64.N)))
+    (let sn:(ptr sockets_arm64.N) (if (call imports_net l) (call sockets_arm64.make l granted connecting) (ptr.null sockets_arm64.N)))
     (put l lower_arm64.L.results (call lower_arm64.data_zeros l (call lower_arm64.results_size)))
     (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get w wasm_reader.Wasm.globals))
     (let gb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))

@@ -17,6 +17,9 @@
 ;;     not a trap). send uses MSG_NOSIGNAL, so a peer that has gone away is
 ;;     an error (-1), not a SIGPIPE ending the process; close shuts a
 ;;     connection down first.
+;;   - connect(addr, len, port) -> handle: the same checks of the address, against the grants
+;;     fixed when the executable was compiled (`--allow-connect`, whose port may be any: ADDR:*);
+;;     -2 if none names it, -1 for a malformed address or a refused or failed connection.
 ;;   - A handle is the Linux descriptor.
 (module sockets
   (import alloc)
@@ -25,6 +28,7 @@
   (import vec)
   (import x64)
   (import lower)
+  (import wasm_reader)
 
   ;; An address and port an executable may listen on: `len` (4 or 16)
   ;; bytes of `addr`.
@@ -32,7 +36,10 @@
 
   ;; Data addresses the routines use: the grants, and a byte per Linux
   ;; descriptor below `slots`, 1 while it is a socket opened here.
-  (struct N [grants:i32 table:i32] (pub))
+  (struct N [grants:i32 connects:i32 table:i32] (pub))
+
+  ;; a connect grant's port that stands for any port
+  (fn any_port [] -> i32 (pub) 65536)
 
   (fn slots [] -> i32 1024)
 
@@ -48,10 +55,18 @@
     (call buf.push_byte b (bitand (shru v 16) 255))
     (call buf.push_byte b (bitand (shru v 24) 255)))
 
-  ;; The grants as data, [count:u32] then [len:u32 port:u32 addr:16 bytes]
-  ;; each, and the socket table.
-  (fn make [l:(ptr lower.L) grants:(ptr (vec.Vec Grant))] -> (ptr N) (pub)
-    (let n:(ptr N) (new N (call alloc.forever) [grants:(zero i32) table:(zero i32)]))
+  ;; Whether the module imports aipl_net_v1's connect.
+  (fn imports_connect [l:(ptr lower.L)] -> bool
+    (let imports:(ptr (vec.Vec (ptr wasm_reader.Import))) (get l lower.L.fimports))
+    (for i 0 (call (vec.len (ptr wasm_reader.Import)) imports)
+      (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) imports i))
+      (when (and (call str.bytes_eq (get imp wasm_reader.Import.module) (call str.from_str "aipl_net_v1"))
+                 (call is (get imp wasm_reader.Import.name) "connect"))
+        (return true)))
+    false)
+
+  ;; The grants as data, [count:u32] then [len:u32 port:u32 addr:16 bytes] each
+  (fn grant_table [l:(ptr lower.L) grants:(ptr (vec.Vec Grant))] -> i32
     (let g:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let count:i32 (call (vec.len Grant) grants))
     (call push_u32 g count)
@@ -61,7 +76,15 @@
       (call push_u32 g (get gr Grant.port))
       (for i 0 16
         (call buf.push_byte g (if (lt i (get gr Grant.len)) (arr.get u8 (get gr Grant.addr) i) 0))))
-    (put n N.grants (call lower.data_bytes l (call buf.bytes g)))
+    (call lower.data_bytes l (call buf.bytes g)))
+
+  ;; The tables the routines use: the grants (listen's and connect's), and the socket table.
+  (fn make [l:(ptr lower.L) grants:(ptr (vec.Vec Grant)) connects:(ptr (vec.Vec Grant))] -> (ptr N) (pub)
+    (let n:(ptr N) (new N (call alloc.forever) [grants:(zero i32) connects:(zero i32) table:(zero i32)]))
+    (put n N.grants (call grant_table l grants))
+    ;; connect's grants only for a module that imports connect: the data, and so the executable, of any other
+    ;; is what it was before connect existed
+    (when (call imports_connect l) (put n N.connects (call grant_table l connects)))
     (let t:(ptr buf.Buf) (call buf.make (call alloc.default) (call slots)))
     (for i 0 (call slots) (call buf.push_byte t 0))
     (put n N.table (call lower.data_bytes l (call buf.bytes t)))
@@ -113,8 +136,9 @@
     (call x64.mov_ri32 c (call rax) v)
     (call x64.ret c))
 
-  ;; listen(addr, len, port) -> handle, -1, or -2 (not granted).
-  (fn emit_listen [l:(ptr lower.L) n:(ptr N)] -> void
+  ;; listen(addr, len, port) -> handle, -1, or -2 (not granted); connect(addr, len, port) likewise, a
+  ;; connection to a granted address (a grant's port may be any).
+  (fn emit_listen [l:(ptr lower.L) n:(ptr N) connecting:bool] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let fail:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
     (let fail_pop:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
@@ -133,7 +157,7 @@
     (call (vec.push i32) fail (call x64.jcc c (call x64.cc_a)))
     ;; rsi = the address bytes (host); look for a grant naming them
     (call x64.lea c 64 (call rsi) (call x64.mem_index (call r15) (call r12) 1 0))
-    (call x64.mov_ri32 c (call rbx) (get n N.grants))
+    (call x64.mov_ri32 c (call rbx) (if connecting (get n N.connects) (get n N.grants)))
     (call x64.load c 32 (call rcx) (call x64.mem (call rbx) 0))
     (call x64.alu_ri c 64 (call x64.op_add) (call rbx) 4)
     (let next:i32 (call buf.len c))
@@ -142,8 +166,18 @@
     (let skip:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 3))
     (call x64.alu_rm c 32 (call x64.op_cmp) (call r13) (call x64.mem (call rbx) 0))
     (call (vec.push i32) skip (call x64.jcc c (call x64.cc_ne)))
-    (call x64.alu_rm c 32 (call x64.op_cmp) (call r14) (call x64.mem (call rbx) 4))
-    (call (vec.push i32) skip (call x64.jcc c (call x64.cc_ne)))
+    (if connecting
+        ;; the port, unless the grant's is any
+        (block
+          (call x64.load c 32 (call rax) (call x64.mem (call rbx) 4))
+          (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) (call any_port))
+          (let any:i32 (call x64.jcc c (call x64.cc_e)))
+          (call x64.alu_rr c 32 (call x64.op_cmp) (call r14) (call rax))
+          (call (vec.push i32) skip (call x64.jcc c (call x64.cc_ne)))
+          (call x64.patch_rel32 c any (call buf.len c)))
+        (block
+          (call x64.alu_rm c 32 (call x64.op_cmp) (call r14) (call x64.mem (call rbx) 4))
+          (call (vec.push i32) skip (call x64.jcc c (call x64.cc_ne)))))
     (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
     (let byte:i32 (call buf.len c))
     (call x64.alu_rr c 32 (call x64.op_cmp) (call rdx) (call r13))
@@ -200,30 +234,41 @@
     (call x64.test_rr c 64 (call rax) (call rax))
     (call (vec.push i32) fail_pop (call x64.jcc c (call x64.cc_s)))
     (call x64.mov_rr c 64 (call r12) (call rax))
-    ;; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &1, 4), as Rust's bind does
-    (call x64.mov_rr c 64 (call rdi) (call r12))
-    (call x64.mov_ri32 c (call rsi) 1)
-    (call x64.mov_ri32 c (call rdx) 2)
-    (call x64.lea c 64 (call r10) (call x64.mem (call rsp) 32))
-    (call x64.mov_ri32 c (call r8) 4)
-    (call x64.mov_ri32 c (call rax) 54)
-    (call x64.syscall c)
-    (call x64.test_rr c 64 (call rax) (call rax))
-    (call (vec.push i32) close_fail (call x64.jcc c (call x64.cc_s)))
-    ;; bind(fd, address, size); listen(fd, 128)
-    (call x64.mov_rr c 64 (call rdi) (call r12))
-    (call x64.mov_rr c 64 (call rsi) (call rsp))
-    (call x64.mov_rr c 64 (call rdx) (call r9))
-    (call x64.mov_ri32 c (call rax) 49)
-    (call x64.syscall c)
-    (call x64.test_rr c 64 (call rax) (call rax))
-    (call (vec.push i32) close_fail (call x64.jcc c (call x64.cc_s)))
-    (call x64.mov_rr c 64 (call rdi) (call r12))
-    (call x64.mov_ri32 c (call rsi) 128)
-    (call x64.mov_ri32 c (call rax) 50)
-    (call x64.syscall c)
-    (call x64.test_rr c 64 (call rax) (call rax))
-    (call (vec.push i32) close_fail (call x64.jcc c (call x64.cc_s)))
+    (if connecting
+        ;; connect(fd, address, size)
+        (block
+          (call x64.mov_rr c 64 (call rdi) (call r12))
+          (call x64.mov_rr c 64 (call rsi) (call rsp))
+          (call x64.mov_rr c 64 (call rdx) (call r9))
+          (call x64.mov_ri32 c (call rax) 42)
+          (call x64.syscall c)
+          (call x64.test_rr c 64 (call rax) (call rax))
+          (call (vec.push i32) close_fail (call x64.jcc c (call x64.cc_s))))
+        (block
+          ;; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &1, 4), as Rust's bind does
+          (call x64.mov_rr c 64 (call rdi) (call r12))
+          (call x64.mov_ri32 c (call rsi) 1)
+          (call x64.mov_ri32 c (call rdx) 2)
+          (call x64.lea c 64 (call r10) (call x64.mem (call rsp) 32))
+          (call x64.mov_ri32 c (call r8) 4)
+          (call x64.mov_ri32 c (call rax) 54)
+          (call x64.syscall c)
+          (call x64.test_rr c 64 (call rax) (call rax))
+          (call (vec.push i32) close_fail (call x64.jcc c (call x64.cc_s)))
+          ;; bind(fd, address, size); listen(fd, 128)
+          (call x64.mov_rr c 64 (call rdi) (call r12))
+          (call x64.mov_rr c 64 (call rsi) (call rsp))
+          (call x64.mov_rr c 64 (call rdx) (call r9))
+          (call x64.mov_ri32 c (call rax) 49)
+          (call x64.syscall c)
+          (call x64.test_rr c 64 (call rax) (call rax))
+          (call (vec.push i32) close_fail (call x64.jcc c (call x64.cc_s)))
+          (call x64.mov_rr c 64 (call rdi) (call r12))
+          (call x64.mov_ri32 c (call rsi) 128)
+          (call x64.mov_ri32 c (call rax) 50)
+          (call x64.syscall c)
+          (call x64.test_rr c 64 (call rax) (call rax))
+          (call (vec.push i32) close_fail (call x64.jcc c (call x64.cc_s)))))
     (call emit_mark c n (call r12) fail_pop)
     (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 48)
     (call x64.mov_rr c 32 (call rax) (call r12))
@@ -311,7 +356,8 @@
   ;; Emits the routine for aipl_net_v1 import `name`; false if it is not one.
   (fn emit_import [l:(ptr lower.L) n:(ptr N) name:str.Bytes] -> bool (pub)
     (cond
-      ((call is name "listen") (call emit_listen l n) true)
+      ((call is name "listen") (call emit_listen l n false) true)
+      ((call is name "connect") (call emit_listen l n true) true)
       ((call is name "accept") (call emit_accept l n) true)
       ((call is name "recv") (call emit_transfer l n false) true)
       ((call is name "send") (call emit_transfer l n true) true)

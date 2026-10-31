@@ -1,5 +1,5 @@
-;; std/http: HTTP/1.1 messages (RFC 9112) without the network: read a
-;; request or a response from bytes, and write one.
+;; std/http: HTTP/1.1 messages (RFC 9112): read a request or a response from
+;; bytes, and write one; and fetch a URL over a connection.
 ;;
 ;;   (match_result (call http.parse_request a text (call http.default_limits))
 ;;     (ok m ... (get m http.Message.method) (call http.header m "host") ...)
@@ -16,12 +16,23 @@
 ;; 2.2). Limits cap the head, the number of headers, and the body. A
 ;; program can read a saved request, or one piped through stdin, and
 ;; answer on stdout.
+;;
+;;   (match_result (call http.fetch a "http://127.0.0.1:9000/stock?item=7" (call http.default_limits))
+;;     (ok m ... (get m http.Message.status) (get m http.Message.body) ... (call http.free_message m))
+;;     (err e ... (get e http.Error.what) ...))
+;;
+;; fetch is a GET over a connection (std/net), which the program must be granted
+;; (--allow-connect ADDR:PORT): plain http:// to an address, not a name, and not https:// (no
+;; TLS here). It sends `Connection: close`, reads to the end, and does not follow redirects.
 (module http
   (import str)
   (import buf)
   (import alloc)
   (import vec)
   (import option)
+  (import ip)
+  (import net)
+  (import url)
 
   ;; Why a message was refused, and the byte offset where; the response
   ;; status the refusal calls for (400, or 413 for a body over the limit,
@@ -45,7 +56,7 @@
   (struct Message [(read is_request:bool) (read method:str.Bytes) (read target:str.Bytes)
                    (read status:i32) (read reason:str.Bytes) (read version:str.Bytes)
                    (read headers:(ptr (vec.Vec Header))) (read body:str.Bytes) (read length:i32)
-                   chunks:(ptr buf.Buf) a:alloc.Allocator] (pub))
+                   chunks:(ptr buf.Buf) a:alloc.Allocator text:(ptr buf.Buf)] (pub))
 
   ;; 64 KiB of head, 100 headers, 8 MiB of body.
   (fn default_limits [] -> Limits (pub) (make Limits [head_bytes:65536
@@ -76,7 +87,86 @@
     (let a:alloc.Allocator (get m Message.a))
     (call (vec.free Header) (get m Message.headers))
     (when (neq (get m Message.chunks) (ptr.null buf.Buf)) (call buf.free (get m Message.chunks)))
+    (when (neq (get m Message.text) (ptr.null buf.Buf)) (call buf.free (get m Message.text)))
     (call (alloc.destroy Message) a m))
+
+  ;; ===== fetching =====
+
+  ;; The response to a GET of `url` (http://ADDR[:PORT][/path][?query], read by std/url; port 80 unless
+  ;; given; an address, not a name), or why there is none: an Error with status 0 for a failure before
+  ;; or after the exchange (a URL that is not one this reads, a connection not granted or refused, a
+  ;; response that is cut short, over the limits, or not HTTP) and the message's own refusal
+  ;; otherwise. The message holds the bytes it was read from: free_message gives them back.
+  (fn fetch [a:alloc.Allocator url:str lim:Limits] -> (result (ptr Message) (ptr Error)) (pub)
+    (match_result (call url.parse a (call str.from_str url))
+      (ok u
+        (let out:(result (ptr Message) (ptr Error)) (call fetch_url a u lim))
+        (call url.free u)
+        out)
+      (err e
+        (let why:(ptr Error) (call error_as a (get e url.Error.at) (get e url.Error.what) 0 false))
+        (call url.free_error a e)
+        (err:(ptr Message) why))))
+
+  (fn fetch_url [a:alloc.Allocator u:(ptr url.Url) lim:Limits] -> (result (ptr Message) (ptr Error))
+    (let scheme:str.Bytes (get u url.Url.scheme))
+    (when (call str.eq_ignore_case scheme (call str.from_str "https"))
+      (return (err:(ptr Message) (call error_as a 0 "https:// needs TLS, which AIPL does not have yet: use http://, or a TLS proxy in front" 0 false))))
+    (when (not (call str.eq_ignore_case scheme (call str.from_str "http")))
+      (return (err:(ptr Message) (call error_as a 0 "not an http:// URL" 0 false))))
+    (when (get u url.Url.has_user)
+      (return (err:(ptr Message) (call error_as a 0 "a URL with user information is not supported" 0 false))))
+    (match (call ip.parse (get u url.Url.host))
+      ((option.Option ip.Addr) none
+       (err:(ptr Message) (call error_as a 0 "not an address: this reads http://ADDR[:PORT]/ (127.0.0.1:9000, [::1]:9000), not a name (there is no resolver yet)" 0 false)))
+      ((option.Option ip.Addr) some [ad]
+       (let port:i32 (if (lt (get u url.Url.port) 0) 80 (get u url.Url.port)))
+       ;; the target: the path (or /), then ?query
+       (let target:(ptr buf.Buf) (call buf.make a 64))
+       (if (eq (get (get u url.Url.path) str.Bytes.len) 0)
+           (call buf.push_byte target 47)
+           (call buf.push_bytes target (get u url.Url.path)))
+       (when (get u url.Url.has_query)
+         (call buf.push_byte target 63)
+         (call buf.push_bytes target (get u url.Url.query)))
+       (let out:(result (ptr Message) (ptr Error))
+         (match_result (call net.connect_to a (call ip.endpoint ad port))
+           (ok c (call exchange a c (get u url.Url.authority) (call buf.to_str target) lim))
+           (err why (err:(ptr Message) (call error_as a 0 (call net.message why) 0 false)))))
+       (call buf.free target)
+       out)))
+
+  ;; GET target on the connection c (closed before this returns), and the response read to the end.
+  (fn exchange [a:alloc.Allocator c:net.Socket authority:str.Bytes target:str lim:Limits] -> (result (ptr Message) (ptr Error))
+    (let req:(ptr buf.Buf) (call buf.make a 256))
+    (call start_request req "GET" target)
+    (call buf.push_str req "Host: ")
+    (call buf.push_bytes req authority)
+    (call buf.push_str req "\r\nConnection: close\r\nAccept: */*\r\n\r\n")
+    (let sent:bool (call net.send c (call buf.bytes req)))
+    (call buf.free req)
+    (when (not sent)
+      (call net.close c)
+      (return (err:(ptr Message) (call error_as a 0 "the request could not be sent" 0 false))))
+    ;; everything to the end of the connection, within the limits (and a little more, for chunk framing)
+    (let cap:i32 (+ (+ (get lim Limits.head_bytes) (get lim Limits.body_bytes)) 65536))
+    (let text:(ptr buf.Buf) (call buf.make a 4096))
+    (let reading:bool true)
+    (while reading
+      (let got:i32 (call net.recv c text 8192))
+      (cond ((lt got 0) (call buf.free text) (call net.close c)
+             (return (err:(ptr Message) (call error_as a 0 "the connection failed while reading the response" 0 false))))
+            ((eq got 0) (set! reading false))
+            ((gt (call buf.len text) cap) (call buf.free text) (call net.close c)
+             (return (err:(ptr Message) (call error_as a (call buf.len text) "the response is larger than the limits" 502 false))))
+            (else (block))))
+    (call net.close c)
+    (match_result (call parse_response a (call buf.bytes text) lim)
+      (ok m
+        ;; the message's views point into text: it is the message's now
+        (put m Message.text text)
+        (ok:(ptr Error) m))
+      (err e (call buf.free text) (err:(ptr Message) e))))
 
   ;; ===== reading =====
 
@@ -195,7 +285,8 @@
                                          body:(zero str.Bytes)
                                          length:(zero i32)
                                          chunks:(ptr.null buf.Buf)
-                                         a:a]))
+                                         a:a
+                                         text:(ptr.null buf.Buf)]))
     (put m Message.body empty)
     (put m Message.length p)
     (match_result (call read_body m text p lim)

@@ -195,6 +195,9 @@ pub enum OpCode {
     NetRecv,
     /// `(net.send h buf len)`: bytes written from buf, or -1.
     NetSend,
+    /// `(net.connect addr len port)`: a TCP connection to the address whose `len` (4 or 16) bytes
+    /// are at `addr`; its handle, -1, or -2 if no `--allow-connect` names it.
+    NetConnect,
     /// `(net.close h)`: closes a socket; 0, or -1.
     NetClose,
     /// `(proc.spawn path len args args_len stdio)`: starts the program at the

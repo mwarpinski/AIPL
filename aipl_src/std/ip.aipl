@@ -25,6 +25,11 @@
   ;; An address and a port (0-65535).
   (struct Endpoint [(read addr:Addr) (read port:i32)] (value) (pub))
 
+  ;; The endpoint for address a and a port (0-65535).
+  (fn endpoint [a:Addr port:i32] -> Endpoint (pub) (no_leak)
+    (req (and (gte port 0) (lte port 65535)))
+    (make Endpoint [addr:a port:port]))
+
   ;; How many bytes the address has: 4 or 16.
   (fn len [a:Addr] -> i32 (pub) (no_leak)
     (if (get a Addr.v6) 16 4))

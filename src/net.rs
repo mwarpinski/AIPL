@@ -19,8 +19,15 @@ use std::sync::{Arc, Mutex};
 pub const FRESH_TOO_LONG: &str = "the answer is more than 64 MiB, the most a fresh instance may write: sent 500 Internal Server Error";
 
 /// Not granted: the program asked for an address and port no `--listen`
-/// names.
+/// (or, for `connect`, `--allow-connect`) names.
 pub const NOT_GRANTED: i32 = -2;
+
+/// One `--allow-connect ADDR:PORT` grant: an address, and a port or any port (`ADDR:*`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectGrant {
+    pub ip: IpAddr,
+    pub port: Option<u16>,
+}
 
 enum Sock {
     Listener(TcpListener),
@@ -37,13 +44,32 @@ struct Table {
 #[derive(Clone, Default)]
 pub struct Net {
     listen: Arc<Vec<SocketAddr>>,
+    connect: Arc<Vec<ConnectGrant>>,
     table: Arc<Mutex<Table>>,
 }
 
 impl Net {
     /// A table with these `--listen` grants.
     pub fn new(listen: Vec<SocketAddr>) -> Net {
-        Net { listen: Arc::new(listen), table: Arc::new(Mutex::new(Table { socks: HashMap::new(), next: 3 })) }
+        Net { listen: Arc::new(listen), connect: Arc::default(), table: Arc::new(Mutex::new(Table { socks: HashMap::new(), next: 3 })) }
+    }
+
+    /// The same table with these `--allow-connect` grants.
+    pub fn with_connect(&self, connect: Vec<ConnectGrant>) -> Net {
+        Net { connect: Arc::new(connect), ..self.clone() }
+    }
+
+    /// `--allow-connect ADDR:PORT` or `ADDR:*` (any port), as `127.0.0.1:8080`, `[::1]:*`: an address,
+    /// not a name (there is no resolver yet), in the form std/ip's parse_endpoint reads.
+    pub fn parse_connect_grant(text: &str) -> Result<ConnectGrant, String> {
+        let bad = || format!("--allow-connect {text}: expected ADDR:PORT or ADDR:*, as 127.0.0.1:8080 or [::1]:*");
+        let Some((host, port)) = text.rsplit_once(':') else { return Err(bad()) };
+        let port = if port == "*" { None } else { Some(port.parse::<u16>().map_err(|_| bad())?) };
+        let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+        if host.contains('%') {
+            return Err(bad());
+        }
+        Ok(ConnectGrant { ip: host.parse().map_err(|_| bad())?, port })
     }
 
     /// `--listen ADDR:PORT`, as `127.0.0.1:8080` or `[::1]:8080`: what
@@ -91,6 +117,19 @@ impl Net {
         }
         match TcpListener::bind(at) {
             Ok(l) => self.insert(Sock::Listener(l)),
+            Err(_) => -1,
+        }
+    }
+
+    /// `connect(addr, len, port)`: a connection's handle; -1 if the address is malformed or the
+    /// connection fails, NOT_GRANTED if no `--allow-connect` names the address and port.
+    pub fn connect(&self, addr: &[u8], port: i32) -> i32 {
+        let Some(at) = Self::address(addr, port) else { return -1 };
+        if !self.connect.iter().any(|g| g.ip == at.ip() && g.port.is_none_or(|p| p == at.port())) {
+            return NOT_GRANTED;
+        }
+        match TcpStream::connect(at) {
+            Ok(s) => self.insert(Sock::Stream(s)),
             Err(_) => -1,
         }
     }

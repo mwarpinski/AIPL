@@ -42,6 +42,10 @@ enum Commands {
         /// or [::1]:8080 (repeatable; none by default)
         #[arg(long = "listen", value_name = "ADDR:PORT")]
         listen: Vec<String>,
+        /// An address and port the program may connect to with net.connect, as 127.0.0.1:8080, or
+        /// 127.0.0.1:* for any port (repeatable; none by default; addresses, not names)
+        #[arg(long = "allow-connect", value_name = "ADDR:PORT")]
+        allow_connect: Vec<String>,
         /// A program the program may start with proc.spawn or proc.exec, as
         /// /bin/sh, or * for any (repeatable; none by default)
         #[arg(long = "allow-run", value_name = "PROGRAM")]
@@ -81,6 +85,10 @@ enum Commands {
         /// executable (repeatable; none by default)
         #[arg(long = "listen", value_name = "ADDR:PORT", requires = "exe")]
         listen: Vec<String>,
+        /// With --exe: an address and port the program may connect to (ADDR:* for any port), fixed
+        /// in the executable (repeatable; none by default)
+        #[arg(long = "allow-connect", value_name = "ADDR:PORT", requires = "exe")]
+        allow_connect: Vec<String>,
         /// With --exe: a program the program may start with proc.spawn or
         /// proc.exec, as /bin/sh, or * for any, fixed in the executable
         /// (repeatable; none by default)
@@ -133,6 +141,9 @@ enum Commands {
         /// An address and port the program may listen on (repeatable)
         #[arg(long = "listen", value_name = "ADDR:PORT")]
         listen: Vec<String>,
+        /// An address and port the program may connect to (repeatable; ADDR:* for any port)
+        #[arg(long = "allow-connect", value_name = "ADDR:PORT")]
+        allow_connect: Vec<String>,
         /// A program the program may start (repeatable; * for any)
         #[arg(long = "allow-run", value_name = "PROGRAM")]
         allow_run: Vec<String>,
@@ -381,7 +392,7 @@ fn write_executable(output: &str, wasm: &[u8], sandbox: bool, listen: &[String],
     if bytes.ends_with(b"AIPLEXE1") || bytes.ends_with(b"AIPLEXE2") {
         return Err("the aipl-run launcher already has a program appended".into());
     }
-    for g in listen.iter().filter(|g| !g.starts_with("run:")) {
+    for g in listen.iter().filter(|g| !g.starts_with("run:") && !g.starts_with("connect:")) {
         aipl_core::net::Net::parse_grant(g)?;
     }
     // refused when compiled, as the native backend refuses it
@@ -411,7 +422,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Eval { file, func, expr, with, wasm, native, listen, allow_run, max_memory, args } => {
+        Commands::Eval { file, func, expr, with, wasm, native, listen, allow_connect, allow_run, max_memory, args } => {
             if let Some(exprs) = expr {
                 use aipl_core::evalexpr::{run, Backend};
                 let backend = if wasm { Backend::Wasm } else if native { Backend::Native } else { Backend::Vm };
@@ -426,6 +437,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut vm = VM::new();
             vm.set_args(std::iter::once(file.clone()).chain(args).collect());
             vm.set_listen(listen.iter().map(|g| aipl_core::net::Net::parse_grant(g)).collect::<Result<_, _>>()?);
+            vm.set_connect(allow_connect.iter().map(|g| aipl_core::net::Net::parse_connect_grant(g)).collect::<Result<_, _>>()?);
             vm.set_allow_run(allow_run);
             if let Some(m) = &max_memory {
                 vm.set_max_pages(aipl_core::compiler::memory_pages(m)? as usize);
@@ -463,13 +475,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Compile { file, output, no_opt, self_flag, exe, sandbox, listen, allow_run, serve, max_memory, target, tests } => {
+        Commands::Compile { file, output, no_opt, self_flag, exe, sandbox, listen, allow_connect, allow_run, serve, max_memory, target, tests } => {
             // a grant is checked before anything is compiled (aipl.aipl does the same)
             for g in &listen {
                 aipl_core::net::Net::parse_grant(g)?;
             }
-            // the grants an executable carries: addresses, then `run:PROGRAM` for each program
-            let listen: Vec<String> = listen.into_iter().chain(allow_run.into_iter().map(|p| format!("run:{p}"))).collect();
+            for g in &allow_connect {
+                aipl_core::net::Net::parse_connect_grant(g)?;
+            }
+            // the grants an executable carries: addresses, then `connect:ADDR:PORT` for each connection and
+            // `run:PROGRAM` for each program
+            let listen: Vec<String> = listen
+                .into_iter()
+                .chain(allow_connect.into_iter().map(|g| format!("connect:{g}")))
+                .chain(allow_run.into_iter().map(|p| format!("run:{p}")))
+                .collect();
             if let Some(s) = &serve {
                 aipl_core::net::Net::parse_address("--serve", s)?;
             }
@@ -584,7 +604,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let _ = fs::remove_dir_all(&dir);
             return Err(format!("cannot start aipl-run: {e}").into());
         }
-        Commands::Run { file, sandbox, listen, allow_run, args } => {
+        Commands::Run { file, sandbox, listen, allow_connect, allow_run, args } => {
             if file.ends_with(".aipl") {
                 return Err(format!(
                     "aipl run takes a compiled .wasm file, not source: run {file} with `aipl eval {file}`, or compile it first with `aipl compile {file} -o out.wasm`"
@@ -597,6 +617,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             for g in &listen {
                 cmd.arg("--listen").arg(g);
+            }
+            for g in &allow_connect {
+                cmd.arg("--allow-connect").arg(g);
             }
             for p in &allow_run {
                 cmd.arg("--allow-run").arg(p);

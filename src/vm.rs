@@ -109,6 +109,7 @@ pub struct VM {
     /// Sockets (aipl_net_v1) and the grants they need, shared by every
     /// thread of the program.
     net: crate::net::Net,
+    connect_grants: Vec<crate::net::ConnectGrant>,
     /// The processes the program started (aipl_sys_v1), and what it may start
     procs: crate::sys::Procs,
     thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
@@ -170,6 +171,7 @@ impl VM {
             dirs: HashMap::new(),
             next_fd: 3,
             net: crate::net::Net::new(Vec::new()),
+            connect_grants: Vec::new(),
             procs: crate::sys::Procs::new(Vec::new()),
             thread_handles: HashMap::new(),
             strings: Arc::new(HashMap::new()),
@@ -202,6 +204,7 @@ impl VM {
             dirs: HashMap::new(),
             next_fd: 3,
             net: self.net.clone(),
+            connect_grants: self.connect_grants.clone(),
             procs: self.procs.clone(),
             thread_handles: HashMap::new(),
             strings: Arc::clone(&self.strings),
@@ -228,7 +231,13 @@ impl VM {
 
     /// The addresses `net.listen` may use (`--listen`); none by default.
     pub fn set_listen(&mut self, grants: Vec<std::net::SocketAddr>) {
-        self.net = crate::net::Net::new(grants);
+        self.net = crate::net::Net::new(grants).with_connect(self.connect_grants.clone());
+    }
+
+    /// The addresses `net.connect` may use (`--allow-connect`); none by default.
+    pub fn set_connect(&mut self, grants: Vec<crate::net::ConnectGrant>) {
+        self.net = self.net.with_connect(grants.clone());
+        self.connect_grants = grants;
     }
 
     /// The programs `proc.spawn` and `proc.exec` may start (`--allow-run`);
@@ -1990,6 +1999,16 @@ impl VM {
                 }
                 let bytes = self.read_bytes(addr, len);
                 Ok(Value::Int(self.net.listen(&bytes, port) as i64))
+            }
+            OpCode::NetConnect => {
+                let addr = self.int_operand(&args[0], scope, "net.connect")? as u32 as usize;
+                let len = self.int_operand(&args[1], scope, "net.connect")? as u32 as usize;
+                let port = self.int_operand(&args[2], scope, "net.connect")? as i32;
+                if !self.in_memory(addr, len) {
+                    return Ok(Value::Int(-1));
+                }
+                let bytes = self.read_bytes(addr, len);
+                Ok(Value::Int(self.net.connect(&bytes, port) as i64))
             }
             OpCode::NetAccept => {
                 let h = self.int_operand(&args[0], scope, "net.accept")? as i32;

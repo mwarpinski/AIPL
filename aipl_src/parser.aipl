@@ -1133,7 +1133,7 @@
     (call op m "fs.opendir" ast.Op.fs_opendir) (call op m "fs.readdir" ast.Op.fs_readdir) (call op m "fs.stat" ast.Op.fs_stat)
     (call op m "fs.chmod" ast.Op.fs_chmod) (call op m "fs.rename" ast.Op.fs_rename) (call op m "fs.rmdir" ast.Op.fs_rmdir) (call op m "fs.mkdir" ast.Op.fs_mkdir) (call op m "sys.poll" ast.Op.sys_poll)
     (call op m "net.listen" ast.Op.net_listen) (call op m "net.accept" ast.Op.net_accept) (call op m "net.recv" ast.Op.net_recv)
-    (call op m "net.send" ast.Op.net_send) (call op m "net.close" ast.Op.net_close)
+    (call op m "net.send" ast.Op.net_send) (call op m "net.close" ast.Op.net_close) (call op m "net.connect" ast.Op.net_connect)
     (call op m "proc.spawn" ast.Op.proc_spawn) (call op m "proc.stream" ast.Op.proc_stream) (call op m "proc.read" ast.Op.proc_read)
     (call op m "proc.write" ast.Op.proc_write) (call op m "proc.close" ast.Op.proc_close) (call op m "proc.wait" ast.Op.proc_wait)
     (call op m "proc.exec" ast.Op.proc_exec)

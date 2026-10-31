@@ -227,6 +227,7 @@ pub fn op_name(op: &OpCode) -> &'static str {
         NetRecv => "net.recv",
         NetSend => "net.send",
         NetClose => "net.close",
+        NetConnect => "net.connect",
         ProcSpawn => "proc.spawn",
         ProcStream => "proc.stream",
         ProcRead => "proc.read",

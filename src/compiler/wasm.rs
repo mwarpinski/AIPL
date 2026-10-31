@@ -1371,6 +1371,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::NetRecv
             | OpCode::NetSend
             | OpCode::NetClose
+            | OpCode::NetConnect
             | OpCode::ProcSpawn
             | OpCode::ProcStream
             | OpCode::ProcRead
@@ -2142,6 +2143,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             | OpCode::NetRecv
             | OpCode::NetSend
             | OpCode::NetClose
+            | OpCode::NetConnect
             | OpCode::ProcSpawn
             | OpCode::ProcStream
             | OpCode::ProcRead
@@ -4320,6 +4322,7 @@ enum Wasi {
     NetRecv,
     NetSend,
     NetClose,
+    NetConnect,
     /// AIPL's own host interface, module "aipl_sys_v1" (docs/design/SYS_PLAN.md):
     /// `chmod(dirfd, path, len, mode)`.
     SysChmod,
@@ -4347,7 +4350,7 @@ impl Wasi {
     fn module(self) -> &'static str {
         match self {
             Wasi::ThreadSpawn => "wasi",
-            Wasi::NetListen | Wasi::NetAccept | Wasi::NetRecv | Wasi::NetSend | Wasi::NetClose => "aipl_net_v1",
+            Wasi::NetListen | Wasi::NetAccept | Wasi::NetRecv | Wasi::NetSend | Wasi::NetClose | Wasi::NetConnect => "aipl_net_v1",
             Wasi::SysChmod | Wasi::ProcSpawn | Wasi::ProcStream | Wasi::ProcRead | Wasi::ProcWrite | Wasi::ProcClose | Wasi::ProcWait | Wasi::ProcExec => "aipl_sys_v1",
             _ => "wasi_snapshot_preview1",
         }
@@ -4375,6 +4378,7 @@ impl Wasi {
             Wasi::NetRecv => "recv",
             Wasi::NetSend => "send",
             Wasi::NetClose => "close",
+            Wasi::NetConnect => "connect",
             Wasi::SysChmod => "chmod",
             Wasi::ProcSpawn => "spawn",
             Wasi::ProcStream => "stream",
@@ -4405,7 +4409,7 @@ impl Wasi {
             Wasi::RandomGet => (vec![I32, I32], vec![I32]),
             Wasi::FdReaddir => (vec![I32, I32, I32, I64, I32], vec![I32]),
             Wasi::PathFilestatGet => (vec![I32, I32, I32, I32, I32], vec![I32]),
-            Wasi::NetListen | Wasi::NetRecv | Wasi::NetSend => (vec![I32, I32, I32], vec![I32]),
+            Wasi::NetListen | Wasi::NetRecv | Wasi::NetSend | Wasi::NetConnect => (vec![I32, I32, I32], vec![I32]),
             Wasi::SysChmod | Wasi::ProcExec => (vec![I32, I32, I32, I32], vec![I32]),
             Wasi::ProcSpawn => (vec![I32, I32, I32, I32, I32], vec![I32]),
             Wasi::ProcRead | Wasi::ProcWrite => (vec![I32, I32, I32], vec![I32]),
@@ -4445,6 +4449,7 @@ impl Wasi {
             OpCode::NetRecv => Some(Wasi::NetRecv),
             OpCode::NetSend => Some(Wasi::NetSend),
             OpCode::NetClose => Some(Wasi::NetClose),
+            OpCode::NetConnect => Some(Wasi::NetConnect),
             OpCode::FsChmod => Some(Wasi::SysChmod),
             OpCode::ProcSpawn => Some(Wasi::ProcSpawn),
             OpCode::ProcStream => Some(Wasi::ProcStream),

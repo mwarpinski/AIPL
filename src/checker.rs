@@ -1789,6 +1789,10 @@ fn fits(got: &Type, want: &Type) -> bool {
                     self.expect_operands("net.close", "(net.close h)", args, &[Type::I32], env, (l, c))?;
                     Ok(Type::I32)
                 }
+                OpCode::NetConnect => {
+                    self.expect_operands("net.connect", "(net.connect addr len port)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
                 OpCode::ProcSpawn => {
                     self.expect_operands("proc.spawn", "(proc.spawn path len args args_len stdio)", args, &[Type::I32, Type::I32, Type::I32, Type::I32, Type::I32], env, (l, c))?;
                     Ok(Type::I32)
@@ -2477,7 +2481,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
             | FsOpen | FsRead | FsWrite | FsDelete | FsChmod | FsRename | FsRmdir | FsMkdir | SysPoll | FsOpendir | FsReaddir | FsStat
-            | NetListen | NetAccept | NetRecv | NetSend | NetClose
+            | NetListen | NetAccept | NetRecv | NetSend | NetClose | NetConnect
             | ProcSpawn | ProcStream | ProcRead | ProcWrite | ProcClose | ProcWait | ProcExec
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom

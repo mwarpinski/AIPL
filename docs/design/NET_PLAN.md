@@ -1,8 +1,9 @@
 # Networking: serving and fetching (stdlib batch L7)
 
 **Status: approved 2026-10-19 (decisions in section 6).** Serving is
-built (steps 1-4); fetching, TLS, and the measurements are not (steps
-5-7). STDLIB_PLAN.md asked for this document before any code: "an `aipl`
+built (steps 1-4), and so is fetching over plain TCP to an address
+(step 5, 2026-10-31); TLS (step 6) is set aside, DNS is not built, and
+the measurements (step 7) are not done. STDLIB_PLAN.md asked for this document before any code: "an `aipl`
 host interface (versioned imports beside WASI preview 1: listening and
 connecting TCP sockets, permissions granted on the command line), in the
 VM, natively as Linux system calls, and in aipl-run; then `http` serving
@@ -16,8 +17,8 @@ and fetching over it".
 | 2 | Sockets: `aipl_net_v1` listen/accept/recv/send/close, `--listen`, std/ip, std/net | **Done** 2026-10-20 |
 | 3 | std/serve and the long-running server (A); `--max-memory` | **Done** 2026-10-20 |
 | 4 | A fresh instance per request (B): `serve.once`, `aipl serve --fresh`, `aipl compile --exe --serve` | **Done** 2026-10-20 |
-| 5 | Fetching: `connect`, `--allow-connect`, `http.fetch` | **Next** |
-| 6 | TLS from the host (rustls): `tls_connect`, `tls_accept`, `https://` | Not started |
+| 5 | Fetching: `connect`, `--allow-connect`, `http.fetch` (plain http to an address) | **Done** 2026-10-31 |
+| 6 | TLS from the host (rustls): `tls_connect`, `tls_accept`, `https://` | **Set aside** (owner, 2026-10-31): see section 6, decision 4 |
 | 7 | Measure requests a second per backend and mode (docs/BENCHMARKS.md) | Not started |
 
 Also outstanding (small, found while building steps 3-4):
@@ -120,8 +121,8 @@ written in AIPL, aipl_src/native/sockets.aipl):
 | `accept(h) -> h` | the next connection (blocking), or -1 | built (step 2) |
 | `recv(h, buf, max) -> n`, `send(h, buf, len) -> n` | blocking reads and writes: bytes moved, 0 at the end, -1 on an error | built (step 2) |
 | `close(h) -> i32` | closes a socket: 0, or -1 | built (step 2) |
-| `connect(addr, len, port) -> h` | a connection; -1, or -2 if not granted | **not built** (step 5) |
-| `tls_connect`, `tls_accept` | TLS over a connection (section 4) | **not built** (step 6) |
+| `connect(addr, len, port) -> h` | a connection; -1, or -2 if not granted | built (step 5) |
+| `tls_connect`, `tls_accept` | TLS over a connection (section 4) | **not built** (step 6, set aside) |
 
 An address is given as its bytes, 4 for IPv4 or 16 for IPv6, in network
 order; std/ip parses the text (`127.0.0.1`, `::1`) in AIPL, so no backend
@@ -141,8 +142,8 @@ safe interface, and turns -2 into an error naming the grant to add ("not
 granted: run the program with --listen ADDR:PORT").
 
 Granted on the command line, nothing by default: `--listen ADDR:PORT`
-(built) and `--allow-connect HOST:PORT` (repeatable; `*` for any port;
-**not built**, step 5). A native executable or launcher bundle gets its
+(built) and `--allow-connect ADDR:PORT` (repeatable; `ADDR:*` for any
+port; built, step 5; an address, not a host name, until DNS exists). A native executable or launcher bundle gets its
 grants when it is compiled, as `--sandbox` does, so a binary says what it
 may reach and cannot be talked into more. The VM and aipl-run take them
 at start.
@@ -152,7 +153,7 @@ std/http reads and writes over them unchanged. A stream's callbacks are
 calls through function references, whose types carry the `(no_leak)`
 promise (step 1), so a `(no_leak)` handler may use streams.
 
-## 4. Fetching (not built: steps 5 and 6)
+## 4. Fetching (step 5 built; step 6, TLS, set aside)
 
 `http.fetch` over `connect`, a request written and the response read
 with std/http:
@@ -222,15 +223,34 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
    way to run one, and `--serve` takes its address when compiled, as
    `--listen` grants are.
 
-### Not started
+5. **`connect`, `--allow-connect`, and `http.fetch`.** Done 2026-10-31, in
+   every backend and both toolchains: `net.connect` (`aipl_net_v1.connect`;
+   src/net.rs for the VM and aipl-run, sockets.aipl and sockets_arm64.aipl
+   natively); `--allow-connect ADDR:PORT` (`ADDR:*` for any port) on eval,
+   run, aipl-run, and compile --exe (fixed in a native executable, and in
+   the launcher bundle's trailer as `connect:` lines); `net.connect`,
+   `net.connect_to` in std/net (`Error.connect_not_granted`, whose message
+   names the flag); `http.fetch` in std/http, over std/url: a GET of
+   `http://ADDR[:PORT][/path][?query]`, `Connection: close`, read to the
+   end, redirects not followed, the message owning the bytes it was read
+   from. Addresses only: a name is an error saying there is no resolver
+   yet, `https://` an error saying there is no TLS. Tests
+   (tests/test_net.rs): the same bytes from a server in the test in the VM,
+   aipl-run, a native executable, and a bundle (a Content-Length body, a
+   chunked one, one ended by the close, a 302 not followed, a malformed
+   response, a cut-short body; the request's exact bytes); each refusal
+   (no grant, another port, nothing listening, https, a name, another
+   scheme) alike everywhere; a malformed grant refused before anything
+   runs; both toolchains' bytes alike. On AArch64 (tests/test_native_arm64_programs.rs)
+   the same, where the test can reach a server (a host or qemu-user).
 
-5. **`connect`, `--allow-connect`, and `http.fetch`**, tested against
-   step 3's server in each backend. **Next.**
+### Not built
+
 6. **TLS from the host:** `tls_connect` and `tls_accept`, `https://` in
    `http.fetch`, a server with a certificate; native executables refuse
    it at compile time with the way out. Tests: a fetch from step 3's
    server over TLS with a test certificate, in the VM and under aipl-run;
-   the refusal's message.
+   the refusal's message. **Set aside** by the owner on 2026-10-31 (decision 4).
 7. **Measure** requests a second per backend and mode on a quiet machine,
    in docs/BENCHMARKS.md.
 
@@ -245,11 +265,13 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
    each with its own arena ("walk, then run"). An event loop, if ever,
    later. *One at a time is built; the worker pool is not started.*
 3. **Fetching over plain HTTP to addresses first**; DNS as a later small
-   batch. *Not started (step 5).*
+   batch. *Built (step 5): addresses only; DNS is not started.*
 4. **TLS from the host (rustls) before launch**, in the VM, aipl-run, and
    the launcher-bundled executables; native executables refuse it at
    compile time with the way out (`--target wasm`, or a TLS proxy in
-   front, as most servers are deployed anyway). *Not started (step 6).*
+   front, as most servers are deployed anyway). *Set aside 2026-10-31: the owner would
+   have TLS (and the like) come from existing Rust code, not from a written-in-AIPL
+   implementation, and not for now; see section 7.*
    **A TLS written in AIPL is not planned** (revised 2026-10-20): it
    would add only HTTPS inside a native executable with no proxy, and
    hand-written cryptography is not fit for real traffic without an
@@ -265,6 +287,11 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
 - Keep-alive and streamed request bodies, if measurements show the need.
 - WebSockets, UDP, and DNS: later batches, each with its own short plan.
 - Not planned: a TLS written in AIPL (decision 4).
+- Rust components, the owner's direction for what AIPL does not do itself (TLS first): a program imports
+  functionality from existing Rust code, or a parallel component written in Rust that AIPL calls, as
+  `aipl_net_v1` and `aipl_sys_v1` already are host imports Rust provides. Needs its own plan (how a
+  component is named and granted, what a native executable does without Rust). Until then a TLS proxy
+  in front, or a Rust process started with `proc.spawn` and spoken to over a socket, is the way.
 - A server that recovers from a trap in one request without a fresh
   instance would need the language to recover from failures, which AIPL
   deliberately does not; the fresh instance (B) is the answer to that.

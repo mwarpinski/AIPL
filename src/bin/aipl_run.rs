@@ -52,6 +52,8 @@ struct Program {
     argv: Vec<String>,
     sandbox: bool,
     listen: Vec<std::net::SocketAddr>,
+    /// --allow-connect: the addresses (and ports) net.connect may reach
+    connect: Vec<aipl_core::net::ConnectGrant>,
     /// --allow-run: the programs the module may start ("*": any)
     allow_run: Vec<String>,
     /// --serve-fresh: the address to serve on, and how many connections to
@@ -88,16 +90,18 @@ fn embedded(args: &[String]) -> Option<Program> {
     // write_executable checked each grant
     let text = std::str::from_utf8(&me[grants_at..n - 20]).ok()?;
     let allow_run = text.lines().filter_map(|g| g.strip_prefix("run:").map(str::to_string)).collect();
+    let connect = text.lines().filter_map(|g| g.strip_prefix("connect:").and_then(|g| aipl_core::net::Net::parse_connect_grant(g).ok())).collect();
     let mut lines = text.lines().filter_map(|g| aipl_core::net::Net::parse_grant(g).ok());
     let fresh = if flags & FLAG_SERVE != 0 { Some((lines.next()?, None)) } else { None };
     let listen = lines.collect();
-    Some(Program { wasm: me[start..grants_at].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0, listen, allow_run, fresh })
+    Some(Program { wasm: me[start..grants_at].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0, listen, connect, allow_run, fresh })
 }
 
 fn from_command_line(args: &[String]) -> Result<Program, String> {
     let mut rest = &args[1.min(args.len())..];
     let (mut sandbox, mut listen, mut fresh, mut requests, mut name) = (false, Vec::new(), None, None, None);
     let mut allow_run: Vec<String> = Vec::new();
+    let mut connect: Vec<aipl_core::net::ConnectGrant> = Vec::new();
     let mut temporary = false;
     loop {
         match rest.first().map(String::as_str) {
@@ -132,6 +136,11 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
                 listen.push(aipl_core::net::Net::parse_grant(g)?);
                 rest = &rest[2..];
             }
+            Some("--allow-connect") => {
+                let g = rest.get(1).ok_or("--allow-connect needs ADDR:PORT or ADDR:*")?;
+                connect.push(aipl_core::net::Net::parse_connect_grant(g)?);
+                rest = &rest[2..];
+            }
             Some("--allow-run") => {
                 allow_run.push(rest.get(1).ok_or("--allow-run needs a program's path, or *")?.clone());
                 rest = &rest[2..];
@@ -139,7 +148,7 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
             _ => break,
         }
     }
-    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... [--allow-run PROGRAM]... [--name NAME] PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] [--name NAME] PROGRAM.wasm [ARGS...]")?;
+    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... [--allow-connect ADDR:PORT]... [--allow-run PROGRAM]... [--name NAME] PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] [--name NAME] PROGRAM.wasm [ARGS...]")?;
     let wasm = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
     if temporary {
         let _ = std::fs::remove_file(file);
@@ -154,7 +163,7 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
     if let Some(n) = name {
         argv[0] = n;
     }
-    Ok(Program { wasm, argv, sandbox, listen, allow_run, fresh: fresh.map(|at| (at, requests)) })
+    Ok(Program { wasm, argv, sandbox, listen, connect, allow_run, fresh: fresh.map(|at| (at, requests)) })
 }
 
 /// What one thread's instance needs: shared by the main thread and every
@@ -220,6 +229,13 @@ fn add_net(linker: &mut Linker<WasiP1Ctx>, net: &aipl_core::net::Net, shared: &O
     linker.func_wrap("aipl_net_v1", "listen", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, addr: i32, len: i32, port: i32| -> i32 {
         match read_mem(&mut c, &sh, addr, len) {
             Some(a) => n.listen(&a, port),
+            None => -1,
+        }
+    })?;
+    let (n, sh) = (net.clone(), shared.clone());
+    linker.func_wrap("aipl_net_v1", "connect", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, addr: i32, len: i32, port: i32| -> i32 {
+        match read_mem(&mut c, &sh, addr, len) {
+            Some(a) => n.connect(&a, port),
             None => -1,
         }
     })?;
@@ -543,7 +559,7 @@ fn serve_fresh(p: Program) -> i32 {
     if let Err(e) = add_sys(&mut linker, &None, p.sandbox, &aipl_core::sys::Procs::new(p.allow_run.clone())) {
         return fail(e.to_string());
     }
-    if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()), &None) {
+    if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()).with_connect(p.connect.clone()), &None) {
         return fail(e.to_string());
     }
     let listener = match std::net::TcpListener::bind(at) {
@@ -679,7 +695,7 @@ fn run(p: Program) -> i32 {
     if let Err(e) = add_sys(&mut linker, &shared, p.sandbox, &aipl_core::sys::Procs::new(p.allow_run.clone())) {
         return fail(e.to_string());
     }
-    if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()), &shared) {
+    if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()).with_connect(p.connect.clone()), &shared) {
         return fail(e.to_string());
     }
     let instance = match linker.instantiate(&mut store, &module) {

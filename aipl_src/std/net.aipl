@@ -11,10 +11,15 @@
 ;;   (call stream.close_reader r)
 ;;   (call net.close c)
 ;;
+;;   (let c:net.Socket (try (call net.connect a (call str.from_str "127.0.0.1:9000"))))
+;;   ... the same reader and writer, then (call net.close c) ...
+;;
 ;; A program may listen only where it was granted: `aipl eval --listen
 ;; 127.0.0.1:8080 prog.aipl`, `aipl-run --listen ...`, or, fixed in a native
 ;; executable, `aipl compile --exe --listen ...`; elsewhere listen gives
-;; Error.not_granted. Addresses are read by std/ip, as Rust reads them.
+;; Error.not_granted. It may connect only to an address granted with
+;; `--allow-connect ADDR:PORT` (ADDR:* for any port), the same way; an address, not
+;; a name (there is no resolver yet). Addresses are read by std/ip, as Rust reads them.
 ;; A Socket's handle is private to this module, so a socket cannot be given
 ;; to std/fs, or a file to it. Every call blocks until it is done; one
 ;; connection at a time for now (a pool of threads later). Nothing here
@@ -33,14 +38,15 @@
   (struct Socket [h:i32] (value) (pub))
 
   ;; Why a call failed.
-  (enum Error [not_an_address not_granted refused] (pub))
+  (enum Error [not_an_address not_granted refused connect_not_granted] (pub))
 
   ;; What went wrong, for a message.
   (fn message [e:Error] -> str (pub) (no_leak)
     (match e
       (Error.not_an_address "not an ADDR:PORT (127.0.0.1:8080, [::1]:8080)")
       (Error.not_granted "not granted: run the program with --listen ADDR:PORT")
-      (Error.refused "refused by the system")))
+      (Error.refused "refused by the system")
+      (Error.connect_not_granted "not granted: run the program with --allow-connect ADDR:PORT")))
 
   ;; A socket listening on `at` (ADDR:PORT), with SO_REUSEADDR and a
   ;; backlog of 128.
@@ -57,6 +63,25 @@
        (cond ((eq h -2) (err:Socket Error.not_granted))
              ((lt h 0) (err:Socket Error.refused))
              (else (ok:Error (make Socket [h:h])))))))
+
+  ;; A connection to `at` (ADDR:PORT), if the program was granted it (--allow-connect); waits
+  ;; for the system's answer.
+  (fn connect [a:alloc.Allocator at:str.Bytes] -> (result Socket Error) (pub) (no_leak)
+    (match (call ip.parse_endpoint at)
+      ((option.Option ip.Endpoint) none (err:Socket Error.not_an_address))
+      ((option.Option ip.Endpoint) some [e] (call connect_to a e))))
+
+  ;; A connection to the endpoint e.
+  (fn connect_to [a:alloc.Allocator e:ip.Endpoint] -> (result Socket Error) (pub) (no_leak)
+    (let ad:ip.Addr (get e ip.Endpoint.addr))
+    (let n:i32 (call ip.len ad))
+    (let b:(arr u8) (arr.new u8 a n))
+    (for i 0 n (arr.set u8 b i (call ip.byte_at ad i)))
+    (let h:i32 (unsafe (net.connect (arr.addr b) n (get e ip.Endpoint.port))))
+    (call (alloc.free_array u8) a b)
+    (cond ((eq h -2) (err:Socket Error.connect_not_granted))
+          ((lt h 0) (err:Socket Error.refused))
+          (else (ok:Error (make Socket [h:h])))))
 
   ;; The next connection on listening socket l (waiting for one).
   (fn accept [l:Socket] -> (result Socket Error) (pub) (no_leak)
