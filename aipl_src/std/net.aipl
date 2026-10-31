@@ -17,9 +17,9 @@
 ;; A program may listen only where it was granted: `aipl eval --listen
 ;; 127.0.0.1:8080 prog.aipl`, `aipl-run --listen ...`, or, fixed in a native
 ;; executable, `aipl compile --exe --listen ...`; elsewhere listen gives
-;; Error.not_granted. It may connect only to an address granted with
-;; `--allow-connect ADDR:PORT` (ADDR:* for any port), the same way; an address, not
-;; a name (there is no resolver yet). Addresses are read by std/ip, as Rust reads them.
+;; Error.not_granted. It may connect only to a host granted with
+;; `--allow-connect HOST:PORT` (HOST:* for any port), the same way; HOST is an address, or, for
+;; connect_host and connect_tls, a name (granted by that name). Addresses are read by std/ip, as Rust reads them.
 ;; A Socket's handle is private to this module, so a socket cannot be given
 ;; to std/fs, or a file to it. Every call blocks until it is done; one
 ;; connection at a time for now (a pool of threads later). Nothing here
@@ -38,7 +38,7 @@
   (struct Socket [h:i32] (value) (pub))
 
   ;; Why a call failed.
-  (enum Error [not_an_address not_granted refused connect_not_granted] (pub))
+  (enum Error [not_an_address not_granted refused connect_not_granted no_host_support tls_failed no_such_host] (pub))
 
   ;; What went wrong, for a message.
   (fn message [e:Error] -> str (pub) (no_leak)
@@ -46,7 +46,10 @@
       (Error.not_an_address "not an ADDR:PORT (127.0.0.1:8080, [::1]:8080)")
       (Error.not_granted "not granted: run the program with --listen ADDR:PORT")
       (Error.refused "refused by the system")
-      (Error.connect_not_granted "not granted: run the program with --allow-connect ADDR:PORT")))
+      (Error.connect_not_granted "not granted: run the program with --allow-connect HOST:PORT")
+      (Error.no_host_support "host names and TLS are not in native executables: use an address and plain http, run it as a wasm module (aipl eval, aipl-run, compile --exe --target wasm), or put a proxy in front")
+      (Error.tls_failed "the TLS handshake failed: an untrusted or mismatched certificate, or a server that does not speak TLS")
+      (Error.no_such_host "the name did not resolve")))
 
   ;; A socket listening on `at` (ADDR:PORT), with SO_REUSEADDR and a
   ;; backlog of 128.
@@ -70,6 +73,30 @@
     (match (call ip.parse_endpoint at)
       ((option.Option ip.Endpoint) none (err:Socket Error.not_an_address))
       ((option.Option ip.Endpoint) some [e] (call connect_to a e))))
+
+  ;; A connection to the host `host` (a name, or an address as text) on `port`, if the program was granted
+  ;; it (`--allow-connect HOST:PORT`); the system's resolver finds the address. Not in native executables
+  ;; (Error.no_host_support).
+  (fn connect_host [a:alloc.Allocator host:str.Bytes port:i32] -> (result Socket Error) (pub) (no_leak)
+    (let h:i32 (unsafe (net.connect_host (call str.addr host) (get host str.Bytes.len) port)))
+    (cond ((eq h -2) (err:Socket Error.connect_not_granted))
+          ((eq h -3) (err:Socket Error.no_host_support))
+          ((eq h -5) (err:Socket Error.no_such_host))
+          ((lt h 0) (err:Socket Error.refused))
+          (else (ok:Error (make Socket [h:h])))))
+
+  ;; A secure connection (TLS) to `host` on `port`: connect_host, then the handshake, in which the server's
+  ;; certificate must be trusted (the Mozilla roots, and the file AIPL_CA_FILE names) and carry the name.
+  ;; Everything sent and received after is plain bytes. Not in native executables (Error.no_host_support).
+  (fn connect_tls [a:alloc.Allocator host:str.Bytes port:i32] -> (result Socket Error) (pub) (no_leak)
+    (match_result (call connect_host a host port)
+      (ok s
+        (let r:i32 (unsafe (net.tls_connect (get s Socket.h) (call str.addr host) (get host str.Bytes.len))))
+        (cond ((eq r 0) (ok:Error s))
+              (else
+               (call close s)
+               (err:Socket (if (eq r -3) Error.no_host_support Error.tls_failed)))))
+      (err e (err:Socket e))))
 
   ;; A connection to the endpoint e.
   (fn connect_to [a:alloc.Allocator e:ip.Endpoint] -> (result Socket Error) (pub) (no_leak)

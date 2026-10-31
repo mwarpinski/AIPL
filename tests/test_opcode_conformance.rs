@@ -92,6 +92,9 @@ fn case(op: &OpCode) -> (&'static str, &'static str) {
         NetClose => ("i32", "(net.close 99)"),
         // no --allow-connect, so refused (-2)
         NetConnect => ("i32", "(net.connect (mem.alloc 8) 4 8080)"),
+        // no grant, so a connect by name is refused (-2); 99 is no connection, so a bad name or handle
+        NetConnectHost => ("i32", "(net.connect_host (str.ptr \"localhost\") 9 8080)"),
+        NetTlsConnect => ("i32", "(net.tls_connect 99 (str.ptr \"localhost\") 9)"),
         // no grant here, so a spawn or exec is refused (-76); 99 is no process or pipe (-8)
         ProcSpawn => ("i32", "(proc.spawn (str.ptr \"x\") 1 (str.ptr \"x\") 1 0)"),
         ProcStream => ("i32", "(proc.stream 99 0)"),
@@ -140,7 +143,7 @@ const ALL_OPCODES: &[OpCode] = {
         Add, Sub, Mul, Div, DivU, Mod, RemU, BitXor, Shl, Shr, ShrU, BitAnd, BitOr, CheckedAdd, CheckedSub, CheckedMul,
         MemLoad8, MemLoad8S, MemLoad16U, MemLoad16S, MemLoad32, MemLoad64, MemStore8, MemStore16, MemStore32, MemStore64, MemAlloc, MemGrow, AtomicAdd, AtomicCas,
         AtomicLock, AtomicUnlock, Eq, Neq, Lt, Lte, Gt, Gte, LtU, LteU, GtU, GteU, And, Or, Not, SysPrint, SysTime,
-        SysMonotonic, SysRandom, SysExit, FsOpen, FsRead, FsWrite, FsClose, FsDelete, FsChmod, FsRename, FsRmdir, FsMkdir, SysPoll, FsOpendir, FsReaddir, FsStat, NetListen, NetAccept, NetRecv, NetSend, NetClose, NetConnect, ProcSpawn, ProcStream, ProcRead, ProcWrite, ProcClose, ProcWait, ProcExec, ArgsSizes, ArgsGet, EnvSizes,
+        SysMonotonic, SysRandom, SysExit, FsOpen, FsRead, FsWrite, FsClose, FsDelete, FsChmod, FsRename, FsRmdir, FsMkdir, SysPoll, FsOpendir, FsReaddir, FsStat, NetListen, NetAccept, NetRecv, NetSend, NetClose, NetConnect, NetConnectHost, NetTlsConnect, ProcSpawn, ProcStream, ProcRead, ProcWrite, ProcClose, ProcWait, ProcExec, ArgsSizes, ArgsGet, EnvSizes,
         EnvGet, ThreadSpawn, ThreadJoin, I64ExtendS, I64ExtendU, I32Wrap, F64ConvertI64S, F32DemoteF64, F64PromoteF32,
         F32ConvertI32S, F32ConvertI64S, F64ConvertI32S, I32TruncF32S, I32TruncF64S, I64TruncF32S, F32ReinterpretI32,
         I32ReinterpretF32, F64Sqrt, I64TruncF64S,

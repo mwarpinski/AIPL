@@ -1847,7 +1847,8 @@
   ;; The aipl_net_v1 operations (docs/design/NET_PLAN.md section 3).
   (fn is_net_op [o:ast.Op] -> bool
     (or (or (eq o ast.Op.net_listen) (eq o ast.Op.net_accept))
-        (or (or (eq o ast.Op.net_recv) (eq o ast.Op.net_send)) (or (eq o ast.Op.net_close) (eq o ast.Op.net_connect)))))
+        (or (or (eq o ast.Op.net_recv) (eq o ast.Op.net_send))
+            (or (or (eq o ast.Op.net_close) (eq o ast.Op.net_connect)) (or (eq o ast.Op.net_connect_host) (eq o ast.Op.net_tls_connect))))))
 
   ;; The aipl_sys_v1 process operations (docs/design/SYS_PLAN.md D3).
   (fn is_proc_op [o:ast.Op] -> bool
@@ -1901,6 +1902,8 @@
       ((eq o ast.Op.net_send) (call operands c env at "net.send" "(net.send h buf len)" args 3) (call i32_t))
       ((eq o ast.Op.net_close) (call operands c env at "net.close" "(net.close h)" args 1) (call i32_t))
       ((eq o ast.Op.net_connect) (call operands c env at "net.connect" "(net.connect addr len port)" args 3) (call i32_t))
+      ((eq o ast.Op.net_connect_host) (call operands c env at "net.connect_host" "(net.connect_host name len port)" args 3) (call i32_t))
+      ((eq o ast.Op.net_tls_connect) (call operands c env at "net.tls_connect" "(net.tls_connect h name len)" args 3) (call i32_t))
       ((eq o ast.Op.proc_spawn) (call operands c env at "proc.spawn" "(proc.spawn path len args args_len stdio)" args 5) (call i32_t))
       ((eq o ast.Op.proc_stream) (call operands c env at "proc.stream" "(proc.stream p which)" args 2) (call i32_t))
       ((eq o ast.Op.proc_read) (call operands c env at "proc.read" "(proc.read h buf max)" args 3) (call i32_t))

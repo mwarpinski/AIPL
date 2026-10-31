@@ -148,7 +148,7 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
             _ => break,
         }
     }
-    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... [--allow-connect ADDR:PORT]... [--allow-run PROGRAM]... [--name NAME] PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] [--name NAME] PROGRAM.wasm [ARGS...]")?;
+    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... [--allow-connect HOST:PORT]... [--allow-run PROGRAM]... [--name NAME] PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] [--name NAME] PROGRAM.wasm [ARGS...]")?;
     let wasm = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
     if temporary {
         let _ = std::fs::remove_file(file);
@@ -237,6 +237,20 @@ fn add_net(linker: &mut Linker<WasiP1Ctx>, net: &aipl_core::net::Net, shared: &O
         match read_mem(&mut c, &sh, addr, len) {
             Some(a) => n.connect(&a, port),
             None => -1,
+        }
+    })?;
+    let (n, sh) = (net.clone(), shared.clone());
+    linker.func_wrap("aipl_net_v1", "connect_host", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, name: i32, len: i32, port: i32| -> i32 {
+        match read_mem(&mut c, &sh, name, len) {
+            Some(a) => n.connect_host(&a, port),
+            None => -1,
+        }
+    })?;
+    let (n, sh) = (net.clone(), shared.clone());
+    linker.func_wrap("aipl_net_v1", "tls_connect", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, h: i32, name: i32, len: i32| -> i32 {
+        match read_mem(&mut c, &sh, name, len) {
+            Some(a) => n.tls_connect(h, &a),
+            None => aipl_core::net::BAD_NAME,
         }
     })?;
     let n = net.clone();

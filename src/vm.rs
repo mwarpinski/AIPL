@@ -2010,6 +2010,26 @@ impl VM {
                 let bytes = self.read_bytes(addr, len);
                 Ok(Value::Int(self.net.connect(&bytes, port) as i64))
             }
+            OpCode::NetConnectHost => {
+                let name = self.int_operand(&args[0], scope, "net.connect_host")? as u32 as usize;
+                let len = self.int_operand(&args[1], scope, "net.connect_host")? as u32 as usize;
+                let port = self.int_operand(&args[2], scope, "net.connect_host")? as i32;
+                if !self.in_memory(name, len) {
+                    return Ok(Value::Int(-1));
+                }
+                let bytes = self.read_bytes(name, len);
+                Ok(Value::Int(self.net.connect_host(&bytes, port) as i64))
+            }
+            OpCode::NetTlsConnect => {
+                let h = self.int_operand(&args[0], scope, "net.tls_connect")? as i32;
+                let name = self.int_operand(&args[1], scope, "net.tls_connect")? as u32 as usize;
+                let len = self.int_operand(&args[2], scope, "net.tls_connect")? as u32 as usize;
+                if !self.in_memory(name, len) {
+                    return Ok(Value::Int(crate::net::BAD_NAME as i64));
+                }
+                let bytes = self.read_bytes(name, len);
+                Ok(Value::Int(self.net.tls_connect(h, &bytes) as i64))
+            }
             OpCode::NetAccept => {
                 let h = self.int_operand(&args[0], scope, "net.accept")? as i32;
                 Ok(Value::Int(self.net.accept(h) as i64))

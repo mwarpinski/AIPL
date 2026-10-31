@@ -307,16 +307,21 @@ fn http_server(replies: Vec<&'static str>) -> (std::net::SocketAddr, std::thread
 /// A backend's name, and how to start fetch_demo on a URL in it.
 type Client = (&'static str, Box<dyn Fn(&str) -> Command>);
 
-/// The commands that run fetch_demo on `url`, each backend granted `grant` (or none).
-fn fetch_commands(dir: &Path, grant: Option<&str>) -> Vec<Client> {
+/// The commands that run fetch_demo on `url`, each backend granted `grants`.
+fn fetch_commands(dir: &Path, grants: &[&str]) -> Vec<Client> {
     let wasm = dir.join("fetch.wasm");
     let o = Command::new(AIPL).arg("compile").arg(fetch_demo()).arg("-o").arg(&wasm).output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // a native executable can hold only an address's grant (it has no resolver)
+    let is_address = |g: &str| {
+        let host = g.rsplit_once(':').map_or(g, |(h, _)| h);
+        host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_ok()
+    };
     let exe = |name: &str, extra: &[&str]| {
         let out = dir.join(name);
         let mut c = Command::new(AIPL);
         c.args(["compile", "--exe"]).args(extra);
-        if let Some(g) = grant {
+        for g in grants.iter().filter(|g| extra.contains(&"--target") || is_address(g)) {
             c.args(["--allow-connect", g]);
         }
         let o = c.arg(fetch_demo()).arg("-o").arg(&out).output().unwrap();
@@ -325,15 +330,15 @@ fn fetch_commands(dir: &Path, grant: Option<&str>) -> Vec<Client> {
     };
     let native = exe("fetch_native", &[]);
     let bundle = exe("fetch_bundle", &["--target", "wasm"]);
-    let grant: Option<String> = grant.map(str::to_string);
-    let (g1, g2) = (grant.clone(), grant);
+    let grants: Vec<String> = grants.iter().map(|g| g.to_string()).collect();
+    let (g1, g2) = (grants.clone(), grants);
     vec![
         (
             "VM",
             Box::new(move |url: &str| {
                 let mut c = Command::new(AIPL);
                 c.arg("eval");
-                if let Some(g) = &g1 {
+                for g in &g1 {
                     c.args(["--allow-connect", g]);
                 }
                 c.arg(fetch_demo()).arg("--").arg(url);
@@ -344,7 +349,7 @@ fn fetch_commands(dir: &Path, grant: Option<&str>) -> Vec<Client> {
             "aipl-run",
             Box::new(move |url: &str| {
                 let mut c = Command::new(RUNNER);
-                if let Some(g) = &g2 {
+                for g in &g2 {
                     c.args(["--allow-connect", g]);
                 }
                 c.arg(&wasm).arg(url);
@@ -371,7 +376,7 @@ fn every_backend_fetches_the_same_bytes() {
     let port = probe.local_addr().unwrap().port();
     drop(probe);
     let grant = format!("127.0.0.1:{port}");
-    let backends = fetch_commands(&dir, Some(&grant));
+    let backends = fetch_commands(&dir, &[&grant]);
     for (name, cmd) in &backends {
         let listener = loop {
             match TcpListener::bind(("127.0.0.1", port)) {
@@ -398,51 +403,56 @@ fn every_backend_fetches_the_same_bytes() {
 
 #[test]
 fn a_fetch_that_cannot_happen_says_why_in_every_backend() {
-    let dir = scratch("fetch_refused");
     let (at, server) = http_server(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
     let granted = format!("127.0.0.1:{}", at.port());
-    // a grant for another port, none at all, a port nothing listens on (granted), https, and a name
+    let not_granted = "error not granted: run the program with --allow-connect HOST:PORT (0)\n";
+    let no_host = "error host names and TLS are not in native executables: use an address and plain http, run it as a wasm module (aipl eval, aipl-run, compile --exe --target wasm), or put a proxy in front (0)\n";
+    // a grant for another port, none at all, a port nothing listens on (granted), a name that was not
+    // granted (a native executable has no resolver at all), another scheme, and https (which needs a
+    // host's TLS, and fails before it connects where there is none)
     let silent = format!("127.0.0.1:{}", free_port("127.0.0.1"));
-    let cases: Vec<(Option<&str>, String, &str)> = vec![
-        (Some(&granted), format!("http://127.0.0.1:{}/", at.port() + 1), "error not granted: run the program with --allow-connect ADDR:PORT (0)\n"),
-        (None, format!("http://{granted}/"), "error not granted: run the program with --allow-connect ADDR:PORT (0)\n"),
-        (Some("127.0.0.1:*"), format!("http://{silent}/"), "error refused by the system (0)\n"),
-        (Some(&granted), format!("https://{granted}/"), "error https:// needs TLS, which AIPL does not have yet: use http://, or a TLS proxy in front (0)\n"),
-        (Some(&granted), "http://example.com/".to_string(), "error not an address: this reads http://ADDR[:PORT]/ (127.0.0.1:9000, [::1]:9000), not a name (there is no resolver yet) (0)\n"),
-        (Some(&granted), "ftp://127.0.0.1/".to_string(), "error not an http:// URL (0)\n"),
+    // (grant, url, what the hosts with a resolver and TLS print, what a native executable prints)
+    let cases: Vec<(Option<&str>, String, &str, &str)> = vec![
+        (Some(&granted), format!("http://127.0.0.1:{}/", at.port() + 1), not_granted, not_granted),
+        (None, format!("http://{granted}/"), not_granted, not_granted),
+        (Some("127.0.0.1:*"), format!("http://{silent}/"), "error refused by the system (0)\n", "error refused by the system (0)\n"),
+        (Some(&granted), "http://example.com/".to_string(), not_granted, no_host),
+        (Some(&granted), "ftp://127.0.0.1/".to_string(), "error not an http:// or https:// URL (0)\n", "error not an http:// or https:// URL (0)\n"),
+        (Some(&granted), "http:///x".to_string(), "error a URL without a host (0)\n", "error a URL without a host (0)\n"),
+        (None, format!("https://{granted}/"), not_granted, no_host),
     ];
-    for (grant, url, want) in &cases {
-        let sub = scratch(&format!("fetch_refused_{}", dir.file_name().unwrap().to_string_lossy().len() + url.len()));
-        for (name, cmd) in fetch_commands(&sub, grant.as_deref()) {
+    for (n, (grant, url, want_host, want_native)) in cases.iter().enumerate() {
+        let sub = scratch(&format!("fetch_refused_{n}"));
+        for (name, cmd) in fetch_commands(&sub, &grant.iter().copied().collect::<Vec<_>>()) {
             let o = cmd(url).output().unwrap();
+            let want = if name == "native" { want_native } else { want_host };
             assert_eq!(printed(&o), *want, "{name}, {url}: {}", String::from_utf8_lossy(&o.stderr));
         }
         let _ = std::fs::remove_dir_all(&sub);
     }
     // the one connection the server was waiting for: a wildcard grant lets the same client through
     let sub = scratch("fetch_wild");
-    for (name, cmd) in fetch_commands(&sub, Some("127.0.0.1:*")).into_iter().take(1) {
+    for (name, cmd) in fetch_commands(&sub, &["127.0.0.1:*"]).into_iter().take(1) {
         let o = cmd(&format!("http://{granted}/")).output().unwrap();
         assert_eq!(printed(&o), "status 200 OK\nx-test none\nbody 2 ok\n", "{name}");
     }
     let _ = server.join();
     let _ = std::fs::remove_dir_all(&sub);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_malformed_connect_grant_is_refused_before_anything_runs() {
-    for bad in ["127.0.0.1", "example.com:80", "127.0.0.1:99999", "[::1]:x", "127.0.0.1:*:*"] {
+    for bad in ["127.0.0.1", "127.0.0.1:99999", "[::1]:x", "127.0.0.1:*:*", "bad-.example:80", "999.1.1.1:80", "[example.com]:80", "example.com:"] {
         let o = Command::new(AIPL).args(["eval", "--allow-connect", bad]).arg(fetch_demo()).output().unwrap();
         assert_eq!(
             String::from_utf8_lossy(&o.stderr).trim(),
-            format!("Error: --allow-connect {bad}: expected ADDR:PORT or ADDR:*, as 127.0.0.1:8080 or [::1]:*"),
+            format!("Error: --allow-connect {bad}: expected HOST:PORT or HOST:*, as 127.0.0.1:8080, [::1]:*, or example.com:443"),
             "{bad}"
         );
         let o = Command::new(AIPL).args(["compile", "--exe", "--allow-connect", bad]).arg(fetch_demo()).args(["-o", "/dev/null"]).output().unwrap();
         assert_eq!(
             String::from_utf8_lossy(&o.stderr).trim(),
-            format!("Error: --allow-connect {bad}: expected ADDR:PORT or ADDR:*, as 127.0.0.1:8080 or [::1]:*"),
+            format!("Error: --allow-connect {bad}: expected HOST:PORT or HOST:*, as 127.0.0.1:8080, [::1]:*, or example.com:443"),
             "{bad}"
         );
     }
@@ -456,4 +466,158 @@ fn both_toolchains_compile_the_client_alike() {
         aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap()
     };
     assert_eq!(aipl_core::selfhost::compile_with_aipl(&fetch_demo()).unwrap(), rust);
+}
+
+// ===== Host names and TLS (NET_PLAN step 6, the clients): the Rust hosts only =====
+
+/// A TLS server in this process for `names` (its certificate's subject names), accepting one connection
+/// for each reply: reads the request's head, writes the reply, and closes. Returns its port, the
+/// certificate as a PEM file (what AIPL_CA_FILE names), and how many handshakes it finished. With
+/// `tls` false it speaks plain HTTP on the same kind of port.
+fn tls_server(dir: &Path, names: &[&str], replies: Vec<&'static str>, tls: bool) -> (u16, PathBuf, std::thread::JoinHandle<usize>) {
+    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    let key = rcgen::generate_simple_self_signed(names.iter().map(|n| n.to_string()).collect::<Vec<_>>()).unwrap();
+    let pem = dir.join(format!("ca_{}.pem", names.join("_")));
+    std::fs::write(&pem, key.cert.pem()).unwrap();
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let config = std::sync::Arc::new(
+        rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![key.cert.der().clone()], PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.signing_key.serialize_der())))
+            .unwrap(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        let mut finished = 0;
+        for reply in replies {
+            let (tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+            let mut stream: Box<dyn ReadWrite> = if tls {
+                let conn = rustls::ServerConnection::new(config.clone()).unwrap();
+                Box::new(rustls::StreamOwned::new(conn, tcp))
+            } else {
+                Box::new(tcp)
+            };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).map(|n| n == 1).unwrap_or(false) {
+                head.push(byte[0]);
+            }
+            if head.ends_with(b"\r\n\r\n") {
+                finished += 1;
+                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.flush();
+            }
+        }
+        finished
+    });
+    (port, pem, handle)
+}
+
+trait ReadWrite: Read + Write + Send {}
+impl<T: Read + Write + Send> ReadWrite for T {}
+
+const TLS_REPLY: &str = "HTTP/1.1 200 OK\r\nX-Test: secure\r\nContent-Length: 5\r\n\r\nhello";
+const TLS_ANSWER: &str = "status 200 OK\nx-test secure\nbody 5 hello\n";
+const HANDSHAKE_FAILED: &str = "error the TLS handshake failed: an untrusted or mismatched certificate, or a server that does not speak TLS (0)\n";
+
+#[test]
+fn https_and_names_work_in_the_rust_hosts() {
+    let dir = scratch("tls");
+    // a certificate for the name and for the address: each URL below must be accepted
+    let (port, pem, server) = tls_server(&dir, &["localhost", "127.0.0.1"], vec![TLS_REPLY; 6], true);
+    let (name_grant, ip_grant) = (format!("localhost:{port}"), format!("127.0.0.1:{port}"));
+    let backends = fetch_commands(&dir, &[&name_grant, &ip_grant]);
+    for (name, cmd) in backends.iter().filter(|(n, _)| *n != "native") {
+        for url in [format!("https://localhost:{port}/p?x=1"), format!("https://127.0.0.1:{port}/p?x=1")] {
+            let o = cmd(&url).env("AIPL_CA_FILE", &pem).output().unwrap();
+            assert_eq!(printed(&o), TLS_ANSWER, "{name}, {url}: {}", String::from_utf8_lossy(&o.stderr));
+        }
+    }
+    // the same bytes of request the plain fetches send, over TLS
+    assert_eq!(server.join().unwrap(), 6);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_certificate_that_is_not_trusted_or_not_for_the_name_is_refused() {
+    let dir = scratch("tls_bad");
+    // untrusted: the certificate is not in the roots (no AIPL_CA_FILE)
+    let (port, pem, server) = tls_server(&dir, &["localhost"], vec![TLS_REPLY], true);
+    let grant = format!("localhost:{port}");
+    for (name, cmd) in fetch_commands(&dir, &[&grant]).iter().filter(|(n, _)| *n != "native") {
+        // the server's single connection is spent by the first client; the rest find the port closed
+        let o = cmd(&format!("https://localhost:{port}/")).output().unwrap();
+        assert!(printed(&o) == HANDSHAKE_FAILED || printed(&o).starts_with("error refused"), "{name}: {} {}", printed(&o), String::from_utf8_lossy(&o.stderr));
+        if name == &"VM" {
+            assert_eq!(printed(&o), HANDSHAKE_FAILED, "{name}");
+        }
+    }
+    let _ = server.join();
+    let _ = pem;
+    // trusted but for another name: refused where the URL names localhost
+    let (port, pem, server) = tls_server(&dir, &["other.example"], vec![TLS_REPLY], true);
+    let grant = format!("localhost:{port}");
+    let sub = scratch("tls_bad_name");
+    let (_, cmd) = fetch_commands(&sub, &[&grant]).into_iter().next().unwrap();
+    let o = cmd(&format!("https://localhost:{port}/")).env("AIPL_CA_FILE", &pem).output().unwrap();
+    assert_eq!(printed(&o), HANDSHAKE_FAILED);
+    assert_eq!(server.join().unwrap(), 0);
+    // a server that does not speak TLS
+    let (port, pem, server) = tls_server(&dir, &["localhost"], vec![TLS_REPLY], false);
+    let grant = format!("localhost:{port}");
+    let (_, cmd) = fetch_commands(&sub, &[&grant]).into_iter().next().unwrap();
+    let o = cmd(&format!("https://localhost:{port}/")).env("AIPL_CA_FILE", &pem).output().unwrap();
+    assert_eq!(printed(&o), HANDSHAKE_FAILED);
+    let _ = server.join();
+    let _ = std::fs::remove_dir_all(&sub);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_name_is_granted_by_name_and_plain_http_to_one_works() {
+    let dir = scratch("names");
+    let (at, server) = http_server(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"; 2]);
+    let port = at.port();
+    let refused = "error not granted: run the program with --allow-connect HOST:PORT (0)\n";
+    // a grant for the address does not let the program connect by name, nor the other way round; the
+    // name matches ignoring case; a name that is not a resolvable one is its own error
+    for (name, cmd) in fetch_commands(&dir, &[&format!("127.0.0.1:{port}")]).iter().take(2) {
+        let o = cmd(&format!("http://localhost:{port}/")).output().unwrap();
+        assert_eq!(printed(&o), refused, "{name}, address granted, name used");
+    }
+    let sub = scratch("names_by_name");
+    for (name, cmd) in fetch_commands(&sub, &[&format!("LocalHost:{port}")]).iter().take(2) {
+        let o = cmd(&format!("http://127.0.0.1:{port}/")).output().unwrap();
+        assert_eq!(printed(&o), refused, "{name}, name granted, address used");
+        let o = cmd(&format!("http://localhost:{port}/")).output().unwrap();
+        assert_eq!(printed(&o), "status 200 OK\nx-test none\nbody 2 ok\n", "{name}, name granted, name used");
+    }
+    let _ = server.join();
+    let nowhere = "no-such-host.invalid";
+    let (_, cmd) = fetch_commands(&sub, &[&format!("{nowhere}:80")]).into_iter().next().unwrap();
+    let o = cmd(&format!("http://{nowhere}/")).output().unwrap();
+    assert_eq!(printed(&o), "error the name did not resolve (0)\n");
+    let _ = std::fs::remove_dir_all(&sub);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_native_executable_says_it_has_no_names_or_tls() {
+    let dir = scratch("native_no_tls");
+    let (_, cmd) = fetch_commands(&dir, &["127.0.0.1:*"]).into_iter().find(|(n, _)| *n == "native").unwrap();
+    let want = "error host names and TLS are not in native executables: use an address and plain http, run it as a wasm module (aipl eval, aipl-run, compile --exe --target wasm), or put a proxy in front (0)\n";
+    for url in ["https://127.0.0.1:9/", "http://localhost:9/", "https://example.com/"] {
+        assert_eq!(printed(&cmd(url).output().unwrap()), want, "{url}");
+    }
+    // a name grant cannot be fixed in a native executable
+    let o = Command::new(AIPL).args(["compile", "--exe", "--allow-connect", "example.com:443"]).arg(fetch_demo()).arg("-o").arg(dir.join("x")).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr).trim(),
+        "Error: --allow-connect example.com:443: a native executable has no name resolver: grant an address (127.0.0.1:8080, [::1]:*), or build with --target wasm"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -159,6 +159,48 @@
   (fn port [t:str.Bytes pos:i32] -> R (no_leak)
     (if (eq (call at t pos) 58) (call number t (+ pos 1) 10 0 65535 true) (call no)))
 
+  ;; Whether t is a host name as a program may give one (src/net.rs is_host_name): letters, digits, and -, in
+  ;; labels of 1 to 63 characters between dots (a final dot allowed), at most 253 bytes, no label starting or
+  ;; ending with -, and a last label that is not all digits.
+  (fn is_host_name [t:str.Bytes] -> bool (pub) (no_leak)
+    (let n:i32 (get t str.Bytes.len))
+    (when (or (eq n 0) (gt n 253)) (return false))
+    (let end:i32 (if (eq (call str.byte_at t (- n 1)) 46) (- n 1) n))
+    (when (eq end 0) (return false))
+    (let start:i32 0)
+    (let all_digits:bool true)
+    (for i 0 (+ end 1)
+      (let c:i32 (if (lt i end) (call str.byte_at t i) 46))
+      (cond
+        ((eq c 46)
+         (let len:i32 (- i start))
+         (when (or (eq len 0) (gt len 63)) (return false))
+         (when (or (eq (call str.byte_at t start) 45) (eq (call str.byte_at t (- i 1)) 45)) (return false))
+         (when (eq i end) (return (not all_digits)))
+         (set! start (+ i 1))
+         (set! all_digits true))
+        ((and (gte c 48) (lte c 57)) (block))
+        ((or (and (gte c 65) (lte c 90)) (or (and (gte c 97) (lte c 122)) (eq c 45))) (set! all_digits false))
+        (else (return false))))
+    false)
+
+  ;; Whether `g` is HOST:PORT or HOST:* with a host name (not an address): a grant for the hosts that have a
+  ;; resolver, which a native executable has not.
+  (fn is_name_grant [g:str.Bytes] -> bool (pub) (no_leak)
+    (let n:i32 (get g str.Bytes.len))
+    (let colon:i32 -1)
+    (for i 0 n (when (eq (call str.byte_at g i) 58) (set! colon i)))
+    (when (lt colon 1) (return false))
+    (let port:str.Bytes (call str.slice g (+ colon 1) (- (- n colon) 1)))
+    (let pn:i32 (get port str.Bytes.len))
+    (when (eq pn 0) (return false))
+    (let port_ok:bool (and (eq pn 1) (eq (call str.byte_at port 0) 42)))
+    (when (not port_ok)
+      (for i 0 pn
+        (when (or (lt (call str.byte_at port i) 48) (gt (call str.byte_at port i) 57)) (return false)))
+      (when (or (gt pn 5) (gt (call str.parse_int_or port -1) 65535)) (return false)))
+    (call is_host_name (call str.slice g 0 colon)))
+
   ;; ===== Parsing =====
 
   ;; The address `t` is, all of it: IPv4 or IPv6 (Rust's IpAddr::from_str).

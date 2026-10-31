@@ -33,8 +33,9 @@ benchmarks against C and Python.
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
 2. **The standard library:** fetching over HTTP is built for plain http to an address
-   (docs/design/NET_PLAN.md, step 5: `connect`, `--allow-connect`, `http.fetch`); DNS and TLS are
-   not (TLS is set aside: it will come from Rust code, not be written in AIPL); starting processes,
+   (docs/design/NET_PLAN.md, step 5: `connect`, `--allow-connect`, `http.fetch`); host names and
+   HTTPS work in the hosts written in Rust (the VM, aipl-run, bundles: rustls and the system's resolver), not in
+   native executables, which refuse them; starting processes,
    which needs a host import of AIPL's own (WASI preview 1 has no way);
    time zones; a faster small-block path in `std/heap`.
 3. **Rust out of the build path:** the stage-0 seed is done (2026-10-15,

@@ -561,7 +561,7 @@ fn fetching_connects_where_granted_and_only_there() {
         let out = arm64::spawn(exe, &[&url]).unwrap().wait_with_output().unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out.stdout),
-            "error not granted: run the program with --allow-connect ADDR:PORT (0)\n",
+            "error not granted: run the program with --allow-connect HOST:PORT (0)\n",
             "{name}"
         );
     }

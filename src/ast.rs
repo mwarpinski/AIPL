@@ -198,6 +198,14 @@ pub enum OpCode {
     /// `(net.connect addr len port)`: a TCP connection to the address whose `len` (4 or 16) bytes
     /// are at `addr`; its handle, -1, or -2 if no `--allow-connect` names it.
     NetConnect,
+    /// `(net.connect_host name len port)`: a TCP connection to the host whose name (or address as text)
+    /// is the `len` bytes at `name`, through the system's resolver; the handle, -1, -2 if not granted,
+    /// -3 where there is no resolver (a native executable), -5 if the name does not resolve.
+    NetConnectHost,
+    /// `(net.tls_connect h name len)`: makes connection h secure (TLS, as a client of the server whose
+    /// certificate must carry the name at `name`); 0, -1 if the handshake fails, -3 where there is no
+    /// TLS (a native executable), -6 for a bad name.
+    NetTlsConnect,
     /// `(net.close h)`: closes a socket; 0, or -1.
     NetClose,
     /// `(proc.spawn path len args args_len stdio)`: starts the program at the

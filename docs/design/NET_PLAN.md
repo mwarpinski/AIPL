@@ -2,7 +2,9 @@
 
 **Status: approved 2026-10-19 (decisions in section 6).** Serving is
 built (steps 1-4), and so is fetching over plain TCP to an address
-(step 5, 2026-10-31); TLS (step 6) is set aside, DNS is not built, and
+(step 5, 2026-10-31); TLS as a client and host names (step 6, 2026-10-31)
+are built for the hosts written in Rust (the VM, aipl-run, wasm bundles)
+and refused by native executables; inbound TLS is left to a proxy, and
 the measurements (step 7) are not done. STDLIB_PLAN.md asked for this document before any code: "an `aipl`
 host interface (versioned imports beside WASI preview 1: listening and
 connecting TCP sockets, permissions granted on the command line), in the
@@ -18,7 +20,7 @@ and fetching over it".
 | 3 | std/serve and the long-running server (A); `--max-memory` | **Done** 2026-10-20 |
 | 4 | A fresh instance per request (B): `serve.once`, `aipl serve --fresh`, `aipl compile --exe --serve` | **Done** 2026-10-20 |
 | 5 | Fetching: `connect`, `--allow-connect`, `http.fetch` (plain http to an address) | **Done** 2026-10-31 |
-| 6 | TLS from the host (rustls): `tls_connect`, `tls_accept`, `https://` | **Set aside** (owner, 2026-10-31): see section 6, decision 4 |
+| 6 | TLS from the host (rustls): `tls_connect`, `https://`, and host names (`connect_host`); `tls_accept` not | **Done** 2026-10-31 for the Rust hosts (clients only); native refuses |
 | 7 | Measure requests a second per backend and mode (docs/BENCHMARKS.md) | Not started |
 
 Also outstanding (small, found while building steps 3-4):
@@ -122,7 +124,9 @@ written in AIPL, aipl_src/native/sockets.aipl):
 | `recv(h, buf, max) -> n`, `send(h, buf, len) -> n` | blocking reads and writes: bytes moved, 0 at the end, -1 on an error | built (step 2) |
 | `close(h) -> i32` | closes a socket: 0, or -1 | built (step 2) |
 | `connect(addr, len, port) -> h` | a connection; -1, or -2 if not granted | built (step 5) |
-| `tls_connect`, `tls_accept` | TLS over a connection (section 4) | **not built** (step 6, set aside) |
+| `connect_host(name, len, port) -> h` | a connection to a host by name (the system's resolver), granted by name; -1, -2 not granted, -3 not supported, -5 does not resolve | built (step 6, the Rust hosts; native gives -3) |
+| `tls_connect(h, name, len) -> i32` | TLS as a client over connection h, the certificate checked against `name`; 0, -1 handshake failed, -3 not supported, -6 bad name | built (step 6, the Rust hosts; native gives -3) |
+| `tls_accept` | TLS as a server | **not built**: servers go behind a proxy |
 
 An address is given as its bytes, 4 for IPv4 or 16 for IPv6, in network
 order; std/ip parses the text (`127.0.0.1`, `::1`) in AIPL, so no backend
@@ -153,7 +157,7 @@ std/http reads and writes over them unchanged. A stream's callbacks are
 calls through function references, whose types carry the `(no_leak)`
 promise (step 1), so a `(no_leak)` handler may use streams.
 
-## 4. Fetching (step 5 built; step 6, TLS, set aside)
+## 4. Fetching (steps 5 and 6 built; native executables cannot do names or TLS)
 
 `http.fetch` over `connect`, a request written and the response read
 with std/http:
@@ -244,13 +248,23 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
    runs; both toolchains' bytes alike. On AArch64 (tests/test_native_arm64_programs.rs)
    the same, where the test can reach a server (a host or qemu-user).
 
-### Not built
+### Built, step 6 (2026-10-31)
 
-6. **TLS from the host:** `tls_connect` and `tls_accept`, `https://` in
-   `http.fetch`, a server with a certificate; native executables refuse
-   it at compile time with the way out. Tests: a fetch from step 3's
-   server over TLS with a test certificate, in the VM and under aipl-run;
-   the refusal's message. **Set aside** by the owner on 2026-10-31 (decision 4).
+6. **TLS (clients) and host names, in the Rust hosts.** `aipl_net_v1.connect_host` and `tls_connect`
+   (src/net.rs: `ToSocketAddrs`, and rustls `StreamOwned` over the connection, one lock for reading and
+   writing; the Mozilla roots through webpki-roots, plus the certificates of `AIPL_CA_FILE`; handshake done in
+   `tls_connect`, so a bad certificate is the answer there); `--allow-connect HOST:PORT` takes a name
+   (matched ignoring case; what it resolves to is then reachable) and `ADDR:PORT` as before; `net.connect_host`,
+   `net.tls_connect` as AIPL ops in both toolchains; std/net `connect_host` and `connect_tls`, std/http `fetch`
+   for `https://` and names (default port 443). Native executables, x86-64 and AArch64: the two imports are
+   routines that give -3, std/net's `Error.no_host_support` names the ways out (an address and plain http, a wasm
+   module, a proxy), and a name grant is refused when the executable is compiled. Tests (tests/test_net.rs): an
+   https fetch from a rustls server in the test, with a certificate for `localhost` and `127.0.0.1`
+   (rcgen), by name and by address, in the VM, aipl-run, and a bundle; an untrusted certificate, one for another
+   name, and a server without TLS each refused as a failed handshake; a grant by name (and not by address, or
+   the reverse), case ignored; a name that does not resolve; the native refusals; the malformed grants. Left out:
+   `tls_accept` (a proxy in front), client certificates, certificate pinning, connection reuse.
+
 7. **Measure** requests a second per backend and mode on a quiet machine,
    in docs/BENCHMARKS.md.
 
@@ -269,9 +283,10 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
 4. **TLS from the host (rustls) before launch**, in the VM, aipl-run, and
    the launcher-bundled executables; native executables refuse it at
    compile time with the way out (`--target wasm`, or a TLS proxy in
-   front, as most servers are deployed anyway). *Set aside 2026-10-31: the owner would
-   have TLS (and the like) come from existing Rust code, not from a written-in-AIPL
-   implementation, and not for now; see section 7.*
+   front, as most servers are deployed anyway). *Built 2026-10-31 as the decision says: clients
+   through rustls in src/net.rs (webpki-roots, and the PEM file AIPL_CA_FILE names, for a private
+   authority or a test; the ring provider), in the VM, aipl-run, and bundles; native executables get -3 from
+   the two imports, and std/net says what to do instead. No `tls_accept`: a server sits behind a proxy.*
    **A TLS written in AIPL is not planned** (revised 2026-10-20): it
    would add only HTTPS inside a native executable with no proxy, and
    hand-written cryptography is not fit for real traffic without an
@@ -287,11 +302,12 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
 - Keep-alive and streamed request bodies, if measurements show the need.
 - WebSockets, UDP, and DNS: later batches, each with its own short plan.
 - Not planned: a TLS written in AIPL (decision 4).
-- Rust components, the owner's direction for what AIPL does not do itself (TLS first): a program imports
-  functionality from existing Rust code, or a parallel component written in Rust that AIPL calls, as
-  `aipl_net_v1` and `aipl_sys_v1` already are host imports Rust provides. Needs its own plan (how a
-  component is named and granted, what a native executable does without Rust). Until then a TLS proxy
-  in front, or a Rust process started with `proc.spawn` and spoken to over a socket, is the way.
+- Rust components, the owner's direction for what AIPL does not do itself (TLS was the first, and is built as
+  host imports of `aipl_net_v1`, which only the hosts written in Rust provide): a program imports functionality
+  from existing Rust code, or a parallel component written in Rust that AIPL calls. Generalizing that needs its
+  own plan (how a component is named and granted, what a native executable does without Rust). Until then a
+  TLS proxy in front, or a Rust process started with `proc.spawn` and spoken to over a socket, is the way for a
+  native executable.
 - A server that recovers from a trap in one request without a fresh
   instance would need the language to recover from failures, which AIPL
   deliberately does not; the fresh instance (B) is the answer to that.

@@ -361,7 +361,9 @@
 
   ;; Whether `g` is an --allow-connect grant: ADDR:PORT, or ADDR:* for any port (src/net.rs parse_connect_grant).
   (fn valid_connect_grant [g:str.Bytes] -> bool (pub)
-    (call (option.is_some ip.Endpoint) (call ip.parse_endpoint (call wild_to_zero g))))
+    (or (call (option.is_some ip.Endpoint) (call ip.parse_endpoint (call wild_to_zero g)))
+        (call ip.is_name_grant g)))
+
 
   ;; `g` with a final `:*` (any port) made `:0`, so that parse_endpoint reads the address; `g` as it is otherwise.
   (fn wild_to_zero [g:str.Bytes] -> str.Bytes
@@ -434,7 +436,9 @@
              (call buf.push_str problem flag)
              (call buf.push_byte problem 32)
              (call buf.push_bytes problem line)
-             (call buf.push_str problem (if wild ": expected ADDR:PORT or ADDR:*, as 127.0.0.1:8080 or [::1]:*" ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080"))
+             (call buf.push_str problem (cond ((and wild (call ip.is_name_grant line)) ": a native executable has no name resolver: grant an address (127.0.0.1:8080, [::1]:*), or build with --target wasm")
+                                              (wild ": expected HOST:PORT or HOST:*, as 127.0.0.1:8080, [::1]:*, or example.com:443")
+                                              (else ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")))
              (return (ptr.null (vec.Vec sockets.Grant))))))))
     out)
 

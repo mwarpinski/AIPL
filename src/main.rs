@@ -42,9 +42,10 @@ enum Commands {
         /// or [::1]:8080 (repeatable; none by default)
         #[arg(long = "listen", value_name = "ADDR:PORT")]
         listen: Vec<String>,
-        /// An address and port the program may connect to with net.connect, as 127.0.0.1:8080, or
-        /// 127.0.0.1:* for any port (repeatable; none by default; addresses, not names)
-        #[arg(long = "allow-connect", value_name = "ADDR:PORT")]
+        /// A host and port the program may connect to (net.connect, or net.connect_host and TLS, which
+        /// take a host name: example.com:443), as 127.0.0.1:8080, or 127.0.0.1:* for any port
+        /// (repeatable; none by default)
+        #[arg(long = "allow-connect", value_name = "HOST:PORT")]
         allow_connect: Vec<String>,
         /// A program the program may start with proc.spawn or proc.exec, as
         /// /bin/sh, or * for any (repeatable; none by default)
@@ -85,9 +86,9 @@ enum Commands {
         /// executable (repeatable; none by default)
         #[arg(long = "listen", value_name = "ADDR:PORT", requires = "exe")]
         listen: Vec<String>,
-        /// With --exe: an address and port the program may connect to (ADDR:* for any port), fixed
-        /// in the executable (repeatable; none by default)
-        #[arg(long = "allow-connect", value_name = "ADDR:PORT", requires = "exe")]
+        /// With --exe: a host and port the program may connect to (HOST:* for any port), fixed in the
+        /// executable (repeatable; none by default; a native executable can hold addresses only)
+        #[arg(long = "allow-connect", value_name = "HOST:PORT", requires = "exe")]
         allow_connect: Vec<String>,
         /// With --exe: a program the program may start with proc.spawn or
         /// proc.exec, as /bin/sh, or * for any, fixed in the executable
@@ -141,8 +142,8 @@ enum Commands {
         /// An address and port the program may listen on (repeatable)
         #[arg(long = "listen", value_name = "ADDR:PORT")]
         listen: Vec<String>,
-        /// An address and port the program may connect to (repeatable; ADDR:* for any port)
-        #[arg(long = "allow-connect", value_name = "ADDR:PORT")]
+        /// A host and port the program may connect to (repeatable; HOST:* for any port)
+        #[arg(long = "allow-connect", value_name = "HOST:PORT")]
         allow_connect: Vec<String>,
         /// A program the program may start (repeatable; * for any)
         #[arg(long = "allow-run", value_name = "PROGRAM")]

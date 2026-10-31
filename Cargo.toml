@@ -13,6 +13,8 @@ clap = { version = "4.5", features = ["derive"] }
 # the aipl CLI, the native backend, which is AIPL compiled to wasm.
 wasmtime = "48.0.2"
 wasmtime-wasi = "48"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1.0.11"
 
 [[bin]]
 name = "aipl"
@@ -27,6 +29,7 @@ name = "aipl_core"
 path = "src/lib.rs"
 
 [dev-dependencies]
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
 wasmparser = "0.224.0"
 
 

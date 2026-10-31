@@ -2,7 +2,7 @@
 ;; expressions, evaluated, and the last one's value printed with its type,
 ;; `49 : i32`.
 ;;
-;;   aipl eval -e EXPRS [--with FILE] [--listen ADDR:PORT]... [--allow-connect ADDR:PORT]... [--allow-run PROGRAM]...
+;;   aipl eval -e EXPRS [--with FILE] [--listen ADDR:PORT]... [--allow-connect HOST:PORT]... [--allow-run PROGRAM]...
 ;;                      [--max-memory SIZE] [-- ARGS...]
 ;;
 ;; The expressions become the body of a function, __eval, added at the end of
@@ -31,7 +31,7 @@
   (import vec)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl eval -e EXPRS [--with FILE] [--listen ADDR:PORT]... [--allow-connect ADDR:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [-- ARGS...]")
+    (call io.eprintln "usage: aipl eval -e EXPRS [--with FILE] [--listen ADDR:PORT]... [--allow-connect HOST:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [-- ARGS...]")
     2)
 
   (fn fail_bytes [prefix:str b:str.Bytes] -> i32
@@ -313,7 +313,7 @@
                (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
                (call buf.push_str m "--allow-connect ")
                (call buf.push_bytes m (call arg (+ i 1)))
-               (call buf.push_str m ": expected ADDR:PORT or ADDR:*, as 127.0.0.1:8080 or [::1]:*")
+               (call buf.push_str m ": expected HOST:PORT or HOST:*, as 127.0.0.1:8080, [::1]:*, or example.com:443")
                (return (call fail_bytes "" (call buf.bytes m))))
          (call buf.push_str grants "connect:")
          (call buf.push_bytes grants (call arg (+ i 1)))

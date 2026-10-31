@@ -22,8 +22,10 @@
 ;;     (err e ... (get e http.Error.what) ...))
 ;;
 ;; fetch is a GET over a connection (std/net), which the program must be granted
-;; (--allow-connect ADDR:PORT): plain http:// to an address, not a name, and not https:// (no
-;; TLS here). It sends `Connection: close`, reads to the end, and does not follow redirects.
+;; (--allow-connect HOST:PORT): http:// to an address, or to a name and https:// where the host has
+;; a resolver and TLS (the VM, aipl-run, wasm bundles: not native executables, which can fetch
+;; plain http from an address). It sends `Connection: close`, reads to the end, and does not follow
+;; redirects.
 (module http
   (import str)
   (import buf)
@@ -92,11 +94,12 @@
 
   ;; ===== fetching =====
 
-  ;; The response to a GET of `url` (http://ADDR[:PORT][/path][?query], read by std/url; port 80 unless
-  ;; given; an address, not a name), or why there is none: an Error with status 0 for a failure before
-  ;; or after the exchange (a URL that is not one this reads, a connection not granted or refused, a
-  ;; response that is cut short, over the limits, or not HTTP) and the message's own refusal
-  ;; otherwise. The message holds the bytes it was read from: free_message gives them back.
+  ;; The response to a GET of `url` (http://HOST[:PORT][/path][?query] or https://..., read by std/url; the
+  ;; port 80 or 443 unless given), or why there is none: an Error with status 0 for a failure before or
+  ;; after the exchange (a URL that is not one this reads, a connection not granted, refused, or not
+  ;; supported here, a certificate not trusted, a response that is cut short, over the limits, or not
+  ;; HTTP) and the message's own refusal otherwise. The message holds the bytes it was read from:
+  ;; free_message gives them back.
   (fn fetch [a:alloc.Allocator url:str lim:Limits] -> (result (ptr Message) (ptr Error)) (pub)
     (match_result (call url.parse a (call str.from_str url))
       (ok u
@@ -110,31 +113,36 @@
 
   (fn fetch_url [a:alloc.Allocator u:(ptr url.Url) lim:Limits] -> (result (ptr Message) (ptr Error))
     (let scheme:str.Bytes (get u url.Url.scheme))
-    (when (call str.eq_ignore_case scheme (call str.from_str "https"))
-      (return (err:(ptr Message) (call error_as a 0 "https:// needs TLS, which AIPL does not have yet: use http://, or a TLS proxy in front" 0 false))))
-    (when (not (call str.eq_ignore_case scheme (call str.from_str "http")))
-      (return (err:(ptr Message) (call error_as a 0 "not an http:// URL" 0 false))))
+    (let secure:bool (call str.eq_ignore_case scheme (call str.from_str "https")))
+    (when (not (or secure (call str.eq_ignore_case scheme (call str.from_str "http"))))
+      (return (err:(ptr Message) (call error_as a 0 "not an http:// or https:// URL" 0 false))))
     (when (get u url.Url.has_user)
       (return (err:(ptr Message) (call error_as a 0 "a URL with user information is not supported" 0 false))))
-    (match (call ip.parse (get u url.Url.host))
-      ((option.Option ip.Addr) none
-       (err:(ptr Message) (call error_as a 0 "not an address: this reads http://ADDR[:PORT]/ (127.0.0.1:9000, [::1]:9000), not a name (there is no resolver yet)" 0 false)))
-      ((option.Option ip.Addr) some [ad]
-       (let port:i32 (if (lt (get u url.Url.port) 0) 80 (get u url.Url.port)))
-       ;; the target: the path (or /), then ?query
-       (let target:(ptr buf.Buf) (call buf.make a 64))
-       (if (eq (get (get u url.Url.path) str.Bytes.len) 0)
-           (call buf.push_byte target 47)
-           (call buf.push_bytes target (get u url.Url.path)))
-       (when (get u url.Url.has_query)
-         (call buf.push_byte target 63)
-         (call buf.push_bytes target (get u url.Url.query)))
-       (let out:(result (ptr Message) (ptr Error))
-         (match_result (call net.connect_to a (call ip.endpoint ad port))
-           (ok c (call exchange a c (get u url.Url.authority) (call buf.to_str target) lim))
-           (err why (err:(ptr Message) (call error_as a 0 (call net.message why) 0 false)))))
-       (call buf.free target)
-       out)))
+    (let host:str.Bytes (get u url.Url.host))
+    (when (eq (get host str.Bytes.len) 0)
+      (return (err:(ptr Message) (call error_as a 0 "a URL without a host" 0 false))))
+    (let port:i32 (if (lt (get u url.Url.port) 0) (if secure 443 80) (get u url.Url.port)))
+    ;; the target: the path (or /), then ?query
+    (let target:(ptr buf.Buf) (call buf.make a 64))
+    (if (eq (get (get u url.Url.path) str.Bytes.len) 0)
+        (call buf.push_byte target 47)
+        (call buf.push_bytes target (get u url.Url.path)))
+    (when (get u url.Url.has_query)
+      (call buf.push_byte target 63)
+      (call buf.push_bytes target (get u url.Url.query)))
+    ;; plain http to an address needs no host support; a name, or TLS, does
+    (let opened:(result net.Socket net.Error)
+      (match (call ip.parse host)
+        ((option.Option ip.Addr) some [ad]
+         (if secure (call net.connect_tls a host port) (call net.connect_to a (call ip.endpoint ad port))))
+        ((option.Option ip.Addr) none
+         (if secure (call net.connect_tls a host port) (call net.connect_host a host port)))))
+    (let out:(result (ptr Message) (ptr Error))
+      (match_result opened
+        (ok c (call exchange a c (get u url.Url.authority) (call buf.to_str target) lim))
+        (err why (err:(ptr Message) (call error_as a 0 (call net.message why) 0 false)))))
+    (call buf.free target)
+    out)
 
   ;; GET target on the connection c (closed before this returns), and the response read to the end.
   (fn exchange [a:alloc.Allocator c:net.Socket authority:str.Bytes target:str lim:Limits] -> (result (ptr Message) (ptr Error))

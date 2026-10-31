@@ -20,6 +20,8 @@
 ;;   - connect(addr, len, port) -> handle: the same checks of the address, against the grants
 ;;     fixed when the executable was compiled (`--allow-connect`, whose port may be any: ADDR:*);
 ;;     -2 if none names it, -1 for a malformed address or a refused or failed connection.
+;;   - connect_host(name, len, port) and tls_connect(h, name, len) are not here: they give -3, not supported
+;;     (a native executable has no name resolver and no TLS; std/net says so, naming the ways out).
 ;;   - A handle is the Linux descriptor.
 (module sockets
   (import alloc)
@@ -358,6 +360,8 @@
     (cond
       ((call is name "listen") (call emit_listen l n false) true)
       ((call is name "connect") (call emit_listen l n true) true)
+      ;; no resolver and no TLS in a native executable: -3, "not supported here" (docs/design/NET_PLAN.md)
+      ((or (call is name "connect_host") (call is name "tls_connect")) (call emit_return (get l lower.L.code) -3) true)
       ((call is name "accept") (call emit_accept l n) true)
       ((call is name "recv") (call emit_transfer l n false) true)
       ((call is name "send") (call emit_transfer l n true) true)
