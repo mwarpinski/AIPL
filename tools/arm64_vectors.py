@@ -199,6 +199,16 @@ for off in (lit(-16), lit(16), lit(-256), lit(255), plus(mod(31, 8), -9)):
     for name, mn in (("str_x_post", "str"), ("ldr_x_post", "ldr")):
         G["memory"].append(op(name, [I_, B_, off], lambda v, mn=mn: f"{mn} {X(64,v[0])}, [{X(64,v[1],False)}], #{v[2]}"))
 # the stack pointer as a base, once
+# the float registers (s and d): scaled, unscaled, and register offsets
+for ft, offs in ((1, (lit(0), lit(8), lit(32760), mod(16, 8))), (0, (lit(0), lit(4), lit(16380), mod(16, 4)))):
+    for name, mn in (("ldr_fp", "ldr"), ("str_fp", "str")):
+        for off in offs:
+            G["memory"].append(op(name, [lit(ft), I_, B_, off], lambda v, mn=mn: f"{mn} {V(v[0],v[1])}, [{X(64,v[2],False)}, #{v[3]}]"))
+    for name, mn in (("ldur_fp", "ldur"), ("stur_fp", "stur")):
+        for off in (lit(-256), lit(-1), lit(255), plus(I_, -15)):
+            G["memory"].append(op(name, [lit(ft), I_, B_, off], lambda v, mn=mn: f"{mn} {V(v[0],v[1])}, [{X(64,v[2],False)}, #{v[3]}]"))
+    for name, mn in (("ldr_fp_uxtw", "ldr"), ("str_fp_uxtw", "str")):
+        G["memory"].append(op(name, [lit(ft), I_, B_, Q2], lambda v, mn=mn: f"{mn} {V(v[0],v[1])}, [{X(64,v[2],False)}, {X(32,v[3])}, uxtw]"))
 G["memory"] += [
     op("str_x", [lit(5), lit(31), lit(16)], lambda v: "str x5, [sp, #16]", per="once"),
     op("ldr_x", [lit(5), lit(31), lit(8)], lambda v: "ldr x5, [sp, #8]", per="once"),

@@ -90,6 +90,11 @@ def run_in_copy(wasm, path, args):
         return run([AIPL, 'run', wasm] + args, cwd, stdin_for(path))
 
 
+# Programs whose output depends on how their threads interleave: the plain and optimized runs are not
+# expected to print the same bytes, so these must only succeed (and the other checks below still apply).
+INTERLEAVED = {'tests/aipl/threads/threads_main.aipl'}
+
+
 def check(path):
     rel = os.path.relpath(path, ROOT)
     name = rel.replace('/', '_').replace('.aipl', '')
@@ -107,6 +112,10 @@ def check(path):
         return (rel, 'skip', 'times out as written')
     b = run_in_copy(opt, path, args)
     addr = lambda out: re.sub(r'@ \d+', '@ ADDR', out)
+    if rel in INTERLEAVED:
+        if (a[0], b[0]) != (0, 0):
+            return (rel, 'DIFFERS', f"status {a[0]} -> {b[0]}")
+        return (rel, 'same', 'interleaved output not compared')
     if (a[0], addr(a[1])) != (b[0], addr(b[1])):
         return (rel, 'DIFFERS', f"status {a[0]} -> {b[0]}; stdout {a[1][-160:]!r} -> {b[1][-160:]!r}")
     if a[0] != 0:

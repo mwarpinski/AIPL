@@ -153,7 +153,7 @@ against the Rust command's. The rest:
   (2026-10-30, procs_arm64.aipl), so `aipl run`, `test`, `watch`, and `eval` work
   on AArch64 Linux**, and the AArch64 seed is checked in. Sockets,
   `--serve`, `--sandbox`, and threads are there as well (2026-10-30): everything the x86-64
-  backend does, the AArch64 one does, though without its optimizer (a baseline lowerer) and without
+  backend does, the AArch64 one does, though with only part of an optimizer (docs/design/ARM64_OPT_PLAN.md: 5 to 11 times faster than the baseline, 1.7 to 7 times C) and without
   the call-stack-exhausted check;
 - macOS needs a Mach-O writer and code signing (ARM64_PLAN.md, section on
   Darwin) or, until then, the launcher bundle;

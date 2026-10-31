@@ -189,7 +189,7 @@ too; a document that is not JSON is reported as `FILE:LINE:COLUMN: what`.
 
 The compiler is written in AIPL, and on Linux x86-64 it compiles itself to a
 native executable in about 3 seconds (on Linux AArch64, which has its own
-seed and a baseline code generator, about 20). Without Rust, start from the
+seed and a code generator with an optimizer begun, about 5). Without Rust, start from the
 checked-in seed for your machine. From the source directory, this script builds the compiler
 with the seed, builds it again with the result, and checks that a third build
 is identical (about 8 seconds):
@@ -267,7 +267,7 @@ is missing):
 2. **The standard library:** networking and starting processes, once WASI
    can, and time zones.
 3. **Rust out of the build path:** the seeds build the compiler on Linux
-   x86-64 and AArch64 today (AArch64 has the whole backend, without its optimizer); next, a
+   x86-64 and AArch64 today (AArch64 has the whole backend, with an optimizer begun: docs/design/ARM64_OPT_PLAN.md); next, a
    macOS seed (or a WebAssembly one), and an installer that needs no Rust. The Rust compiler stays as the referee.
 4. **Packages:** a registry with versioned packages, dependency resolution,
    and lock files.
@@ -278,7 +278,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **512 Rust tests** and an AIPL test suite, run on every push by CI.
+- **513 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500
