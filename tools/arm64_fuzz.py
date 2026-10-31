@@ -62,7 +62,17 @@ def build(case, seed):
 NANS = ((b"-2251799813685248", b"9221120237041090560"), (b"-4194304", b"2143289344"))
 
 
-def same_output(a, b):
+def flipped_sign(x, y):
+    """Whether x and y are integers that differ in exactly the top bit (as 64-bit values): a NaN's sign carried
+    through integer arithmetic."""
+    try:
+        d = (int(x) - int(y)) % (1 << 64)
+    except ValueError:
+        return False
+    return d == 1 << 63
+
+
+def same_output(a, b, reinterprets):
     if a == b:
         return True
     la, lb = a.split(b"\n"), b.split(b"\n")
@@ -71,8 +81,13 @@ def same_output(a, b):
     for x, y in zip(la, lb):
         if x == y:
             continue
-        if not any(x.replace(neg, pos) == y.replace(neg, pos) and neg in (x + y) for neg, pos in NANS):
-            return False
+        if any(x.replace(neg, pos) == y.replace(neg, pos) and neg in (x + y) for neg, pos in NANS):
+            continue
+        # a program that reinterprets floats as integers can carry the NaN's sign into any integer it prints
+        wx, wy = x.split(b" "), y.split(b" ")
+        if reinterprets and len(wx) == len(wy) and wx[:-1] == wy[:-1] and flipped_sign(wx[-1], wy[-1]):
+            continue
+        return False
     return True
 
 
@@ -148,7 +163,7 @@ def main():
             else:
                 if a_status != x_status:
                     problems.append(f"exit status differs: AArch64 {a_status}, x86-64 {x_status}")
-                if not same_output(a_out, x_out):
+                if not same_output(a_out, x_out, b"reinterpret" in open(os.path.join(d, "prog.aipl"), "rb").read()):
                     problems.append("output differs")
                 if normalized(a_err) != normalized(x_err):
                     problems.append("trap message or call chain differs")

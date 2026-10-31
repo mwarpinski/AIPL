@@ -769,6 +769,17 @@
                dots:(call lower_arm64.data_text l "  ... ") more:(call lower_arm64.data_text l " more\n")
                open:(call lower_arm64.data_text l " (") colon:(call lower_arm64.data_text l ":")
                close:(call lower_arm64.data_text l ")")]))
+    ;; the register calling convention (lower_arm64.aipl): all but the functions that something other than a direct
+    ;; call reaches: the table's, the start function, and the entries the stubs call
+    (let pinned:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 16))
+    (let elems:(ptr (vec.Vec (ptr wasm_reader.Elem))) (get w wasm_reader.Wasm.elems))
+    (for i 0 (call (vec.len (ptr wasm_reader.Elem)) elems)
+      (let fs:(ptr (vec.Vec i32)) (get (call (vec.at (ptr wasm_reader.Elem)) elems i) wasm_reader.Elem.funcs))
+      (for k 0 (call (vec.len i32) fs) (call (vec.push i32) pinned (call (vec.at i32) fs k))))
+    (call (vec.push i32) pinned (get w wasm_reader.Wasm.start))
+    (call (vec.push i32) pinned entry_fn)
+    (call (vec.push i32) pinned (get th Threads.thread_start))
+    (call lower_arm64.plan_conv l nfuncs pinned)
     (let routines:(ptr backtrace_arm64.Routines)
          (call backtrace_arm64.emit_routines c texts (call lower_arm64.trap_unreachable) (call lower_arm64.trap_out_of_bounds) (neq lim (ptr.null wasm_reader.Limits))))
     (put l lower_arm64.L.trap_routine (get routines backtrace_arm64.Routines.trap))

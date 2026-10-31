@@ -1,6 +1,6 @@
 # The AArch64 backend's optimizer
 
-Status: **phases 1 and 2 done** (2026-10-30); phase 3 to come. The baseline AArch64 backend (docs/design/ARM64_PLAN.md) does everything
+Status: **phases 1, 2, and 3 done** (2026-10-30). The baseline AArch64 backend (docs/design/ARM64_PLAN.md) does everything
 the x86-64 one does and is slow: every wasm value is a 16-byte slot on the machine stack, every local is a
 frame slot, and a float operation moves its operands through integer registers. This plan makes it fast.
 The goal is the x86-64 backend's distance from C, not C's speed.
@@ -114,12 +114,48 @@ builds itself on AArch64 in 4.6 s (22 s at the baseline, 6.0 s after phase 1) an
 is left is call-bound: `binarytrees` and `spectralnorm` spend their time in calls, whose arguments are still pushed
 as 16-byte stack slots; that is phase 3.
 
+## Phase 3: done (2026-10-30)
+
+A wasm function called from wasm takes its first eight arguments in `x0`-`x7` (integers) and `d0`-`d7` (floats),
+each class counted separately, and returns in `x0` or `d0`. `plan_conv` decides per function: the ones whose
+address escapes (the elements of the table, the start function, `_start`, and a thread's start function) keep the
+stack convention, since they are entered from outside translated code; so does a function with more than eight
+arguments of a class. A call site spills the entries below its arguments, pops the arguments last first into their
+registers, and calls; a register-convention function stores its parameters below the frame (or keeps them in
+their register locals) and does not flush at its return. The calls to imports keep the stack convention.
+
+The same phase adds **guards**: an `if` with no result and no `else` whose body ends in `unreachable`, `br`, or
+`return` (a bounds check, an assertion) does not flush the virtual stack at its label. The stack is saved at the
+`if`, the body runs on a copy, and the fall-through continues with the saved one; a body that falls through anyway
+is an error ("native arm64: a guard's body fell through").
+
+| benchmark | C -O2 | phase 2 | phase 3 | ratio after phase 2 | ratio after phase 3 |
+|---|---|---|---|---|---|
+| binarytrees 16 | 0.14 s | 0.39 s | 0.40 s | 2.9x | 2.9x |
+| fannkuch 10 | 0.12 s | 0.58 s | 0.54 s | 4.8x | 4.5x |
+| knucleotide | 0.01 s | 0.04 s | 0.04 s | 6.7x | 7.5x |
+| mandelbrot 1000 | 0.03 s | 0.12 s | 0.12 s | 3.9x | 3.9x |
+| nbody 1000000 | 0.03 s | 0.24 s | 0.21 s | 7.6x | 6.8x |
+| spectralnorm 1000 | 0.03 s | 0.19 s | 0.10 s | 6.8x | 3.8x |
+| spigot 10000 | 0.93 s | 1.57 s | 1.50 s | 1.7x | 1.6x |
+
+The register convention alone changed nothing measurable (a call's cost is the frame and the saves, not the
+arguments); the guards are where `spectralnorm` halved, since its inner loop's bounds checks no longer spill the
+stack. Verified as before: every benchmark's output, 19 AArch64 tests, `tools/arm64_bootstrap.sh` (107 programs
+identical, 1m34s), and 6,000 generated programs (`tools/arm64_fuzz.py`, seeds 3, 7, 11, 21) with no difference but
+the default NaN's sign (the fuzzer also accepts a top-bit difference in an integer a program prints when it
+reinterprets floats, which carries that sign).
+
+What is left against C is the instruction selection: a binary operation still moves its operands through
+`x0`/`x1`, a constant operand is not an immediate, and a load or store adds `x28` and the address before the access
+instead of using `[x28, wN, uxtw]`.
+
 ## Phases, each measured against the table above
 
 1. **The virtual stack, constants, typed registers, fused compare and branch, addressing** (locals still in
    frame slots). Expected: 3 to 5 times faster.
 2. **Locals in registers**, with the saves in the import routines. Expected: another 2 to 3 times.
-3. **The register calling convention.** Expected: 1.2 to 1.5 times on call-heavy programs (binarytrees).
+3. **The register calling convention** (and guard-ifs). Expected: 1.2 to 1.5 times on call-heavy programs (binarytrees); measured: only the guards helped.
 
 A phase is done when every benchmark's output is unchanged, `tests/test_native_arm64*.rs` and
 `tools/arm64_bootstrap.sh` pass (the compiler built by the optimized backend compiles itself to the same
