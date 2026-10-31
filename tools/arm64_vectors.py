@@ -111,6 +111,21 @@ G["alu_imm"] += [
     op("mov_sp", [lit(64), I_, Q1], lambda v: f"add {X(64,v[1],False)}, {X(64,v[2],False)}, #0"),
 ]
 
+# logical immediates (a run of ones, rotated, over the whole register) and add with a uxtw-extended register
+for sz, vals in ((64, (1, 255, 0xFFFF0000, 0xFFFFFFFE, 0x7FFFFFFFFFFFFFFF, 0x8000000000000000, 0xFFFFFFFFFFFFFFFE,
+                       0xFFFFFFFF00000000, 0xC000000000000003, 0x00FFFFFFFFFFFF00)),
+                (32, (1, 255, 0xFFFFFFFE, 0x80000000, 0x7FFFFFFF, 0xC0000003, 0x0FF00000, 0xFFFF))):
+    for n in ("and_ri", "orr_ri", "eor_ri"):
+        m = n[:-3]
+        for v in vals:
+            signed = v - (1 << 64) if v >= (1 << 63) else v
+            G["alu_imm"].append(op(n, [lit(sz), I_, Q1, (f"{signed}i64", lambda i, v=v: v)],
+                                   lambda v, m=m, sz=sz: f"{m} {X(sz,v[1],False)}, {X(sz,v[2])}, #{hex(v[3])}"))
+G["alu_imm"] += [
+    op("add_uxtw", [I_, B_, Q2], lambda v: f"add {X(64,v[0],False)}, {X(64,v[1],False)}, {X(32,v[2])}, uxtw"),
+    op("add_uxtw", [lit(16), lit(28), lit(5)], lambda v: "add x16, x28, w5, uxtw", per="once"),
+]
+
 # shifts by immediate and extensions
 G["shift_ext"] = []
 for sz in (64, 32):
@@ -223,6 +238,11 @@ G["memory"] += [
 # floating point: the registers v0-v30 as s (ft 0) and d (ft 1)
 def V(ft, n): return f"{'d' if ft else 's'}{n}"
 G["float"] = []
+def imm8_value(imm8):
+    sign = -1.0 if imm8 & 128 else 1.0
+    b, cd, m = (imm8 >> 6) & 1, (imm8 >> 4) & 3, imm8 & 15
+    e = cd - 3 if b else cd + 1
+    return sign * (16 + m) / 16 * 2.0 ** e
 for ft in (0, 1):
     G["float"] += [
         op("fmov_to_fp", [lit(ft), I_, Q1], lambda v: f"fmov {V(v[0],v[1])}, {X(64 if v[0] else 32, v[2])}"),
@@ -244,6 +264,9 @@ G["float"] += [
 ]
 
 # acquire/release and exclusive access, the base register never the register moved
+for ft in (0, 1):
+    for imm8 in (0, 1, 15, 16, 0x30, 0x50, 0x60, 0x70, 0x7f, 0x80, 0xa5, 0xff):
+        G["float"].append(op("fmov_imm", [lit(ft), mod(32, 1), lit(imm8)], lambda v, imm8=imm8: f"fmov {V(v[0],v[1])}, #{imm8_value(imm8):.8f}"))
 G["atomic"] = []
 for sz in (64, 32):
     for n in ("ldar", "stlr", "ldaxr"):

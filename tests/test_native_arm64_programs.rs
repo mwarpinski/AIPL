@@ -355,3 +355,72 @@ fn the_benchmarks_print_their_expected_output() {
         assert_eq!(out.status.code(), Some(0), "{name}");
     }
 }
+
+/// Operations with a constant operand (immediates of add, sub, compare, shifts, bitmask immediates, a
+/// multiplication or an unsigned division by a power of two, a division with no check to make, the
+/// 8-bit float immediates) on a spread of values: what the AArch64 executable prints is what the
+/// x86-64 one prints. (Only where an x86-64 Linux machine runs the second.)
+#[test]
+fn constant_operands_give_what_the_x86_64_build_gives() {
+    let mut text = String::from("(module t\n  (fn ops [x:i32 y:i64 f:f64] -> void\n");
+    let i32_ops = [
+        "(+ x 5)", "(- x 5)", "(+ x -7)", "(- x -7)", "(+ x 4095)", "(- x 4096)", "(* x 8)", "(* x 1)", "(* x 6)", "(/ x 8)", "(/ x 7)",
+        "(% x 8)", "(% x -3)", "(divu x 8)", "(remu x 8)", "(divu x 1)", "(remu x 1)", "(divu x 7)", "(remu x -1)",
+        "(bitand x 255)", "(bitor x 65280)", "(^ x 2147483647)", "(bitand x -2)", "(bitor x -1073741821)", "(^ x 85)",
+        "(shl x 3)", "(shl x 0)", "(shl x 32)", "(shr x 3)", "(shru x 3)", "(shru x 31)", "(shr x 31)",
+        "(if (lt x 5) 1 0)", "(if (lt x -5) 1 0)", "(if (eq x 0) 1 0)", "(if (gt x 4095) 1 0)", "(if (gte x -4095) 1 0)",
+        "(if (ltu x 4096) 1 0)", "(if (ltu x -1) 1 0)", "(if (neq x -1) 1 0)", "(if (lte x 2147483647) 1 0)",
+    ];
+    let i64_ops = [
+        "(+ y 5i64)", "(- y 5i64)", "(+ y -7i64)", "(* y 8i64)", "(* y 1024i64)", "(/ y 8i64)", "(% y 10i64)", "(divu y 16i64)", "(remu y 16i64)",
+        "(bitand y 255i64)", "(bitor y 4278190080i64)", "(^ y 9223372036854775807i64)", "(bitand y -2i64)", "(bitor y -4611686018427387901i64)",
+        "(shl y 3i64)", "(shr y 40i64)", "(shru y 63i64)", "(if (lt y 5i64) 1 0)", "(if (lt y -5i64) 1 0)", "(if (eq y 0i64) 1 0)",
+        "(if (gt y 4095i64) 1 0)", "(if (ltu y -1i64) 1 0)",
+    ];
+    for e in i32_ops.iter().chain(i64_ops.iter()) {
+        text.push_str(&format!("    (println \"{{{e}}}\")\n"));
+    }
+    for e in [
+        "(+ f 2.0)", "(* f 0.5)", "(- f 31.0)", "(/ f 0.125)", "(+ f 1.0)", "(* f -3.0)", "(+ f 0.0)", "(* f 100.0)", "(- 4.0 f)", "(+ f 1.9375)",
+        "(* f 0.1)", "(if (lt f 0.5) 1 0)", "(if (gt f -2.0) 1 0)",
+    ] {
+        text.push_str(&format!("    (println \"{{{e}}}\")\n"));
+    }
+    text.push_str("    (println \"-\"))\n  (fn main [] -> i32\n");
+    for (x, y, f) in [
+        ("0", "0i64", "0.0"), ("1", "1i64", "1.0"), ("-1", "-1i64", "-1.0"), ("7", "-123456789012i64", "3.25"), ("8", "40960i64", "0.4"),
+        ("-9", "9223372036854775807i64", "-31.5"), ("2147483647", "-9223372036854775807i64", "1000.0"), ("-2147483648", "281474976710656i64", "2.5"),
+        ("305419896", "4294967295i64", "0.03125"), ("4096", "4096i64", "17.0"), ("-4096", "-4096i64", "31.0"),
+    ] {
+        text.push_str(&format!("    (call ops {x} {y} {f})\n"));
+    }
+    text.push_str("    0))\n");
+    let dir = std::env::temp_dir().join(format!("aipl_arm64_consts_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("prog.aipl");
+    std::fs::write(&file, &text).unwrap();
+    let module = Resolver::resolve(&file).unwrap_or_else(|e| panic!("{e}"));
+    TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("{e}"));
+    let wasm = WasmCompiler::compile(&module).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        eprintln!("no x86-64 Linux machine to run the reference on: not run");
+        return;
+    }
+    let arm = aipl_core::native::executable_arm64_with(&wasm, false, &[], None).unwrap_or_else(|e| panic!("{e}"));
+    let Some(got) = arm64::run(&arm, &[], b"") else {
+        eprintln!("no AArch64 machine to run on: not run");
+        return;
+    };
+    let x86 = aipl_core::native::executable(&wasm, false).unwrap_or_else(|e| panic!("{e}"));
+    let path = std::env::temp_dir().join(format!("aipl_arm64_consts_x86_{}", std::process::id()));
+    std::fs::write(&path, x86).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let want = std::process::Command::new(&path).output().unwrap();
+    std::fs::remove_file(&path).ok();
+    assert_eq!(want.status.code(), Some(0), "{}", String::from_utf8_lossy(&want.stderr));
+    assert_eq!(String::from_utf8_lossy(&got.stdout), String::from_utf8_lossy(&want.stdout));
+    assert_eq!(got.status.code(), Some(0));
+    assert!(got.stdout.len() > 2000, "the program printed little: {}", got.stdout.len());
+}

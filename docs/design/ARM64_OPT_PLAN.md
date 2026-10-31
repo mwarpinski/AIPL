@@ -1,6 +1,6 @@
 # The AArch64 backend's optimizer
 
-Status: **phases 1, 2, and 3 done** (2026-10-30). The baseline AArch64 backend (docs/design/ARM64_PLAN.md) does everything
+Status: **phases 1, 2, 3, and 4 done** (2026-10-30). The baseline AArch64 backend (docs/design/ARM64_PLAN.md) does everything
 the x86-64 one does and is slow: every wasm value is a 16-byte slot on the machine stack, every local is a
 frame slot, and a float operation moves its operands through integer registers. This plan makes it fast.
 The goal is the x86-64 backend's distance from C, not C's speed.
@@ -150,12 +150,68 @@ What is left against C is the instruction selection: a binary operation still mo
 `x0`/`x1`, a constant operand is not an immediate, and a load or store adds `x28` and the address before the access
 instead of using `[x28, wN, uxtw]`.
 
+## Phase 4: done (2026-10-30)
+
+Instruction selection, the cost the disassembly of phase 3 showed: a binary operation moved its operands
+through `x0` and `x1`, a constant was never an immediate, and a memory access added `x28` and the address
+before the access. Now:
+
+- **Operands where they are.** `src` returns the register that holds the top value (a pool register, or a register
+  local, read only) or loads it into a scratch register, and the result goes straight into a fresh pool
+  register: `add w9, w19, w21`, not `mov x1,..; mov x0,..; add w0,w0,w1; mov x9,x0`. Integer operations,
+  comparisons, `select`, `if` and `br_if` conditions (`cbz`/`cbnz` on the register), the extensions, `clz`/`ctz`,
+  global access, and the float operations (`src_fp`, a destination register of their own: `fadd d17, d10, d11`)
+  all use it. A local's `local.set` of a value the last instruction just computed retargets that instruction
+  to the local's register (`add w19, w19, #1`, not an `add` and a `mov`): the instruction's Rd field is
+  rewritten, only when nothing was emitted since (`L.def_end`).
+- **Immediates.** A constant right operand is an immediate for add and sub (a negative one turns the instruction
+  around), comparisons (`cmp`, or `cmn` for a negative), shifts, and, or and xor with a bitmask immediate
+  (`arm64.logic_imm_field`: a run of ones, rotated), a multiplication by a power of two (a shift), an
+  unsigned division or remainder by a power of two (a shift, a mask). A division by any other nonzero
+  constant has no zero check (nor, for a divisor other than -1, the overflow check). Float constants that fit
+  8 bits (`fmov d, #2.0`; `arm64.fp_imm8`) and zero are not loaded through `x16`.
+- **Addressing.** A load or store with offset 0 is `ldr w, [x28, wN, uxtw]`; with an offset the instruction
+  can hold, `add x16, x28, wN, uxtw` then the access with the offset (the add is shared by consecutive accesses
+  through the same register); only an offset that does not fit costs a `mov`.
+- **Direct conditional branches.** A `br_if` whose target needs no stack adjustment is the conditional branch
+  itself (`b.lt target`, `cbnz`), not a branch over an unconditional one; forward ones are patched with a
+  mark bit in the fixup list. Their reach is 1 MiB, so a function of 1,500 or more instructions keeps the old form.
+- **Constant locals.** A declared local set once, from a constant, with every get after the set and inside the
+  block that holds it (an `else` ends its block) is that constant: its gets are constants (immediates) and its
+  set does nothing. The `for` loops' step and (literal) end are such locals. A local that is set more than
+  once, as the code optimizer's local reuse makes of most of them, is not.
+- **More float registers.** Float locals get d8-d15 and d28-d31 (12), the pool v16-v27.
+
+| benchmark | C -O2 | phase 3 | phase 4 | ratio after phase 3 | ratio after phase 4 |
+|---|---|---|---|---|---|
+| binarytrees 16 | 0.14 s | 0.40 s | 0.26 s | 2.9x | 1.9x |
+| fannkuch 10 | 0.12 s | 0.54 s | 0.35 s | 4.5x | 2.9x |
+| knucleotide | 0.01 s | 0.04 s | 0.04 s | 7.5x | 5.5x to 6.9x |
+| mandelbrot 1000 | 0.03 s | 0.12 s | 0.06 s | 3.9x | 2.0x |
+| nbody 1000000 | 0.03 s | 0.21 s | 0.16 s | 6.8x | 4.9x |
+| spectralnorm 1000 | 0.03 s | 0.10 s | 0.06 s | 3.8x | 2.0x |
+| spigot 10000 | 0.93 s | 1.50 s | 1.12 s | 1.6x | 1.2x |
+
+(knucleotide runs in 0.04 s, so its ratio is mostly start-up.) Two bugs the tests caught on the way: a float
+local in `d28`-`d31` read as an integer register by the prologue's `(lt r 19)` test, which zeroed `x28`
+(the memory base); and the shared address register, valid only until a label, where another path arrives.
+Verified as before: every benchmark's output, the AArch64 tests (a new one runs operations with constant
+operands on a spread of values on both backends and compares the output), `tools/arm64_bootstrap.sh`
+(107 programs identical), and 8,500 generated programs (`tools/arm64_fuzz.py`, seeds 31 to 33, 41, 42) with no
+difference. The encoder gained `add_uxtw`, `and_ri`/`orr_ri`/`eor_ri`, `fmov_imm` (checked against Apple's
+assembler like the rest: 15,342 vectors).
+
+What is left against C: the locals past the 7 integer registers live in frame slots (a big function's `sub x16,
+x29, #off; ldr` per access); a value that is the result of an `if` or `else` (every `&&` and `||`) goes through
+the machine stack; a loop's step and end are not constants when the code optimizer reuses their local.
+
 ## Phases, each measured against the table above
 
 1. **The virtual stack, constants, typed registers, fused compare and branch, addressing** (locals still in
    frame slots). Expected: 3 to 5 times faster.
 2. **Locals in registers**, with the saves in the import routines. Expected: another 2 to 3 times.
 3. **The register calling convention** (and guard-ifs). Expected: 1.2 to 1.5 times on call-heavy programs (binarytrees); measured: only the guards helped.
+4. **Instruction selection** (operands in place, immediates, uxtw addressing, direct branches, constant locals). Measured: 1.2 to 2 times.
 
 A phase is done when every benchmark's output is unchanged, `tests/test_native_arm64*.rs` and
 `tools/arm64_bootstrap.sh` pass (the compiler built by the optimized backend compiles itself to the same

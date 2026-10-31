@@ -22,7 +22,7 @@
 ;;     in data holds its size in pages. Loads and stores are not checked here:
 ;;     past the current size, up to 8 GiB from x28, memory has no access.
 ;;   - x16 and x17 are scratch for the sequences below; x0-x7 hold operands. The locals a function uses most
-;;     live in x19-x25 and d8-d15, which a function saves in its frame and gives back as it returns (a routine
+;;     live in x19-x25 and d8-d15 and d28-d31, which a function saves in its frame and gives back as it returns (a routine
 ;;     for an import saves them too: wasi_arm64.prologue).
 ;;   - A trap jumps to the trap routine with its reason's number in x0.
 ;;   - Control flow: the translator tracks the value stack's depth (in slots)
@@ -70,8 +70,8 @@
              (pub threaded:bool) (pub shared:bool) (pub results_off:i32)
              (read seg_addrs:(ptr (vec.Vec i32))) (read seg_lens:(ptr (vec.Vec i32)))
              vn:i32 (read vkind:(arr i32)) (read vreg:(arr i32)) (read vval:(arr i64)) imask:i32 fmask:i32
-             ltypes:(arr i32) lreg:(arr i32) nint:i32 nfp:i32 nsave:i32
-             regconv:(arr i32) rc:bool rtype:i32
+             ltypes:(arr i32) lreg:(arr i32) nint:i32 nfp:i32 nsave:i32 lconst:(arr i32) lcval:(arr i64)
+             regconv:(arr i32) rc:bool rtype:i32 def_end:i32 def_reg:i32 addr_reg:i32 addr_end:i32
              body:(ptr (vec.Vec (ptr wasm_reader.Instr))) at:i32] (pub))
 
   ;; The trap reasons' numbers, the trap routine's table order.
@@ -133,9 +133,15 @@
                                                 nint:0
                                                 nfp:0
                                                 nsave:0
+                                                lconst:(arr.new i32 (call alloc.forever) 1)
+                                                lcval:(arr.new i64 (call alloc.forever) 1)
                                                 regconv:(arr.new i32 (call alloc.forever) 1)
                                                 rc:false
                                                 rtype:-1
+                                                def_end:-1
+                                                def_reg:-1
+                                                addr_reg:-1
+                                                addr_end:-1
                                                 body:(ptr.null (vec.Vec (ptr wasm_reader.Instr)))
                                                 at:0]))
     l)
@@ -193,7 +199,11 @@
   (fn ipool [] -> i32 9)
   (fn ipool_n [] -> i32 7)
   (fn fpool [] -> i32 16)
-  (fn fpool_n [] -> i32 16)
+  (fn fpool_n [] -> i32 12)
+  ;; the float registers of locals: d8-d15, then d28-d31 (the pool is v16-v27)
+  (fn fp_local [j:i32] -> i32 (if (lt j 8) (+ 8 j) (+ 20 j)))
+  ;; whether a local's register r (x19-x25, d8-d15, d28-d31) is a float one
+  (fn is_fp_reg [r:i32] -> bool (or (lt r 19) (gte r 28)))
   (fn vcap [] -> i32 56)
 
   (fn alloc_int [l:(ptr L)] -> i32
@@ -296,7 +306,21 @@
   (fn push [l:(ptr L) r:i32] -> void
     (let d:i32 (call alloc_int l))
     (when (neq d r) (call arm64.mov_rr (get l L.code) 64 d r))
-    (call vpush l 0 d 0i64))
+    (let end:i32 (call buf.len (get l L.code)))
+    (call vpush l 0 d 0i64)
+    (when (neq d r) (call defined_at l end d)))
+
+  ;; The instruction that ended at `end` wrote pool register d, which is now the top entry: a `local.set` of
+  ;; a register local can make that instruction write the local's register instead (pop_to_reg).
+  (fn defined_at [l:(ptr L) end:i32 d:i32] -> void
+    (put l L.def_end end)
+    (put l L.def_reg d))
+
+  ;; A new top entry, the value the instruction just emitted wrote into pool register d (taken by alloc_int).
+  (fn defined [l:(ptr L) d:i32] -> void
+    (let end:i32 (call buf.len (get l L.code)))
+    (call vpush l 0 d 0i64)
+    (call defined_at l end d))
 
   ;; the top value into integer register r (a float's bits, a constant, the flags as 0 or 1)
   (fn pop [l:(ptr L) r:i32] -> void
@@ -320,6 +344,55 @@
             (else (call arm64.cset c 32 r e)))
           (call vtake l))))
 
+  ;; A register that holds the top value, which comes off the stack: the entry's own register (a pool
+  ;; register, free again; or a register local, which the caller must only read), otherwise the value
+  ;; loaded into `scratch`.
+  (fn src [l:(ptr L) scratch:i32] -> i32
+    (let n:i32 (get l L.vn))
+    (when (gt n 0)
+      (let k:i32 (arr.get i32 (get l L.vkind) (- n 1)))
+      (let e:i32 (arr.get i32 (get l L.vreg) (- n 1)))
+      (when (eq k 0) (call free_int l e) (call vtake l) (return e))
+      (when (eq k 6) (call vtake l) (return e)))
+    (call pop l scratch)
+    scratch)
+
+  ;; The top value into register rg, a register local's: when the last instruction computed it into a pool
+  ;; register, that instruction writes rg itself.
+  (fn pop_to_reg [l:(ptr L) rg:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let n:i32 (get l L.vn))
+    (let e:i32 (if (gt n 0) (arr.get i32 (get l L.vreg) (- n 1)) -1))
+    (if (and (gt n 0)
+             (and (eq (arr.get i32 (get l L.vkind) (- n 1)) 0)
+                  (and (eq e (get l L.def_reg)) (eq (get l L.def_end) (call buf.len c)))))
+        (block
+          (call arm64.retarget c (- (call buf.len c) 4) rg)
+          (put l L.def_reg -1)
+          (call free_int l e)
+          (call vtake l))
+        (call pop l rg)))
+
+  ;; pop_to_reg for a float register
+  (fn pop_fp_to_reg [l:(ptr L) ft:i32 rg:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let n:i32 (get l L.vn))
+    (let k:i32 (if (gt n 0) (arr.get i32 (get l L.vkind) (- n 1)) -1))
+    (let e:i32 (if (gt n 0) (arr.get i32 (get l L.vreg) (- n 1)) -1))
+    (if (and (or (eq k 1) (eq k 2)) (and (eq e (get l L.def_reg)) (eq (get l L.def_end) (call buf.len c))))
+        (block
+          (call arm64.retarget c (- (call buf.len c) 4) rg)
+          (put l L.def_reg -1)
+          (call free_fp l e)
+          (call vtake l))
+        (call pop_fp l ft rg)))
+
+  ;; A new float entry (kind 1 f32, 2 f64) in pool register d, written by the instruction just emitted
+  (fn defined_fp [l:(ptr L) kind:i32 d:i32] -> void
+    (let end:i32 (call buf.len (get l L.code)))
+    (call vpush l kind d 0i64)
+    (call defined_at l end d))
+
   ;; the top value into float register f (format ft: 0 single, 1 double)
   (fn pop_fp [l:(ptr L) ft:i32 f:i32] -> void
     (let n:i32 (get l L.vn))
@@ -331,14 +404,35 @@
           (when (or (eq k 1) (eq k 2)) (call free_fp l e))
           (call vtake l))
         (block
-          (call pop l 16)
-          (call arm64.fmov_to_fp (get l L.code) ft f 16))))
+          (let imm:i32 (if (and (gt n 0) (eq k (if (eq ft 1) 4 3)))
+                           (call arm64.fp_imm8 ft (arr.get i64 (get l L.vval) (- n 1)))
+                           -1))
+          (cond
+            ((gte imm 0) (call vtake l) (call arm64.fmov_imm (get l L.code) ft f imm))
+            ((and (and (gt n 0) (eq k (if (eq ft 1) 4 3))) (eq (arr.get i64 (get l L.vval) (- n 1)) 0i64))
+             (call vtake l)
+             (call arm64.fmov_to_fp (get l L.code) ft f 31))
+            (else
+             (call pop l 16)
+             (call arm64.fmov_to_fp (get l L.code) ft f 16))))))
+
+  ;; the float register that holds the top value (format ft), which comes off the stack: its own (a pool
+  ;; register, free again; a register local, to be only read), or the value loaded into `scratch`
+  (fn src_fp [l:(ptr L) ft:i32 scratch:i32] -> i32
+    (let n:i32 (get l L.vn))
+    (when (gt n 0)
+      (let k:i32 (arr.get i32 (get l L.vkind) (- n 1)))
+      (let e:i32 (arr.get i32 (get l L.vreg) (- n 1)))
+      (when (or (eq k 1) (eq k 2)) (call free_fp l e) (call vtake l) (return e))
+      (when (or (eq k 7) (eq k 8)) (call vtake l) (return e)))
+    (call pop_fp l ft scratch)
+    scratch)
 
   ;; the value in float register f goes on the stack
   (fn push_fp [l:(ptr L) ft:i32 f:i32] -> void
     (let d:i32 (call alloc_fp l))
     (call arm64.fmov_rr (get l L.code) ft d f)
-    (call vpush l (if (eq ft 1) 2 1) d 0i64))
+    (call defined_fp l (if (eq ft 1) 2 1) d))
 
   ;; the top value in a float register of its own, which the caller must free (or hand to vpush): the register
   ;; it was in, or one it is loaded into
@@ -439,7 +533,7 @@
     (put l L.regconv rc))
 
   ;; The locals that get registers: the ones used most (a use counts 8 times for each loop it is inside,
-  ;; to 4096), the integers in x19-x25 and the floats in d8-d15, in order. L.lreg: a local's register, or -1.
+  ;; to 4096), the integers in x19-x25 and the floats in d8-d15 then d28-d31, in order. L.lreg: a local's register, or -1.
   (fn plan_locals [l:(ptr L) code:(ptr (vec.Vec (ptr wasm_reader.Instr))) total:i32] -> void
     (let cnt:(arr i32) (arr.new i32 (call alloc.default) (+ total 1)))
     (let n:i32 (call (vec.len (ptr wasm_reader.Instr)) code))
@@ -462,6 +556,66 @@
          (let a:i32 (get ins wasm_reader.Instr.a))
          (arr.set i32 cnt a (+ (arr.get i32 cnt a) w)))
         (else (block))))
+    ;; A declared local that is set once, from a constant, with every get after the set and in the block that
+    ;; holds it (so the set always comes first) is that constant: its gets are constants and its set does nothing.
+    (let nset:(arr i32) (arr.new i32 (call alloc.default) (+ total 1)))
+    (let spos:(arr i32) (arr.new i32 (call alloc.default) (+ total 1)))
+    (let sblk:(arr i32) (arr.new i32 (call alloc.default) (+ total 1)))
+    (let fget:(arr i32) (arr.new i32 (call alloc.default) (+ total 1)))
+    (let lget:(arr i32) (arr.new i32 (call alloc.default) (+ total 1)))
+    (let lconst:(arr i32) (arr.new i32 (call alloc.forever) (+ total 1)))
+    (let lcval:(arr i64) (arr.new i64 (call alloc.forever) (+ total 1)))
+    (for i 0 total (arr.set i32 fget i -1) (arr.set i32 lget i -1) (arr.set i32 spos i -1))
+    (let bstk:(arr i32) (arr.new i32 (call alloc.default) (+ n 2)))
+    (let bend:(arr i32) (arr.new i32 (call alloc.default) (+ n 2)))
+    (let nb:i32 1)
+    (let bsp:i32 1)
+    (for i 0 n
+      (let ins:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code i))
+      (let op:i32 (get ins wasm_reader.Instr.op))
+      (cond
+        ((or (eq op 2) (or (eq op 3) (eq op 4)))
+         (arr.set i32 bstk bsp nb)
+         (set! bsp (+ bsp 1))
+         (set! nb (+ nb 1)))
+        ;; an else ends the then-arm's block and starts the else-arm's
+        ((eq op 5)
+         (when (gt bsp 0)
+           (arr.set i32 bend (arr.get i32 bstk (- bsp 1)) i)
+           (arr.set i32 bstk (- bsp 1) nb)
+           (set! nb (+ nb 1))))
+        ((eq op 11)
+         (when (gt bsp 0)
+           (arr.set i32 bend (arr.get i32 bstk (- bsp 1)) i)
+           (set! bsp (- bsp 1))))
+        ((eq op 32)
+         (let a:i32 (get ins wasm_reader.Instr.a))
+         (when (lt (arr.get i32 fget a) 0) (arr.set i32 fget a i))
+         (arr.set i32 lget a i))
+        ((eq op 34)
+         (let a:i32 (get ins wasm_reader.Instr.a))
+         (arr.set i32 nset a (+ (arr.get i32 nset a) 2)))
+        ((eq op 33)
+         (let a:i32 (get ins wasm_reader.Instr.a))
+         (arr.set i32 nset a (+ (arr.get i32 nset a) 1))
+         (when (and (gt i 0) (gt bsp 0))
+           (let prev:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code (- i 1)))
+           (let pop:i32 (get prev wasm_reader.Instr.op))
+           (let t:i32 (arr.get i32 (get l L.ltypes) a))
+           (when (or (and (eq pop 65) (eq t 127)) (and (eq pop 66) (eq t 126)))
+             (arr.set i32 spos a i)
+             (arr.set i32 sblk a (arr.get i32 bstk (- bsp 1)))
+             (arr.set i64 lcval a (get prev wasm_reader.Instr.c)))))
+        (else (block))))
+    (for a (get l L.np) total
+      (when (and (eq (arr.get i32 nset a) 1) (gte (arr.get i32 spos a) 0))
+        (when (or (lt (arr.get i32 fget a) 0)
+                  (and (gt (arr.get i32 fget a) (arr.get i32 spos a))
+                       (lt (arr.get i32 lget a) (arr.get i32 bend (arr.get i32 sblk a)))))
+          (arr.set i32 lconst a 1)
+          (arr.set i32 cnt a 0))))
+    (put l L.lconst lconst)
+    (put l L.lcval lcval)
     (let lreg:(arr i32) (arr.new i32 (call alloc.forever) (+ total 1)))
     (for i 0 total (arr.set i32 lreg i -1))
     (let ni:i32 0)
@@ -473,7 +627,7 @@
         (let t:i32 (arr.get i32 (get l L.ltypes) i))
         (let isint:bool (or (eq t 127) (eq t 126)))
         (when (and (and (gt (arr.get i32 cnt i) 0) (eq (arr.get i32 lreg i) -1))
-                   (if isint (lt ni 7) (lt nf 8)))
+                   (if isint (lt ni 7) (lt nf 12)))
           (when (or (lt best 0) (gt (arr.get i32 cnt i) (arr.get i32 cnt best))) (set! best i))))
       (if (lt best 0)
           (set! more false)
@@ -481,7 +635,7 @@
             (let t:i32 (arr.get i32 (get l L.ltypes) best))
             (if (or (eq t 127) (eq t 126))
                 (block (arr.set i32 lreg best (+ 19 ni)) (set! ni (+ ni 1)))
-                (block (arr.set i32 lreg best (+ 8 nf)) (set! nf (+ nf 1))))
+                (block (arr.set i32 lreg best (call fp_local nf)) (set! nf (+ nf 1))))
             (arr.set i32 cnt best 0))))
     (put l L.lreg lreg)
     (put l L.nint ni)
@@ -503,8 +657,8 @@
     (for j 0 (get l L.nfp)
       (let off:i32 (- 0 (+ (* 8 (get l L.nint)) (* 8 (+ j 1)))))
       (if save
-          (call arm64.stur_fp c 1 (+ 8 j) 29 off)
-          (call arm64.ldur_fp c 1 (+ 8 j) 29 off))))
+          (call arm64.stur_fp c 1 (call fp_local j) 29 off)
+          (call arm64.ldur_fp c 1 (call fp_local j) 29 off))))
 
   ;; the local's type: 0 an integer, 1 an f32, 2 an f64
   (fn local_kind [l:(ptr L) i:i32] -> i32
@@ -703,7 +857,7 @@
       (let r:i32 (call local_reg l i))
       (cond
         ((lt r 0) (call emit_local l false 31 i))
-        ((lt r 19) (call arm64.fmov_to_fp c 1 r 31))
+        ((call is_fp_reg r) (call arm64.fmov_to_fp c 1 r 31))
         (else (call arm64.mov_imm c 64 r 0i64))))
     (for i 0 np
       (let r:i32 (call local_reg l i))
@@ -717,7 +871,7 @@
                   (if (gte r 0) (call arm64.fmov_rr c ft r k) (call emit_local_fp l false ft k i)))
                 (if (gte r 0) (call arm64.mov_rr c 64 r k) (call emit_local l false k i))))
           (when (gte r 0)
-            (if (lt r 19)
+            (if (call is_fp_reg r)
                 (call emit_local_fp l true (- (call local_kind l i) 1) r i)
                 (call emit_local l true r i)))))
     (put l L.depth 0)
@@ -841,9 +995,16 @@
           (call (vec.push i32) (get lab Label.fixups) (call arm64.b c))
           (put lab Label.reached true))))
 
+  ;; Whether a conditional branch can be used for a branch within this function (its reach is 1 MiB, and
+  ;; an instruction is at most some hundreds of bytes): the function is not a very long one.
+  (fn direct_ok [l:(ptr L)] -> bool
+    (lt (call (vec.len (ptr wasm_reader.Instr)) (get l L.body)) 1500))
+
   ;; The control instructions. Returns false for any other opcode.
   (fn control [l:(ptr L) op:i32 a:i32 nres:i32] -> bool
     (let c:(ptr buf.Buf) (get l L.code))
+    ;; a label may be reached from elsewhere: x16 is not x28 + a register there
+    (when (or (eq op 3) (or (eq op 5) (eq op 11))) (put l L.addr_end -1))
     (let live:bool (not (get l L.dead)))
     (cond
       ((or (eq op 2) (eq op 3))
@@ -856,10 +1017,11 @@
              ;; the condition, in the flags or a register; the stack below it goes to memory first
              (let flags:bool (call top_is_flags l))
              (let cc:i32 (if flags (arr.get i32 (get l L.vreg) (- (get l L.vn) 1)) 0))
-             (if flags (call vtake l) (call pop l 0))
+             (let cr:i32 0)
+             (if flags (call vtake l) (set! cr (call src l 0)))
              (let guard:bool (and (eq a 64) (call guard_if l)))
              (when (not guard) (call flush l))
-             (let at:i32 (if flags (call arm64.b_cond c (call arm64.invert cc)) (call arm64.cbz c 32 0)))
+             (let at:i32 (if flags (call arm64.b_cond c (call arm64.invert cc)) (call arm64.cbz c 32 cr)))
              (let lab:(ptr Label) (call open_label l 2 (call arity_of a)))
              (put lab Label.else_at at)
              (when guard
@@ -894,7 +1056,11 @@
              (put lab Label.reached true))
        (let fx:(ptr (vec.Vec i32)) (get lab Label.fixups))
        (for k 0 (call (vec.len i32) fx)
-         (call arm64.patch_b c (call (vec.at i32) fx k) (call buf.len c)))
+         (let at:i32 (call (vec.at i32) fx k))
+         ;; a bit set: a conditional branch (b.cond, cbnz), whose reach is 1 MiB
+         (if (eq (bitand at 1) 1)
+             (call arm64.patch_cond c (- at 1) (call buf.len c))
+             (call arm64.patch_b c at (call buf.len c))))
        (put l L.depth (+ (get lab Label.height) (get lab Label.arity)))
        (put l L.dead (not (get lab Label.reached)))
        ;; after a guard the stack is what it was at the `if`
@@ -910,13 +1076,26 @@
       ((eq op 13)
        (let flags:bool (call top_is_flags l))
        (let cc:i32 (if flags (arr.get i32 (get l L.vreg) (- (get l L.vn) 1)) 0))
-       (if flags (call vtake l) (call pop l 0))
+       (let cr:i32 0)
+       (if flags (call vtake l) (set! cr (call src l 0)))
        (call flush l)
-       (let skip:i32 (if flags (call arm64.b_cond c (call arm64.invert cc)) (call arm64.cbz c 32 0)))
-       (let depth:i32 (get l L.depth))
-       (call emit_branch l (call label_at l a))
-       (call arm64.patch_cond c skip (call buf.len c))
-       (put l L.depth depth)
+       (let target:(ptr Label) (call label_at l a))
+       (let carried:i32 (if (eq (get target Label.kind) 1) 0 (get target Label.arity)))
+       (if (and (eq (get l L.depth) (+ (get target Label.height) carried)) (call direct_ok l))
+           ;; the stack is where the label wants it: the condition itself branches there
+           (block
+             (let at:i32 (if flags (call arm64.b_cond c cc) (call arm64.cbnz c 32 cr)))
+             (if (eq (get target Label.kind) 1)
+                 (call arm64.patch_cond c at (get target Label.start))
+                 (block
+                   (call (vec.push i32) (get target Label.fixups) (bitor at 1))
+                   (put target Label.reached true))))
+           (block
+             (let skip:i32 (if flags (call arm64.b_cond c (call arm64.invert cc)) (call arm64.cbz c 32 cr)))
+             (let depth:i32 (get l L.depth))
+             (call emit_branch l target)
+             (call arm64.patch_cond c skip (call buf.len c))
+             (put l L.depth depth)))
        true)
       ((eq op 15)
        (when (not (and (get l L.rc) (lte nres 1))) (call flush l))
@@ -993,20 +1172,25 @@
        ;; select: the first value, the second, and the condition on top (the flags, or a register to compare)
        (let flags:bool (call top_is_flags l))
        (let cc:i32 (if flags (arr.get i32 (get l L.vreg) (- (get l L.vn) 1)) 0))
-       (if flags (call vtake l) (call pop l 2))
-       (call pop l 1)
-       (call pop l 0)
+       (let cr:i32 2)
+       (if flags (call vtake l) (set! cr (call src l 2)))
+       (let second:i32 (call src l 1))
+       (let first:i32 (call src l 0))
+       (let d:i32 (call alloc_int l))
        (if flags
-           (call arm64.csel c 64 0 0 1 cc)
+           (call arm64.csel c 64 d first second cc)
            (block
-             (call arm64.cmp_ri c 32 2 0)
-             (call arm64.csel c 64 0 0 1 (call arm64.cc_ne))))
-       (call push l 0)
+             (call arm64.cmp_ri c 32 cr 0)
+             (call arm64.csel c 64 d first second (call arm64.cc_ne))))
+       (call defined l d)
        true)
       ((eq op 32)
        (let k:i32 (call local_kind l a))
        (let rg:i32 (call local_reg l a))
        (cond
+         ;; a constant
+         ((eq (arr.get i32 (get l L.lconst) a) 1)
+          (call vpush l (if (eq (arr.get i32 (get l L.ltypes) a) 127) 3 4) 0 (arr.get i64 (get l L.lcval) a)))
          ;; in a register: the entry refers to it
          ((gte rg 0) (call vpush l (+ 6 k) rg 0i64))
          ((eq k 0)
@@ -1022,22 +1206,32 @@
        (let k:i32 (call local_kind l a))
        (let rg:i32 (call local_reg l a))
        (cond
+         ;; a constant: the set does nothing (the value on the stack is that constant)
+         ((eq (arr.get i32 (get l L.lconst) a) 1)
+          (if (gt (get l L.vn) 0)
+              (block (call free_entry l (- (get l L.vn) 1)) (call vtake l))
+              (block (call arm64.add_ri c 64 31 31 16) (call adjust l -1))))
          ;; in a register: the value goes there, and a tee leaves a reference to it
          ((gte rg 0)
           (call sync_local l rg)
-          (if (eq k 0) (call pop l rg) (call pop_fp l (- k 1) rg))
+          (if (eq k 0) (call pop_to_reg l rg) (call pop_fp_to_reg l (- k 1) rg))
           (when (eq op 34) (call vpush l (+ 6 k) rg 0i64)))
          ((eq k 0)
-          (call pop l 0)
-          (call emit_local l false 0 a)
-          (when (eq op 34) (call push l 0)))
+          (let v:i32 (call src l 0))
+          (call emit_local l false v a)
+          (when (eq op 34) (call push l v)))
          (else
-          (call pop_fp l (- k 1) 0)
-          (call emit_local_fp l false (- k 1) 0 a)
-          (when (eq op 34) (call push_fp l (- k 1) 0))))
+          (let v:i32 (call src_fp l (- k 1) 0))
+          (call emit_local_fp l false (- k 1) v a)
+          (when (eq op 34) (call push_fp l (- k 1) v))))
        true)
-      ((eq op 35) (call global_addr l a) (call arm64.ldr_x c 0 16 0) (call push l 0) true)
-      ((eq op 36) (call pop l 0) (call global_addr l a) (call arm64.str_x c 0 16 0) true)
+      ((eq op 35)
+       (let d:i32 (call alloc_int l))
+       (call global_addr l a)
+       (call arm64.ldr_x c d 16 0)
+       (call defined l d)
+       true)
+      ((eq op 36) (let v:i32 (call src l 0)) (call global_addr l a) (call arm64.str_x c v 16 0) true)
       ((or (eq op 65) (eq op 67)) (call vpush l 3 0 (get ins wasm_reader.Instr.c)) true)
       ((or (eq op 66) (eq op 68)) (call vpush l 4 0 (get ins wasm_reader.Instr.c)) true)
       ((eq op 16)
@@ -1101,84 +1295,175 @@
            ;; the opposite of a comparison
            (arr.set i32 (get l L.vreg) (- (get l L.vn) 1) (call arm64.invert (arr.get i32 (get l L.vreg) (- (get l L.vn) 1))))
            (block
-             (call pop l 0)
-             (call arm64.cmp_ri c sz 0 0)
+             (let a:i32 (call src l 0))
+             (call arm64.cmp_ri c sz a 0)
              (call vpush l 5 (call arm64.cc_eq) 0i64)))
        true)
       ;; the comparisons
       ((or (and (gte op 70) (lte op 79)) (and (gte op 81) (lte op 90)))
        (let sz:i32 (if (lte op 79) 32 64))
        (let k:i32 (if (lte op 79) (- op 70) (- op 81)))
-       (call pop l 1)
-       (call pop l 0)
-       (call arm64.cmp_rr c sz 0 1)
+       (if (and (call top_const l sz) (call small_imm (call top_value l sz)))
+           (block
+             (let v:i64 (call top_value l sz))
+             (call vtake l)
+             (let a:i32 (call src l 0))
+             (if (gte v 0i64) (call arm64.cmp_ri c sz a (i32.wrap v)) (call arm64.adds_ri c sz 31 a (i32.wrap (- 0i64 v)))))
+           (block
+             (let b:i32 (call src l 1))
+             (let a:i32 (call src l 0))
+             (call arm64.cmp_rr c sz a b)))
        (call vpush l 5 (call compare_cc k) 0i64)
        true)
       ;; clz and ctz (popcnt is not here yet)
       ((or (eq op 103) (eq op 121))
-       (call pop l 0)
-       (call arm64.clz c (if (eq op 103) 32 64) 0 0)
-       (call push l 0)
+       (let a:i32 (call src l 0))
+       (let d:i32 (call alloc_int l))
+       (call arm64.clz c (if (eq op 103) 32 64) d a)
+       (call defined l d)
        true)
       ((or (eq op 104) (eq op 122))
        (let sz:i32 (if (eq op 104) 32 64))
-       (call pop l 0)
-       (call arm64.rbit c sz 0 0)
-       (call arm64.clz c sz 0 0)
-       (call push l 0)
+       (let a:i32 (call src l 0))
+       (let d:i32 (call alloc_int l))
+       (call arm64.rbit c sz d a)
+       (call arm64.clz c sz d d)
+       (call defined l d)
        true)
       ((and (gte op 106) (lte op 120)) (call binary l 32 (- op 106)) true)
       ((and (gte op 124) (lte op 138)) (call binary l 64 (- op 124)) true)
       ;; i32.wrap_i64, i64.extend_i32_s, i64.extend_i32_u
-      ((eq op 167) (call pop l 0) (call arm64.mov_rr c 32 0 0) (call push l 0) true)
-      ((eq op 172) (call pop l 0) (call arm64.sxtw c 0 0) (call push l 0) true)
-      ((eq op 173) (call pop l 0) (call arm64.mov_rr c 32 0 0) (call push l 0) true)
+      ((or (or (eq op 167) (eq op 172)) (eq op 173))
+       (let a:i32 (call src l 0))
+       (let d:i32 (call alloc_int l))
+       (if (eq op 172) (call arm64.sxtw c d a) (call arm64.mov_rr c 32 d a))
+       (call defined l d)
+       true)
       ;; the sign-extension operators
-      ((eq op 192) (call pop l 0) (call arm64.sxtb c 32 0 0) (call push l 0) true)
-      ((eq op 193) (call pop l 0) (call arm64.sxth c 32 0 0) (call push l 0) true)
-      ((eq op 194) (call pop l 0) (call arm64.sxtb c 64 0 0) (call push l 0) true)
-      ((eq op 195) (call pop l 0) (call arm64.sxth c 64 0 0) (call push l 0) true)
-      ((eq op 196) (call pop l 0) (call arm64.sxtw c 0 0) (call push l 0) true)
+      ((and (gte op 192) (lte op 196))
+       (let a:i32 (call src l 0))
+       (let d:i32 (call alloc_int l))
+       (cond
+         ((eq op 192) (call arm64.sxtb c 32 d a))
+         ((eq op 193) (call arm64.sxth c 32 d a))
+         ((eq op 194) (call arm64.sxtb c 64 d a))
+         ((eq op 195) (call arm64.sxth c 64 d a))
+         (else (call arm64.sxtw c d a)))
+       (call defined l d)
+       true)
       (else false)))
 
   ;; The binary arithmetic and bit operations, k from 0: add sub mul div_s
   ;; div_u rem_s rem_u and or xor shl shr_s shr_u rotl rotr; sz 32 or 64.
   (fn binary [l:(ptr L) sz:i32 k:i32] -> void
     (let c:(ptr buf.Buf) (get l L.code))
+    (when (and (call top_const l sz) (call binary_imm l sz k)) (return))
+    (when (or (or (eq k 0) (eq k 1)) (or (eq k 2) (or (and (gte k 7) (lte k 12)) (eq k 14))))
+      (let b:i32 (call src l 1))
+      (let a:i32 (call src l 0))
+      (let d:i32 (call alloc_int l))
+      (cond
+        ((eq k 0) (call arm64.add_rrr c sz d a b))
+        ((eq k 1) (call arm64.sub_rrr c sz d a b))
+        ((eq k 2) (call arm64.mul c sz d a b))
+        ((eq k 7) (call arm64.and_rrr c sz d a b))
+        ((eq k 8) (call arm64.orr_rrr c sz d a b))
+        ((eq k 9) (call arm64.eor_rrr c sz d a b))
+        ((eq k 10) (call arm64.lslv c sz d a b))
+        ((eq k 11) (call arm64.asrv c sz d a b))
+        ((eq k 12) (call arm64.lsrv c sz d a b))
+        (else (call arm64.rorv c sz d a b)))
+      (call defined l d)
+      (return))
+    (when (and (gte k 3) (lte k 6)) (call divide l sz k) (return))
     (call pop l 1)
     (call pop l 0)
     (cond
-      ((eq k 0) (call arm64.add_rrr c sz 0 0 1))
-      ((eq k 1) (call arm64.sub_rrr c sz 0 0 1))
-      ((eq k 2) (call arm64.mul c sz 0 0 1))
-      ((eq k 3)
-       (call arm64.cmp_ri c sz 1 0)
-       (call trap_if l (call arm64.cc_eq) (call trap_div_zero))
-       ;; INT_MIN / -1: the dividend is the smallest and the divisor is -1
-       (call arm64.mov_imm c sz 16 (if (eq sz 32) -2147483648i64 -9223372036854775808i64))
-       (call arm64.add_ri c sz 17 1 1)
-       (call arm64.cmp_rr c sz 0 16)
-       (call arm64.ccmp_ri c sz 17 0 0 (call arm64.cc_eq))
-       (call trap_if l (call arm64.cc_eq) (call trap_overflow))
-       (call arm64.sdiv c sz 0 0 1))
-      ((eq k 4)
-       (call arm64.cmp_ri c sz 1 0)
-       (call trap_if l (call arm64.cc_eq) (call trap_div_zero))
-       (call arm64.udiv c sz 0 0 1))
-      ((or (eq k 5) (eq k 6))
-       (call arm64.cmp_ri c sz 1 0)
-       (call trap_if l (call arm64.cc_eq) (call trap_div_zero))
-       (if (eq k 5) (call arm64.sdiv c sz 2 0 1) (call arm64.udiv c sz 2 0 1))
-       (call arm64.msub c sz 0 2 1 0))
-      ((eq k 7) (call arm64.and_rrr c sz 0 0 1))
-      ((eq k 8) (call arm64.orr_rrr c sz 0 0 1))
-      ((eq k 9) (call arm64.eor_rrr c sz 0 0 1))
-      ((eq k 10) (call arm64.lslv c sz 0 0 1))
-      ((eq k 11) (call arm64.asrv c sz 0 0 1))
-      ((eq k 12) (call arm64.lsrv c sz 0 0 1))
       ((eq k 13) (call arm64.neg c sz 1 1) (call arm64.rorv c sz 0 0 1))
       (else (call arm64.rorv c sz 0 0 1)))
     (call push l 0))
+
+  ;; div_s div_u rem_s rem_u (k 3-6): a constant divisor that cannot trap needs no check, and an unsigned
+  ;; division or remainder by a power of two is a shift or a mask
+  (fn divide [l:(ptr L) sz:i32 k:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let konst:bool (call top_const l sz))
+    (let v:i64 (if konst (call top_value l sz) 0i64))
+    (when (and konst (and (or (eq k 4) (eq k 6)) (and (gt v 0i64) (eq (bitand v (- v 1i64)) 0i64))))
+      (call vtake l)
+      (let a:i32 (call src l 0))
+      (let d:i32 (call alloc_int l))
+      (let n:i32 0)
+      (while (neq (bitand (shru v (i64.extend_s n)) 1i64) 1i64) (set! n (+ n 1)))
+      (if (eq k 4)
+          (if (eq n 0) (call arm64.mov_rr c sz d a) (call arm64.lsr_ri c sz d a n))
+          (if (eq n 0) (call arm64.mov_imm c 32 d 0i64) (call arm64.and_ri c sz d a (- v 1i64))))
+      (call defined l d)
+      (return))
+    (let zero_ok:bool (and konst (neq v 0i64)))
+    (let ovf_ok:bool (or (neq k 3) (and konst (and (neq v 0i64) (neq v -1i64)))))
+    (let b:i32 (call src l 1))
+    (let a:i32 (call src l 0))
+    (let d:i32 (call alloc_int l))
+    (when (not zero_ok)
+      (call arm64.cmp_ri c sz b 0)
+      (call trap_if l (call arm64.cc_eq) (call trap_div_zero)))
+    (when (not ovf_ok)
+      ;; INT_MIN / -1: the dividend is the smallest and the divisor is -1
+      (call arm64.mov_imm c sz 16 (if (eq sz 32) -2147483648i64 -9223372036854775808i64))
+      (call arm64.add_ri c sz 17 b 1)
+      (call arm64.cmp_rr c sz a 16)
+      (call arm64.ccmp_ri c sz 17 0 0 (call arm64.cc_eq))
+      (call trap_if l (call arm64.cc_eq) (call trap_overflow)))
+    (cond
+      ((eq k 3) (call arm64.sdiv c sz d a b))
+      ((eq k 4) (call arm64.udiv c sz d a b))
+      (else
+       (if (eq k 5) (call arm64.sdiv c sz 16 a b) (call arm64.udiv c sz 16 a b))
+       (call arm64.msub c sz d 16 b a)))
+    (call defined l d))
+
+  ;; Whether the top entry is a constant of integer width sz, and its value (i32 sign-extended)
+  (fn top_const [l:(ptr L) sz:i32] -> bool
+    (and (gt (get l L.vn) 0) (eq (arr.get i32 (get l L.vkind) (- (get l L.vn) 1)) (if (eq sz 32) 3 4))))
+  (fn top_value [l:(ptr L) sz:i32] -> i64
+    (let v:i64 (arr.get i64 (get l L.vval) (- (get l L.vn) 1)))
+    (if (eq sz 32) (i64.extend_s (i32.wrap v)) v))
+  ;; an immediate of add, sub, or cmp (a negative one turns the instruction around)
+  (fn small_imm [v:i64] -> bool (and (gte v -4095i64) (lte v 4095i64)))
+
+  ;; binary with the constant on top as an immediate, when the operation has the form: add, sub, mul by a
+  ;; power of two, and, or, xor with a bitmask immediate, and the shifts. False when it has not (nothing is done).
+  (fn binary_imm [l:(ptr L) sz:i32 k:i32] -> bool
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let v:i64 (call top_value l sz))
+    (let ok:bool false)
+    (cond
+      ((or (eq k 0) (eq k 1)) (set! ok (call small_imm v)))
+      ((eq k 2) (set! ok (and (gt v 0i64) (eq (bitand v (- v 1i64)) 0i64))))
+      ((and (gte k 7) (lte k 9)) (set! ok (gte (call arm64.logic_imm_field sz v) 0)))
+      ((and (gte k 10) (lte k 12)) (set! ok true))
+      (else (block)))
+    (when (not ok) (return false))
+    (call vtake l)
+    (let a:i32 (call src l 0))
+    (let d:i32 (call alloc_int l))
+    (let sh:i32 (i32.wrap (bitand v (i64.extend_s (- sz 1)))))
+    (cond
+      ((eq k 0) (if (gte v 0i64) (call arm64.add_ri c sz d a (i32.wrap v)) (call arm64.sub_ri c sz d a (i32.wrap (- 0i64 v)))))
+      ((eq k 1) (if (gte v 0i64) (call arm64.sub_ri c sz d a (i32.wrap v)) (call arm64.add_ri c sz d a (i32.wrap (- 0i64 v)))))
+      ((eq k 2)
+       (let n:i32 0)
+       (while (neq (bitand (shru v (i64.extend_s n)) 1i64) 1i64) (set! n (+ n 1)))
+       (if (eq n 0) (call arm64.mov_rr c sz d a) (call arm64.lsl_ri c sz d a n)))
+      ((eq k 7) (call arm64.and_ri c sz d a v))
+      ((eq k 8) (call arm64.orr_ri c sz d a v))
+      ((eq k 9) (call arm64.eor_ri c sz d a v))
+      ((eq k 10) (if (eq sh 0) (call arm64.mov_rr c sz d a) (call arm64.lsl_ri c sz d a sh)))
+      ((eq k 11) (call arm64.asr_ri c sz d a sh))
+      (else (call arm64.lsr_ri c sz d a sh)))
+    (call defined l d)
+    true)
 
 ;; ===== Floating point =====
   ;; A slot holds an f32's or f64's bits; arithmetic moves them through d0 and d1.
@@ -1201,43 +1486,42 @@
       ((and (gte op 91) (lte op 102))
        (let ft:i32 (if (lte op 96) 0 1))
        (let k:i32 (if (lte op 96) (- op 91) (- op 97)))
-       (let rb:i32 (call take_fp l ft))
-       (let ra:i32 (call take_fp l ft))
+       (let rb:i32 (call src_fp l ft 0))
+       (let ra:i32 (call src_fp l ft 1))
        (call arm64.fcmp c ft ra rb)
-       (call free_fp l ra)
-       (call free_fp l rb)
        (call vpush l 5 (call float_cc k) 0i64)
        true)
       ;; one operand: abs neg ceil floor trunc nearest sqrt (f32 0x8b-0x91, f64 0x99-0x9f)
       ((or (and (gte op 139) (lte op 145)) (and (gte op 153) (lte op 159)))
        (let ft:i32 (if (lte op 145) 0 1))
        (let k:i32 (if (lte op 145) (- op 139) (- op 153)))
-       (let r:i32 (call take_fp l ft))
+       (let r:i32 (call src_fp l ft 0))
+       (let d:i32 (call alloc_fp l))
        (cond
-         ((eq k 0) (call arm64.fabs c ft r r))
-         ((eq k 1) (call arm64.fneg c ft r r))
-         ((eq k 2) (call arm64.frintp c ft r r))
-         ((eq k 3) (call arm64.frintm c ft r r))
-         ((eq k 4) (call arm64.frintz c ft r r))
-         ((eq k 5) (call arm64.frintn c ft r r))
-         (else (call arm64.fsqrt c ft r r)))
-       (call vpush l (if (eq ft 1) 2 1) r 0i64)
+         ((eq k 0) (call arm64.fabs c ft d r))
+         ((eq k 1) (call arm64.fneg c ft d r))
+         ((eq k 2) (call arm64.frintp c ft d r))
+         ((eq k 3) (call arm64.frintm c ft d r))
+         ((eq k 4) (call arm64.frintz c ft d r))
+         ((eq k 5) (call arm64.frintn c ft d r))
+         (else (call arm64.fsqrt c ft d r)))
+       (call defined_fp l (if (eq ft 1) 2 1) d)
        true)
       ;; add sub mul div min max (f32 0x92-0x97, f64 0xa0-0xa5)
       ((or (and (gte op 146) (lte op 151)) (and (gte op 160) (lte op 165)))
        (let ft:i32 (if (lte op 151) 0 1))
        (let k:i32 (if (lte op 151) (- op 146) (- op 160)))
-       (let rb:i32 (call take_fp l ft))
-       (let ra:i32 (call take_fp l ft))
+       (let rb:i32 (call src_fp l ft 0))
+       (let ra:i32 (call src_fp l ft 1))
+       (let d:i32 (call alloc_fp l))
        (cond
-         ((eq k 0) (call arm64.fadd c ft ra ra rb))
-         ((eq k 1) (call arm64.fsub c ft ra ra rb))
-         ((eq k 2) (call arm64.fmul c ft ra ra rb))
-         ((eq k 3) (call arm64.fdiv c ft ra ra rb))
-         ((eq k 4) (call arm64.fmin c ft ra ra rb))
-         (else (call arm64.fmax c ft ra ra rb)))
-       (call free_fp l rb)
-       (call vpush l (if (eq ft 1) 2 1) ra 0i64)
+         ((eq k 0) (call arm64.fadd c ft d ra rb))
+         ((eq k 1) (call arm64.fsub c ft d ra rb))
+         ((eq k 2) (call arm64.fmul c ft d ra rb))
+         ((eq k 3) (call arm64.fdiv c ft d ra rb))
+         ((eq k 4) (call arm64.fmin c ft d ra rb))
+         (else (call arm64.fmax c ft d ra rb)))
+       (call defined_fp l (if (eq ft 1) 2 1) d)
        true)
       ;; copysign: the magnitude of the first, the sign of the second
       ((or (eq op 152) (eq op 166))
@@ -1252,23 +1536,26 @@
        true)
       ;; f32.demote_f64, f64.promote_f32
       ((eq op 182)
-       (call pop_fp l 1 0)
-       (call arm64.fcvt_to_single c 0 0)
-       (call push_fp l 0 0)
+       (let r:i32 (call src_fp l 1 0))
+       (let d:i32 (call alloc_fp l))
+       (call arm64.fcvt_to_single c d r)
+       (call defined_fp l 1 d)
        true)
       ((eq op 187)
-       (call pop_fp l 0 0)
-       (call arm64.fcvt_to_double c 0 0)
-       (call push_fp l 1 0)
+       (let r:i32 (call src_fp l 0 0))
+       (let d:i32 (call alloc_fp l))
+       (call arm64.fcvt_to_double c d r)
+       (call defined_fp l 2 d)
        true)
       ;; f32 and f64 from integers: convert_i32_s/u, convert_i64_s/u
       ((or (and (gte op 178) (lte op 181)) (and (gte op 183) (lte op 186)))
        (let ft:i32 (if (lte op 181) 0 1))
        (let k:i32 (if (lte op 181) (- op 178) (- op 183)))
        (let sz:i32 (if (lt k 2) 32 64))
-       (call pop l 0)
-       (if (eq (% k 2) 0) (call arm64.scvtf c sz ft 0 0) (call arm64.ucvtf c sz ft 0 0))
-       (call push_fp l ft 0)
+       (let a:i32 (call src l 0))
+       (let d:i32 (call alloc_fp l))
+       (if (eq (% k 2) 0) (call arm64.scvtf c sz ft d a) (call arm64.ucvtf c sz ft d a))
+       (call defined_fp l (if (eq ft 1) 2 1) d)
        true)
       ;; the reinterpretations change nothing: a slot holds the bits either way
       ((and (gte op 188) (lte op 191)) true)
@@ -1505,6 +1792,7 @@
 
   ;; x1 = the address of the byte the access names: the 32-bit address popped
   ;; into x1, plus the offset, from the base in x28
+  ;; the address of an atomic access: x1 = x28 + the 32-bit address in x1 + the offset
   (fn emit_address [l:(ptr L) offset:i32] -> void
     (let c:(ptr buf.Buf) (get l L.code))
     (call arm64.mov_rr c 32 1 1)
@@ -1516,42 +1804,94 @@
        (call arm64.add_rrr c 64 1 1 2)))
     (call arm64.add_rrr c 64 1 28 1))
 
+  ;; the size in bytes of the access of load or store opcode op
+  (fn access_size [op:i32] -> i32
+    (cond
+      ((or (eq op 44) (or (eq op 45) (or (eq op 48) (or (eq op 49) (or (eq op 58) (eq op 60)))))) 1)
+      ((or (eq op 46) (or (eq op 47) (or (eq op 50) (or (eq op 51) (or (eq op 59) (eq op 61)))))) 2)
+      ((or (eq op 40) (or (eq op 42) (or (eq op 52) (or (eq op 53) (or (eq op 54) (or (eq op 56) (eq op 62))))))) 4)
+      (else 8)))
+
+  ;; Whether an access of `size` bytes takes `offset` as its scaled immediate
+  (fn foldable [offset:i32 size:i32] -> bool
+    (and (gte offset 0) (and (lte offset (* 4095 size)) (eq (% offset size) 0))))
+
+  ;; The wasm address in register a (its low 32 bits) and the access's offset, as a base for the access: with
+  ;; no offset the access is [x28, a, uxtw] (the return value is unused); with one that fits the instruction,
+  ;; x16 = x28 + a and the access is [x16, #offset]; otherwise x16 is the whole address and the access has
+  ;; offset 0. Returns the immediate the access uses (0 when it uses the register form or x16 alone).
+  (fn address [l:(ptr L) a:i32 offset:i32 size:i32] -> i32
+    (let c:(ptr buf.Buf) (get l L.code))
+    (cond
+      ((eq offset 0) 0)
+      ((call foldable offset size)
+       ;; x16 already holds x28 + a when the access just before used the same register and nothing came between
+       (when (not (and (eq a (get l L.addr_reg)) (eq (get l L.addr_end) (call buf.len c))))
+         (call arm64.add_uxtw c 16 28 a))
+       offset)
+      (else
+       (call arm64.mov_imm c 64 17 (bitand (i64.extend_s offset) 4294967295i64))
+       (call arm64.add_uxtw c 16 17 a)
+       (call arm64.add_rrr c 64 16 28 16)
+       0)))
+
+  ;; After an access that used x16 = x28 + a (offset folded): the next access with the same register can reuse x16
+  (fn note_addr [l:(ptr L) a:i32 offset:i32 size:i32] -> void
+    (when (and (neq offset 0) (call foldable offset size))
+      (put l L.addr_reg a)
+      (put l L.addr_end (call buf.len (get l L.code)))))
+
+  ;; load opcode op (not float) into d: from [x28, r, uxtw] if reg, else from [r, #imm]
+  (fn emit_load [c:(ptr buf.Buf) op:i32 d:i32 r:i32 imm:i32 reg:bool] -> void
+    (cond
+      ((or (eq op 40) (eq op 53)) (if reg (call arm64.ldr_w_uxtw c d 28 r) (call arm64.ldr_w c d r imm)))
+      ((eq op 41) (if reg (call arm64.ldr_x_uxtw c d 28 r) (call arm64.ldr_x c d r imm)))
+      ((eq op 44) (if reg (call arm64.ldrsb_uxtw c 32 d 28 r) (call arm64.ldrsb c 32 d r imm)))
+      ((or (eq op 45) (eq op 49)) (if reg (call arm64.ldrb_uxtw c d 28 r) (call arm64.ldrb c d r imm)))
+      ((eq op 46) (if reg (call arm64.ldrsh_uxtw c 32 d 28 r) (call arm64.ldrsh c 32 d r imm)))
+      ((or (eq op 47) (eq op 51)) (if reg (call arm64.ldrh_uxtw c d 28 r) (call arm64.ldrh c d r imm)))
+      ((eq op 48) (if reg (call arm64.ldrsb_uxtw c 64 d 28 r) (call arm64.ldrsb c 64 d r imm)))
+      ((eq op 50) (if reg (call arm64.ldrsh_uxtw c 64 d 28 r) (call arm64.ldrsh c 64 d r imm)))
+      (else (if reg (call arm64.ldrsw_uxtw c d 28 r) (call arm64.ldrsw c d r imm)))))
+
+  ;; store opcode op (not float) of register v
+  (fn emit_store [c:(ptr buf.Buf) op:i32 v:i32 r:i32 imm:i32 reg:bool] -> void
+    (cond
+      ((or (eq op 54) (eq op 62)) (if reg (call arm64.str_w_uxtw c v 28 r) (call arm64.str_w c v r imm)))
+      ((eq op 55) (if reg (call arm64.str_x_uxtw c v 28 r) (call arm64.str_x c v r imm)))
+      ((or (eq op 58) (eq op 60)) (if reg (call arm64.strb_uxtw c v 28 r) (call arm64.strb c v r imm)))
+      (else (if reg (call arm64.strh_uxtw c v 28 r) (call arm64.strh c v r imm)))))
+
   (fn memory_op [l:(ptr L) op:i32 offset:i32] -> bool
     (let c:(ptr buf.Buf) (get l L.code))
     (cond
       ;; f32.load, f64.load: into a float register
       ((or (eq op 42) (eq op 43))
        (let ft:i32 (if (eq op 43) 1 0))
-       (call pop l 1)
-       (call emit_address l offset)
+       (let a:i32 (call src l 1))
        (let d:i32 (call alloc_fp l))
-       (call arm64.ldr_fp c ft d 1 0)
-       (call vpush l (if (eq ft 1) 2 1) d 0i64)
+       (let imm:i32 (call address l a offset (call access_size op)))
+       (if (eq offset 0) (call arm64.ldr_fp_uxtw c ft d 28 a) (call arm64.ldr_fp c ft d 16 imm))
+       (call note_addr l a offset (call access_size op))
+       (call defined_fp l (if (eq ft 1) 2 1) d)
        true)
       ;; f32.store, f64.store: from a float register
       ((or (eq op 56) (eq op 57))
        (let ft:i32 (if (eq op 57) 1 0))
-       (let r:i32 (call take_fp l ft))
-       (call pop l 1)
-       (call emit_address l offset)
-       (call arm64.str_fp c ft r 1 0)
-       (call free_fp l r)
+       (let v:i32 (call src_fp l ft 0))
+       (let a:i32 (call src l 1))
+       (let imm:i32 (call address l a offset (call access_size op)))
+       (if (eq offset 0) (call arm64.str_fp_uxtw c ft v 28 a) (call arm64.str_fp c ft v 16 imm))
+       (call note_addr l a offset (call access_size op))
        true)
       ;; loads 0x28-0x35
       ((and (gte op 40) (lte op 53))
-       (call pop l 1)
-       (call emit_address l offset)
-       (cond
-         ((or (eq op 40) (or (eq op 42) (eq op 53))) (call arm64.ldr_w c 0 1 0))
-         ((or (eq op 41) (eq op 43)) (call arm64.ldr_x c 0 1 0))
-         ((eq op 44) (call arm64.ldrsb c 32 0 1 0))
-         ((or (eq op 45) (eq op 49)) (call arm64.ldrb c 0 1 0))
-         ((eq op 46) (call arm64.ldrsh c 32 0 1 0))
-         ((or (eq op 47) (eq op 51)) (call arm64.ldrh c 0 1 0))
-         ((eq op 48) (call arm64.ldrsb c 64 0 1 0))
-         ((eq op 50) (call arm64.ldrsh c 64 0 1 0))
-         (else (call arm64.ldrsw c 0 1 0)))
-       (call push l 0)
+       (let a:i32 (call src l 1))
+       (let d:i32 (call alloc_int l))
+       (let imm:i32 (call address l a offset (call access_size op)))
+       (call emit_load c op d (if (eq offset 0) a 16) imm (eq offset 0))
+       (when (neq d a) (call note_addr l a offset (call access_size op)))
+       (call defined l d)
        true)
       ;; memory.size (0x3f): the pages, from the cell
       ((eq op 63)
@@ -1592,14 +1932,11 @@
        true)
       ;; stores 0x36-0x3e
       ((and (gte op 54) (lte op 62))
-       (call pop l 0)
-       (call pop l 1)
-       (call emit_address l offset)
-       (cond
-         ((or (eq op 54) (or (eq op 56) (eq op 62))) (call arm64.str_w c 0 1 0))
-         ((or (eq op 55) (eq op 57)) (call arm64.str_x c 0 1 0))
-         ((or (eq op 58) (eq op 60)) (call arm64.strb c 0 1 0))
-         (else (call arm64.strh c 0 1 0)))
+       (let v:i32 (call src l 0))
+       (let a:i32 (call src l 1))
+       (let imm:i32 (call address l a offset (call access_size op)))
+       (call emit_store c op v (if (eq offset 0) a 16) imm (eq offset 0))
+       (call note_addr l a offset (call access_size op))
        true)
       (else false)))
 )
