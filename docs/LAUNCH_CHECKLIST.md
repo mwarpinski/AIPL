@@ -254,8 +254,11 @@ more than usual.
   installs none of them) and adds `~/.aipl/env` to the shell profiles;
   `--uninstall` undoes it; CI runs shellcheck and a full install. Not
   `cargo install --git`: its binaries point at a cargo checkout that cargo
-  deletes after about a month unused. Later, optionally: prebuilt `aipl`
-  and `aipl-run` on a GitHub release, so Rust is not needed.
+  deletes after about a month unused. 2026-11-02: it now downloads prebuilt
+  `aipl` and `aipl-run` from a GitHub release (Linux x86-64 and arm64,
+  macOS arm64; checked against a published SHA-256), so git and Rust are not
+  needed; `--from-source` keeps the build. A pushed `v*` tag runs
+  `.github/workflows/release.yml`; the first release is not cut yet.
 - [x] **A binary that works wherever it is** (done 2026-10-26; noted
   2026-10-18, from docs/notes/freedom.md). The Rust `aipl` carries its
   library (aipl_src/: the standard library and the toolchain's sources,

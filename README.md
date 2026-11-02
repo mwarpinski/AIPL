@@ -82,27 +82,34 @@ Error: bad.aipl: 18:14: Arg 1 of 'gcd' expects i32, got bool
 
 ## Install
 
-The installer needs git, a stable Rust toolchain
-([rustup.rs](https://rustup.rs)), and a C compiler for linking (e.g.
-`build-essential`). It builds AIPL from source into `~/.aipl` and puts
-`aipl` and `aipl-run` on your `PATH`; nothing runs as root:
+On Linux (x86-64 or arm64) and macOS (Apple silicon), one command installs a
+prebuilt AIPL. It needs only `curl` and `tar`: no git, no Rust, and nothing
+runs as root. It downloads the release for your machine, checks it against its
+published SHA-256, and unpacks it into `~/.aipl` (the programs `aipl` and
+`aipl-run` in `bin`, the README, specification, and examples in `share`),
+and puts `~/.aipl/bin` on your `PATH`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/mwarpinski/AIPL/main/install.sh | sh
 ```
 
-To read it before running it (it is about 200 lines of POSIX `sh`):
+To read it before running it (it is about 300 lines of POSIX `sh`):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSfO https://raw.githubusercontent.com/mwarpinski/AIPL/main/install.sh
 less install.sh && sh install.sh
 ```
 
-`sh install.sh --help` lists the options (`--ref` to install a branch, tag,
-or commit; `--no-modify-path`); `sh install.sh --uninstall` removes it. Run
-the installer again to update.
+`sh install.sh --help` lists the options (`--version` to install a release
+other than the latest, `--no-modify-path`); `sh install.sh --uninstall`
+removes it. Run the installer again to update. Each release's files are also on
+the [releases page](https://github.com/mwarpinski/AIPL/releases) to download by hand.
 
-Or build a clone by hand:
+To build from source instead, you need git, a stable Rust toolchain
+([rustup.rs](https://rustup.rs)), and a C compiler for linking (e.g.
+`build-essential`). `sh install.sh --from-source` (or `--ref` with a branch,
+tag, or commit) does it for you, into `~/.aipl/src`, and a machine with no
+prebuilt release gets this automatically. Or build a clone by hand:
 
 ```bash
 git clone https://github.com/mwarpinski/AIPL.git && cd AIPL
@@ -112,8 +119,8 @@ cargo build --release
 This builds `target/release/aipl` (the compiler, interpreter, and checker)
 and `target/release/aipl-run` (the launcher for compiled WebAssembly). Either
 way, `aipl` carries the standard library inside it, so a copied or installed
-one needs nothing beside it (run from a clone's `target/`, it reads that
-clone's `aipl_src/`, so an edit there shows at once).
+one needs nothing beside it but `aipl-run` (run from a clone's `target/`, it
+reads that clone's `aipl_src/`, so an edit there shows at once).
 
 ## Your first program
 
@@ -139,7 +146,7 @@ the rest of the language in ten minutes, with programs you can run.
 
 ## Try the tools
 
-From the source directory (`~/.aipl/src` after the installer):
+From the examples directory (`~/.aipl/share` after the installer, or a clone):
 
 ```bash
 aipl verify examples/word_count.aipl            # parse and type-check

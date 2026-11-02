@@ -1,0 +1,61 @@
+# Publishes a release when a version tag is pushed (git tag v0.1.0 && git push
+# origin v0.1.0): the tarballs install.sh downloads, one per platform, built
+# here and each tried through install.sh, as a user would, before it is kept.
+# The Linux ones are built on Ubuntu 22.04 so they run on older glibc.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-14, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The tag names the crate's version
+        run: |
+          v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, but Cargo.toml says $v"; exit 1; }
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        run: sh tools/package_release.sh dist
+      - name: Install it as a user would, in an empty home
+        run: |
+          export HOME="$(mktemp -d)" AIPL_RELEASES="file://$PWD/dist-site"
+          mkdir -p dist-site/latest/download
+          cp dist/* dist-site/latest/download/
+          sh install.sh
+          sh -c '. "$HOME/.aipl/env" && aipl --version'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aipl-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "AIPL ${GITHUB_REF_NAME#v}" --generate-notes

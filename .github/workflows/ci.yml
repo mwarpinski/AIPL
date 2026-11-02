@@ -77,9 +77,9 @@ jobs:
           cmp target/stage1 target/stage2
 
   install:
-    # install.sh, as a user runs it: shellcheck, then a full install of
+    # install.sh, as a user runs it: shellcheck, then a full source install of
     # this commit into an empty home, a second run (an update), and
-    # --uninstall.
+    # --uninstall; then the same for a release tarball built from this commit.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -98,3 +98,17 @@ jobs:
           sh -c '. "$HOME/.aipl/env" && aipl --version'
           sh install.sh --uninstall
           [ ! -e "$HOME/.aipl" ] && ! grep -q aipl "$HOME/.profile" "$HOME/.bashrc"
+      - name: Install a release tarball (the default install), as install.sh does with a downloaded one
+        run: |
+          cargo build --release --locked
+          sh tools/package_release.sh dist
+          mkdir -p dist-site/latest/download
+          cp dist/* dist-site/latest/download/
+          export HOME="$(mktemp -d)" AIPL_RELEASES="file://$PWD/dist-site"
+          touch "$HOME/.bashrc"
+          sh install.sh
+          sh install.sh
+          [ "$(grep -c aipl "$HOME/.profile")" = 1 ]
+          sh -c '. "$HOME/.aipl/env" && aipl --version'
+          sh install.sh --uninstall
+          [ ! -e "$HOME/.aipl" ]
