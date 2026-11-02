@@ -164,7 +164,9 @@ fetch_release() {
     [ "$(sha256_of "$tmp/$name")" = "$want" ] || err "the download does not match its SHA-256 ($want); not installing it"
     tar -C "$tmp" -xzf "$tmp/$name"
     dir="$tmp/aipl-$TARGET"
-    [ -x "$dir/bin/aipl" ] && [ -x "$dir/bin/aipl-run" ] || err "the download is not an AIPL release"
+    if [ ! -x "$dir/bin/aipl" ] || [ ! -x "$dir/bin/aipl-run" ]; then
+        err "the download is not an AIPL release"
+    fi
     mkdir -p "$AIPL_HOME/bin"
     for b in aipl aipl-run; do
         # a source install links these into its build; remove the link, not its target
