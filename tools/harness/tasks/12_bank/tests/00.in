@@ -1,0 +1,7 @@
+open alice
+deposit alice 1050
+open bob
+transfer alice bob 300
+withdraw bob 500
+open alice
+deposit carol 5

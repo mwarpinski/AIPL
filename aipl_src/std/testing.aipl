@@ -1,0 +1,31 @@
+;; std/testing: what a (test ...)'s (expect ...) calls (AIPL_SPEC.md 4.L,
+;; docs/design/FEEDBACK_TOOLS_PLAN.md F4). A failed expect writes where it
+;; is and what it checked to standard error, with both sides for a
+;; comparison, and counts one failure; the test goes on. A test build's
+;; _start runs the test its first argument names and exits with the count.
+;; AIPL has no globals, so the count is in runtime cell 24 (AIPL_SPEC.md
+;; 7.9); each test runs in a fresh instance, so it starts at 0.
+(module testing
+  (import io)
+
+  ;; The failures in the test running.
+  (fn failures [] -> i32 (pub) (unsafe (mem.load32 24)))
+
+  (fn count [] -> void (unsafe (mem.store32 24 (+ (mem.load32 24) 1))))
+
+  ;; A failed (expect c): its place and text.
+  (fn fail [label:str] -> void (pub)
+    (call count)
+    (call io.eprintln label))
+
+  ;; A failed comparison: its place and text, then both sides.
+  (fn fail_cmp [label:str left:str right:str] -> void (pub)
+    (call count)
+    (call io.write_str 2 label)
+    (call io.write_str 2 ": left ")
+    (call io.write_str 2 left)
+    (call io.write_str 2 ", right ")
+    (call io.eprintln right))
+
+  ;; The exit status for n failures: 0 to 125 (a WASI command's range).
+  (fn status [n:i32] -> i32 (pub) (if (gt n 125) 125 n)))

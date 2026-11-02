@@ -1,0 +1,9 @@
+twice 5 = 10
+err 4
+pick a 101
+pick b -1
+pick c 7 107
+pick c -1 -2
+vs 3 1.5
+vs 0 0.0
+sum_pos 37

@@ -1,0 +1,102 @@
+;; Master AIPL Test Suite
+;; The single terminal-facing entrypoint for running this project's tests:
+;;   aipl test aipl_src/test_suite.aipl
+;; All the "what counts as pass/fail" and reporting logic lives here, in
+;; AIPL, using sys.print - not in Rust. Rust's role (src/main.rs's `test`
+;; subcommand) is just: resolve imports, type-check, invoke run_all, and
+;; turn the returned failure count into a process exit code.
+;;
+;; It covers every module whose self-test has been verified to do real work
+;; (and to fail when the code under test is broken). Add an import + report
+;; line here as each new module gets such a test; don't add one just to make
+;; the suite look bigger.
+
+
+(module test_suite
+  (import compiler)
+  (import codegen)
+  (import memory)
+  (import file_io)
+  (import str)
+  (import float)
+  (import fmt)
+  (import io)
+  (import vec)
+  (import ip)
+  (import map)
+  (import buf)
+  (import time)
+  (import date)
+  (import show)
+  (import text)
+  (import utf8)
+  (import stream)
+  (import arena)
+  (import heap)
+  (import alloc)
+  (import bigint)
+  (import option)
+  (import cmp)
+  (import thread)
+  (import par)
+  (import fs)
+  (import json)
+  (import consts)
+  (import codegen_opt)
+  (import thread_sync)
+  (import resolver)
+  (import os)
+  (import native/wasm_reader)
+  (import native/x64)
+  (import native/elf)
+
+  ;; Prints a [PASS]/[FAIL] line for one module's test group and returns
+  ;; 0 (contributes no failures) or 1 (contributes one failure) for the
+  ;; caller to sum.
+  (fn report [label:str result:i32 expected:i32] -> i32
+    (if (eq result expected)
+        (block (call io.write_str 1 "[PASS] ") (call io.println label) 0)
+        (block (call io.write_str 1 "[FAIL] ") (call io.println label) 1)))
+
+  ;; Runs every verified-real module's self-test, prints one line each, and
+  ;; returns the total number of failing groups (0 = everything passed).
+  (fn run_all [] -> i32
+    (let failures:i32 0)
+    (set! failures (+ failures (call report "compiler: tokenizer (2 tests)" (call compiler.run_tokenizer_tests) 2)))
+    (set! failures (+ failures (call report "compiler: parser (2 tests)" (call compiler.run_parser_tests) 2)))
+    (set! failures (+ failures (call report "codegen: signatures + 3 real wasm modules (4 tests)" (call codegen.run_codegen_tests) 4)))
+    (set! failures (+ failures (call report "memory: allocator + arena" (call memory.run_memory_tests) 1)))
+    (set! failures (+ failures (call report "file_io: real disk round-trip" (call file_io.run_file_io_tests) 1)))
+    (set! failures (+ failures (call report "std/str: byte slices, parse_int, UTF-8, making strings (10 tests)" (call str.run_str_tests) 10)))
+    (set! failures (+ failures (call report "std/fmt: number formatting (14 tests)" (call fmt.run_fmt_tests) 14)))
+    (set! failures (+ failures (call report "resolver: imports in AIPL (3 tests)" (call resolver.run_resolver_tests) 3)))
+    (set! failures (+ failures (call report "std/os: arguments + environment (3 tests)" (call os.run_os_tests) 3)))
+    (set! failures (+ failures (call report "native/wasm_reader: module structure and bodies (5 tests)" (call wasm_reader.run_reader_tests) 5)))
+    (set! failures (+ failures (call report "native/x64: instruction encodings vs GNU as (16 tests)" (call x64.run_x64_tests) 16)))
+    (set! failures (+ failures (call report "native/elf: executable layout and headers (4 tests)" (call elf.run_elf_tests) 4)))
+    (set! failures (+ failures (call report "std/io: file round trip (2 tests)" (call io.run_io_tests) 2)))
+    (set! failures (+ failures (call report "std/vec: generic list + stable sort (8 tests)" (call vec.run_vec_tests) 8)))
+    (set! failures (+ failures (call report "std/ip: addresses read as Rust reads them (5 tests)" (call ip.run_ip_tests) 5)))
+    (set! failures (+ failures (call report "std/map: generic hash map over cmp.Hash keys (10 tests)" (call map.run_map_tests) 10)))
+    (set! failures (+ failures (call report "std/buf: string builder (4 tests)" (call buf.run_buf_tests) 4)))
+    (set! failures (+ failures (call report "std/time: durations and the clock (7 tests)" (call time.run_time_tests) 7)))
+    (set! failures (+ failures (call report "std/date: UTC dates, ISO 8601 (8 tests)" (call date.run_date_tests) 8)))
+    (set! failures (+ failures (call report "std/show: values as text, floats as Python's repr (7 tests)" (call show.run_show_tests) 7)))
+    (set! failures (+ failures (call report "std/text: split, lines, replace, case, parse_f64 (7 tests)" (call text.run_text_tests) 7)))
+    (set! failures (+ failures (call report "std/utf8: decode, encode, count, whitespace (4 tests)" (call utf8.run_utf8_tests) 4)))
+    (set! failures (+ failures (call report "std/stream: readers and writers over files, memory, and functions (7 tests)" (call stream.run_stream_tests) 7)))
+    (set! failures (+ failures (call report "std/arena: typed region allocator (7 tests)" (call arena.run_arena_tests) 7)))
+    (set! failures (+ failures (call report "std/heap: general-purpose allocator (8 tests)" (call heap.run_heap_tests) 8)))
+    (set! failures (+ failures (call report "std/alloc: any allocator as one value (9 tests)" (call alloc.run_alloc_tests) 9)))
+    (set! failures (+ failures (call report "std/bigint: arbitrary-precision integers (13 tests)" (call bigint.run_bigint_tests) 13)))
+    (set! failures (+ failures (call report "std/option: Option T, a generic union (7 tests)" (call option.run_option_tests) 7)))
+    (set! failures (+ failures (call report "std/cmp: Eq, Ord, Hash for built-in types (10 tests)" (call cmp.run_cmp_tests) 10)))
+    (set! failures (+ failures (call report "std/thread: spawn_with, a typed context (2 tests)" (call thread.run_thread_tests) 2)))
+    (set! failures (+ failures (call report "std/par: parallel map and reduce, no unsafe (8 tests)" (call par.run_par_tests) 8)))
+    (set! failures (+ failures (call report "std/fs: directory listing and file information (4 tests)" (call fs.run_fs_tests) 4)))
+    (set! failures (+ failures (call report "std/json: parsing and writing JSON (6 tests)" (call json.run_json_tests) 6)))
+    (set! failures (+ failures (call report "std/float: decimal text to the nearest f64 (14 tests)" (call float.run_float_tests) 14)))
+    (set! failures (+ failures (call report "consts: constants and enums erased for codegen (5 tests)" (call consts.run_consts_tests) 5)))
+    (set! failures (+ failures (call report "codegen_opt: the optimizer's folds, inlining, and refusals (7 tests)" (call codegen_opt.run_codegen_opt_tests) 7)))
+    (set! failures (+ failures (call report "thread_sync: 4 threads x 1000 atomic adds = 4000" (call thread_sync.run_thread_tests) 1)))
+    failures))

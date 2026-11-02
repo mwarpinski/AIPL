@@ -1,0 +1,23 @@
+;; std/assertion: what stops the program when an (assert c) or (assert c msg) fails (AIPL_SPEC.md 4, Contracts).
+;; A module that uses assert imports this one, as one that uses a formatting form imports std/show; the
+;; resolver lowers (assert (eq n 3) "why") to a call of failed_cmp with the assert's place and text, both sides
+;; as show writes them, and the message ("" without one). They are ordinary functions, usable directly. The
+;; program ends here, so the memory that builds the message is no leak (src/leaks.rs).
+(module assertion
+  (import str)
+
+  ;; Stops the program with "Assertion failed: LABEL", the label being the place and the text of the assert as
+  ;; written, then ": MSG" when the program gave one (msg is "" when it did not).
+  (fn failed [label:str msg:str] -> void (pub)
+    (abort (call str.concat (call str.concat "Assertion failed: " label) (call tail msg))))
+
+  ;; The same with ": left L, right R" after the label, the two sides of the comparison that failed.
+  (fn failed_cmp [label:str left:str right:str msg:str] -> void (pub)
+    (abort (call str.concat
+                 (call str.concat
+                       (call str.concat (call str.concat (call str.concat "Assertion failed: " label) ": left ") left)
+                       (call str.concat ", right " right))
+                 (call tail msg))))
+
+  (fn tail [msg:str] -> str
+    (if (eq (str.len msg) 0) "" (call str.concat ": " msg))))

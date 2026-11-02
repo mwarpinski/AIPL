@@ -1,0 +1,53 @@
+;; runtime_arm64: what an AArch64 Linux executable needs at start-up and to
+;; end (native ARM64 backend task NA4, docs/design/ARM64_PLAN.md), beginning
+;; with the first executable: it prints a line and exits with status 7.
+;;
+;; Linux AArch64 system calls: the number in x8, the arguments in x0-x5, `svc
+;; #0`, the result in x0 (minus errno on failure). The asm-generic numbering,
+;; not x86-64's: write is 64, exit_group 94.
+(module runtime_arm64
+  (import alloc)
+  (import str)
+  (import buf)
+  (import arm64)
+  (import elf)
+
+  (fn sys_write [] -> i32 (pub) 64)
+  (fn sys_exit_group [] -> i32 (pub) 94)
+
+  ;; x8 = the system call's number, then svc #0
+  (fn emit_syscall [c:(ptr buf.Buf) n:i32] -> void (pub)
+    (call arm64.mov_imm c 64 8 (i64.extend_s n))
+    (call arm64.svc c 0))
+
+  ;; write(fd, addr, len): clobbers x0, x1, x2, x8; the result is in x0
+  (fn emit_write [c:(ptr buf.Buf) fd:i32 addr:i32 len:i32] -> void (pub)
+    (call arm64.mov_imm c 64 0 (i64.extend_s fd))
+    (call arm64.mov_imm c 64 1 (i64.extend_s addr))
+    (call arm64.mov_imm c 64 2 (i64.extend_s len))
+    (call emit_syscall c (call sys_write)))
+
+  ;; exit_group(status); never returns, and a stop after it should it
+  (fn emit_exit [c:(ptr buf.Buf) status:i32] -> void (pub)
+    (call arm64.mov_imm c 64 0 (i64.extend_s status))
+    (call emit_syscall c (call sys_exit_group))
+    (call arm64.brk c 0))
+
+  ;; The address and length of a byte string, the way a host reads one back.
+  (struct HostBytes [(read addr:i32) (read len:i32)])
+  (fn host_bytes [b:str.Bytes] -> (ptr HostBytes)
+    (let h:(ptr HostBytes) (new HostBytes (call alloc.forever) [addr:(call str.addr b)
+                                                                len:(get b str.Bytes.len)]))
+    h)
+
+  ;; The first executable: prints "hello from native AIPL" and a newline, and
+  ;; exits with status 7.
+  (fn hello_exe [] -> (ptr HostBytes)
+    (let data:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (call buf.push_str data "hello from native AIPL")
+    (call buf.push_byte data 10)
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call emit_write c 1 (call elf.data_vaddr_arm64) (call buf.len data))
+    (call emit_exit c 7)
+    (call host_bytes (call buf.bytes (call elf.image_arm64 (call buf.bytes c) 0 (call buf.bytes data) 0))))
+)

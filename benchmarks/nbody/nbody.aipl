@@ -1,0 +1,110 @@
+;; nbody: the Benchmarks Game's n-body. The Sun and the four gas giants
+;; under gravity, advanced N steps of 0.01 (default 1000); the system's
+;; energy printed to nine decimals before and after. Value structs (a body
+;; is its position, velocity, and mass, held inline in an array), f64.sqrt,
+;; fmt.f64_fixed. The constants are the benchmark's, written out in decimal.
+;;
+;;   ./nbody 1000   ->   -0.169075164 / -0.169087605
+(module nbody
+  (import alloc)
+  (import io)
+  (import os)
+  (import time)
+
+  (struct Vec3 [x:f64 y:f64 z:f64] (value))
+  (struct Body [pos:Vec3 vel:Vec3 mass:f64] (value))
+
+  ;; a body from the benchmark's numbers: velocities in units per year,
+  ;; masses in solar masses
+  (fn body [x:f64 y:f64 z:f64 vx:f64 vy:f64 vz:f64 m:f64] -> Body
+    (let dpy:f64 365.24)
+    (make Body [pos:(make Vec3 [x:x y:y z:z])
+                vel:(make Vec3 [x:(* vx dpy) y:(* vy dpy) z:(* vz dpy)])
+                mass:(* m (call solar_mass))]))
+
+  (fn solar_mass [] -> f64
+    (let pi:f64 3.141592653589793)
+    (* (* 4.0 pi) pi))
+
+  (fn system [] -> (arr Body)
+    (let bs:(arr Body) (arr.new Body (call alloc.forever) 5))
+    (let sm:f64 (call solar_mass))
+    (arr.set Body bs 0 (make Body [pos:(make Vec3 [x:0.0 y:0.0 z:0.0]) vel:(make Vec3 [x:0.0 y:0.0 z:0.0]) mass:sm]))
+    ;; jupiter, saturn, uranus, neptune
+    (arr.set Body bs 1 (call body 4.84143144246472090 -1.16032004402742839 -0.103622044471123109 0.00166007664274403694 0.00769901118419740425 -0.0000690460016972063023 0.000954791938424326609))
+    (arr.set Body bs 2 (call body 8.34336671824457987 4.12479856412430479 -0.403523417114321381 -0.00276742510726862411 0.00499852801234917238 0.0000230417297573763929 0.000285885980666130812))
+    (arr.set Body bs 3 (call body 12.8943695621391310 -15.1111514016986312 -0.223307578892655734 0.00296460137564761618 0.00237847173959480950 -0.0000296589568540237556 0.0000436624404335156298))
+    (arr.set Body bs 4 (call body 15.3796971148509165 -25.9193146099879641 0.179258772950371181 0.00268067772490389322 0.00162824170038242295 -0.0000951592254519715870 0.0000515138902046611451))
+    ;; the Sun takes the momentum that makes the total zero
+    (let px:f64 0.0) (let py:f64 0.0) (let pz:f64 0.0)
+    (for i 0 5
+      (let b:Body (arr.get Body bs i))
+      (set! px (+ px (* (get b Body.vel Vec3.x) (get b Body.mass))))
+      (set! py (+ py (* (get b Body.vel Vec3.y) (get b Body.mass))))
+      (set! pz (+ pz (* (get b Body.vel Vec3.z) (get b Body.mass)))))
+    (arr.set Body bs 0 Body.vel (make Vec3 [x:(/ (- 0.0 px) sm)
+                                            y:(/ (- 0.0 py) sm)
+                                            z:(/ (- 0.0 pz) sm)]))
+    bs)
+
+  (fn energy [bs:(arr Body)] -> f64
+    (let e:f64 0.0)
+    (for i 0 5
+      (let b:Body (arr.get Body bs i))
+      (let v:Vec3 (get b Body.vel))
+      (set! e (+ e (* (* 0.5 (get b Body.mass))
+                      (+ (+ (* (get v Vec3.x) (get v Vec3.x)) (* (get v Vec3.y) (get v Vec3.y)))
+                         (* (get v Vec3.z) (get v Vec3.z))))))
+      (for j (+ i 1) 5
+        (let c:Body (arr.get Body bs j))
+        (let dx:f64 (- (get b Body.pos Vec3.x) (get c Body.pos Vec3.x)))
+        (let dy:f64 (- (get b Body.pos Vec3.y) (get c Body.pos Vec3.y)))
+        (let dz:f64 (- (get b Body.pos Vec3.z) (get c Body.pos Vec3.z)))
+        (let distance:f64 (f64.sqrt (+ (+ (* dx dx) (* dy dy)) (* dz dz))))
+        (set! e (- e (/ (* (get b Body.mass) (get c Body.mass)) distance)))))
+    e)
+
+  (fn advance [bs:(arr Body) dt:f64] -> void
+    (for i 0 5
+      (for j (+ i 1) 5
+        ;; body i read again for each j: its velocity changes as it goes
+        (let a:Body (arr.get Body bs i))
+        (let b:Body (arr.get Body bs j))
+        (let dx:f64 (- (get a Body.pos Vec3.x) (get b Body.pos Vec3.x)))
+        (let dy:f64 (- (get a Body.pos Vec3.y) (get b Body.pos Vec3.y)))
+        (let dz:f64 (- (get a Body.pos Vec3.z) (get b Body.pos Vec3.z)))
+        (let dsq:f64 (+ (+ (* dx dx) (* dy dy)) (* dz dz)))
+        (let distance:f64 (f64.sqrt dsq))
+        (let mag:f64 (/ dt (* dsq distance)))
+        (let mi:f64 (get a Body.mass))
+        (let mj:f64 (get b Body.mass))
+        (let va:Vec3 (get a Body.vel))
+        (let vb:Vec3 (get b Body.vel))
+        (arr.set Body bs i Body.vel
+          (make Vec3 [x:(- (get va Vec3.x) (* (* dx mj) mag))
+                      y:(- (get va Vec3.y) (* (* dy mj) mag))
+                      z:(- (get va Vec3.z) (* (* dz mj) mag))]))
+        (arr.set Body bs j Body.vel
+          (make Vec3 [x:(+ (get vb Vec3.x) (* (* dx mi) mag))
+                      y:(+ (get vb Vec3.y) (* (* dy mi) mag))
+                      z:(+ (get vb Vec3.z) (* (* dz mi) mag))]))))
+    (for i 0 5
+      (let b:Body (arr.get Body bs i))
+      (let p:Vec3 (get b Body.pos))
+      (let v:Vec3 (get b Body.vel))
+      (arr.set Body bs i Body.pos
+        (make Vec3 [x:(+ (get p Vec3.x) (* dt (get v Vec3.x)))
+                    y:(+ (get p Vec3.y) (* dt (get v Vec3.y)))
+                    z:(+ (get p Vec3.z) (* dt (get v Vec3.z)))]))))
+
+  (fn main [] -> i32
+    (let started:i64 (call time.now))
+    (let n:i32 (call os.arg_int 1 1000))
+    (let bs:(arr Body) (call system))
+    (print "{(call energy bs):.9}")
+    (call io.println "")
+    (for s 1 (+ n 1) (call advance bs 0.01))
+    (print "{(call energy bs):.9}")
+    (call io.println "")
+    (call time.report "nbody computed in" started)
+    0))

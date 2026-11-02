@@ -1,0 +1,65 @@
+What Made This Task Easier (AIPL's Superpowers)
+
+Homoiconic S-Expression Syntax (Zero Grammar Ambiguity):
+
+Because AIPL is already an S-expression language with zero operator precedence, zero infix associativity rules, and uniform (head arg1 arg2 ...) structure, writing a source-to-source / AST-to-AST optimizer is dramatically simpler than in Rust, C, or TypeScript.
+Printing an optimized ONode tree back into valid AIPL source (print_onode) took 40 lines of code and cannot have precedence bugs.
+Similarly, structural equality (node_eq), tree cloning (clone_node), and variable substitution (subst_node) are tiny, uniform recursive functions.
+
+Explicit Type Conversions & Annotated let Bindings:
+
+Every local declaration in AIPL carries an explicit type ((let x:i32 ...)), and every numeric widening/narrowing is an explicit AST node (i64.extend_s, i64.extend_u, i32.wrap, f64.convert_i64_s).
+That meant codegen_opt.aipl could perform type-safe strength reduction and conversion fusion (like fusing (f64.convert_i64_s (i64.extend_s x)) into (f64.convert_i32_s x) at lines 1261–1276) purely from the syntax tree, without needing to re-run full type inference between passes.
+
+Zero Implicit Control Flow or Hidden Exceptions:
+
+Knowing that an expression cannot throw exceptions, run hidden destructors, or trigger operator overloading made purity analysis (is_pure) and side-effect/mutation tracking (scan_fn_locals) completely mechanical. If a variable isn't in a (set! x ...), (loop x ...), or (match ...) binder, it is 100% immutable.
+
+Fast, Deterministic aipl verify & aipl test Loop:
+
+./target/debug/aipl verify type-checks a 2,400-line module with all its stdlib imports in milliseconds. Whenever I had a type mismatch or arity error, the verifier caught it immediately.
+Having vec.Vec and map.Map with automatic trait-based hashing/equality (Eq/Hash on (ptr str.Bytes)) meant symbol tables, call-count maps, and BFS reachability queues worked out of the box.
+What Made This Task Difficult (Friction Points & Traps)
+
+No Pattern Matching on AST Shapes (Manual onode_nth / is_form Chains):
+
+Even though AIPL has union and match, you cannot pattern-match nested S-expressions or structural patterns like (f64.convert_i64_s (i64.extend_s $x)) or (/ (* $a (+ $a 1)) 2).
+Look at is_known_even or opt_binary_int: matching a 2-level nested expression requires 10–15 lines of defensive onode_count, onode_nth, is_form, and node_eq calls.
+
+No Short-Circuiting or Chained and / or (The Pyramid of Doom):
+
+Binary-only (and a b) and (or a b) force deeply nested right-leaning trees. Look at is_pure_op_name—checking if a symbol is one of 38 pure operators ends with 38 closing parentheses )))))))))))))))))))))))))))))))))))))).
+Worse, because and and or are eager in the current backends unless written as if/cond, any null-pointer guard like (if (and (neq p (ptr.null ONode)) (eq (get p ONode.kind) ...))) has to be carefully ordered or split into nested ifs whenever you aren't 100% sure how the backend lowers it.
+
+Explicit Type Args on Every Generic Call Site:
+
+Having to write (call (map.get_or (ptr str.Bytes) (ptr InlineDef)) defs callee (ptr.null InlineDef)) or (call (vec.push (ptr ONode)) items it) at every single call site adds massive visual noise and token overhead. Over 2,400 lines, repeating (ptr str.Bytes) and (ptr ONode) hundreds of times is the #1 source of verbosity.
+
+Struct Initialization Boilerplate (new + 
+𝑁
+N put Statements):
+
+Allocating a struct like ONode or InlineDef requires (let n:(ptr ONode) (new ONode)) followed by 6–7 separate (put n ONode.field val) lines. If you add a field to a struct and forget one put in a constructor helper, it silently defaults to zero/null.
+
+Untyped Statement vs. Expression Boundaries ((block) as a Void Coercion Hack):
+
+This was the exact bug that broke Stage 2 self-hosting before we fixed it:
+In codegen.aipl, set_compile_error returns i32 (0), not void. To use it in the then branch of a void if statement, codegen.aipl writes (block (call set_compile_error 92) (block))—using a trailing empty (block) solely to discard the i32 value on the WebAssembly/native virtual stack!
+Even more subtly, codegen.aipl determines whether an (if cond then else) is void or value-producing by inspecting the syntactic shape of the else branch (not the then branch!).
+When codegen_opt initially stripped the "redundant" trailing (block) from (block (call set_compile_error 92) (block)), the if statement still passed aipl verify, still produced valid Wasm, and only crashed in Stage 2 because the native x86-64 backend's virtual stack pointer (sp) drifted by 1 slot across the if!
+Having an explicit (drop expr) form (or banning non-void expressions in statement position without (drop ...)) would make that class of bug impossible.
+
+Integer Literal Corner Cases (i32 vs i64 in S-Expressions):
+
+In codegen.aipl, emit_numeric_cast writes (let i:i64 -2147483649) and (let i:i64 2147483648) without an i64 suffix, relying on codegen's contextual type-directed literal parsing.
+If an optimizer naively parses every unsuffixed integer token with compiler.int_value (i32) and reprints it with buf.push_int, 2147483648 wraps to -2147483648! We had to write text_fits_i32 specifically to preserve out-of-range unsuffixed integer tokens verbatim.
+Summary: What Would Have Cut codegen_opt.aipl in Half?
+
+If AIPL added just four small things from REVISIONS.md:
+
+Variadic short-circuiting (and a b c ...) and (or a b c ...)
+Type-argument inference on generic calls ((call map.get_or defs callee ...) instead of (call (map.get_or (ptr str.Bytes) (ptr InlineDef)) defs callee ...))
+Exhaustive (make StructName [field1 val1 ...]) for heap structs (not just value structs)
+An explicit (drop expr) form (replacing the trailing empty (block) idiom for discarding return values)
+
+codegen_opt.aipl would be ~1,400 lines instead of 2,434, and the Stage 2 stack-balance bug wouldn't have been representable in the language.

@@ -1,0 +1,28 @@
+;; std/fs's mkdir and rmdir (docs/design/SYS_PLAN.md, section 11): test_sys.rs
+;; runs it in a directory holding file.txt, full/f.txt, and link (to full),
+;; once for each backend; each case prints its label and what the call gave,
+;; as a number or a word.
+(module std_fs_dirs
+  (import fs)
+  (import io)
+  (import str)
+
+  (fn show [label:str r:(result i32 io.Error)] -> void
+    (match_result r
+      (ok n (println "{label} ok {n}"))
+      (err e (let why:str (call io.message e))
+        (println "{label} {why}"))))
+
+  (fn main [] -> i32
+    (call show "mkdir" (call fs.mkdir "made"))
+    (call show "again" (call fs.mkdir "made"))
+    (call show "bytes" (call fs.mkdir_path (call str.from_str "made/inner")))
+    (call show "missing_parent" (call fs.mkdir "no/such"))
+    (call show "dotdot" (call fs.mkdir "../outside_made"))
+    (call show "rmdir" (call fs.rmdir "made/inner"))
+    (call show "rmdir_bytes" (call fs.rmdir_path (call str.from_str "made")))
+    (call show "not_empty" (call fs.rmdir "full"))
+    (call show "file" (call fs.rmdir "file.txt"))
+    (call show "link" (call fs.rmdir "link"))
+    (call show "missing" (call fs.rmdir "made"))
+    0))

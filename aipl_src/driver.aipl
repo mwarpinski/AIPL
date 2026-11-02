@@ -1,0 +1,275 @@
+;; The self-hosted toolchain as one program: resolver.aipl flattens a
+;; multi-file program, front.aipl type-checks it (reporting errors in the
+;; user's files, through origins.aipl), codegen.aipl compiles it. Compiled to wasm it is a WASI
+;; command that compiles AIPL with no Rust involved:
+;;   aipl compile aipl_src/driver.aipl -o aiplc.wasm
+;;   wasmtime run --dir . --env AIPL_PATH aiplc.wasm examples/word_count.aipl wc.wasm
+;; The standard library is found as stdpath.aipl says ($AIPL_STD, else beside
+;; the executable, else aipl_src/std/ below the working directory). In the VM: aipl eval aipl_src/driver.aipl -- IN OUT.
+;; A host can also call compile_file directly with paths in memory taken from
+;; host_alloc (tests/test_resolver_aipl.rs does both).
+(module driver
+  (import alloc)
+  (import option)
+  (import resolver)
+  (import front)
+  (import checker)
+  (import origins)
+  (import compiler)
+  (import buf)
+  (import codegen)
+  (import os)
+  (import io)
+  (import str)
+  (import fmt)
+  (import vec)
+  (import fmtlower)
+  (import codegen_opt)
+  (import stdpath)
+
+  ;; status 0: the wasm module is at (addr, len)
+  ;; status 1: import resolution failed; the message is at (addr, len)
+  ;; status 2: codegen failed; len is the compile error code (AIPL_SPEC.md 6.4)
+  ;; status 3: the program does not type-check; "path: line:col: message" is at (addr, len)
+  (struct Out [(read status:i32) (read addr:i32) (read len:i32)] (pub))
+
+  (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+
+  ;; Compiles the program whose entry file is (path_addr, path_len), searching
+  ;; the colon-separated library directories at (dirs_addr, dirs_len).
+  (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len false 32768 false false (call str.from_str "") false))
+
+  ;; compile_file with memory's maximum lowered to max_pages (--max-memory).
+  (fn compile_file_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages false false (call str.from_str "") false))
+
+  ;; compile_file_limited through the optimizer (codegen_opt.aipl), as `aipl
+  ;; compile` builds by default (docs/design/OPT_PLAN.md); what the optimizer
+  ;; makes must type-check, or the result is status 3 naming --no-opt.
+  (fn compile_file_opt [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages true false (call str.from_str "") false))
+
+  ;; compile_file for the file's test build (resolver.rs resolve_tests): its
+  ;; (test ...) items as functions, and a _start running the one its first
+  ;; argument names.
+  (fn compile_tests [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len true 32768 false false (call str.from_str "") false))
+
+  ;; compile_tests with memory's maximum lowered to max_pages.
+  (fn compile_tests_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages false false (call str.from_str "") false))
+
+  ;; compile_tests_limited through the optimizer, as compile_file_opt.
+  (fn compile_tests_opt [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages true false (call str.from_str "") false))
+
+  ;; The front end alone, as `aipl verify`: resolve (as a test build does, so
+  ;; that the entry's tests are checked too), type-check every template and
+  ;; then the program, compile nothing. Status 0 puts the entry module's name
+  ;; at (addr, len), followed by a space and "tests" if it has tests; 1 and 3
+  ;; are as for compile_file.
+  (fn verify_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len true 32768 false true (call str.from_str "") false))
+
+  ;; aipl eval -e, in two steps over the expressions wrapped in a module (the
+  ;; text, as the file at `path`): eval_type gives the type of the last
+  ;; expression of its function __eval (status 0, the type at (addr, len) as
+  ;; source writes it; 1 and 3 as for compile_file); compile_text then compiles
+  ;; the wrapped module as it stands, without the optimizer.
+  (fn eval_type [path:str.Bytes text:str.Bytes dirs:str.Bytes] -> (ptr Out) (pub)
+    (call compile_as (call str.addr path) (get path str.Bytes.len) (call str.addr dirs) (get dirs str.Bytes.len) false 32768 false false text true))
+
+  (fn compile_text [path:str.Bytes text:str.Bytes dirs:str.Bytes max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as (call str.addr path) (get path str.Bytes.len) (call str.addr dirs) (get dirs str.Bytes.len) false max_pages false false text false))
+
+  ;; `--max-memory SIZE` as wasm pages, or -1 (src/compiler/mod.rs
+  ;; memory_pages): bytes, or K, M, or G of them (binary), a whole number of
+  ;; 64 KiB pages from 1M to 2G.
+  (fn memory_pages [t:str.Bytes] -> i32 (pub)
+    (let n:i32 (get t str.Bytes.len))
+    (let digits:i32 0)
+    (while (and (lt digits n) (and (gte (call str.byte_at t digits) 48) (lte (call str.byte_at t digits) 57)))
+      (set! digits (+ digits 1)))
+    (when (or (eq digits 0) (or (gt digits 10) (gt (- n digits) 1))) (return -1))
+    (let shift:i64 (if (eq digits n) 0i64
+                       (cond ((eq (call str.byte_at t digits) 75) 10i64)
+                             ((eq (call str.byte_at t digits) 77) 20i64)
+                             ((eq (call str.byte_at t digits) 71) 30i64)
+                             (else -1i64))))
+    (when (lt shift 0i64) (return -1))
+    (let v:i64 0i64)
+    (for i 0 digits
+      (set! v (+ (* v 10i64) (i64.extend_s (- (call str.byte_at t i) 48)))))
+    ;; at most 10 digits: v < 2^34, and shifted by 30 < 2^64
+    (let bytes:i64 (shl v shift))
+    (when (neq (bitand bytes 65535i64) 0i64) (return -1))
+    (let pages:i64 (shru bytes 16i64))
+    (if (or (lt pages 16i64) (gt pages 32768i64)) -1 (i32.wrap pages)))
+
+  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool max_pages:i32 opt:bool verify_only:bool entry_text:str.Bytes body:bool] -> (ptr Out)
+    (unsafe (let res:(ptr Out) (new Out (call alloc.forever) [status:(zero i32)
+                                                              addr:(zero i32)
+                                                              len:(zero i32)]))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+    (let orig:(ptr origins.Origins) (call origins.make))
+    (let gen:(ptr origins.Origins) (call origins.make))
+    (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (when (not (cond
+                 (tests (call resolver.flatten_tests_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig))
+                 ((gt (get entry_text str.Bytes.len) 0) (call resolver.flatten_text_mapped (call str.bytes path_addr path_len) entry_text (call str.bytes dirs_addr dirs_len) pre err orig))
+                 (else (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig)))) (call put_text res 1 err) (return res))
+    ;; every template checked once, at placeholders for its type parameters
+    ;; (resolver.rs resolve); nothing is compiled from these
+    (let arch:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (let agen:(ptr origins.Origins) (call origins.make))
+    (when (not (call resolver.archetypes_of pre arch err orig agen)) (call put_text res 1 err) (return res))
+    (when (gt (call buf.len arch) 0)
+          (let at:str.Bytes (call buf.bytes arch))
+          (let ap:(ptr checker.Problem) (call front.check (call str.addr at) (get at str.Bytes.len)))
+          (when (neq ap (ptr.null checker.Problem)) (call put_text res 3 (call locate orig agen ap (call str.bytes path_addr path_len))) (return res)))
+    (when (not (call resolver.expand_generics pre out err orig gen)) (call put_text res 1 err) (return res))
+    (let flat:str.Bytes (call buf.bytes out))
+    (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
+    (let problem:(ptr checker.Problem) (call front.check_formats (call str.addr flat) (get flat str.Bytes.len) fmts))
+    (when (neq problem (ptr.null checker.Problem)) (call put_text res 3 (call locate orig gen problem (call str.bytes path_addr path_len))) (return res))
+    (when body
+          ;; aipl eval -e: the type of the last expression of __eval, as source writes it
+          (let tb:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+          (let bp:(ptr checker.Problem) (call front.check_eval (call str.addr flat) (get flat str.Bytes.len) tb))
+          (when (neq bp (ptr.null checker.Problem)) (call put_text res 3 (call locate orig gen bp (call str.bytes path_addr path_len))) (return res))
+          (call put_text res 0 tb)
+          (return res))
+    (when verify_only
+          ;; flat begins "(module NAME" and a newline
+          (let name_end:i32 8)
+          (while (gt (call str.byte_at flat name_end) 32) (set! name_end (+ name_end 1)))
+          (let name:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+          (call buf.push_bytes name (call str.slice flat 8 (- name_end 8)))
+          ;; a test build has a function for each test, from __test_0 (resolver.flatten_tests_mapped)
+          (when (call str.contains flat (call str.from_str "(fn __test_0 ")) (call buf.push_str name " tests"))
+          (call put_text res 0 name)
+          (return res))
+    ;; the formatting forms become std/show calls (fmtlower.aipl)
+    (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
+    (let low:(ptr origins.Origins) (call origins.make))
+    (let is_lowered:bool (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low))
+    (when opt
+          ;; the optimizer (codegen_opt.aipl) rewrites the checked program; what
+          ;; it makes must still type-check, so a rewrite that breaks typing is
+          ;; a compile error naming it, never wrong code
+          (let stage:str.Bytes (if is_lowered (call buf.bytes lowered) flat))
+          (let opt_orig:(ptr origins.Origins) (call origins.make))
+          (let opt_src:str.Bytes (call codegen_opt.optimize_mapped stage (call str.absent) (ptr.null codegen_opt.Stats) low opt_orig -1))
+          ;; AIPL_OPT_DUMP=FILE: the optimizer's output, for reading what it did
+          (let dump:str.Bytes (call (option.unwrap_or str.Bytes) (call os.env "AIPL_OPT_DUMP") (call str.from_str "")))
+          (when (gt (get dump str.Bytes.len) 0) (let _w:bool (match_result (call io.write_path dump opt_src) (ok n true) (err e false))))
+          (let op:(ptr checker.Problem) (call front.check (call str.addr opt_src) (get opt_src str.Bytes.len)))
+          (when (neq op (ptr.null checker.Problem))
+                (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+                (call buf.push_str eb "the optimizer made a program that does not type-check (a bug in aipl_src/codegen_opt.aipl; compile with --no-opt): ")
+                (call buf.push_bytes eb (call buf.bytes (call front.render (call str.addr opt_src) op)))
+                (call put_text res 3 eb)
+                (return res))
+          (return (call put_module res (call codegen.compile_lowered (call str.addr opt_src) (get opt_src str.Bytes.len) gen orig opt_orig max_pages))))
+    (let n:i32 (if is_lowered
+                   (block
+                     (let lt:str.Bytes (call buf.bytes lowered))
+                     (call codegen.compile_lowered (call str.addr lt) (get lt str.Bytes.len) gen orig low max_pages))
+                   (call codegen.compile_mapped (call str.addr flat) (get flat str.Bytes.len) gen orig max_pages)))
+    (call put_module res n)))
+
+  ;; res holding codegen's result: n bytes of module, or (n <= 0) the
+  ;; compile error code codegen left in cell 4.
+  (fn put_module [res:(ptr Out) n:i32] -> (ptr Out)
+    (unsafe
+    (if (gt n 0)
+        (block
+          (put res Out.status 0)
+          (put res Out.addr (mem.load32 60))
+          (put res Out.len n))
+        (block
+          (put res Out.status 2)
+          (put res Out.addr 0)
+          (put res Out.len (mem.load32 4))))
+    res))
+
+  (fn put_text [res:(ptr Out) status:i32 b:(ptr buf.Buf)] -> void
+    (let t:str.Bytes (call buf.bytes b))
+    (put res Out.status status)
+    (put res Out.addr (call str.addr t))
+    (put res Out.len (get t str.Bytes.len)))
+
+  ;; "path: line:col: message" for each error, one per line.
+  (fn locate [orig:(ptr origins.Origins) gen:(ptr origins.Origins) first:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
+    (let pr:(ptr checker.Problem) first)
+    (while (neq pr (ptr.null checker.Problem))
+      (when (neq pr first) (call buf.push_byte b 10))
+      (call buf.push_bytes b (call buf.bytes (call locate_one orig gen pr entry)))
+      (set! pr (get pr checker.Problem.next)))
+    b)
+
+  ;; "path: line:col: message" for an error at an offset in the flat
+  ;; program: through gen (empty when there were no generics) to the
+  ;; resolver's text, through orig to a file.
+  (fn locate_one [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
+    (let at:i32 (get pr checker.Problem.at))
+    (let g:(ptr origins.Entry) (call origins.find gen at))
+    (when (neq g (ptr.null origins.Entry)) (set! at (get g origins.Entry.pos)))
+    (let r:(ptr origins.Entry) (call origins.find orig at))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
+    (let path:str.Bytes entry)
+    (let line:i32 1)
+    (let col:i32 1)
+    (when (and (neq r (ptr.null origins.Entry)) (gte (get r origins.Entry.file) 0))
+          (let f:(ptr origins.File) (call origins.file_at orig (get r origins.Entry.file)))
+          (set! path (get f origins.File.path))
+          (let lc:(ptr compiler.LineCol) (call compiler.line_col (call str.addr (get f origins.File.text)) (get r origins.Entry.pos)))
+          (set! line (get lc compiler.LineCol.line))
+          (set! col (get lc compiler.LineCol.col)))
+    (call buf.push_bytes b path)
+    (call buf.push_str b ": ")
+    (call buf.push_int b line)
+    (call buf.push_byte b 58)
+    (call buf.push_int b col)
+    (call buf.push_str b ": ")
+    (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
+    b)
+
+  (fn write_err [b:str.Bytes] -> void
+    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len))))
+
+  ;; driver ENTRY.aipl OUT.wasm: 0 on success, 1 on a resolve, type,
+  ;; compile, or write error (reported on stderr), 2 on bad usage.
+  (fn main [] -> i32
+    (unsafe (when (neq (call os.arg_count) 3) (call io.eprintln "usage: driver ENTRY.aipl OUT.wasm") (return 2))
+    (let std_dir:str.Bytes (call stdpath.find))
+    (let entry:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (let out:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 2) (call str.from_str "")))
+    (let res:(ptr Out) (call compile_file (call str.addr entry) (get entry str.Bytes.len)
+                                          (call str.addr std_dir) (get std_dir str.Bytes.len)))
+    (let status:i32 (get res Out.status))
+    (cond
+      ((eq status 0)
+       (let wasm:str.Bytes (call str.bytes (get res Out.addr) (get res Out.len)))
+       (if (match_result (call io.write_path out wasm) (ok n (eq n (get res Out.len))) (err e false))
+           (block
+             (println "compiled, bytes: {(get res Out.len)}")
+             0)
+           (block (call io.write_str 2 "cannot write ") (call write_err out) (call io.eprintln "") 1)))
+      ((or (eq status 1) (eq status 3))
+       (call write_err (call str.bytes (get res Out.addr) (get res Out.len)))
+       (call io.eprintln "")
+       1)
+      (else
+       (let digits:i32 (mem.alloc 11))
+       (call io.write_str 2 "compile error ")
+       (fs.write 2 digits (call fmt.int_to_bytes (get res Out.len) digits))
+       (call io.eprintln " (AIPL_SPEC.md 6.4)")
+       1))))
+
+  ;; WASI command entry point: runs main and exits with its status.
+  (fn _start [] -> void
+    (sys.exit (call main))))

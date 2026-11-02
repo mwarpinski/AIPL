@@ -1,0 +1,5 @@
+error 5: insufficient funds
+error 6: already open
+error 7: no such account
+alice 7.50
+bob 3.00

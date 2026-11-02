@@ -1,0 +1,29 @@
+;; One thread waits for a program that will not end while another kills it (std/proc.kill takes no lock the
+;; waiting thread holds): tests/test_sys.rs runs this with `--allow-run /bin/sh`, where threads run.
+(module proc_kill_thread
+  (import alloc)
+  (import proc)
+  (import thread)
+  (import time)
+
+  (struct Job [ch:proc.Child])
+
+  ;; After 150 ms: SIGKILL.
+  (fn killer [j:(ptr Job)] -> i32
+    (call time.sleep 150000000i64)
+    (if (call proc.kill (get j Job.ch) proc.SIGKILL) 1 0))
+
+  (fn main [] -> i32
+    (let c:(ptr proc.Command) (call proc.command (call alloc.default) "/bin/sh"))
+    (call proc.arg c "-c")
+    (call proc.arg c "exec sleep 30")
+    (let ch:proc.Child (match_result (call proc.spawn c) (ok x x) (err e (return 1))))
+    (let j:(ptr Job) (new Job (call alloc.default) [ch:ch]))
+    (let t0:i64 (call time.now))
+    (let h:i32 (unsafe (call (thread.spawn_with (ptr Job)) (ref killer) j)))
+    (let st:i32 (call proc.wait ch))
+    (println "status {st} signal {(call proc.signal st)}")
+    (println "killer sent it: {(unsafe (thread.join h))}")
+    (println "ended well before the 30 s: {(lt (- (call time.now) t0) 10000000000i64)}")
+    (call proc.close ch)
+    0))

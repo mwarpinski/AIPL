@@ -1,0 +1,13 @@
+;; Takes memory 64 KiB at a time, up to 1,000 times (about 64 MiB), saying
+;; so every 16 blocks (tests/test_memory.rs): with `--max-memory 4M` it stops
+;; after 48 blocks in every backend, at the same place; without, it runs to
+;; the end.
+(module hog
+  (import alloc)
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (for i 0 1000
+      (let b:(arr u8) (arr.new u8 a 65536))
+      (arr.set u8 b 65535 1)
+      (when (eq (% i 16) 0) (println "{i} blocks")))
+    0))

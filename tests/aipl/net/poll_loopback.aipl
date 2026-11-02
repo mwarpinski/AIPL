@@ -1,0 +1,33 @@
+;; std/net's waiting a limited time (poll, readable, writable, accept_within, recv_within), on one thread over
+;; the loopback: tests/test_net.rs runs this with the address (the first argument) granted to listen on and
+;; connect to, and every backend prints the same lines.
+(module poll_loopback
+  (import alloc)
+  (import buf)
+  (import net)
+  (import option)
+  (import str)
+  (import os)
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let at:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (let l:net.Socket (match_result (call net.listen a at) (ok s s) (err e (return 1))))
+    (println "idle listener readable {(call net.readable l 0)}")
+    (let c:net.Socket (match_result (call net.connect a at) (ok s s) (err e (return 2))))
+    (println "pending listener readable {(call net.readable l 5000)}")
+    (let s:net.Socket (match_result (call net.accept_within l 5000) (ok x x) (err e (return 3))))
+    (println "connection readable {(call net.readable s 50)} writable {(call net.writable s 0)}")
+    (match_result (call net.accept_within l 50)
+      (ok x (println "accepted?"))
+      (err e (println "accept_within: {(call net.message e)}")))
+    (let into:(ptr buf.Buf) (call buf.make a 16))
+    (println "recv_within on silence {(call net.recv_within s into 16 50)}")
+    (let _sent:bool (call net.send c (call str.from_str "hello")))
+    (println "recv_within {(call net.recv_within s into 16 5000)} {(call buf.to_str into)}")
+    (call net.close c)
+    (println "after the peer closed: readable {(call net.readable s 5000)} recv {(call net.recv s into 16)}")
+    (println "poll: events 3 {(call net.poll s 3 0)} events 0 {(call net.poll s 0 0)} closed handle {(call net.poll c 1 0)}")
+    (call net.close s)
+    (call net.close l)
+    0))

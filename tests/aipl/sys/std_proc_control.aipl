@@ -1,0 +1,54 @@
+;; std/proc's way of ending a program that does not end (kill, terminate, try_wait, wait_timeout, stop):
+;; tests/test_sys.rs runs this with `--allow-run /bin/sh`, in every backend; every line it prints is the same in
+;; each. The times are only bounds (a slow machine passes), never exact.
+(module proc_control
+  (import alloc)
+  (import buf)
+  (import option)
+  (import proc)
+  (import str)
+  (import time)
+
+  (fn shell [script:str out:proc.Stream] -> (result proc.Child proc.Error)
+    (let c:(ptr proc.Command) (call proc.command (call alloc.default) "/bin/sh"))
+    (call proc.arg c "-c")
+    (call proc.arg c script)
+    (call proc.spawn_with c proc.Stream.null out proc.Stream.inherit))
+
+  (fn shows [label:str s:(option.Option i32)] -> void
+    (match s
+      ((option.Option i32) some [v] (println "{label} some {v}"))
+      ((option.Option i32) none (println "{label} none"))))
+
+  (fn main [] -> i32
+    ;; a program that runs: nothing to report, a wait that times out, then a signal ends it
+    (let ch:proc.Child (match_result (call shell "exec sleep 30" proc.Stream.null) (ok x x) (err e (return 1))))
+    (call shows "try_wait running" (call proc.try_wait ch))
+    (let t0:i64 (call time.now))
+    (call shows "wait_timeout running" (call proc.wait_timeout ch 100000000i64))
+    (println "waited the 100 ms: {(gte (- (call time.now) t0) 100000000i64)}")
+    (println "bad signal {(call proc.kill ch 0)} {(call proc.kill ch 65)} {(call proc.kill ch -1)}")
+    (println "terminate {(call proc.terminate ch)}")
+    (let st:i32 (call proc.wait ch))
+    (println "status {st} exited {(call proc.exited st)} signal {(call proc.signal st)}")
+    (println "after wait: kill {(call proc.kill ch 9)} terminate {(call proc.terminate ch)}")
+    (call shows "after wait: try_wait" (call proc.try_wait ch))
+    (call proc.close ch)
+    ;; a program that ends by itself
+    (let quick:proc.Child (match_result (call shell "exit 7" proc.Stream.null) (ok x x) (err e (return 1))))
+    (call shows "wait_timeout ended" (call proc.wait_timeout quick 10000000000i64))
+    (call shows "try_wait again" (call proc.try_wait quick))
+    (println "kill ended {(call proc.kill quick 9)}")
+    (call proc.close quick)
+    ;; a program that ignores SIGTERM: stop asks, waits out the grace, and kills it
+    (let stubborn:proc.Child (match_result (call shell "trap '' TERM; echo ready; exec sleep 30" proc.Stream.pipe) (ok x x) (err e (return 1))))
+    (let line:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (let n:i32 (call proc.read stubborn line 16))
+    (println "stubborn said {n} bytes")
+    (let t1:i64 (call time.now))
+    (let st2:i32 (call proc.stop stubborn 300000000i64))
+    (println "stop {st2} signal {(call proc.signal st2)} took the grace: {(gte (- (call time.now) t1) 300000000i64)}")
+    (call proc.close stubborn)
+    ;; handles that are not programs
+    (println "bad handle {(unsafe (proc.kill 7 9))} {(unsafe (proc.try_wait 7))} {(unsafe (proc.kill 1024 9))}")
+    0))

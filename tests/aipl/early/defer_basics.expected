@@ -1,0 +1,14 @@
+start 4
+v=4
+freed the buffer
+first defer 4
+ok 8
+start 0
+first defer 0
+ok -1
+start 12
+freed the buffer
+first defer 12
+err big
+i=1
+noisy done

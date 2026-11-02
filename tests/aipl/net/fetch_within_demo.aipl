@@ -1,0 +1,24 @@
+;; A client for tests/test_net.rs: fetches the URL given as its first argument with http.fetch_within, the
+;; limit in milliseconds the environment variable AIPL_FETCH_MS says, and prints the status that came back or
+;; why nothing did.
+(module fetch_within_demo
+  (import alloc)
+  (import option)
+  (import str)
+  (import http)
+  (import os)
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let url:str (call str.from_bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str ""))))
+    (let ms:i32 (call str.parse_int_or (call (option.unwrap_or str.Bytes) (call os.env "AIPL_FETCH_MS") (call str.from_str "-1")) -1))
+    (match_result (call http.fetch_within a url (call http.default_limits) ms)
+      (ok m
+        (println "status {(get m http.Message.status)}")
+        (call http.free_message m)
+        0)
+      (err e
+        (println "error {(get e http.Error.what)} ({(get e http.Error.status)})")
+        (call http.free_error a e)
+        0)))
+)

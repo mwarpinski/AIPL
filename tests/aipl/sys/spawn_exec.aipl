@@ -1,0 +1,26 @@
+;; proc.exec (docs/design/SYS_PLAN.md D3): tests/test_sys.rs runs this with
+;; `--allow-run /bin/sh --allow-run /no/such/program` and AIPL_PROC_TEST=hello.
+;; An exec that is refused or fails comes back; one that works never does:
+;; the program becomes `sh`, which ends the run with its own status.
+(module proc_exec_cases
+  (import alloc)
+  (import buf)
+  (import str)
+
+  (fn say [label:str n:i32] -> void
+    (println "{label} {n}"))
+
+  (fn main [] -> i32
+    (println "before")
+    (call say "not_granted" (unsafe (proc.exec (str.ptr "/bin/false") 10 (str.ptr "false") 5)))
+    (call say "missing" (unsafe (proc.exec (str.ptr "/no/such/program") 16 (str.ptr "x") 1)))
+    (call say "too_long" (unsafe (proc.exec 1024 2000000000 1024 1)))
+    (let a:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_str a "sh") (call buf.push_byte a 0)
+    (call buf.push_str a "-c") (call buf.push_byte a 0)
+    (call buf.push_str a "echo \"replaced $0-$1 env=$AIPL_PROC_TEST\"; exit 3") (call buf.push_byte a 0)
+    (call buf.push_str a "A") (call buf.push_byte a 0)
+    (call buf.push_str a "B")
+    (let ab:str.Bytes (call buf.bytes a))
+    (call say "exec" (unsafe (proc.exec (str.ptr "/bin/sh") 7 (call str.addr ab) (get ab str.Bytes.len))))
+    0))

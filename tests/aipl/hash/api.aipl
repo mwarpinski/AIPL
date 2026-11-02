@@ -1,0 +1,40 @@
+;; std/hash's API (tests/test_hash.rs): the str-to-hex functions, the
+;; checksums' published check values, a stream hashed as it is read, and
+;; the sizes.
+(module api
+  (import hash)
+  (import str)
+  (import buf)
+  (import alloc)
+  (import stream)
+  (import encode)
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let sha:str (call hash.hex hash.Algorithm.sha256 "abc"))
+    (println "sha256 abc {sha}")
+    (let mac:str (call hash.hmac_hex hash.Algorithm.sha256 "key" "The quick brown fox jumps over the lazy dog"))
+    (println "hmac {mac}")
+    ;; CRC-32's check value is 0xCBF43926 (widened to show unsigned); Adler-32
+    ;; of "Wikipedia" is 0x11E60398
+    (let crc:i64 (i64.extend_u (call hash.crc32 (call str.from_str "123456789"))))
+    (let adler:i32 (call hash.adler32 (call str.from_str "Wikipedia")))
+    (println "crc32 {crc:x} adler32 {adler:x}")
+    ;; a stream, read to its end
+    (let text:str "a line\nanother line\n")
+    (let r:(ptr stream.Reader) (call stream.of_str a text))
+    (let x:(ptr hash.Hasher) (call hash.make a hash.Algorithm.sha1))
+    (let n:i64 (call hash.update_reader x r))
+    (let d:(ptr buf.Buf) (call buf.make a 32))
+    (call hash.finish_to x d)
+    (call hash.free x)
+    (call stream.close_reader r)
+    (let h:(ptr buf.Buf) (call buf.make a 64))
+    (call encode.hex_to h (call buf.bytes d) false)
+    (let whole:str (call hash.hex hash.Algorithm.sha1 text))
+    (println "stream: {n} bytes, same as whole: {(call str.same (call buf.to_str h) whole)}")
+    (let same:bool (call hash.constant_time_eq (call buf.bytes d) (call buf.bytes d)))
+    (println "sizes {(call hash.digest_size hash.Algorithm.sha512)} {(call hash.block_size hash.Algorithm.sha512)} {(call hash.digest_size hash.Algorithm.md5)}; equal {same}")
+    (call buf.free h)
+    (call buf.free d)
+    0))

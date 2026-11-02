@@ -1,0 +1,45 @@
+;; Threads starting and waiting for processes at the same time (the native process table gives each spawn its
+;; own slot atomically): tests/test_sys.rs runs this with `--allow-run /bin/sh`. Each of 8 threads starts
+;; /bin/sh -c "exit K" 25 times, K its own number, waits for each and checks the status it gets is its K; the
+;; mismatches (and spawns that failed) are summed and printed, which must be 0.
+(module proc_threads
+  (import alloc)
+  (import buf)
+  (import str)
+  (import thread)
+
+  (struct Job [code:i32 args:str.Bytes])
+
+  ;; The arguments block for /bin/sh -c "exit CODE": each word followed by a zero byte.
+  (fn exit_args [code:i32] -> str.Bytes
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (call buf.push_str b "sh") (call buf.push_byte b 0)
+    (call buf.push_str b "-c") (call buf.push_byte b 0)
+    (call buf.push_str b "exit ") (call buf.push_int b code) (call buf.push_byte b 0)
+    (call buf.bytes b))
+
+  ;; 25 rounds of: start, wait, give the handle back. The number that went wrong.
+  (fn work [j:(ptr Job)] -> i32
+    (let bad:i32 0)
+    (let args:str.Bytes (get j Job.args))
+    (for round 0 25
+      (let h:i32 (unsafe (proc.spawn (str.ptr "/bin/sh") 7 (call str.addr args) (get args str.Bytes.len) 0)))
+      (if (lt h 0)
+          (set! bad (+ bad 1))
+          (block
+            (let status:i32 (unsafe (proc.wait h)))
+            (when (neq status (get j Job.code)) (set! bad (+ bad 1)))
+            (let _closed:i32 (unsafe (proc.close h))))))
+    bad)
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let handles:(arr i32) (arr.new i32 a 8))
+    (for k 0 8
+      (let j:(ptr Job) (new Job a [code:(+ k 1) args:(call exit_args (+ k 1))]))
+      (arr.set i32 handles k (unsafe (call (thread.spawn_with (ptr Job)) (ref work) j))))
+    (let bad:i32 0)
+    (for k 0 8
+      (set! bad (+ bad (unsafe (thread.join (arr.get i32 handles k))))))
+    (println "mismatches {bad}")
+    0))

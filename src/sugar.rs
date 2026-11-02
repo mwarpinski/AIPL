@@ -1,0 +1,145 @@
+//! Three forms written for the reader, rewritten as the resolver reads a
+//! module (AIPL_SPEC.md 4.M), so nothing after it sees them:
+//!
+//! - `when` is not rewritten (it was until CANONICAL_PLAN.md step 4): the
+//!   parsers read `(when c body...)` as `(if c (block body...) (block))`,
+//!   and only its shape is checked here, as for `for`;
+//! - `(for i start end body...)` is `(counted_loop i start (- end 1) 1 body...)`:
+//!   i from start up to, but not including, end (the internal form, which
+//!   counts to its end inclusive and has a step, is not for programs: `loop`
+//!   is an error, CANONICAL_PLAN.md step 3);
+//! - `(and a b c ...)` is `(and a (and b c ...))`, and `or` the same;
+//! - `(new S a)` is `(call (alloc.create S) a)` and `(arr.new T a n)` is
+//!   `(call (alloc.array T) a n)`: every allocation names its allocator
+//!   (docs/design/MEMORY_PLAN.md decision 5), and a module that uses them
+//!   imports std/alloc;
+//! - `(arr.of T a x y ...)`, the array literal (LANGUAGE_DECISIONS.md
+//!   item 3), is `(block (let _arr_of_L_C:(arr T) (call (alloc.array T) a
+//!   n)) (arr.set T _arr_of_L_C 0 x) ... _arr_of_L_C)`, named by its line
+//!   and column: the allocator, then the values in order, each once; with
+//!   no values, an empty array.
+//!
+//! Every list made here is at the form's place, as aipl_src/resolver.aipl
+//! writes it, so both toolchains give the same positions.
+
+use crate::parser::{Token, TokenKind};
+use crate::sexpr::Sx;
+
+fn list_at(items: Vec<Sx>, at: (u32, u32)) -> Sx {
+    let (line, col) = at;
+    Sx::List { open: Token { kind: TokenKind::LParen, line, col }, items, close: Token { kind: TokenKind::RParen, line, col } }
+}
+
+fn symbol_at(s: &str, at: (u32, u32)) -> Sx {
+    Sx::Atom(Token { kind: TokenKind::Symbol(s.to_string()), line: at.0, col: at.1 })
+}
+
+fn int_at(v: i64, at: (u32, u32)) -> Sx {
+    Sx::Atom(Token { kind: TokenKind::IntLit(v), line: at.0, col: at.1 })
+}
+
+/// The message for `(new S)` and `(arr.new T n)`, which name no allocator.
+pub const NEW_NEEDS_ALLOCATOR: &str = "new takes the allocator to make it from, then each field by name: (new S a [x:v y:v]), e.g. (new S (call alloc.default) [x:1 y:2]), or (call alloc.forever) for memory kept until the program exits";
+/// The message for any other `new` but the named one, `(new S a)` included.
+pub const NEW_NAMES_FIELDS: &str = "new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name; a field that starts empty is given its zero, (zero T)";
+pub const ARR_NEW_NEEDS_ALLOCATOR: &str = "arr.new takes the allocator to make it from: (arr.new T a n), e.g. (arr.new T (call alloc.default) n), or (arr.new T (call alloc.forever) n) for memory kept until the program exits";
+pub const ARR_OF_NEEDS_ALLOCATOR: &str = "arr.of takes the allocator to make it from, then the values: (arr.of T a x y ...), e.g. (arr.of i32 (call alloc.default) 1 2 3), or (arr.of i32 a) for an empty array";
+
+/// Rewrites the forms in `sx`, inner ones first; `err` places a message at
+/// a form. A `[...]` list holds no expression and is left alone, but for
+/// the field values of a named `new` or `make`. `alloc`
+/// is how this module names std/alloc's functions (`alloc.`, an alias's
+/// prefix, or none in std/alloc itself), or why it cannot use new; `used`
+/// is set when a new or arr.new is rewritten.
+pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err: &dyn Fn(&Sx, &str) -> String) -> Result<(), String> {
+    if !sx.is_paren() {
+        return Ok(());
+    }
+    // a form's shape first, so the first mistake in the text is reported
+    let n = sx.items().len();
+    match sx.head() {
+        Some("new" | "arr.new" | "arr.of") if alloc.is_err() => return Err(err(sx, alloc.as_ref().unwrap_err())),
+        // (arr.of T) names no allocator; nor does (arr.of T 1 2 3), whose
+        // allocator would be a literal
+        Some("arr.of") if n < 3 || matches!(&sx.items()[2], Sx::Atom(Token { kind: TokenKind::IntLit(_) | TokenKind::Int64Lit(_) | TokenKind::FloatLit(..) | TokenKind::Float32Lit(..) | TokenKind::StringLit(_) | TokenKind::BoolLit(_), .. })) => {
+            return Err(err(sx, ARR_OF_NEEDS_ALLOCATOR))
+        }
+        Some("new") if n == 2 => return Err(err(sx, NEW_NEEDS_ALLOCATOR)),
+        // (new S a [f:v ...]), its fields named, is checked and rewritten
+        // where the struct's fields are known (resolver.rs named_fields)
+        Some("new") if n == 4 && matches!(&sx.items()[3], Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. }) => {}
+        // the zeroed (new S a) is gone (LANGUAGE_DECISIONS.md item 4)
+        Some("new") => return Err(err(sx, NEW_NAMES_FIELDS)),
+        Some("arr.new") if n == 3 => return Err(err(sx, ARR_NEW_NEEDS_ALLOCATOR)),
+        Some("arr.new") if n != 4 => return Err(err(sx, "arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length")),
+        Some("when") if n < 2 => return Err(err(sx, "when takes a condition and a body: (when c body...)")),
+        Some("for") if n >= 5 && matches!(&sx.items()[4], Sx::Atom(Token { kind: TokenKind::IntLit(_), .. })) => {
+            return Err(err(&sx.items()[4], crate::parser::Parser::FOR_HAS_NO_STEP))
+        }
+        Some("for") if n < 4 || sx.items()[1].symbol().is_none() => {
+            return Err(err(sx, "for is (for i start end body...): i from start up to end, end left out"))
+        }
+        _ => {}
+    }
+    // the [f:v ...] of a named new or make holds expressions
+    let named = matches!(sx.head(), Some("new" | "make")) && matches!(sx.items().last(), Some(Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. }));
+    if let Some(items) = sx.items_mut() {
+        let last = items.len() - 1;
+        for (k, i) in items.iter_mut().enumerate() {
+            if named && k == last {
+                for v in i.items_mut().into_iter().flatten() {
+                    rewrite(v, alloc, used, err)?;
+                }
+            } else {
+                rewrite(i, alloc, used, err)?;
+            }
+        }
+    }
+    let at = sx.position();
+    let items = sx.items().to_vec();
+    match sx.head() {
+        Some("for") => {
+            let end = list_at(vec![symbol_at("-", at), items[3].clone(), int_at(1, at)], at);
+            let mut out = vec![symbol_at("counted_loop", at), items[1].clone(), items[2].clone(), end, int_at(1, at)];
+            out.extend(items[4..].iter().cloned());
+            *sx = list_at(out, at);
+        }
+        Some("new") => *used = true,
+        Some("arr.new") => {
+            let prefix = alloc.as_ref().unwrap_or_else(|_| unreachable!());
+            let mut out = vec![symbol_at("call", at), list_at(vec![symbol_at(&format!("{prefix}array"), at), items[1].clone()], at)];
+            out.extend(items[2..].iter().cloned());
+            *sx = list_at(out, at);
+            *used = true;
+        }
+        Some("arr.of") => {
+            let prefix = alloc.as_ref().unwrap_or_else(|_| unreachable!());
+            let name = format!("_arr_of_{}_{}", at.0, at.1);
+            let t = items[1].clone();
+            let values = &items[3..];
+            let colon = Sx::Atom(Token { kind: TokenKind::Colon, line: at.0, col: at.1 });
+            let array = list_at(vec![symbol_at("arr", at), t.clone()], at);
+            let make = list_at(
+                vec![symbol_at("call", at), list_at(vec![symbol_at(&format!("{prefix}array"), at), t.clone()], at), items[2].clone(), int_at(values.len() as i64, at)],
+                at,
+            );
+            let mut out = vec![symbol_at("block", at), list_at(vec![symbol_at("let", at), symbol_at(&name, at), colon, array, make], at)];
+            for (k, v) in values.iter().enumerate() {
+                out.push(list_at(vec![symbol_at("arr.set", at), t.clone(), symbol_at(&name, at), int_at(k as i64, at), v.clone()], at));
+            }
+            out.push(symbol_at(&name, at));
+            *sx = list_at(out, at);
+            *used = true;
+        }
+        Some(op @ ("and" | "or")) if items.len() > 3 => {
+            // right-nested, as (and a (and b c))
+            let mut tail = list_at(vec![symbol_at(op, at), items[items.len() - 2].clone(), items[items.len() - 1].clone()], at);
+            for x in items[2..items.len() - 2].iter().rev() {
+                tail = list_at(vec![symbol_at(op, at), x.clone(), tail], at);
+            }
+            *sx = list_at(vec![items[0].clone(), items[1].clone(), tail], at);
+        }
+        _ => {}
+    }
+    Ok(())
+}

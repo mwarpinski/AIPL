@@ -1,0 +1,5 @@
+;; Imported by main.aipl: a dbg here is labelled with this file's name.
+(module lib
+  (fn (twice T) [x:T] -> T (pub) (dbg x))
+  (fn half [n:i32] -> i32 (pub)
+    (dbg (/ n 2))))

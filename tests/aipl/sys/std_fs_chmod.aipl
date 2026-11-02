@@ -1,0 +1,22 @@
+;; std/fs's chmod (docs/design/SYS_PLAN.md, step 4): test_sys.rs runs it in a
+;; directory holding a.txt, once for each backend; each case prints its label
+;; and what fs.chmod gave, as a number or a word.
+(module std_fs_chmod
+  (import fs)
+  (import io)
+  (import str)
+
+  (fn show [label:str r:(result i32 io.Error)] -> void
+    (match_result r
+      (ok n (println "{label} ok {n}"))
+      (err e (let why:str (call io.message e))
+        (println "{label} {why}"))))
+
+  (fn main [] -> i32
+    (call show "program" (call fs.chmod "a.txt" fs.PROGRAM))
+    (call show "file" (call fs.chmod "a.txt" fs.FILE))
+    (call show "bytes" (call fs.chmod_path (call str.from_str "a.txt") 384))
+    (call show "setuid" (call fs.chmod "a.txt" 2541))
+    (call show "missing" (call fs.chmod "no/such/file" 420))
+    (call show "dotdot" (call fs.chmod "../outside.txt" 384))
+    0))

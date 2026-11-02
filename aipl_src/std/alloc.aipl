@@ -1,0 +1,254 @@
+;; std/alloc: any allocator, as one value (docs/design/HEAP_PLAN.md). Code that
+;; allocates freeable memory takes an Allocator and does not care which:
+;;
+;;   (fn (fill T) [a:alloc.Allocator n:i32 x:T] -> (arr T)
+;;     (let xs:(arr T) (call (alloc.array T) a n)) ...)
+;;
+;;   (call (fill i32) (call alloc.default) 10 7)               ;; the shared heap
+;;   (call (fill i32) (call alloc.forever) 10 7)               ;; never freed
+;;   (call (fill i32) (call alloc.of_heap h) 10 7)             ;; a heap of your own
+;;   (call (fill i32) (call alloc.of_arena ar) 10 7)           ;; freed by arena.reset
+;;   (call (fill i32) (call alloc.fixed (mem.alloc 4096) 4096) 10 7)  ;; inside a buffer
+;;   (call (fill i32) (call (alloc.custom (ptr Pool)) pool (ref my_alloc) (ref my_free)) 10 7)
+;;
+;; A custom allocator is a program's own: my_alloc [state:C n] -> address
+;; of n bytes, 8-aligned; my_free [state:C p n]. The state is a value of any
+;; type C, typically a pointer to the allocator's own struct, and is passed
+;; to both as that type. raw zeroes what it returns, so a custom allocator
+;; need not.
+;;
+;; Make an Allocator once and pass it around: each of_heap, of_arena, and
+;; fixed makes a small cell that is never freed. What a free does depends
+;; on the allocator: a heap reuses the block and checks the free (std/heap);
+;; an arena ignores it (arena.reset frees everything); a fixed buffer takes
+;; back only its most recent allocation, as Zig's FixedBufferAllocator does.
+(module alloc
+  (import heap)
+  (import arena)
+  (import gen)
+
+  ;; A region inside a buffer: [base, base + len), the first `used` bytes
+  ;; handed out.
+  (struct Fixed [base:i32 len:i32 used:i32] (pub))
+
+  ;; A custom allocator's state and functions, for its state's type C.
+  (struct (CustomOf C) [state:C alloc_fn:(fn [C i32] -> i32) free_fn:(fn [C i32 i32] -> void)])
+
+  ;; What an Allocator holds for one, whatever C is: the CustomOf<C> cell's
+  ;; address, and the two functions that read it back as a CustomOf<C>
+  ;; (alloc_through, free_through), which only custom makes.
+  (struct Custom [cell:i32 alloc_fn:(fn [i32 i32] -> i32) free_fn:(fn [i32 i32 i32] -> void)] (pub))
+
+  ;; Any allocator as one value, to pass to code that allocates: make it
+  ;; with of_heap, of_arena, of_fast_arena, fixed, custom, default, or
+  ;; forever.
+  (union Allocator [(heap h:(ptr heap.Heap))
+                    (arena r:(ptr arena.Arena))
+                    (fast_arena fr:(ptr arena.Fast))
+                    (fixed f:(ptr Fixed))
+                    (custom c:(ptr Custom))
+                    (forever)] (pub))
+
+  ;; Memory that lives until the program exits: never reused, so what it
+  ;; hands out is never freed (a destroy still ends the object: a pointer
+  ;; kept past it stops the program). Right for what a program makes once
+  ;; and keeps; a call to it is what (no_leak) refuses (docs/design/
+  ;; MEMORY_PLAN.md decision 5).
+  (fn forever [] -> Allocator (pub) (make Allocator.forever))
+
+  ;; Unsafe to call: the allocator's functions hand out raw addresses.
+  (fn (custom C) [state:C alloc_fn:(fn [C i32] -> i32) free_fn:(fn [C i32 i32] -> void)] -> Allocator (pub) (unsafe)
+    (let cell:(ptr (CustomOf C)) (call (create (CustomOf C)) (call forever)))
+    (put cell (CustomOf C) state state)
+    (put cell (CustomOf C) alloc_fn alloc_fn)
+    (put cell (CustomOf C) free_fn free_fn)
+    (let c:(ptr Custom) (call (create Custom) (call forever)))
+    (put c Custom.cell (ptr.addr cell))
+    (put c Custom.alloc_fn (ref (alloc_through C)))
+    (put c Custom.free_fn (ref (free_through C)))
+    (make Allocator.custom c))
+
+  ;; The custom allocator's own functions, given its CustomOf<C> cell.
+  (fn (alloc_through C) [cell:i32 n:i32] -> i32 (unsafe)
+    (let x:(ptr (CustomOf C)) (ptr.cast (CustomOf C) cell))
+    (call_ref (fn [C i32] -> i32) (get x (CustomOf C) alloc_fn) (get x (CustomOf C) state) n))
+  (fn (free_through C) [cell:i32 p:i32 n:i32] -> void (unsafe)
+    (let x:(ptr (CustomOf C)) (ptr.cast (CustomOf C) cell))
+    (call_ref (fn [C i32 i32] -> void) (get x (CustomOf C) free_fn) (get x (CustomOf C) state) p n))
+
+  ;; An allocator over a heap of your own (std/heap).
+  (fn of_heap [h:(ptr heap.Heap)] -> Allocator (pub) (make Allocator.heap h))
+  ;; An allocator over an arena: frees do nothing, arena.reset frees all.
+  (fn of_arena [r:(ptr arena.Arena)] -> Allocator (pub) (make Allocator.arena r))
+  ;; An allocator over a fast arena (arena.make_fast).
+  (fn of_fast_arena [fr:(ptr arena.Fast)] -> Allocator (pub) (make Allocator.fast_arena fr))
+
+  ;; An allocator handing out the len bytes at base (from mem.alloc, or
+  ;; from another allocator), 8 bytes at a time.
+  ;; Unsafe to call: the allocator hands out whatever memory base names.
+  (fn fixed [base:i32 len:i32] -> Allocator (pub) (unsafe)
+    (req (gte len 0))
+    (let f:(ptr Fixed) (call (create Fixed) (call forever)))
+    (put f Fixed.base base)
+    (put f Fixed.len len)
+    (put f Fixed.used 0)
+    (make Allocator.fixed f))
+
+  ;; The shared general-purpose heap, made on first use. AIPL has no
+  ;; globals, so runtime cell 52 (AIPL_SPEC.md 7.9) points to a Shared
+  ;; holding it. A heap takes its lock to allocate and free, so threads
+  ;; may share it; two threads making it at once agree on one (the first
+  ;; to store it wins, and the other's is never used).
+  (struct Shared [a:Allocator])
+
+  ;; The shared general-purpose heap, made on first use ((no_leak): it
+  ;; is made once, then handed out each time).
+  (fn default [] -> Allocator (pub) (no_leak)
+    (unsafe (when (eq (mem.load32 52) 0)
+          (let s:(ptr Shared) (call (create Shared) (call forever)))
+          (put s Shared.a (call of_heap (call heap.make)))
+          (let _won:bool (atomic.cas 52 0 (ptr.addr s))))
+    (get (ptr.cast Shared (mem.load32 52)) Shared.a)))
+
+  ;; ===== Raw bytes =====
+
+  ;; n zeroed bytes, 8-aligned.
+  ;; (no_leak): every allocator here hands out memory it gets back (a
+  ;; heap's freed blocks, an arena's chunks after reset, a fixed buffer);
+  ;; a custom allocator is its maker's word, as making one is unsafe.
+  (fn raw [a:Allocator n:i32] -> i32 (pub) (no_leak)
+    (req (gt n 0))
+    (match a
+      (Allocator.heap [h] (call heap.raw h n))
+      (Allocator.arena [r] (call arena.raw r n))
+      (Allocator.fast_arena [fr] (call arena.fast_raw fr n))
+      (Allocator.fixed [f] (call fixed_raw f n))
+      (Allocator.custom [c] (unsafe (call custom_raw c n)))
+      ;; fresh memory from the bump cursor, which is zero
+      (Allocator.forever (unsafe (mem.alloc n)))))
+
+  ;; Frees the n bytes at p, which raw returned for n bytes.
+  ;; Unsafe to call: p must be what raw returned for n bytes.
+  ;; (no_leak): it frees; a custom allocator's free is its maker's word.
+  (fn free_raw [a:Allocator p:i32 n:i32] -> void (pub) (unsafe) (no_leak)
+    (unsafe (match a
+      (Allocator.heap [h] (call heap.free_raw h p n))
+      (Allocator.arena [_] (block))
+      (Allocator.fast_arena [_] (block))
+      (Allocator.fixed [f] (call fixed_free f p n))
+      (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.cell) p n))
+      ;; never reused
+      (Allocator.forever (block)))))
+
+  ;; n bytes from a custom allocator, zeroed here.
+  (fn custom_raw [c:(ptr Custom) n:i32] -> i32
+    (unsafe (let p:i32 (call custom_result (call_ref (fn [i32 i32] -> i32) (get c Custom.alloc_fn) (get c Custom.cell) n)))
+    (for i 0 (/ (bitand (+ n 7) -8) 8) (mem.store64 (+ p (* 8 i)) 0i64))
+    p))
+
+  ;; What a custom allocator returned, which must be 8-aligned.
+  (fn custom_result [p:i32] -> i32
+    (req (call aligned p))
+    p)
+  (fn aligned [p:i32] -> bool (eq (bitand p 7) 0))
+
+  (fn fixed_raw [f:(ptr Fixed) n:i32] -> i32
+    (req (call fits f n))
+    (unsafe (let size:i32 (bitand (+ n 7) -8))
+    (let p:i32 (+ (get f Fixed.base) (get f Fixed.used)))
+    (put f Fixed.used (+ (get f Fixed.used) size))
+    (for i 0 (/ size 8) (mem.store64 (+ p (* 8 i)) 0i64))
+    p))
+
+  ;; Whether n more bytes fit in the buffer.
+  (fn fits [f:(ptr Fixed) n:i32] -> bool
+    (lte (bitand (+ n 7) -8) (- (get f Fixed.len) (get f Fixed.used))))
+
+  (fn fixed_free [f:(ptr Fixed) p:i32 n:i32] -> void
+    (let size:i32 (bitand (+ n 7) -8))
+    (when (eq (+ p size) (+ (get f Fixed.base) (get f Fixed.used)))
+        (put f Fixed.used (- (get f Fixed.used) size))))
+
+  ;; ===== Typed =====
+
+  ;; A zeroed T.
+  (fn (create T) [a:Allocator] -> (ptr T) (pub) (where (struct T))
+    (unsafe (call (gen.adopt T) (call raw a (+ (sizeof T) 8)))))
+
+  ;; Frees p, which create made from the same allocator; any pointer to it
+  ;; used afterwards stops the program with "Use after free".
+  (fn (destroy T) [a:Allocator p:(ptr T)] -> void (pub) (where (struct T))
+    (unsafe (call free_raw a (call (gen.retire T) p) (+ (sizeof T) 8))))
+
+  ;; n zeroed Ts, laid out like (arr.new T n).
+  (fn (array T) [a:Allocator n:i32] -> (arr T) (pub)
+    (req (gte n 0))
+    (unsafe (call (gen.adopt_array T) (call raw a (checked.add 8 (checked.mul n (sizeof T)))) n)))
+
+  ;; Frees xs, which array made from the same allocator.
+  (fn (free_array T) [a:Allocator xs:(arr T)] -> void (pub)
+    (unsafe (let n:i32 (+ 8 (* (arr.len xs) (sizeof T))))
+    (call free_raw a (call (gen.retire_array T) xs) n)))
+
+  (struct Pair [left:i32 right:i64])
+
+  ;; Allocates and frees through `a`: a Pair and an array, zeroed and usable.
+  (fn round_trip [a:Allocator] -> bool
+    (let p:(ptr Pair) (call (create Pair) a))
+    (let xs:(arr i64) (call (array i64) a 10))
+    (put p Pair.right 5i64)
+    (arr.set i64 xs 9 6i64)
+    (let ok:bool (and (eq (+ (get p Pair.right) (arr.get i64 xs 9)) 11i64)
+                      (and (eq (arr.len xs) 10) (eq (arr.get i64 xs 0) 0i64))))
+    (call (free_array i64) a xs)
+    (call (destroy Pair) a p)
+    ok)
+
+  ;; A custom allocator for the tests: a heap that counts its calls.
+  (struct Counting [h:(ptr heap.Heap) allocs:i32 frees:i32])
+  (fn counting_alloc [k:(ptr Counting) n:i32] -> i32
+    (put k Counting.allocs (+ (get k Counting.allocs) 1))
+    (call heap.raw (get k Counting.h) n))
+  (fn counting_free [k:(ptr Counting) p:i32 n:i32] -> void (unsafe)
+    (put k Counting.frees (+ (get k Counting.frees) 1))
+    (call heap.free_raw (get k Counting.h) p n))
+
+  ;; Pass count; test_suite.aipl expects 9.
+  (fn run_alloc_tests [] -> i32 (pub)
+    (unsafe (let p:i32 0)
+    ;; the same code works with every kind of allocator
+    (let h:(ptr heap.Heap) (call heap.make))
+    (when (and (call round_trip (call of_heap h)) (eq (call heap.live h) 0)) (set! p (+ p 1)))
+    (let r:(ptr arena.Arena) (call arena.make 4096))
+    (when (call round_trip (call of_arena r)) (set! p (+ p 1)))
+    (let f:Allocator (call fixed (mem.alloc 256) 256))
+    (when (call round_trip f) (set! p (+ p 1)))
+    (when (call round_trip (call default)) (set! p (+ p 1)))
+    ;; default is one shared heap: the same block comes back after a free
+    (let d:Allocator (call default))
+    (let x:(ptr Pair) (call (create Pair) d))
+    (call (destroy Pair) d x)
+    (let y:(ptr Pair) (call (create Pair) (call default)))
+    (when (eq (ptr.addr x) (ptr.addr y)) (set! p (+ p 1)))
+    ;; a fixed buffer takes back only its most recent allocation
+    (let g:Allocator (call fixed (mem.alloc 64) 64))
+    (let a1:i32 (call raw g 16))
+    (let a2:i32 (call raw g 16))
+    (call free_raw g a1 16)
+    (let a3:i32 (call raw g 16))
+    (call free_raw g a3 16)
+    (let a4:i32 (call raw g 16))
+    (when (and (eq a3 (+ a2 16)) (eq a4 a3)) (set! p (+ p 1)))
+    ;; a custom allocator gets every allocation and free
+    (let k:(ptr Counting) (call (create Counting) (call forever)))
+    (put k Counting.h (call heap.make))
+    (let c:Allocator (call (custom (ptr Counting)) k (ref counting_alloc) (ref counting_free)))
+    (when (and (call round_trip c) (and (eq (get k Counting.allocs) 2) (eq (get k Counting.frees) 2)))
+        (set! p (+ p 1)))
+    ;; forever: usable, and never reused after a destroy
+    (when (call round_trip (call forever)) (set! p (+ p 1)))
+    (let fx:(ptr Pair) (call (create Pair) (call forever)))
+    (call (destroy Pair) (call forever) fx)
+    (let fy:(ptr Pair) (call (create Pair) (call forever)))
+    (when (neq (ptr.addr fx) (ptr.addr fy)) (set! p (+ p 1)))
+    p)))

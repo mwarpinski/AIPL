@@ -1,0 +1,5 @@
+a=3 b=4
+ok 7
+a=0 b=4
+err zero
+err big

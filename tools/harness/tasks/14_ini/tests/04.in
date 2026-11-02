@@ -1,0 +1,30 @@
+[log]
+
+ host =  x=y
+size=  a b
+size  =  x=y
+host  =  /tmp
+[web]
+ size=  1
+ port  =  on
+  user =  a b
+level =/tmp
+  size=  1
+[db]
+port =  a b
+  size =  1
+port  =/tmp
+ size  = a b
+ path  =a b
+ size= x=y
+  port = a b
+ size= x=y
+host  = /tmp
+  path= 1
+ user= a b
+[log]
+  size =  on
+  host =x=y
+  port=1
+host  = x=y
+[log]

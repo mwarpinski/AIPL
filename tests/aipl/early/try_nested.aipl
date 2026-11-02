@@ -1,0 +1,13 @@
+(module try_nested
+  (import option)
+  (fn d [c:i32] -> (result i32 str) (if (lt c 10) (ok:str c) (err:i32 "big")))
+  (fn h [n:i32] -> (option.Option i32) (if (gt n 0) (make (option.Option i32) some n) (make (option.Option i32) none)))
+  (fn f [a:i32 b:i32] -> (result i32 str)
+    (println "a={(try (call d a))} b={(try (call d b))}")
+    (let x:i32 (try_or (call h (try (call d a))) "zero"))
+    (ok:str (+ x (try (call d (try (call d b)))))))
+  (fn main [] -> i32
+    (match_result (call f 3 4) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    (match_result (call f 0 4) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    (match_result (call f 3 40) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    0))

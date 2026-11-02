@@ -1,0 +1,100 @@
+# Builds AIPL and runs every test on Linux x86-64 (the native backend's
+# platform): clippy with warnings as errors, the Rust test suite, the
+# AIPL-native suite, 3,000 mutated programs through both toolchains
+# (tools/fuzz.py), and 500 generated programs run in the VM, as wasm, and
+# natively (tools/run_fuzz.py), and the repository's programs and 500
+# generated ones optimized against unoptimized (tools/opt_diff.py); the
+# fuzzers with fixed seeds. See DEVELOPING.md, "How to verify everything".
+# The arm64 job builds and tests on Linux AArch64 (GitHub's ubuntu-24.04-arm
+# runner), where the AArch64 backend's executables run as they are, and has
+# the compiler built for AArch64 compile itself there.
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --release --no-fail-fast
+      - name: Native executables on a system without openat2
+        run: python3 tools/without_openat2.py cargo test --release --test test_native
+      - name: AIPL test suite
+        run: ./target/release/aipl test aipl_src/test_suite.aipl
+      - name: Mutated programs, Rust toolchain against the self-hosted one
+        run: python3 tools/fuzz.py --cases 3000 --seed 1
+      - name: Generated programs, VM against compiled code
+        run: python3 tools/run_fuzz.py --cases 500 --seed 1
+      - name: The optimizer, optimized programs against unoptimized ones
+        run: |
+          python3 tools/opt_diff.py
+          python3 tools/opt_diff.py --fuzz 500 --seed 1
+      - name: The A/B harness, its references and toolchain paths
+        run: python3 tools/harness/harness.py selftest
+      - name: The documentation, against the repository
+        run: python3 tools/docs_check.py
+
+  arm64:
+    # AArch64 Linux: the Rust test suite (the AArch64 backend's executables run on this
+    # machine, tests/arm64), the AIPL suite, and the compiler built for AArch64
+    # compiling itself to the same bytes (docs/design/ARM64_PLAN.md).
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --release --no-fail-fast
+      - name: AIPL test suite
+        run: ./target/release/aipl test aipl_src/test_suite.aipl
+      - name: The AArch64 seed builds the compiler, and rebuilds it unchanged
+        run: sh bootstrap/build.sh
+      - name: The compiler for AArch64 compiles itself
+        run: |
+          ./target/release/aipl compile --exe --target arm64 --allow-run '*' aipl_src/aipl.aipl -o target/stage1
+          ./target/stage1 compile --exe --target arm64 --allow-run '*' aipl_src/aipl.aipl -o target/stage2
+          cmp target/stage1 target/stage2
+
+  install:
+    # install.sh, as a user runs it: shellcheck, then a full install of
+    # this commit into an empty home, a second run (an update), and
+    # --uninstall.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Shellcheck
+        run: shellcheck install.sh
+      - name: Install, update, uninstall
+        run: |
+          export CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup"
+          export HOME="$(mktemp -d)" AIPL_REPO="file://$GITHUB_WORKSPACE" AIPL_REF="$GITHUB_SHA"
+          touch "$HOME/.bashrc"
+          sh install.sh
+          sh install.sh
+          [ "$(grep -c aipl "$HOME/.profile")" = 1 ] && [ "$(grep -c aipl "$HOME/.bashrc")" = 1 ]
+          sh -c '. "$HOME/.aipl/env" && aipl --version'
+          sh install.sh --uninstall
+          [ ! -e "$HOME/.aipl" ] && ! grep -q aipl "$HOME/.profile" "$HOME/.bashrc"

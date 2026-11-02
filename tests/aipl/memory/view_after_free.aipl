@@ -1,0 +1,18 @@
+;; A view of a buffer read after the buffer is freed stops the program
+;; (tests/test_memory.rs): views are checked (docs/design/MEMORY_PLAN.md M1).
+(module view_after_free
+  (import buf)
+  (import str)
+  (import alloc)
+  (import heap)
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.of_heap (call heap.make)))
+    (let b:(ptr buf.Buf) (call buf.make a 32))
+    (call buf.push_str b "secret-password")
+    (let v:str.Bytes (call buf.bytes b))
+    (call buf.free b)
+    ;; the memory is reused; the old view must not show it
+    (let c:(ptr buf.Buf) (call buf.make a 32))
+    (call buf.push_str c "something else!")
+    (println "view after free: {v}")
+    0))

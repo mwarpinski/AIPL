@@ -1,0 +1,66 @@
+;; The checking front end of the self-hosted toolchain, in one call: over a
+;; flat program (the resolver's output), tokenize, expand constants
+;; (expand.aipl), parse (parser.aipl), and type-check (checker.aipl). The
+;; result is null, or the errors as a list of checker.Problem: a source
+;; offset in that program and the message, which `render` turns into
+;; "line:col: message" lines (driver.aipl first maps the offset back to the
+;; file it came from).
+(module front
+  (import alloc)
+  (import ast)
+  (import compiler)
+  (import parser)
+  (import expand)
+  (import checker)
+  (import vec)
+  (import buf)
+
+  (fn check [src:i32 len:i32] -> (ptr checker.Problem) (pub)
+    (call check_formats src len (ptr.null (vec.Vec (ptr checker.Fmt)))))
+
+  ;; check, noting each formatting piece's type in fmts (fmtlower.aipl).
+  (fn check_formats [src:i32 len:i32 fmts:(ptr (vec.Vec (ptr checker.Fmt)))] -> (ptr checker.Problem) (pub)
+    (let r:(ptr parser.Parsed) (call parse src len))
+    (if (get r parser.Parsed.ok)
+        (call checker.check_formats src (get r parser.Parsed.module) fmts)
+        (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))
+
+  ;; check, writing in `eval_type` the type of the last expression of the
+  ;; function __eval, as source writes a type (aipl eval -e).
+  (fn check_eval [src:i32 len:i32 eval_type:(ptr buf.Buf)] -> (ptr checker.Problem) (pub)
+    (let r:(ptr parser.Parsed) (call parse src len))
+    (if (get r parser.Parsed.ok)
+        (call checker.check_eval src (get r parser.Parsed.module) eval_type)
+        (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))
+
+  ;; Tokenize, expand, parse; a tokenizer error comes first, as in Rust.
+  (fn parse [src:i32 len:i32] -> (ptr parser.Parsed) (pub)
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
+    (let n:i32 (call compiler.strip_marks src toks (call compiler.tokenize src len toks)))
+    (when (and (gt n 0) (eq (get (call compiler.token_at toks (- n 1)) compiler.Token.kind) compiler.Kind.bad))
+        (return (call parser.parse_tokens src toks n)))
+    (let x:(ptr expand.Expanded) (call expand.expand src toks n))
+    (if (get x expand.Expanded.ok)
+        (call parser.parse_tokens src (get x expand.Expanded.toks) (get x expand.Expanded.n))
+        (block
+          (let r:(ptr parser.Parsed) (new parser.Parsed (call alloc.forever) [module:(zero (ptr ast.Module))
+                                                                              ok:false
+                                                                              err:(get x expand.Expanded.err)
+                                                                              err_at:(get x expand.Expanded.err_at)]))
+          r)))
+
+  ;; "line:col: message" for each error, one per line, counting in the
+  ;; text at src.
+  (fn render [src:i32 first:(ptr checker.Problem)] -> (ptr buf.Buf) (pub)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
+    (let pr:(ptr checker.Problem) first)
+    (while (neq pr (ptr.null checker.Problem))
+      (when (neq pr first) (call buf.push_byte b 10))
+      (let lc:(ptr compiler.LineCol) (call compiler.line_col src (get pr checker.Problem.at)))
+      (call buf.push_int b (get lc compiler.LineCol.line))
+      (call buf.push_byte b 58)
+      (call buf.push_int b (get lc compiler.LineCol.col))
+      (call buf.push_str b ": ")
+      (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
+      (set! pr (get pr checker.Problem.next)))
+    b))

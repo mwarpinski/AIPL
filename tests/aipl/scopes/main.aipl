@@ -1,0 +1,40 @@
+;; A name's scope is its block or match arm (LANGUAGE_DECISIONS.md item 5):
+;; sibling blocks and arms each declare a name again, with any type.
+(module main
+  (import alloc)
+  (union Shape [(circle r:f64) (box w:i32 h:i32)])
+
+  ;; two arms bind v, an f64 and an i32
+  (fn area [s:Shape] -> f64
+    (match s
+      (Shape.circle [v] (* v v))
+      (Shape.box [v h] (f64.convert_i32_s (* v h)))))
+
+  (fn parse [ok:bool] -> (result i32 str) (if ok (ok:str 7) (err:i32 "bad")))
+  (fn half [ok:bool] -> (result f64 bool) (if ok (ok:bool 2.5) (err:f64 false)))
+
+  ;; in a template, each instance renames alike
+  (fn (count T) [xs:(arr T)] -> i32
+    (let n:i32 0)
+    (block (let x:i32 (arr.len xs)) (set! n x))
+    (block (let x:f64 0.5) (when (gt x 0.25) (set! n (+ n 1))))
+    n)
+
+  (fn main [] -> i32
+    (let total:i32 0)
+    ;; sibling blocks: x an i32, then an f64
+    (block (let x:i32 4) (set! total (+ total x)))
+    (block (let x:f64 1.5) (when (gt x 1.0) (set! total (+ total 10))))
+    ;; match_result arms: e an i32 and a str, then an f64 and a bool
+    (match_result (call parse true) (ok e (set! total (+ total e))) (err e (set! total 0)))
+    (match_result (call half true) (ok e (when (gt e 2.0) (set! total (+ total 100)))) (err e (when e (set! total 0))))
+    ;; loops in sibling scopes, and cond clauses
+    (for i 0 3 (set! total (+ total i)))
+    (when true (for i 0 2 (let w:f64 (f64.convert_i32_s i)) (set! total (+ total 1))))
+    (cond
+      ((gt total 0) (let k:i64 5i64) (set! total (+ total (i32.wrap k))))
+      (else (let k:bool false) (when k (set! total 0))))
+    (let xs:(arr i32) (arr.of i32 (call alloc.default) 1 2 3))
+    (let fs:(arr f64) (arr.of f64 (call alloc.default) 1.0))
+    (println "scopes {total} {(call area (make Shape.circle 2.0))} {(call area (make Shape.box 3 4))} {(call (count i32) xs)} {(call (count f64) fs)}")
+    0))

@@ -1,0 +1,64 @@
+;; Reads lines of `NAME BITS...` from standard input (tests/test_math_float.rs writes them), where each
+;; BITS is the decimal value of an f64's 64 bits (as a signed i64), calls std/math's function NAME on the
+;; numbers, and prints the bits of each answer on a line. The test compares them with the Rust libm
+;; crate's, which is musl's fdlibm: bit for bit.
+(module math_transcendental
+  (import alloc)
+  (import io)
+  (import math)
+  (import str)
+  (import text)
+  (import vec)
+
+  (fn is [op:str.Bytes name:str] -> bool (call str.bytes_eq op (call str.from_str name)))
+
+  (fn bits_at [f:(ptr (vec.Vec str.Bytes)) k:i32] -> f64
+    (match_result (call str.parse_i64 (call (vec.at str.Bytes) f k))
+      (ok n (f64.reinterpret_i64 n))
+      (err e 0.0)))
+
+  (fn one [op:str.Bytes x:f64] -> f64
+    (cond
+      ((call is op "exp") (call math.exp x))
+      ((call is op "expm1") (call math.expm1 x))
+      ((call is op "ln") (call math.ln x))
+      ((call is op "log10") (call math.log10 x))
+      ((call is op "log2") (call math.log2 x))
+      ((call is op "log1p") (call math.log1p x))
+      ((call is op "sin") (call math.sin x))
+      ((call is op "cos") (call math.cos x))
+      ((call is op "tan") (call math.tan x))
+      ((call is op "asin") (call math.asin x))
+      ((call is op "acos") (call math.acos x))
+      ((call is op "atan") (call math.atan x))
+      ((call is op "sinh") (call math.sinh x))
+      ((call is op "cosh") (call math.cosh x))
+      ((call is op "tanh") (call math.tanh x))
+      ((call is op "cbrt") (call math.cbrt x))
+      (else 0.0)))
+
+  (fn two [op:str.Bytes x:f64 y:f64] -> f64
+    (cond
+      ((call is op "pow_f64") (call math.pow_f64 x y))
+      ((call is op "atan2") (call math.atan2 x y))
+      ((call is op "hypot") (call math.hypot x y))
+      (else 0.0)))
+
+  (fn answer [f:(ptr (vec.Vec str.Bytes))] -> void
+    (let op:str.Bytes (call (vec.at str.Bytes) f 0))
+    (let r:f64
+      (if (eq (call (vec.len str.Bytes) f) 3)
+          (call two op (call bits_at f 1) (call bits_at f 2))
+          (call one op (call bits_at f 1))))
+    (println "{(i64.reinterpret_f64 r)}"))
+
+  (fn main [] -> (result i32 str)
+    (let a:alloc.Allocator (call alloc.default))
+    (let input:str.Bytes
+      (match_result (call io.read_stdin)
+        (ok b b)
+        (err e (return (err:i32 (format "stdin: {(call io.message e)}"))))))
+    (let lines:(ptr (vec.Vec str.Bytes)) (call text.lines a input))
+    (for i 0 (call (vec.len str.Bytes) lines)
+      (call answer (call text.fields a (call (vec.at str.Bytes) lines i))))
+    (ok:str 0)))

@@ -1,0 +1,306 @@
+# PROMPT GUIDE FOR AI AGENTS: Generating AIPL
+
+A system-prompt module and verified examples for LLMs writing **AIPL**. Every example below type-checks, runs in the VM, and compiles to wasm with the same result. The full language reference is [AIPL_SPEC.md](AIPL_SPEC.md); its section 13 lists the mistakes LLMs actually make.
+
+---
+
+## Start here
+
+**First, look before you write.** Before writing any helper (a parser, a splitter, a formatter, a sort, a hash table), search the standard library: `aipl doc --find WORD` searches every module's functions (`aipl doc --find split`), `aipl doc MODULE` lists one module's functions with their exact parameters, and `aipl doc MODULE.NAME` shows one. A program that hand-wrote a float parser did it beside `text.parse_f64`.
+
+**The ten mistakes models make most.** Each is a compile error, a wrong answer, or a form that no longer exists (`loop`); the fix is the right-hand side.
+
+| # | You write | Write |
+|---|---|---|
+| 1 | `(f x)` to call your own function | `(call f x)`. Only built-in operations are written bare. |
+| 2 | `(if c (set! x 1))`, or `(if c x (block))` | An `if` has two real branches, and an empty `(block)` branch is an error. For one branch, `(when c (set! x 1))`; for an else alone, `(when (not c) ...)`. |
+| 3 | `(let x 5)` | `(let x:i32 5)`. Every `let`, parameter, return and field names its type. |
+| 4 | `(loop i 0 n 1 ...)` | `loop` is gone (an error). `(for i 0 n ...)` runs n times: the end is left out. For another step, use `while`. |
+| 5 | A quote inside a placeholder, `{(call f "x")}`, which ends the whole string | Write each quote of a string in a placeholder with a backslash: `{(call f \"x\")}`, `{(if ok \"yes\" \"no\")}`. Such a string holds only plain characters (no `\n`, `\\`, or braces): otherwise `(let s:str ...)` first, then `{s}`. |
+| 6 | A `let` or binder reusing a name that is still in scope (a `let x` inside a block within the scope of another `x`) | Shadowing is an error: rename the inner one. A name's scope is its block or arm, so sibling blocks and arms may each reuse a name, with any type. |
+| 7 | `(new S)`, `(new S a)` with no fields, or `(arr.new T n)` | Every allocation names its allocator, and a struct names every field, in order: `(new S a [x:1 y:2])` (a field that starts empty is `(zero i32)`, `(zero (ptr S))`, ...), `(arr.new T a n)`, with `a:alloc.Allocator` passed in as a parameter. A value struct is the same: `(make V [x:1 y:2])`. |
+| 8 | An array literal without an allocator, `(arr.of i32 1 2 3)` | Name the allocator first: `(arr.of i32 a 1 2 3)`, e.g. `(arr.of i32 (call alloc.default) 1 2 3)`; `(arr.of i32 a)` is an empty array. |
+| 9 | `(call fs.remove path)`, or any call that gives a result or an option, on a line of its own | The value is dropped: an error. Use it (`match_result`, `try`), or `(drop (call fs.remove path))` to ignore it on purpose. |
+| 10 | `(ok 5)`, or `(match_result r (ok [v] ...) (err [e] ...))` | `(ok:E 5)` names the type of the side it does not carry; the arms bind without brackets: `(match_result r (ok v ...) (err e ...))`. |
+| 11 | `(+ s1 s2)` or `(eq s1 s2)` on strings | `(call str.concat s1 s2)` and `(call str.same s1 s2)`. Numbers of two types never mix either: `(i64.extend_s n)`, `(i32.wrap x)`. |
+
+The full list is [AIPL_SPEC.md](AIPL_SPEC.md) section 13. When the compiler's message does not name the fix, look the form up there before guessing again.
+
+---
+
+## SYSTEM PROMPT MODULE (include in agent context)
+
+```sysprompt
+You write AIPL, a statically typed S-expression language that compiles to WebAssembly.
+
+BEFORE WRITING A HELPER, search the standard library: `aipl doc --find WORD` (then `aipl doc MODULE` for the exact parameters). It probably has it.
+
+RULES:
+1. One top-level (module <name> ...). Inside it: (import m), (struct S [f:type ...]), (const ...), (enum ...), (union ...), and (fn ...) forms. Import every module whose name you write (str.Bytes needs (import str)), even one another import uses.
+2. Functions: (fn name [p:type ...] -> RetType (req ...)* (ens ...)* (inv ...)* body...). The last body expression is the return value; `res` names it in (ens ...); (inv c) must hold both when the function starts and when it returns. Contracts run in the VM and in compiled code: a failed one stops the program with a message naming the function and the contract.
+3. Types are mandatory everywhere: i32 i64 f32 f64 bool str void (result T E) (ptr S) (arr T). (ptr S) points at a struct S; (arr T) is an array of T. Neither is an integer: no arithmetic, compare only with eq/neq. u8 i8 u16 i16 are only for struct fields and array elements ((arr u8) for bytes); reading one gives an i32, writing one takes an i32.
+4. Every operation is prefix: (+ a b), (lt a b), (and a b). Call user functions with (call f a b), never (f a b).
+5. (let x:T v) declares and is void; (set! x v) assigns and is void. let is block-scoped; shadowing an outer name is an error. A name's scope is its block or arm, so sibling blocks and arms may each reuse a name, with any type.
+6. (if c a b) always has three parts, two real branches: both void or both the same type. Use (block ...) to sequence. For one branch, write (when c body...): its body is statements (a value in it is dropped) and it has no value; for an else alone, (when (not c) body...). An if whose then or else is an empty (block) is an error.
+7. Loops: (for i 0 n body...) runs i from 0 up to n, n left out (n times; the end evaluated once), so (for i 0 (arr.len xs) ...) visits every element; (while cond body...) for another step or a condition (there is no loop form). (break) leaves the loop, (continue) goes to the next iteration, (return v) leaves the function. These have no value, so a branch that ends in one fits any type: (when c (return v)) as a statement, or (let x:i32 (if ok v (return -1))) for a value. For 3+ branches use (cond (test body...) ... (else body...)); else is required.
+8. Literals: 42 is i32, 42i64 is i64, 0xEDB88320 and 0b1010_0101 are i32 bit patterns (0xFFFFFFFF is -1; use them for masks and constants, never convert by hand), 0xFFFFFFFFFFFFFFFFi64 is an i64, 1.5 is f64 (needs a dot), 1.5f32 is f32, "s" is str. Never mix number types without converting: (i64.extend_s x) / (i32.wrap x) between i32 and i64, (f64.promote x) / (f32.demote x) between f32 and f64, and f64.convert_i32_s, f32.convert_i32_s, i32.trunc_f64_s and the like between integers and floats. Bit operations on i32 and i64 (both operands one type): bitand, bitor, ^ (xor), shl, shr (keeps the sign), shru, rotl, rotr, and the one-operand bitnot (flip every bit), clz, ctz, popcnt (leading zeros, trailing zeros, one bits; the width for 0): there is no &, |, <<, or ~.
+9. Memory: every allocation names its allocator. (new S a [x:1 y:2]) gives a (ptr S) from the alloc.Allocator a with its fields given by name, each once and in declaration order (there is no zeroed (new S a)); a field that starts empty is given its zero, (zero T): 0, 0.0, false, "", (ptr.null S), (arr.null T), an enum's first member (no zero for a union: make the variant); (arr.new T a n) gives an (arr T) of n zeroed Ts, and (arr.of T a x y z) one holding x, y, z ((arr.of T a) an empty one). A function that allocates takes the allocator as a parameter, a:alloc.Allocator, and passes it on; the program picks one, usually in main: (call alloc.default) (a shared heap; free with (call (alloc.destroy S) a p)), (call alloc.forever) (never freed: what a program makes once and keeps), or an arena it resets. (new S) without one is an error. (ptr.null S) / (arr.null T) are typed nulls. Raw bytes come from (mem.alloc n), which is an i32; convert explicitly with (ptr.cast S addr) / (arr.cast T addr) (an unchecked pointer: no use-after-free check) and back with (ptr.addr p) / (arr.addr a). Never store to a literal address below 1024. mem.load*/mem.store* and the casts are unchecked: they need (unsafe ...) (rule 20), so prefer (new S a [...]) and (arr.new T a n).
+10. Structs: (get p S.f), (put p S.f v), (sizeof S), with p a (ptr S). Arrays: (arr.get T a i), (arr.set T a i v), (arr.len a), with a an (arr T). Every index is bounds-checked, compiled code included: an index out of range stops the program (`Array index out of bounds: ...`), so check it first where it may be out of range. Structs from an imported module m are m.S: (ptr m.S), (get p m.S.f).
+11. Results: (ok:E v) / (err:T e) for a (result T E): each names the side it does not carry, always ((ok:str 5) for a (result i32 str)); consumed with (match_result r (ok v body...) (err e body...)); payloads may be any type. For a value that may be missing, use (import option): (option.Option T) with (make (option.Option i32) some 5) and (make (option.Option i32) none), never -1 or a null pointer. Pass a failure up instead of nesting match_result: (let v:i32 (try (call parse s))) gives the ok value or returns the error from a function that returns a (result R E) with the same E; (try_opt o) does the same for an Option in a function returning an Option; (try_or o err) turns a missing value into (err err). (defer (call buf.free b)), a statement of the function's body, runs when the function returns, however it returns. Check what must hold in the middle of a body with (assert (gt n 0)) or (assert (eq n 3) "why"): it stops the program, with the place, both sides of a comparison, and the message, which is a str evaluated only on failure ((assert (lt i n) (format "i = {i}"))); (abort "message") stops it unconditionally, and a branch that ends in one fits any type. A result or an option must be used: a call that gives one, as a statement, is an error ("this value, (result i32 io.Error), is dropped"); handle it, pass it up with try, or write (drop (call fs.remove path)) to ignore it on purpose. A branch that returns, breaks, or continues fits any type: (if ok v (return -1)).
+12. Printing and formatting: (println "n = {n}, mean {mean:.2}") prints a line; (print ...) without the newline, (eprintln ...) to stderr; (format "...") makes a str and (format_to b "...") appends to a buf. In the string, {name} is a variable or constant, {(expression)} any expression (a string inside is written with a backslash before each quote, {(if ok \"yes\" \"no\")}, plain characters only; else let-bind the value first), {{ and }} are braces; after a colon, a format: {n:>5} {n:05} {x:.3} {n:x} {label:<12}. Every value prints: numbers, bool, str, str.Bytes, and enums as themselves (these take formats like :>5), and a struct, array, union, or result as its contents, Row{n: 2, name: "a"}, [1, 2, 3], some{value: 5}, ok(4) (no format); not void or a function reference. To see a value while debugging, wrap it: (dbg (call f x)) prints file:line:col: (call f x) = 5 to stderr and gives the value, so it can sit anywhere an expression can (not inside a placeholder). Strings: there is no + and no eq on str. Join two with (call str.concat a b), compare with (call str.same a b); build text in a loop with (import buf) (buf.push_str, then buf.to_str once at the end). A str.Bytes is a view for reading and parsing (a value: making or slicing one allocates nothing, and reading one of a buffer that has been freed or has grown since stops the program, "Use after free", so take a view after building): (call str.from_str s) gives one, (call str.from_bytes b) copies one back into a str. On views: str.find, str.contains, str.starts_with, str.trim, str.split_once, str.parse_int, str.parse_i64; (import text) for text.split a b sep, text.fields, text.lines, text.join, text.replace, text.to_lower, text.parse_f64 (a is an alloc.Allocator); (import utf8) for one character at a time. sys.print takes str values only; print numbers with the format forms, (println "n = {n}"). Arithmetic is for numbers, % and bitwise ops for integers only, and lt/gt order numbers only (bool compares with eq/neq). (sys.time) and (sys.monotonic) are i64 nanoseconds; (sys.random ptr len) fills bytes. Threads: (import thread) and (call (thread.spawn_with (ptr Job)) (ref worker) job) with worker of type (fn [(ptr Job)] -> i32), so the worker's data keeps its type; (thread.join h) gives its result (both inside (unsafe ...)); atomic.add / atomic.cas / atomic.lock / atomic.unlock on 4-byte words from mem.alloc. Allocation is thread-safe. Threads, atomics, and sys.random need (unsafe ...) (rule 20); os.random_i32 does not.
+13. Function values: (ref f) has type (fn [param types] -> ret); call one with (call_ref (fn [param types] -> ret) g args...). There are no closures, lambdas, or globals: a callback sees only its parameters, so data it needs is a context passed as its first parameter, as in (call (vec.sort_by_with i32 (arr i32)) order scores (ref by_score)) with by_score [scores:(arr i32) a:i32 b:i32] -> i32. Library functions that pass a context end in _with.
+14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln (plain text; numbers and other values print with the format forms, rule 12), io.read_file path -> (result str.Bytes io.Error), io.write_file path b -> (result i32 io.Error), and io.read_path / io.write_path for a path held as str.Bytes (a failure is io.Error.not_found, .denied, .is_directory, .exists, .not_empty, or .other: branch on it, and (call io.message e) gives its words; the path is yours to print); (import os) gives os.arg i and os.env name -> (option.Option str.Bytes), none when missing; (import str) gives str.from_str, str.byte_at b i, str.set_byte b i c, str.slice b start len (a view, no copy), str.count_lines, str.count_words, str.find_byte, str.bytes_eq; every index is checked. (fmt.int_to_bytes and the other fmt writers, fmt.f64_fixed, str.bytes, and alloc.custom take raw addresses and are marked (unsafe); use buf instead.) Collections are generic (rule 16) and take an allocator when made, as in Zig (import alloc; (call alloc.default) is a shared heap): (import vec) gives (vec.Vec T) with (call (vec.make T) (call alloc.default) cap), (call (vec.free T) v) when done, (call (vec.push T) v x), (call (vec.at T) v i), vec.len, vec.pop, vec.set, (call (vec.sort T) v) by T's cmp.Ord (i32, i64, str), vec.sort_by with a comparator (ref f) of type (fn [T T] -> i32 (no_leak)) (f must not allocate memory it keeps), or vec.sort_by_with v ctx cmp when the comparison needs data of its own (cmp takes ctx first); (import map) gives (map.Map K V) keyed by any type with a cmp.Hash implementation (i32, i64, str, and str.Bytes by its contents come with std/cmp), with (call (map.make K V) a cap), free, set m k v, get_or m k default, find m k -> (option.Option V) (allocates nothing for a small V), has, remove, count, each named with both types, e.g. (call (map.get_or str.Bytes i32) m k 0); (import buf) string builder ((call buf.make a cap), buf.free, buf.push_str, buf.push_int, buf.bytes; buf.print writes it to stdout). str.parse_int parses decimal text (str.parse_int_or b default when a fallback will do). (import os) gives os.arg_int i default (argument i as a number, e.g. (call os.arg_int 1 1000)), os.arg_count, os.arg i -> (option.Option str.Bytes) (0 is the program; none past the end), os.env "NAME" -> (option.Option str.Bytes) (none if unset), and os.random_i32. io.read_stdin reads all of stdin. For a big input, or line by line, (import stream): (let r:(ptr stream.Reader) (try (call stream.open a "data.txt"))) (or stream.stdin a, stream.of_str a s), then (while (call stream.next_line r) (let line:str.Bytes (call stream.line r)) ...) and (call stream.close_reader r) (a (defer ...) is a good place for it); the line is good until the next read, so copy what you keep. Write with (let w:(ptr stream.Writer) (call stream.stdout a)) (or stream.create a path, stream.to_buf a b), then (format_to w "...") (w a variable), stream.write_str, stream.write_bytes, and end with (call stream.close_writer w), which flushes: a writer holds output until 8 KB, so without close_writer or flush the last of it is lost. (import fs) gives fs.list a "dir" -> (option.Option (ptr (vec.Vec str.Bytes))) (names sorted, no . or ..) and fs.info "path" -> (option.Option fs.Info) (a value struct) with (get i fs.Info.kind) (fs.Kind.file, directory, other), size and modified (i64, bytes and ns). (import json) gives (call json.parse a text) -> (result json.Value (ptr json.Error)) (strict; (get e json.Error.at) is the byte offset), json.get v "key" and json.at v i -> (option.Option json.Value), json.count, and json.write b v (compact text, as JSON.stringify); match a json.Value with (json.Value.number [n] ...), text [s], list [items], object [fields], boolean [b], null. (import proc) starts other programs, but only those a grant names, fixed when the program is built or run (`aipl eval --allow-run /bin/sh prog.aipl`, `aipl compile --exe --allow-run /bin/sh`; `*` grants any): (call proc.command (call alloc.default) "/bin/sh"), (call proc.arg c "-c"), then (call proc.run c input out) -> (result i32 proc.Error) (the status, 256 + the signal if one ended it; what it wrote, its error too, is added to the buffer out), or proc.spawn for pipes to talk to it, proc.exec to become it, and proc.find "name" out to look a name up in the PATH; a program that may not end: proc.run_within c input out ns (killed at the limit, Error.timed_out; what it wrote stays in out), proc.wait_timeout ch ns -> (option.Option i32), proc.try_wait, proc.kill ch proc.SIGKILL, proc.stop ch grace_ns; net.readable / net.accept_within / net.recv_within and http.fetch_within take milliseconds; `aipl doc proc` shows each. Numbers into a buffer: buf.push_i64, buf.push_f64, fmt.f64_fixed. (import time) gives time.now (i64 ns), time.since start, time.report "label" start (to stderr). (import heap) frees single objects: (call (heap.create T) h), (call (heap.destroy T) h p), (call (heap.array T) h n), (call (heap.free_array T) h xs); a double free or a wrong size or type stops the program, and so does using any pointer to an object after it is destroyed ("Use after free"): do not keep one, and heap.live counts what is not freed. (import alloc) wraps any allocator as one value: alloc.of_heap, alloc.of_arena, alloc.fixed (unsafe to call), alloc.default, (call (alloc.custom (ptr Pool)) pool (ref my_alloc) (ref my_free)) with a typed state, with the same create/destroy/array/free_array. (import arena) is a region allocator: (call (arena.alloc T) a), arena.reset frees everything at once (a pointer used after it stops the program); arena.make_fast gives an arena.Fast (fast_alloc, fast_reset) that is faster but catches such a pointer only once its memory is reused. (import par) runs work in parallel with no unsafe: (call (par.map T U C) out (ref f) ctx xs threads) sets out[i] to (f ctx xs i), f a (fn [C (arr T) i32] -> U), each thread with its own copy of xs; T, U, and C must be plain (no pointers or arrays inside: numbers, str, enums, value structs). (import csv), (import stats) (Python's statistics, to the bit), (import set), (import random) (seeded, the same everywhere), (import uuid), (import path), (import cli), (import encode) (base64, hex, percent-encoding), (import hash) (CRC-32, SHA-256, HMAC, and more), (import regex) (linear-time regular expressions, matching as Python's re does), (import deflate) (DEFLATE, zlib, and gzip, both ways), (import url) (parse, resolve, query strings), (import http) (HTTP/1.1 messages, read and written), and (import html) (escape, unescape) cover data files, statistics, sets, random numbers, ids, paths, command-line options, encodings, hashes, pattern matching, compression, and the web's formats; json.get_path reads "a.b[2].c": `aipl doc MODULE` shows each. (import bigint) has arbitrary-precision integers changed in place, each from an allocator ((call bigint.from_i32 a n), add, sub, mul_small, div_small, compare, push_decimal, and bigint.free). (import math) has what the operators lack: for i32 min, max, abs, sign, clamp, floor_div and floor_mod (Python's // and %; the operators / and % round toward zero), gcd, pow, isqrt, with an _i64 suffix for i64 (math.max_i64); for f64 floor, ceil, trunc, round, min_f64, max_f64, abs_f64, powi, is_nan; math.PI and math.TAU; and the fdlibm ports exp, expm1, ln, log10, log2, log1p, pow_f64 (a real exponent), sin, cos, tan, asin, acos, atan, atan2 (y first), sinh, cosh, tanh, hypot, cbrt, scalbn (a result that does not exist is NaN or an infinity, not a stop, as in C). Allocation grows memory by itself (up to 2 GiB); what new and arr.new make is freed through the allocator a, except alloc.forever's, which, like mem.alloc's, is never freed.
+14b. What alloc.forever hands out, mem.alloc, and run-time str values (format, str.concat, buf.to_str) are never freed. For code that runs for a long time (a request handler, a loop over a big input), take an alloc.Allocator, allocate through it, free or reset it, and mark the function (no_leak) after its return type: the checker then refuses anything in it, or in what it calls, that would make memory never freed, and names the call that does. A (no_leak) function may call through a reference only if the type says so: (fn [i32] -> i32 (no_leak)) takes only functions that keep no memory (marked, or proven by the checker), and call_ref through it with that same signature.
+14c. Networking: (import net). (call net.listen a (call str.from_str "127.0.0.1:8080")) -> (result net.Socket net.Error), then (call net.accept l) per connection, (call net.reader a c) and (call net.writer a c) to read lines and write through std/stream (close_writer flushes; then stream.close_reader, net.close). A program may listen only where it is granted: run it with aipl eval --listen 127.0.0.1:8080 prog.aipl, aipl run --listen ... prog.wasm, or compile it with aipl compile --exe --listen 127.0.0.1:8080; otherwise listen gives net.Error.not_granted (call net.message e for the text). To connect out: (call net.connect a (call str.from_str "127.0.0.1:9000")) -> (result net.Socket net.Error), the same reader, writer and net.close; only where granted with --allow-connect HOST:PORT (HOST:* for any port; HOST an address or a name; given to eval, run, or compile --exe like --listen), else net.Error.connect_not_granted. A name (net.connect_host a host port) and TLS (net.connect_tls a host port, the certificate checked against host; AIPL_CA_FILE adds trusted certificates) work in aipl eval, aipl-run, and --target wasm bundles, not in native executables (net.Error.no_host_support). (call http.fetch a "https://example.com/path?x=1" (call http.default_limits)) -> (result (ptr http.Message) (ptr http.Error)) does a GET over it (an Error with status 0 is a failure of the exchange; http.free_message gives the response back). Addresses are parsed by std/ip (ip.parse, ip.parse_endpoint). For an HTTP server, (import serve): write a handler (fn handle [a:alloc.Allocator req:(ptr http.Message) out:(ptr buf.Buf)] -> void (no_leak)) that writes its whole response to out with http.start_response, http.add_header, http.end_head, then (call serve.run l (ref handle) (call serve.options)); a is the request's arena, reset after it, so never keep req or a view of it past the handler (the next use stops the program with Use after free). State between requests goes in a context: (call (serve.run_with C) l ctx (ref handle) o), the handler taking ctx first. A trap in serve.run's handler ends the server; for a server where a crash costs only its request, main returns (call serve.once (ref handle) (call serve.options)), which answers one request from standard input on standard output, and is run with aipl serve --fresh prog.aipl --listen 127.0.0.1:8080 (a new instance per connection; a trap answers 500), or built into a server with aipl compile --exe --serve 127.0.0.1:8080 prog.aipl -o prog. Try either kind of handler on a saved request without a network: aipl eval prog.aipl < request.txt.
+14d. main's value is the program's exit status, in every backend: (fn main [] -> i32 ... 0) with 0 for success and 1-125 for a failure, or (fn main [] -> (result i32 str) ...) returning (ok:str 0), or (err:i32 "why") to print why on stderr and exit with 1, or -> void (status 0). Nothing else may be main's type. A program's answer is output: print it with (println "{n}") and return 0; never return a computed number from main.
+15. (and a b c ...) and (or a b c ...) short-circuit, left to right, and take two or more operands. (and (lt i n) (eq (arr.get i32 a i) x)) is a safe bounds guard.
+16. Generics: (struct (Box T) [value:T]) and (fn (make T) [v:T] -> (ptr (Box T)) ...) are templates. Every use names the types: (ptr (Box i32)), (new (Box i32) a [value:5]), (get b (Box i32) value), (put b (Box i32) value 5), (call (make i32) 5), (ref (make i32)). Type parameters start with an uppercase letter; generic names may not be built-in forms like get or put. A template is checked once with its parameters sealed: T supports only let, parameters, results, fields, (arr T), and sizeof. Anything more is asked for right after the signature: (where (cmp.Eq T)) then (call (cmp.Eq.same T) a b); (where (cmp.Ord T)) then (call (cmp.Ord.compare T) a b) (-1, 0, or 1); (where (cmp.Hash T)); (where (struct T)) to use (ptr T) or (call (alloc.create T) a) (a zeroed T: a template cannot name T's fields). Never (eq a b) or (lt a b) on a T. Pass a struct as (ptr S), never S, unless the parameter has (where (struct T)). Give your own type an interface with (impl (cmp.Eq (ptr Point)) (fn same [a:(ptr Point) b:(ptr Point)] -> bool ...)) in the module that defines Point: the interface's functions, with its parameter names and types.
+17. Constants and enums: (const PAGE_SIZE:i32 65536) names a value (capitals; i32 i64 f64 bool str); use PAGE_SIZE anywhere. A constant may be computed from literals and other constants: (const POOL:i32 (* 4 PAGE_SIZE)). (enum Kind [red green (blue 10)]) is a new type with members Kind.red (0), Kind.green (1), Kind.blue (10); use Kind as a type ([k:Kind], (arr Kind), struct fields). Enums are not numbers: compare with eq/neq only, convert with (enum.ord k) -> i32 and (enum.cast Kind n). Imported: m.PAGE_SIZE, m.Kind, m.Kind.red. Use these instead of bare numbers or zero-argument functions for fixed values and codes.
+18. Unions: (union Shape [(circle r:f64) (rect w:f64 h:f64) (dot)]) is a type whose value is one variant with that variant's fields. Build one with (make Shape.rect 2.0 3.0) (one value per field, in order); take it apart with (match s (Shape.circle [r] body...) (Shape.rect [w h] body...) (Shape.dot body...)): every variant needs an arm unless the last arm is (else body...), and an else that can never run is an error. Binders are new names for the variant's fields, in order; write _ for a field you do not need. All arms yield the same type. match also works on enums: (match k (Kind.red 1) (else 0)). Union values never compare (no eq) and are never null; use a variant like (none) for "no value". Every union is a value: make allocates nothing, so (option.Option T) is free to return. A union may not contain itself or need more than 8 numbers (a str and an enum are 1, a str.Bytes 3, a pointer 1): put a recursive or large variant's fields in a struct and make the variant a pointer to it, from an allocator you name, (union Tree [(leaf) (node n:(ptr Node))]) with (struct Node [l:Tree v:i32 r:Tree]); the checker names the field or variant to move. Use a union instead of a struct with a kind field whose other fields mean different things per kind. A generic union (union (Pair T) [(one a:T) (two a:T b:T)]) is used with its type arguments, then the variant: (make (Pair i32) one 5), and the arm ((Pair i32) two [a b] body...).
+19. Integers: lt/lte/gt/gte are signed; ltu/lteu/gtu/gteu compare i32/i64 as unsigned (sizes, hashes). + - * wrap silently; checked.add / checked.sub / checked.mul stop the program on overflow instead, for values where wrapping would be a wrong answer.
+20. Unchecked operations (mem.load*/mem.store*, ptr.cast, arr.cast, atomic.*, thread.*, the raw fs.* operations such as fs.open (not std/fs's list, info, and chmod), args.*, env.*, sys.random, and calls to functions marked (unsafe)) are rejected unless written inside (unsafe e...), a block in every other way, or in a function with the (unsafe) clause: (fn f [at:i32] -> void (unsafe) body...), which makes f itself unsafe to call. Wrap the operations in (unsafe ...) when the function is safe for any arguments; add the clause only when wrong arguments could break memory. Most programs need neither: use new, arrays, and the standard library.
+21. Visibility: a module's items are private to it. Mark what other modules may use with (pub) right after the signature: (fn f [x:i32] -> i32 (pub) ...), (struct S [fields] (pub)), (enum E [members] (pub)), (union U [variants] (pub)), (const MAX:i32 9 (pub)). Fields are private unless written (read x:T) (others may get it) or (pub x:T) (get and put); others can make one with new only if every field is (pub). A single-module program needs no marks.
+22. Value structs: (struct Vec3 [x:f64 y:f64 z:f64] (value)) is a value, like an i32: no pointer, nothing allocated, copied where it goes, never changed. Make one with (make Vec3 [x:1.0 y:2.0 z:3.0]) (every field by name, each once and in order: a struct's fields are named, a union variant's payload is positional); read with (get v Vec3.x); a changed copy is (with v Vec3.x 5.0). Its type is written Vec3, never (ptr Vec3), and there is no new, put, or eq for it. It may hold numbers, bool, enums, pointers, arrays, function references, and other value structs (not str, unions, or results), at most 8 numbers in all. Held in a pointer struct's field or an array it is inline, and a path reads or writes one field in place: (get p Body.vel Vec3.x), (put p Body.vel Vec3.x 0.0), (arr.get Body bs i Body.vel Vec3.x), (arr.set Body bs i Body.vel Vec3.x 0.0). Use a value struct for a small record of numbers passed around or returned (a point, a vector, a size and a time); use a pointer struct for anything larger, changed in place, or shared. (pub) goes after (value): (struct V [fields] (value) (pub)).
+```
+
+---
+
+## Examples
+
+### 1. Recursion with contracts
+```lisp
+(module math_demo
+  (fn factorial [n:i32] -> i32
+    (req (gte n 0))
+    (ens (gt res 0))
+    (if (lte n 1)
+        1
+        (* n (call factorial (- n 1))))))
+```
+`(call factorial 10)` is `3628800`.
+
+### 2. Binary search over a heap array
+```lisp
+(module search
+  (import alloc)
+  ;; returns the index of target in the sorted array a, or -1
+  (fn binary_search [a:(arr i32) target:i32] -> i32
+    (let low:i32 0)
+    (let high:i32 (- (arr.len a) 1))
+    (while (lte low high)
+      (let mid:i32 (/ (+ low high) 2))
+      (let v:i32 (arr.get i32 a mid))
+      (cond
+        ((eq v target) (return mid))
+        ((lt v target) (set! low (+ mid 1)))
+        (else (set! high (- mid 1)))))
+    -1)
+
+  (fn main [] -> i32
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) 8))
+    (for i 0 8
+      (arr.set i32 a i (* i 3)))                  ;; 0 3 6 ... 21
+    (println "15 is at {(call binary_search a 15)}, 4 is at {(call binary_search a 4)}")
+    0))
+```
+Prints `15 is at 5, 4 is at -1` (4 is not in the array) and exits with status 0: `main`'s value is the exit status, so a program prints its answers.
+
+### 3. A struct-based linked list
+```lisp
+(module list_demo
+  (import alloc)
+  (struct Node [val:i32 next:(ptr Node)])
+
+  (fn push [head:(ptr Node) v:i32] -> (ptr Node)
+    (let n:(ptr Node) (new Node (call alloc.forever) [val:v next:head]))
+    n)
+
+  (fn sum [head:(ptr Node)] -> i32
+    (let total:i32 0)
+    (let cur:(ptr Node) head)
+    (while (neq cur (ptr.null Node))
+      (set! total (+ total (get cur Node.val)))
+      (set! cur (get cur Node.next)))
+    total)
+
+  (fn main [] -> i32
+    (let h:(ptr Node) (ptr.null Node))
+    (for i 1 11
+      (set! h (call push h i)))
+    (println "sum: {(call sum h)}")
+    0))
+```
+Prints `sum: 55`.
+
+### 4. Fallible parsing with results
+```lisp
+(module parse_demo
+  (import str)
+  (fn digit [c:i32] -> (result i32 i32)
+    (if (and (gte c 48) (lte c 57))
+        (ok:i32 (- c 48))
+        (err:i32 c)))
+
+  ;; parses the decimal digits of s; -1 on the first non-digit
+  (fn parse_uint [s:str] -> i32
+    (let b:str.Bytes (call str.from_str s))
+    (let n:i32 0)
+    (let bad:bool false)
+    (for i 0 (str.len s)
+      (match_result (call digit (call str.byte_at b i))
+        (ok d (set! n (+ (* n 10) d)))
+        (err e (set! bad true))))
+    (if bad -1 n))
+
+  (fn main [] -> i32
+    (let good:i32 (call parse_uint "1234"))
+    (let bad:i32 (call parse_uint "12x"))
+    (println "1234 parses to {good}; 12x to {bad}")
+    0))
+```
+Prints `1234 parses to 1234; 12x to -1`.
+
+### 5. Printing and files (compiled with WASI)
+```lisp
+(module io_demo
+  (import io)
+  (import str)
+  (fn main [] -> (result i32 str)
+    (match_result (call io.write_file "note.txt" (call str.from_str "hello from AIPL"))
+      (ok n (println "wrote {n} bytes to note.txt") (ok:str 0))
+      (err e (err:i32 (format "note.txt: {(call io.message e)}"))))))
+```
+Prints `wrote 15 bytes to note.txt`. If the file cannot be written, `main`'s `err` puts its message (`note.txt: permission denied`, say) on standard error and the program exits with status 1. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && aipl run io.wasm`, or `aipl compile --exe io_demo.aipl -o io_demo && ./io_demo`. `aipl compile` optimizes by default: the program behaves the same, but a trap inside a small function it inlined is reported at the call, in the caller's frame, and printed addresses differ from `aipl eval`'s; `aipl compile --no-opt` builds without the optimizer.
+
+### 6. The standard library
+```lisp
+(module std_demo
+  (import io)
+  (import str)
+  (fn main [] -> i32
+    (let b:str.Bytes (call str.from_str "one two\nthree\n"))
+    (println "words: {(call str.count_words b)}")
+    (println "lines: {(call str.count_lines b)}")
+    0))
+```
+Prints `words: 3` and `lines: 2`. `(call io.read_file "input.txt")` gives a file's `str.Bytes`, in a result (see `examples/word_count.aipl`).
+
+### 7. Generics: a typed list of structs
+```lisp
+(module generics_demo
+  (import vec)
+  (import alloc)
+  (struct Point [x:i32 y:i32])
+  (struct (Pair A B) [first:A second:B])
+
+  (fn (swap A B) [p:(ptr (Pair A B))] -> (ptr (Pair B A))
+    (let q:(ptr (Pair B A)) (new (Pair B A) (call alloc.forever) [first:(get p (Pair A B) second)
+                                                                  second:(get p (Pair A B) first)]))
+    q)
+
+  (fn by_x [a:(ptr Point) b:(ptr Point)] -> i32 (- (get a Point.x) (get b Point.x)))
+
+  (fn main [] -> i32
+    (let pts:(ptr (vec.Vec (ptr Point))) (call (vec.make (ptr Point)) (call alloc.default) 0))
+    (for i 1 4
+      (let p:(ptr Point) (new Point (call alloc.forever) [x:(* i 10) y:(zero i32)]))
+      (call (vec.push (ptr Point)) pts p))
+    (call (vec.sort_by (ptr Point)) pts (ref by_x))
+    (let pair:(ptr (Pair i32 bool)) (new (Pair i32 bool) (call alloc.forever) [first:7 second:true]))
+    (let flipped:(ptr (Pair bool i32)) (call (swap i32 bool) pair))
+    (let smallest:i32 (get (call (vec.at (ptr Point)) pts 0) Point.x))
+    (println "smallest x: {smallest}, swapped second: {(get flipped (Pair bool i32) second)}")
+    0))
+```
+Prints `smallest x: 10, swapped second: 7`. Every instantiation (`vec.Vec<ptr<Point>>`, `Pair<i32,bool>`, `swap<i32,bool>`, ...) is an ordinary concrete struct or function after expansion.
+
+### 8. Constants and enums
+```lisp
+(module tokens_demo
+  (import alloc)
+  (const MAX_TOKENS:i32 4)
+  (enum Tok [num plus (minus 10)])
+
+  (fn value [t:Tok] -> i32
+    (cond
+      ((eq t Tok.plus) 1)
+      ((eq t Tok.minus) -1)
+      (else 0)))
+
+  (fn main [] -> i32
+    (let ts:(arr Tok) (arr.new Tok (call alloc.forever) MAX_TOKENS))
+    (arr.set Tok ts 0 Tok.plus)
+    (arr.set Tok ts 1 Tok.plus)
+    (arr.set Tok ts 2 Tok.minus)
+    (arr.set Tok ts 3 Tok.num)
+    (let sum:i32 0)
+    (for i 0 MAX_TOKENS
+      (set! sum (+ sum (call value (arr.get Tok ts i)))))
+    (println "sum {sum}, Tok.minus is {(enum.ord Tok.minus)}")
+    0))
+```
+Prints `sum 1, Tok.minus is 10`. `(+ t 1)` or `(lt t Tok.plus)` on a `Tok` is a type error.
+
+### 9. Unions and match
+```lisp
+(module expr_demo
+  (import alloc)
+  ;; an arithmetic expression: a number, or an operation on expressions.
+  ;; A union is a value, so a variant that holds expressions holds them
+  ;; through a pointer to a struct, made from an allocator.
+  (union Expr [(num v:i32) (add p:(ptr Pair)) (mul p:(ptr Pair)) (neg s:(ptr Sub))])
+  (struct Pair [a:Expr b:Expr])
+  (struct Sub [e:Expr])
+
+  (fn pair [al:alloc.Allocator a:Expr b:Expr] -> (ptr Pair)
+    (let p:(ptr Pair) (new Pair al [a:a b:b]))
+    p)
+
+  (fn sub [al:alloc.Allocator e:Expr] -> (ptr Sub)
+    (let s:(ptr Sub) (new Sub al [e:e]))
+    s)
+
+  (fn eval [e:Expr] -> i32
+    (match e
+      (Expr.num [v] v)
+      (Expr.add [p] (checked.add (call eval (get p Pair.a)) (call eval (get p Pair.b))))
+      (Expr.mul [p] (checked.mul (call eval (get p Pair.a)) (call eval (get p Pair.b))))
+      (Expr.neg [s] (- 0 (call eval (get s Sub.e))))))
+
+  (fn is_leaf [e:Expr] -> bool
+    (match e (Expr.num [v] true) (else false)))
+
+  (fn main [] -> i32
+    (let al:alloc.Allocator (call alloc.default))
+    ;; (2 + 3) * -(4)
+    (let e:Expr (make Expr.mul (call pair al (make Expr.add (call pair al (make Expr.num 2) (make Expr.num 3)))
+                                             (make Expr.neg (call sub al (make Expr.num 4))))))
+    (println "{(call eval e)}; a num is a leaf: {(call is_leaf (make Expr.num 7))}")
+    0))
+```
+Prints `-20; a num is a leaf: true`: `(2 + 3) * -4` is `-20`. A union that held `Expr` directly would contain itself, and the checker refuses it, naming the field; the pointer is the program's own allocation, from the allocator it names (`alloc.default` here; a server building one tree per request passes its request arena). The binder `p` is reused by two arms with the same type, which is allowed; binding `p` as an `f64` in one arm and a `(ptr Pair)` in another is not.
+
+---
+
+## Checklist before returning AIPL
+
+- [ ] Parentheses balance, and nothing follows the module's closing `)`.
+- [ ] Every `let`, parameter, return, and struct field has a type.
+- [ ] Each function body ends in a value of its return type (not a `let`, `set!`, or loop), unless the return type is `void`.
+- [ ] Both `if` branches are void, or both are the same type.
+- [ ] No name is `let` twice in nested scopes.
+- [ ] `for` leaves out its end: `(for i 0 n ...)` runs `n` times; there is no `loop` (for another step, use `while`).
+- [ ] `return`/`break`/`continue` end a branch or a statement (`(when c (return v))`), and every `cond` ends with `(else ...)`.
+- [ ] Every `if` has two real branches; one branch is `when` (never an empty `(block)`).
+- [ ] No mixed `i32`/`i64` operands; conversions are explicit.
+- [ ] `and`/`or` have two or more operands: `(and a b c)`, not nested pairs.
+- [ ] Fixed values and codes are `const`s and `enum`s, not bare numbers; enums are compared with `eq`/`neq`, never with arithmetic or `lt`.
+- [ ] Data that is one of several shapes is a `union`, built with `make` and read with `match`; each `match` covers every variant or ends in `else`, and every arm yields the same type.
+- [ ] A value struct (declared `(value)`) is written `V`, made with `(make V ...)`, changed by `(with v V.f x)`; a pointer struct is `(ptr S)`, made with `new`, changed by `put`.
+- [ ] Pointers are `(ptr S)` and arrays `(arr T)`, never `i32`. `get`/`put` match the pointer's struct, `arr.get`/`arr.set` match the array's element type, and nulls are `(ptr.null S)` / `(arr.null T)`.
+- [ ] Raw memory, casts, threads, and atomics sit inside `(unsafe ...)` or an `(unsafe)` function, and only where typed pointers, arrays, or the standard library cannot do the job.
+- [ ] Every generic function or struct that compares, orders, hashes, or points to its `T` says so with a `where` clause right after its signature, and calls `(cmp.Eq.same T)` / `(cmp.Ord.compare T)` instead of `eq` / `lt`.
+- [ ] In a program of several modules, everything another module uses is `(pub)`, and fields others read are `(read x:T)` (or `(pub x:T)` if they write them).
+- [ ] Contracts are S-expressions such as `(req (gt n 0))`, and postconditions use `res`.
+
+Look up a standard function before guessing it, and before writing any helper (`aipl doc --find WORD` first, as under "Start here"): `aipl doc text` lists a module's functions with their exact parameters and what they do, `aipl doc text.split` shows one, and `aipl doc --find split` searches every module. Write tests next to the code: (test "three fields" (let n:i32 (call parse_row "a,b,c")) (expect (eq n 3))) is an item of the module (it may call private functions), (expect c) checks a bool and shows both sides of a failed comparison, and `aipl test file.aipl` runs each test alone (-k NAME picks some); tests are left out of ordinary builds. Try an expression before building on it: `aipl eval -e '(call str.trim (call str.from_str "  x "))'` prints its value and type, and `aipl eval --with file.aipl -e '(call my_fn 3)'` runs it with that file's functions (private ones too). Validate with `aipl verify file.aipl`. Every error is `path: line:col: message`. A syntax error or an error in a definition is reported alone; otherwise each function with an error reports its first one, one per line, so fix them all and verify again. An `if` missing its else branch is reported as `Unexpected token parsing expression: ')'`.

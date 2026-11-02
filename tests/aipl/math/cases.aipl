@@ -1,0 +1,66 @@
+;; Reads lines of `OP ARG...` from standard input (tools/math_vectors.py writes
+;; them), calls std/math's function OP on the arguments, and prints each answer
+;; on a line. tests/test_math.rs compares the answers with Python's.
+(module math_cases
+  (import alloc)
+  (import io)
+  (import math)
+  (import str)
+  (import text)
+  (import vec)
+
+  (fn is [op:str.Bytes name:str] -> bool (call str.bytes_eq op (call str.from_str name)))
+
+  (fn arg [f:(ptr (vec.Vec str.Bytes)) k:i32] -> str.Bytes (call (vec.at str.Bytes) f k))
+
+  (fn int_at [f:(ptr (vec.Vec str.Bytes)) k:i32] -> i32 (call str.parse_int_or (call arg f k) 0))
+
+  (fn long_at [f:(ptr (vec.Vec str.Bytes)) k:i32] -> i64
+    (match_result (call str.parse_i64 (call arg f k)) (ok n n) (err e 0i64)))
+
+  (fn real_at [f:(ptr (vec.Vec str.Bytes)) k:i32] -> f64
+    (match_result (call text.parse_f64 (call arg f k)) (ok x x) (err e 0.0)))
+
+  (fn answer [f:(ptr (vec.Vec str.Bytes))] -> void
+    (let op:str.Bytes (call arg f 0))
+    (cond
+      ((call is op "min") (println "{(call math.min (call int_at f 1) (call int_at f 2))}"))
+      ((call is op "max") (println "{(call math.max (call int_at f 1) (call int_at f 2))}"))
+      ((call is op "abs") (println "{(call math.abs (call int_at f 1))}"))
+      ((call is op "sign") (println "{(call math.sign (call int_at f 1))}"))
+      ((call is op "clamp") (println "{(call math.clamp (call int_at f 1) (call int_at f 2) (call int_at f 3))}"))
+      ((call is op "floor_div") (println "{(call math.floor_div (call int_at f 1) (call int_at f 2))}"))
+      ((call is op "floor_mod") (println "{(call math.floor_mod (call int_at f 1) (call int_at f 2))}"))
+      ((call is op "gcd") (println "{(call math.gcd (call int_at f 1) (call int_at f 2))}"))
+      ((call is op "pow") (println "{(call math.pow (call int_at f 1) (call int_at f 2))}"))
+      ((call is op "isqrt") (println "{(call math.isqrt (call int_at f 1))}"))
+      ((call is op "min_i64") (println "{(call math.min_i64 (call long_at f 1) (call long_at f 2))}"))
+      ((call is op "max_i64") (println "{(call math.max_i64 (call long_at f 1) (call long_at f 2))}"))
+      ((call is op "abs_i64") (println "{(call math.abs_i64 (call long_at f 1))}"))
+      ((call is op "clamp_i64") (println "{(call math.clamp_i64 (call long_at f 1) (call long_at f 2) (call long_at f 3))}"))
+      ((call is op "floor_div_i64") (println "{(call math.floor_div_i64 (call long_at f 1) (call long_at f 2))}"))
+      ((call is op "floor_mod_i64") (println "{(call math.floor_mod_i64 (call long_at f 1) (call long_at f 2))}"))
+      ((call is op "gcd_i64") (println "{(call math.gcd_i64 (call long_at f 1) (call long_at f 2))}"))
+      ((call is op "pow_i64") (println "{(call math.pow_i64 (call long_at f 1) (call int_at f 2))}"))
+      ((call is op "isqrt_i64") (println "{(call math.isqrt_i64 (call long_at f 1))}"))
+      ((call is op "floor") (println "{(call math.floor (call real_at f 1))}"))
+      ((call is op "ceil") (println "{(call math.ceil (call real_at f 1))}"))
+      ((call is op "trunc") (println "{(call math.trunc (call real_at f 1))}"))
+      ((call is op "round") (println "{(call math.round (call real_at f 1))}"))
+      ((call is op "min_f64") (println "{(call math.min_f64 (call real_at f 1) (call real_at f 2))}"))
+      ((call is op "max_f64") (println "{(call math.max_f64 (call real_at f 1) (call real_at f 2))}"))
+      ((call is op "abs_f64") (println "{(call math.abs_f64 (call real_at f 1))}"))
+      ((call is op "powi") (println "{(call math.powi (call real_at f 1) (call int_at f 2))}"))
+      (else (println "unknown operation")))
+    (return))
+
+  (fn main [] -> (result i32 str)
+    (let a:alloc.Allocator (call alloc.default))
+    (let input:str.Bytes
+      (match_result (call io.read_stdin)
+        (ok b b)
+        (err e (return (err:i32 (format "stdin: {(call io.message e)}"))))))
+    (let lines:(ptr (vec.Vec str.Bytes)) (call text.lines a input))
+    (for i 0 (call (vec.len str.Bytes) lines)
+      (call answer (call text.fields a (call (vec.at str.Bytes) lines i))))
+    (ok:str 0)))

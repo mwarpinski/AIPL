@@ -1,0 +1,61 @@
+;; Files, directories, listing, and file information from a native executable
+;; (test_native_arm64_programs.rs runs it on AArch64 and compares with the
+;; output the x86-64 build prints): a directory made, two files written into
+;; it and read back, the directory listed in order, fs.info of a file, the
+;; directory, and a missing path, a file renamed and removed, the directory
+;; removed once it is empty, and descriptors reused after a close.
+(module files_dirs_stat
+  (import fs)
+  (import io)
+  (import str)
+  (import vec)
+  (import option)
+  (import alloc)
+
+  (fn kind [k:fs.Kind] -> str
+    (cond ((eq k fs.Kind.file) "file") ((eq k fs.Kind.directory) "directory") (else "other")))
+
+  (fn say [label:str r:(result i32 io.Error)] -> void
+    (match_result r
+      (ok n (println "{label} ok"))
+      (err e (let why:str (call io.message e))
+        (println "{label} {why}"))))
+
+  (fn show_info [path:str] -> void
+    (match (call fs.info path)
+      ((option.Option fs.Info) some [i]
+        (if (eq (get i fs.Info.kind) fs.Kind.file)
+            (println "{path}: file {(get i fs.Info.size)}")
+            (println "{path}: {(call kind (get i fs.Info.kind))}")))
+      ((option.Option fs.Info) none (println "{path}: missing"))))
+
+  (fn main [] -> i32
+    (call say "mkdir" (call fs.mkdir "d"))
+    (call say "write b" (call io.write_file "d/b.txt" (call str.from_str "bee")))
+    (call say "write a" (call io.write_file "d/a.txt" (call str.from_str "a longer text")))
+    (call say "mkdir sub" (call fs.mkdir "d/sub"))
+    (match_result (call io.read_file "d/a.txt")
+      (ok b (println "read: {b}"))
+      (err e (println "read failed")))
+    (match (call fs.list (call alloc.default) "d")
+      ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
+        (for i 0 (call (vec.len str.Bytes) names)
+          (println "entry {(call (vec.at str.Bytes) names i)}")))
+      ((option.Option (ptr (vec.Vec str.Bytes))) none (println "list failed")))
+    (call show_info "d/a.txt")
+    (call show_info "d/b.txt")
+    (call show_info "d/sub")
+    (call show_info "d/none")
+    (call say "rename" (call fs.rename "d/b.txt" "d/c.txt"))
+    (call show_info "d/b.txt")
+    (call show_info "d/c.txt")
+    (call say "rmdir full" (call fs.rmdir "d"))
+    (call say "remove a" (call fs.remove "d/a.txt"))
+    (call say "remove c" (call fs.remove "d/c.txt"))
+    (call say "remove missing" (call fs.remove "d/c.txt"))
+    (call say "rmdir sub" (call fs.rmdir "d/sub"))
+    (call say "rmdir" (call fs.rmdir "d"))
+    (match (call fs.list (call alloc.default) "d")
+      ((option.Option (ptr (vec.Vec str.Bytes))) some [names] (println "still there"))
+      ((option.Option (ptr (vec.Vec str.Bytes))) none (println "gone")))
+    0))

@@ -1,0 +1,111 @@
+;; File I/O over fs.* (VM: std::fs; compiled: WASI path_open/fd_read/
+;; fd_write/fd_close/path_unlink_file; native: the same WASI functions as
+;; Linux system calls, aipl_src/native/wasi.aipl).
+;; Thin AIPL wrappers over the real fs.open/fs.read/fs.write/fs.close opcodes,
+;; which do genuine file I/O in every backend. (An early version of this file
+;; only echoed byte counts back without touching any file; see the audit.)
+
+(module file_io
+
+  ;; path_ptr/path_len point at UTF-8 path bytes in linear memory (matching
+  ;; WASI's path_open convention). flags: 0 = read-only, non-zero =
+  ;; write/create/truncate. Returns a file descriptor, or -1 on error.
+  (fn fs_open [path_ptr:i32 path_len:i32 flags:i32] -> i32
+    (req (gte path_ptr 0))
+    (req (gt path_len 0))
+    (unsafe (fs.open path_ptr path_len flags)))
+
+  ;; Reads up to max_len bytes from fd into linear memory at buf_ptr. Returns
+  ;; the number of bytes actually read, or -1 on error.
+  (fn fs_read [fd:i32 buf_ptr:i32 max_len:i32] -> i32
+    (req (gte buf_ptr 0))
+    (req (gt max_len 0))
+    (unsafe (fs.read fd buf_ptr max_len)))
+
+  ;; Writes len bytes from linear memory at buf_ptr to fd. Returns the number
+  ;; of bytes actually written, or -1 on error.
+  (fn fs_write [fd:i32 buf_ptr:i32 len:i32] -> i32
+    (req (gte buf_ptr 0))
+    (req (gt len 0))
+    (unsafe (fs.write fd buf_ptr len)))
+
+  ;; Closes fd. Returns 0 on success, -1 on error.
+  (fn fs_close [fd:i32] -> i32
+    (fs.close fd))
+
+  ;; Deletes the file at path_ptr/path_len. Returns 0 on success, -1 on error.
+  (fn fs_delete [path_ptr:i32 path_len:i32] -> i32
+    (req (gte path_ptr 0))
+    (req (gt path_len 0))
+    (unsafe (fs.delete path_ptr path_len)))
+
+  ;; High-level: open (create/truncate), write len bytes from buf_ptr, close.
+  ;; Returns bytes written, or -1 if the file couldn't be opened.
+  (fn fs_write_file [path_ptr:i32 path_len:i32 buf_ptr:i32 len:i32] -> i32
+    (req (gte path_ptr 0))
+    (req (gt path_len 0))
+    (req (gte buf_ptr 0))
+    (req (gt len 0))
+    (let fd:i32 (call fs_open path_ptr path_len 1))
+    (if (lt fd 0)
+        -1
+        (block
+          (let written:i32 (call fs_write fd buf_ptr len))
+          (let _c:i32 (call fs_close fd))
+          written)))
+
+  ;; High-level: open (read-only), read up to max_len bytes into out_buf_ptr,
+  ;; close. Returns bytes read, or -1 if the file couldn't be opened.
+  (fn fs_read_file [path_ptr:i32 path_len:i32 out_buf_ptr:i32 max_len:i32] -> i32
+    (req (gte path_ptr 0))
+    (req (gt path_len 0))
+    (req (gte out_buf_ptr 0))
+    (req (gt max_len 0))
+    (let fd:i32 (call fs_open path_ptr path_len 0))
+    (if (lt fd 0)
+        -1
+        (block
+          (let n:i32 (call fs_read fd out_buf_ptr max_len))
+          (let _c:i32 (call fs_close fd))
+          n)))
+
+  ;; Master Disk I/O Self-Test: writes real bytes to a real file on disk,
+  ;; reads them back, verifies an exact byte-for-byte match, and deletes the
+  ;; file - a genuine round trip through the OS filesystem, not a
+  ;; self-fulfilling count-echo, and it cleans up after itself.
+  (fn run_file_io_tests [] -> i32 (pub)
+    (unsafe (let path:i32 (mem.alloc 32))
+    (let payload:i32 (mem.alloc 32))
+    (let readbuf:i32 (mem.alloc 64))
+    (mem.store8 (+ path 0) 97) (mem.store8 (+ path 1) 105) (mem.store8 (+ path 2) 112)
+    (mem.store8 (+ path 3) 108) (mem.store8 (+ path 4) 95) (mem.store8 (+ path 5) 102)
+    (mem.store8 (+ path 6) 105) (mem.store8 (+ path 7) 108) (mem.store8 (+ path 8) 101)
+    (mem.store8 (+ path 9) 105) (mem.store8 (+ path 10) 111) (mem.store8 (+ path 11) 95)
+    (mem.store8 (+ path 12) 115) (mem.store8 (+ path 13) 101) (mem.store8 (+ path 14) 108)
+    (mem.store8 (+ path 15) 102) (mem.store8 (+ path 16) 116) (mem.store8 (+ path 17) 101)
+    (mem.store8 (+ path 18) 115) (mem.store8 (+ path 19) 116) (mem.store8 (+ path 20) 46)
+    (mem.store8 (+ path 21) 116) (mem.store8 (+ path 22) 109) (mem.store8 (+ path 23) 112)
+    (let path_len:i32 24)
+
+    (mem.store8 (+ payload 0) 82) (mem.store8 (+ payload 1) 69) (mem.store8 (+ payload 2) 65)
+    (mem.store8 (+ payload 3) 76) (mem.store8 (+ payload 4) 45) (mem.store8 (+ payload 5) 68)
+    (mem.store8 (+ payload 6) 73) (mem.store8 (+ payload 7) 83) (mem.store8 (+ payload 8) 75)
+    (mem.store8 (+ payload 9) 45) (mem.store8 (+ payload 10) 67) (mem.store8 (+ payload 11) 79)
+    (mem.store8 (+ payload 12) 78) (mem.store8 (+ payload 13) 84) (mem.store8 (+ payload 14) 69)
+    (mem.store8 (+ payload 15) 78) (mem.store8 (+ payload 16) 84)
+    (let payload_len:i32 17)
+
+    (let written:i32 (call fs_write_file path path_len payload payload_len))
+    (let read_n:i32 (call fs_read_file path path_len readbuf 64))
+
+    (let mismatch:i32 0)
+    (for i 0 17
+      (if (neq (mem.load8 (+ readbuf i)) (mem.load8 (+ payload i)))
+          (set! mismatch (+ mismatch 1))
+          (set! mismatch mismatch)))
+
+    (let _d:i32 (call fs_delete path path_len))
+
+    (if (and (eq written 17) (and (eq read_n 17) (eq mismatch 0)))
+        1
+        0))))

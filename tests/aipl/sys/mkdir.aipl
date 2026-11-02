@@ -1,0 +1,24 @@
+;; fs.mkdir (docs/design/SYS_PLAN.md): the program test_sys.rs runs in a
+;; directory it has set up (file.txt, sub/, link (to sub), and ../ beside it,
+;; with an absolute directory substituted for @ABS@), once for each backend;
+;; each case prints its label and what fs.mkdir gave, and the test reads the
+;; tree it leaves.
+(module mkdir_cases
+  (fn mkdir [path:str] -> i32
+    (unsafe (fs.mkdir (str.ptr path) (str.len path))))
+
+  (fn show [label:str got:i32] -> void
+    (println "{label} {got}"))
+
+  (fn main [] -> i32
+    (call show "plain" (call mkdir "made"))
+    (call show "again" (call mkdir "made"))
+    (call show "nested" (call mkdir "made/inner"))
+    (call show "file_exists" (call mkdir "file.txt"))
+    (call show "link_exists" (call mkdir "link"))
+    (call show "missing_parent" (call mkdir "no/such"))
+    (call show "under_file" (call mkdir "file.txt/x"))
+    (call show "dotdot" (call mkdir "../outside_made"))
+    (call show "absolute" (call mkdir "@ABS@/made"))
+    (call show "empty_path" (call mkdir ""))
+    0))

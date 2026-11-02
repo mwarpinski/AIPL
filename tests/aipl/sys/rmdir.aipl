@@ -1,0 +1,24 @@
+;; fs.rmdir (docs/design/SYS_PLAN.md): the program test_sys.rs runs in a
+;; directory it has set up (empty/, full/f.txt, file.txt, sub/inner/, target/,
+;; link (to target), and ../outside_dir, with an absolute directory
+;; substituted for @ABS@), once for each backend; each case prints its label
+;; and what fs.rmdir gave, and the test reads the tree it leaves.
+(module rmdir_cases
+  (fn rmdir [path:str] -> i32
+    (unsafe (fs.rmdir (str.ptr path) (str.len path))))
+
+  (fn show [label:str got:i32] -> void
+    (println "{label} {got}"))
+
+  (fn main [] -> i32
+    (call show "plain" (call rmdir "empty"))
+    (call show "again" (call rmdir "empty"))
+    (call show "not_empty" (call rmdir "full"))
+    (call show "file" (call rmdir "file.txt"))
+    (call show "inner" (call rmdir "sub/inner"))
+    (call show "outer" (call rmdir "sub"))
+    (call show "link" (call rmdir "link"))
+    (call show "dotdot" (call rmdir "../outside_dir"))
+    (call show "absolute" (call rmdir "@ABS@/gone"))
+    (call show "empty_path" (call rmdir ""))
+    0))

@@ -1,0 +1,60 @@
+;; Values std/show cannot print on its own, through the printers formatting
+;; generates (tests/test_formats.rs; formats.rs debug_functions): structs
+;; behind pointers, value structs, arrays, unions, results, and generic
+;; instances of them, in every backend and both toolchains.
+(module values
+  (import str)
+  (import option)
+  (import alloc)
+  (struct Q [k:i32])
+  (struct V [a:i32 b:f64] (value))
+  (struct Pair [left:V right:V] (value))
+  (struct Small [tiny:u8 neg:i16 f:(fn [i32] -> i32)])
+  (struct Row [n:i32 name:str q:(ptr Q) xs:(arr i32) at:V sh:Shade label:str.Bytes none:(ptr Q)])
+  (struct (Box T) [item:T])
+  (enum Shade [light dark])
+  (union Shape [(circle r:f64) (boxed w:i32 h:i32) (empty)])
+  ;; recursive: the branches behind pointers, which print as addresses
+  (union Tree [(leaf n:i32) (node left:(ptr Branch) right:(ptr Branch))])
+  (struct Branch [t:Tree])
+
+  (fn branch [t:Tree] -> (ptr Branch)
+    (let b:(ptr Branch) (new Branch (call alloc.default) [t:t]))
+    b)
+
+  (fn inc [x:i32] -> i32 (+ x 1))
+
+  (fn main [] -> i32
+    (let r:(ptr Row) (new Row (call alloc.forever) [n:2
+                                                    name:"a"
+                                                    q:(new Q (call alloc.forever) [k:(zero i32)])
+                                                    xs:(arr.new i32 (call alloc.forever) 3)
+                                                    at:(make V [a:1 b:2.5])
+                                                    sh:Shade.dark
+                                                    label:(call str.from_str "lab")
+                                                    none:(ptr.null Q)]))
+    (println "{r}")
+    (println "{(ptr.null Row)}")
+    (let xs:(arr i32) (arr.new i32 (call alloc.forever) 20))
+    (arr.set i32 xs 3 7)
+    (println "{xs}")
+    (let names:(arr str) (arr.new str (call alloc.forever) 2))
+    (arr.set str names 0 "x")
+    (arr.set str names 1 "y")
+    (println "{names} {(call (alloc.array f64) (call alloc.forever) 0)}")
+    (println "{(make Shape.boxed 2 3)} {(make Shape.empty)} {(make Shape.circle 0.5)}")
+    (let t:Tree (make Tree.node (call branch (make Tree.leaf 1)) (call branch (make Tree.node (call branch (make Tree.leaf 2)) (call branch (make Tree.leaf 3))))))
+    (println "{t}")
+    (let os:(option.Option str) (make (option.Option str) some "x"))
+    (let no:(option.Option i32) (make (option.Option i32) none))
+    (println "{os} {no}")
+    (let good:(result i32 str) (ok:str 4))
+    (let bad:(result i32 str) (err:i32 "bad"))
+    (println "{good} {bad}")
+    (let pair:Pair (make Pair [left:(make V [a:1 b:0.5]) right:(make V [a:2 b:1.5])]))
+    (println "{pair}")
+    (let s:(ptr Small) (new Small (call alloc.forever) [tiny:255 neg:-3 f:(ref inc)]))
+    (println "{s}")
+    (let b:(ptr (Box i32)) (new (Box i32) (call alloc.forever) [item:9]))
+    (println "box {b} done")
+    0))

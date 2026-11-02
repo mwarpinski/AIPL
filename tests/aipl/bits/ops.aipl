@@ -1,0 +1,69 @@
+;; Reads lines of `NAME X [N]` from standard input (tests/test_bit_ops.rs writes them), X and N decimal i64s
+;; (an i32 operation reads their low 32 bits), applies the bit operation NAME, and prints the answer. The
+;; test compares each with Rust's rotate_left, rotate_right, !, leading_zeros, trailing_zeros, and count_ones. The `_c` forms have a constant count, which
+;; the native backends lower differently from a count in a register.
+(module bit_ops
+  (import alloc)
+  (import io)
+  (import str)
+  (import text)
+  (import vec)
+
+  (fn is [op:str.Bytes name:str] -> bool (call str.bytes_eq op (call str.from_str name)))
+
+  (fn num [f:(ptr (vec.Vec str.Bytes)) k:i32] -> i64
+    (if (lt k (call (vec.len str.Bytes) f))
+        (match_result (call str.parse_i64 (call (vec.at str.Bytes) f k))
+          (ok n n)
+          (err e 0i64))
+        0i64))
+
+  (fn answer [f:(ptr (vec.Vec str.Bytes))] -> void
+    (let op:str.Bytes (call (vec.at str.Bytes) f 0))
+    (let x:i64 (call num f 1))
+    (let n:i64 (call num f 2))
+    (let xi:i32 (i32.wrap x))
+    (let ni:i32 (i32.wrap n))
+    (cond
+      ((call is op "rotl32") (println "{(rotl xi ni)}"))
+      ((call is op "rotr32") (println "{(rotr xi ni)}"))
+      ((call is op "rotl64") (println "{(rotl x n)}"))
+      ((call is op "rotr64") (println "{(rotr x n)}"))
+      ((call is op "bitnot32") (println "{(bitnot xi)}"))
+      ((call is op "bitnot64") (println "{(bitnot x)}"))
+      ((call is op "clz32") (println "{(clz xi)}"))
+      ((call is op "ctz32") (println "{(ctz xi)}"))
+      ((call is op "popcnt32") (println "{(popcnt xi)}"))
+      ((call is op "clz64") (println "{(clz x)}"))
+      ((call is op "ctz64") (println "{(ctz x)}"))
+      ((call is op "popcnt64") (println "{(popcnt x)}"))
+      ;; counts of a sum, so that the operand is in a register that something else uses too
+      ((call is op "clz32_sum") (println "{(+ (clz xi) (clz (+ xi ni)))}"))
+      ((call is op "popcnt64_sum") (println "{(+ (popcnt x) (popcnt (+ x n)))}"))
+      ((call is op "rotl32_c0") (println "{(rotl xi 0)}"))
+      ((call is op "rotl32_c5") (println "{(rotl xi 5)}"))
+      ((call is op "rotl32_c31") (println "{(rotl xi 31)}"))
+      ((call is op "rotl32_c32") (println "{(rotl xi 32)}"))
+      ((call is op "rotl32_c37") (println "{(rotl xi 37)}"))
+      ((call is op "rotr32_c1") (println "{(rotr xi 1)}"))
+      ((call is op "rotr32_c13") (println "{(rotr xi 13)}"))
+      ((call is op "rotr32_c-1") (println "{(rotr xi -1)}"))
+      ((call is op "rotl64_c0") (println "{(rotl x 0i64)}"))
+      ((call is op "rotl64_c7") (println "{(rotl x 7i64)}"))
+      ((call is op "rotl64_c63") (println "{(rotl x 63i64)}"))
+      ((call is op "rotl64_c64") (println "{(rotl x 64i64)}"))
+      ((call is op "rotr64_c1") (println "{(rotr x 1i64)}"))
+      ((call is op "rotr64_c40") (println "{(rotr x 40i64)}"))
+      ((call is op "rotr64_c-3") (println "{(rotr x -3i64)}"))
+      (else (println "?"))))
+
+  (fn main [] -> (result i32 str)
+    (let a:alloc.Allocator (call alloc.default))
+    (let input:str.Bytes
+      (match_result (call io.read_stdin)
+        (ok b b)
+        (err e (return (err:i32 (format "stdin: {(call io.message e)}"))))))
+    (let lines:(ptr (vec.Vec str.Bytes)) (call text.lines a input))
+    (for i 0 (call (vec.len str.Bytes) lines)
+      (call answer (call text.fields a (call (vec.at str.Bytes) lines i))))
+    (ok:str 0)))

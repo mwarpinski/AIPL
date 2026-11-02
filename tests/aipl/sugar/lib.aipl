@@ -1,0 +1,6 @@
+;; Imported by main.aipl: the forms work in an imported module too.
+(module lib
+  (fn count_to [n:i32] -> i32 (pub)
+    (let k:i32 0)
+    (for i 0 n (when (or (eq i 1) (eq i 3) (eq i 5)) (set! k (+ k 1))))
+    k))

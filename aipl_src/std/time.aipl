@@ -1,0 +1,90 @@
+;; std/time: measuring how long code takes, from the monotonic clock
+;; (sys.monotonic: nanoseconds, never going backwards).
+;;
+;;   (let t:i64 (call time.now))
+;;   ... work ...
+;;   (call time.report "sort" t)          ;; stderr: "sort: 12.345 ms"
+;;   (call time.sleep 250000000i64)       ;; waits a quarter of a second
+;;
+;; Durations print with three decimals in the largest fitting unit (ns, us,
+;; ms, s), from integer arithmetic.
+(module time
+  (import alloc)
+  (import str)
+  (import buf)
+
+  ;; Now, in nanoseconds since an arbitrary start (only differences matter).
+  (fn now [] -> i64 (pub) (sys.monotonic))
+
+  ;; Waits `ns` nanoseconds (nothing for 0 or less), by sys.poll: WASI's
+  ;; poll_oneoff with one relative clock subscription, which every backend
+  ;; gives. A wait a signal cuts short ends early.
+  (fn sleep [ns:i64] -> void (pub)
+    (when (lte ns 0i64) (return))
+    (unsafe
+      (let a:alloc.Allocator (call alloc.default))
+      ;; the subscription (48 bytes), the event it gives (32), the event count (4)
+      (let p:i32 (call alloc.raw a 96))
+      (mem.store64 p 0i64)
+      (mem.store8 (+ p 8) 0)
+      (mem.store32 (+ p 16) 1)
+      (mem.store64 (+ p 24) ns)
+      (mem.store64 (+ p 32) 0i64)
+      (mem.store16 (+ p 40) 0)
+      (let r:i32 (sys.poll p (+ p 48) 1 (+ p 80)))
+      (call alloc.free_raw a p 96)))
+
+  ;; Nanoseconds since `start` (a value from now).
+  (fn since [start:i64] -> i64 (pub) (- (sys.monotonic) start))
+
+  ;; The milliseconds from now until `deadline` (a value of now), rounded up: 0 once it has passed, and at most
+  ;; 2147483647 (what poll takes as a timeout).
+  (fn ms_until [deadline:i64] -> i32 (pub)
+    (let left:i64 (- deadline (sys.monotonic)))
+    (cond ((lte left 0i64) 0)
+          ((gt left 2147483647000000i64) 2147483647)
+          (else (i32.wrap (/ (+ left 999999i64) 1000000i64)))))
+
+  ;; Appends a duration: "850 ns", "12.345 us", "3.071 ms", "4.200 s".
+  (fn push_duration [b:(ptr buf.Buf) ns:i64] -> void (pub)
+    (when (lt ns 1000i64) (call buf.push_i64 b ns) (call buf.push_str b " ns") (return))
+    (let unit:i64 (cond ((lt ns 1000000i64) 1000i64) ((lt ns 1000000000i64) 1000000i64) (else 1000000000i64)))
+    (call buf.push_i64 b (/ ns unit))
+    (call buf.push_byte b 46)
+    ;; three decimals, zero-padded
+    (let milli:i64 (/ (* (% ns unit) 1000i64) unit))
+    (when (lt milli 100i64) (call buf.push_byte b 48))
+    (when (lt milli 10i64) (call buf.push_byte b 48))
+    (call buf.push_i64 b milli)
+    (call buf.push_str b (cond ((eq unit 1000i64) " us") ((eq unit 1000000i64) " ms") (else " s"))))
+
+  ;; Writes "label: <duration since start>" and a newline to stderr (so a
+  ;; program's own output stays clean).
+  (fn report [label:str start:i64] -> void (pub)
+    (let ns:i64 (call since start))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_str b label)
+    (call buf.push_str b ": ")
+    (call push_duration b ns)
+    (call buf.push_byte b 10)
+    (let _w:i32 (call buf.write b 2)))
+
+  ;; True if the duration formats as `want`.
+  (fn formats [ns:i64 want:str] -> bool
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (call push_duration b ns)
+    (call str.bytes_eq (call buf.bytes b) (call str.from_str want)))
+
+  ;; Pass count; test_suite.aipl expects 7.
+  (fn run_time_tests [] -> i32 (pub)
+    (let p:i32 0)
+    (when (call formats 0i64 "0 ns") (set! p (+ p 1)))
+    (when (call formats 999i64 "999 ns") (set! p (+ p 1)))
+    (when (call formats 1000i64 "1.000 us") (set! p (+ p 1)))
+    (when (call formats 12345678i64 "12.345 ms") (set! p (+ p 1)))
+    (when (call formats 4200000000i64 "4.200 s") (set! p (+ p 1)))
+    (when (call formats 1005000i64 "1.005 ms") (set! p (+ p 1)))
+    ;; the clock moves forward (or stays)
+    (let t:i64 (call now))
+    (when (gte (call since t) 0i64) (set! p (+ p 1)))
+    p))

@@ -1,0 +1,71 @@
+;; when, for, variadic and/or, and the array literal arr.of
+;; (tests/test_sugar.rs; sugar.rs): each rewritten as the resolver reads the
+;; module, the same in every backend.
+(module main
+  (import alloc)
+  (import lib)
+
+  (struct Rect [x:i32 y:i32 w:i32 h:i32])
+  (struct V2 [a:i32 b:i32] (value))
+  (struct (Cell T) [item:T count:i32])
+  (enum Tone [(low 3) high])
+  (fn (dflt T) [] -> T (zero T))
+
+  (fn noisy [label:str v:bool] -> bool
+    (print "{label} ")
+    v)
+
+  (fn ends [] -> i32
+    (println "end evaluated")
+    4)
+
+  (fn main [] -> i32
+    ;; up to, not including, the end; the end evaluated once
+    (let s:i32 0)
+    (for i 0 (call ends) (set! s (+ s i)))
+    (println "sum {s}")
+    ;; an empty range, and one that ends before it starts
+    (for i 3 3 (println "never"))
+    (for i 5 2 (println "never"))
+    ;; break and continue inside
+    (let odd:i32 0)
+    (for i 0 100
+      (when (eq i 9) (break))
+      (when (eq (% i 2) 0) (continue))
+      (set! odd (+ odd i)))
+    (println "odd {odd}")
+    ;; nested, and a when with no body
+    (let pairs:i32 0)
+    (for i 0 3 (for j 0 3 (when (lt i j) (set! pairs (+ pairs 1)))))
+    (when true)
+    (println "pairs {pairs}")
+    ;; and/or: left to right, stopping at the first that decides
+    (let a:bool (and (call noisy "a1" true) (call noisy "a2" true) (call noisy "a3" false) (call noisy "a4" true)))
+    (println "= {a}")
+    (let o:bool (or (call noisy "o1" false) (call noisy "o2" true) (call noisy "o3" true)))
+    (println "= {o}")
+    (println "lib {(call lib.count_to 6)}")
+    ;; an array literal, an empty one (an initializer), and one in place
+    (let xs:(arr i32) (arr.of i32 (call alloc.default) 3 1 4 1 5))
+    (let none:(arr i32) (arr.of i32 (call alloc.default)))
+    (let second:i32 (arr.get i32 (arr.of i32 (call alloc.default) 7 8) 1))
+    (println "arr.of {(arr.len xs)} {(arr.get i32 xs 2)} {(arr.len none)} {second}")
+    ;; structs made with their fields named, each once and in order
+    (let r:(ptr Rect) (new Rect (call alloc.default) [x:1 y:2 w:30 h:40]))
+    (let v:V2 (make V2 [a:5 b:6]))
+    (let c:(ptr (Cell i32)) (new (Cell i32) (call alloc.default) [item:9 count:2]))
+    (println "named {(get r Rect.w)} {(get r Rect.h)} {(get v V2.b)} {(get c (Cell i32) item)}")
+    ;; zeros: of a type, of a value struct (its fields'), and of T in a template
+    (let zi:i32 (zero i32))
+    (let zv:V2 (zero V2))
+    (let zp:(ptr Rect) (zero (ptr Rect)))
+    (let zt:Tone (zero Tone))
+    (let zf:f64 (call (dflt f64)))
+    (let zs:str (call (dflt str)))
+    (println "zero {zi} {(get zv V2.b)} {(eq zp (ptr.null Rect))} {zt} {zf} [{zs}]")
+    0)
+
+  (test "for counts up to the end"
+    (let n:i32 0)
+    (for i 0 10 (set! n (+ n 1)))
+    (expect (and (eq n 10) (gt n 0) (lt n 11)))))

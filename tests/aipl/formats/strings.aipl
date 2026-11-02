@@ -1,0 +1,25 @@
+;; Strings written \"...\" inside a placeholder's code (AIPL_SPEC.md 4.K): tests/test_formats.rs runs this in
+;; every backend and both toolchains, which print the same lines.
+(module format_strings
+  (import alloc)
+  (import buf)
+
+  (fn pick [b:bool yes:str no:str] -> str (if b yes no))
+
+  (fn main [] -> i32
+    (let ok:bool true)
+    (let bad:bool false)
+    (let n:i32 3)
+    (let name:str "Ada")
+    (println "1 {(if ok \"yes\" \"no\")} {(if bad \"yes\" \"no\")} {(if (gt n 5) \"big\" \"small\")}")
+    (println "2 [{(call pick ok \", \" \"\")}] [{(call pick bad \"x\" \"; semi\")}] {(call pick ok \"(paren\" \")\")}")
+    (println "3 {(call pick ok \"é ünï\" \"\")} {{{(call pick ok \"brace\" \"\")}}} {n:>4}|{(call pick ok \"pad\" \"\"):>6}|{(call pick ok \"pad\" \"\"):<6}|")
+    (println "4 {(call pick ok \"[sq]\" \"\")} {(call pick ok \"a.b-c+d=e\" \"\")} {(call pick ok \"1.5e3\" \"\")} {(call pick ok \"->\" \"\")} {(call pick ok \"true\" \"\")}")
+    (println "5 {(call pick ok \"(dbg x)\" \"\")} {name} {(call pick (eq n 3) \"three\" \"other\")}")
+    (let s:str (format "6 {(if ok \"fmt\" \"x\")} {name}"))
+    (println "{s}")
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (format_to b "7 {(if ok \"to\" \"no\")} {n}")
+    (println "{(call buf.to_str b)}")
+    (eprintln "8 {(if ok \"err\" \"no\")}")
+    0))

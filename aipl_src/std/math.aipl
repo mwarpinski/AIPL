@@ -1,0 +1,1301 @@
+;; std/math: the small arithmetic a program reaches for and the language does
+;; not spell: min, max, abs, clamp, the floor-rounding division and remainder
+;; of Python's // and %, gcd, integer powers and square roots, floor, ceil,
+;; trunc, and round for f64, and the transcendental functions (exp, ln,
+;; pow_f64, sin, cos, atan2, and the rest: ports of fdlibm). Integers: i32 as the plain names, i64 with an
+;; _i64 suffix; f64 with _f64 where the name would clash.
+;;
+;;   (call math.max 3 7)                 ;; 7
+;;   (call math.floor_div -7 2)          ;; -4 (the operator / gives -3)
+;;   (call math.floor_mod -7 2)          ;; 1 (the operator % gives -1)
+;;   (call math.gcd 12 18)               ;; 6
+;;   (call math.isqrt 99)                ;; 9
+;;   (call math.floor 2.7)               ;; 2.0
+;;   (call math.ln 10.0)                 ;; 2.302585092994046
+;;   (call math.pow_f64 2.0 0.5)         ;; 1.4142135623730951
+;;
+;; Where a result cannot be represented the program stops, as the rest of the
+;; language does: abs of the smallest integer, pow past the range, a division
+;; by zero (the f64 functions return NaN or an infinity, as C does). Not here:
+;; gcd or pow on big numbers (std/bigint).
+(module math
+  (import alloc)
+  ;; The ratio of a circle's circumference to its diameter, as an f64.
+  (const PI:f64 3.141592653589793 (pub))
+
+  ;; A full turn in radians, 2 * PI.
+  (const TAU:f64 6.283185307179586 (pub))
+
+  ;; ===== i32 =====
+
+  ;; The smaller of two numbers.
+  (fn min [a:i32 b:i32] -> i32 (pub) (if (lt a b) a b))
+
+  ;; The larger of two numbers.
+  (fn max [a:i32 b:i32] -> i32 (pub) (if (gt a b) a b))
+
+  ;; x without its sign. The smallest i32 has no positive twin, so it stops
+  ;; the program.
+  (fn abs [x:i32] -> i32 (pub)
+    (req (neq x -2147483648))
+    (if (lt x 0) (- 0 x) x))
+
+  ;; -1, 0, or 1: the sign of x.
+  (fn sign [x:i32] -> i32 (pub) (cond ((lt x 0) -1) ((gt x 0) 1) (else 0)))
+
+  ;; x, held between lo and hi.
+  (fn clamp [x:i32 lo:i32 hi:i32] -> i32 (pub)
+    (req (lte lo hi))
+    (if (lt x lo) lo (if (gt x hi) hi x)))
+
+  ;; a divided by b, rounded toward negative infinity, as Python's a // b:
+  ;; (floor_div -7 2) is -4, where (/ -7 2) is -3.
+  (fn floor_div [a:i32 b:i32] -> i32 (pub)
+    (req (neq b 0))
+    (let q:i32 (/ a b))
+    (if (and (neq (% a b) 0) (neq (lt a 0) (lt b 0))) (- q 1) q))
+
+  ;; What is left of a after floor_div: the sign of b (or 0), as Python's
+  ;; a % b: (floor_mod -7 2) is 1, where (% -7 2) is -1.
+  (fn floor_mod [a:i32 b:i32] -> i32 (pub)
+    (req (neq b 0))
+    (let r:i32 (% a b))
+    (if (and (neq r 0) (neq (lt r 0) (lt b 0))) (+ r b) r))
+
+  ;; The greatest common divisor, never negative; (gcd 0 0) is 0.
+  (fn gcd [a:i32 b:i32] -> i32 (pub)
+    (let x:i32 (call abs a))
+    (let y:i32 (call abs b))
+    (while (neq y 0)
+      (let t:i32 (% x y))
+      (set! x y)
+      (set! y t))
+    x)
+
+  ;; x to the power n, n not negative: (pow 3 4) is 81, (pow x 0) is 1.
+  ;; Stops the program when the answer does not fit.
+  (fn pow [x:i32 n:i32] -> i32 (pub)
+    (req (gte n 0))
+    (let result:i32 1)
+    (let base:i32 x)
+    (let k:i32 n)
+    (while (gt k 0)
+      (when (neq (bitand k 1) 0) (set! result (checked.mul result base)))
+      (set! k (shru k 1))
+      (when (gt k 0) (set! base (checked.mul base base))))
+    result)
+
+  ;; The whole part of the square root of x, x not negative: the largest r
+  ;; with r * r <= x, so (isqrt 99) is 9 and (isqrt 100) is 10.
+  (fn isqrt [x:i32] -> i32 (pub)
+    (req (gte x 0))
+    (let r:i32 (i32.trunc_f64_s (f64.sqrt (f64.convert_i32_s x))))
+    (while (gt (* r r) x) (set! r (- r 1)))
+    r)
+
+  ;; ===== i64 =====
+
+  ;; The smaller of two numbers.
+  (fn min_i64 [a:i64 b:i64] -> i64 (pub) (if (lt a b) a b))
+
+  ;; The larger of two numbers.
+  (fn max_i64 [a:i64 b:i64] -> i64 (pub) (if (gt a b) a b))
+
+  ;; x without its sign; the smallest i64 stops the program.
+  (fn abs_i64 [x:i64] -> i64 (pub)
+    (req (neq x -9223372036854775808i64))
+    (if (lt x 0i64) (- 0i64 x) x))
+
+  ;; x, held between lo and hi.
+  (fn clamp_i64 [x:i64 lo:i64 hi:i64] -> i64 (pub)
+    (req (lte lo hi))
+    (if (lt x lo) lo (if (gt x hi) hi x)))
+
+  ;; a // b as Python writes it, for i64.
+  (fn floor_div_i64 [a:i64 b:i64] -> i64 (pub)
+    (req (neq b 0i64))
+    (let q:i64 (/ a b))
+    (if (and (neq (% a b) 0i64) (neq (lt a 0i64) (lt b 0i64))) (- q 1i64) q))
+
+  ;; a % b as Python writes it, for i64.
+  (fn floor_mod_i64 [a:i64 b:i64] -> i64 (pub)
+    (req (neq b 0i64))
+    (let r:i64 (% a b))
+    (if (and (neq r 0i64) (neq (lt r 0i64) (lt b 0i64))) (+ r b) r))
+
+  ;; The greatest common divisor, never negative.
+  (fn gcd_i64 [a:i64 b:i64] -> i64 (pub)
+    (let x:i64 (call abs_i64 a))
+    (let y:i64 (call abs_i64 b))
+    (while (neq y 0i64)
+      (let t:i64 (% x y))
+      (set! x y)
+      (set! y t))
+    x)
+
+  ;; x to the power n, n not negative; stops the program when the answer
+  ;; does not fit.
+  (fn pow_i64 [x:i64 n:i32] -> i64 (pub)
+    (req (gte n 0))
+    (let result:i64 1i64)
+    (let base:i64 x)
+    (let k:i32 n)
+    (while (gt k 0)
+      (when (neq (bitand k 1) 0) (set! result (checked.mul result base)))
+      (set! k (shru k 1))
+      (when (gt k 0) (set! base (checked.mul base base))))
+    result)
+
+  ;; The whole part of the square root of x, x not negative.
+  (fn isqrt_i64 [x:i64] -> i64 (pub)
+    (req (gte x 0i64))
+    ;; 3037000499 is the largest r whose square fits in an i64
+    (let r:i64 (i64.trunc_f64_s (f64.sqrt (f64.convert_i64_s x))))
+    (when (gt r 3037000499i64) (set! r 3037000499i64))
+    (while (gt (* r r) x) (set! r (- r 1i64)))
+    (while (and (lt r 3037000499i64) (lte (* (+ r 1i64) (+ r 1i64)) x)) (set! r (+ r 1i64)))
+    r)
+
+  ;; ===== f64 =====
+
+  ;; Whether x is not a number.
+  (fn is_nan [x:f64] -> bool (pub) (neq x x))
+
+  ;; The smaller of two numbers; not a number when either is.
+  (fn min_f64 [a:f64 b:f64] -> f64 (pub)
+    (cond ((neq a a) a) ((neq b b) b) ((lt a b) a) (else b)))
+
+  ;; The larger of two numbers; not a number when either is.
+  (fn max_f64 [a:f64 b:f64] -> f64 (pub)
+    (cond ((neq a a) a) ((neq b b) b) ((gt a b) a) (else b)))
+
+  ;; x without its sign (including a negative zero's).
+  (fn abs_f64 [x:f64] -> f64 (pub)
+    (f64.reinterpret_i64 (bitand (i64.reinterpret_f64 x) 9223372036854775807i64)))
+
+  ;; Whether x has no fraction to drop: 2^52 and beyond, where every double is
+  ;; a whole number, or not a number at all (which stays as it is).
+  (fn whole [x:f64] -> bool
+    (or (neq x x) (gte x 4503599627370496.0) (lte x -4503599627370496.0)))
+
+  ;; x with its fraction dropped (rounded toward zero): (trunc -2.7) is -2.0.
+  ;; A zero result has no sign.
+  (fn trunc [x:f64] -> f64 (pub)
+    (if (call whole x) x (f64.convert_i64_s (i64.trunc_f64_s x))))
+
+  ;; The largest whole number not above x: (floor 2.7) is 2.0, (floor -2.7)
+  ;; is -3.0.
+  (fn floor [x:f64] -> f64 (pub)
+    (let t:f64 (call trunc x))
+    (if (and (not (call whole x)) (gt t x)) (- t 1.0) t))
+
+  ;; The smallest whole number not below x: (ceil 2.1) is 3.0, (ceil -2.1) is
+  ;; -2.0.
+  (fn ceil [x:f64] -> f64 (pub)
+    (let t:f64 (call trunc x))
+    (if (and (not (call whole x)) (lt t x)) (+ t 1.0) t))
+
+  ;; x to the nearest whole number, halves away from zero as C's round:
+  ;; (round 2.5) is 3.0, (round -2.5) is -3.0, (round 0.4999999999999999) is 0.0.
+  (fn round [x:f64] -> f64 (pub)
+    (let t:f64 (call trunc x))
+    (let d:f64 (- x t))
+    (cond
+      ((call whole x) x)
+      ((gte d 0.5) (+ t 1.0))
+      ((lte d -0.5) (- t 1.0))
+      (else t)))
+
+  ;; x to the power n, n a whole number, by repeated multiplication (a negative
+  ;; n divides): exact where every step is, otherwise within a few units of
+  ;; the last place, not always libm's last bit.
+  (fn powi [x:f64 n:i32] -> f64 (pub)
+    (req (neq n -2147483648))
+    (let result:f64 1.0)
+    (let base:f64 x)
+    (let k:i32 (call abs n))
+    (while (gt k 0)
+      (when (neq (bitand k 1) 0) (set! result (* result base)))
+      (set! k (shru k 1))
+      (when (gt k 0) (set! base (* base base))))
+    (if (lt n 0) (/ 1.0 result) result))
+
+  ;; ===== Transcendental functions: ports of fdlibm =====
+  ;;
+  ;; exp, expm1, ln, log10, log2, log1p, pow_f64, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh,
+  ;; tanh, hypot, and cbrt are written in AIPL, from FreeBSD's msun (the fdlibm that musl and the Rust
+  ;; `libm` crate carry), with only IEEE arithmetic, `f64.sqrt`, and bit operations: every backend, the
+  ;; interpreter included, gives the same bits. tests/test_math_float.rs checks each against the `libm`
+  ;; crate bit for bit on generated inputs. glibc, which Python's `math` calls, uses other algorithms
+  ;; and differs from fdlibm in the last place for some arguments; both are within 1 ulp of the true
+  ;; value (fdlibm's functions are under 1 ulp, tanh a little over, and cbrt, FreeBSD's, is under 0.667
+  ;; ulp: not the correctly rounded cube root newer libraries give). As in C, a result that does not exist is NaN or an
+  ;; infinity, not a stop (ln of 0 is -inf, ln of a negative number is NaN); a NaN's sign and payload are
+  ;; whatever the machine's arithmetic makes (WebAssembly leaves them open).
+
+  ;; The high 32 bits of x's representation, as an i32 (the sign in bit 31).
+  (fn hi_word [x:f64] -> i32 (shr (i32.wrap (shru (i64.reinterpret_f64 x) 32i64)) 0))
+
+  ;; The low 32 bits.
+  (fn lo_word [x:f64] -> i32 (i32.wrap (i64.reinterpret_f64 x)))
+
+  ;; The f64 with these high and low words.
+  (fn from_words [hi:i32 lo:i32] -> f64
+    (f64.reinterpret_i64 (bitor (shl (i64.extend_u hi) 32i64) (i64.extend_u lo))))
+
+  ;; x with its low word replaced by zero.
+  (fn clear_lo [x:f64] -> f64
+    (f64.reinterpret_i64 (bitand (i64.reinterpret_f64 x) -4294967296i64)))
+
+  ;; x times 2 to the n (exactly, if the result is a normal number; one rounding, if it is subnormal), as C's
+  ;; scalbn.
+  (fn scalbn [x:f64 n0:i32] -> f64 (pub)
+    (let y:f64 x)
+    (let n:i32 n0)
+    (if (gt n 1023)
+        (block
+          (set! y (* y 8.98846567431158e307))
+          (set! n (- n 1023))
+          (when (gt n 1023)
+            (set! y (* y 8.98846567431158e307))
+            (set! n (- n 1023))
+            (when (gt n 1023) (set! n 1023))))
+        (when (lt n -1022)
+          ;; the final n must be below -53, so that a subnormal result is rounded once
+          (set! y (* y 2.004168360008973e-292))
+          (set! n (+ n 969))
+          (when (lt n -1022)
+            (set! y (* y 2.004168360008973e-292))
+            (set! n (+ n 969))
+            (when (lt n -1022) (set! n -1022)))))
+    (* y (f64.reinterpret_i64 (shl (i64.extend_s (+ 1023 n)) 52i64))))
+
+  ;; e to the x (FreeBSD e_exp.c): x = k ln 2 + r, |r| <= ln 2 / 2, exp(r) from a degree-5 polynomial in r*r,
+  ;; scaled by 2^k. Under 1 ulp. exp(+inf) is +inf, exp(-inf) is 0, exp(NaN) is NaN.
+  (fn exp [x0:f64] -> f64 (pub)
+    (let x:f64 x0)
+    (let hx:i32 (call hi_word x))
+    (let sign:i32 (shru hx 31))
+    (set! hx (bitand hx 2147483647))
+    (when (gte hx 1082535467)
+      (when (call is_nan x) (return x))
+      (when (gt x 709.782712893384) (return (* x 8.98846567431158e307)))
+      (when (and (lt x -708.3964185322641) (lt x -745.1332191019411)) (return 0.0)))
+    (let k:i32 0)
+    (let hi:f64 0.0)
+    (let lo:f64 0.0)
+    (if (gt hx 1071001154)
+        (block
+          (if (gte hx 1072734898)
+              (set! k (i32.trunc_f64_s (+ (* 1.4426950408889634 x) (if (eq sign 0) 0.5 -0.5))))
+              (set! k (- (- 1 sign) sign)))
+          (set! hi (- x (* (f64.convert_i32_s k) 0.6931471803691238)))
+          (set! lo (* (f64.convert_i32_s k) 1.9082149292705877e-10))
+          (set! x (- hi lo)))
+        (if (gt hx 1043333120)
+            (set! hi x)
+            (return (+ 1.0 x))))
+    (let xx:f64 (* x x))
+    (let c:f64 (- x (* xx (+ 0.16666666666666602 (* xx (+ -0.0027777777777015593 (* xx (+ 6.613756321437934e-05 (* xx (+ -1.6533902205465252e-06 (* xx 4.1381367970572385e-08)))))))))))
+    (let y:f64 (+ 1.0 (+ (- (/ (* x c) (- 2.0 c)) lo) hi)))
+    (if (eq k 0) y (call scalbn y k)))
+
+  (const LN2_HI:f64 0.6931471803691238)
+  (const LN2_LO:f64 1.9082149292705877e-10)
+  (const INVLN2:f64 1.4426950408889634)
+  (const LG1:f64 0.6666666666666735)
+  (const LG2:f64 0.3999999999940942)
+  (const LG3:f64 0.2857142874366239)
+  (const LG4:f64 0.22222198432149784)
+  (const LG5:f64 0.1818357216161805)
+  (const LG6:f64 0.15313837699209373)
+  (const LG7:f64 0.14798198605116586)
+  (const IVLN2HI:f64 1.4426950407214463)
+  (const IVLN2LO:f64 1.6751713164886512e-10)
+  (const IVLN10HI:f64 0.4342944818781689)
+  (const IVLN10LO:f64 2.5082946711645275e-11)
+  (const LOG10_2HI:f64 0.30102999566361177)
+  (const LOG10_2LO:f64 3.694239077158931e-13)
+  (const O_THRESHOLD:f64 709.782712893384)
+  (const Q1:f64 -0.03333333333333313)
+  (const Q2:f64 0.0015873015872548146)
+  (const Q3:f64 -7.93650757867488e-5)
+  (const Q4:f64 4.008217827329362e-6)
+  (const Q5:f64 -2.0109921818362437e-7)
+
+  ;; What the logarithms have in common (FreeBSD e_log.c): x = 2^k * (1 + f) with 1 + f in [sqrt(2)/2, sqrt(2)],
+  ;; and R, the polynomial that log(1 + f) = f - hfsq + s * (hfsq + R) needs, s = f / (2 + f). `done` is set
+  ;; when the answer needs no more (a zero, a negative number, infinity, NaN, 1): it is `v`.
+  (struct LogParts [f:f64 hfsq:f64 s:f64 r:f64 k:i32 done:bool v:f64] (value))
+
+  (fn log_split [x0:f64] -> LogParts
+    (let x:f64 x0)
+    (let bits:i64 (i64.reinterpret_f64 x))
+    (let hx:i32 (call hi_word x))
+    (let k:i32 0)
+    (if (lt hx 1048576)
+        (block
+          (when (eq (shl bits 1i64) 0i64)
+            (return (make LogParts [f:0.0 hfsq:0.0 s:0.0 r:0.0 k:0 done:true v:(/ -1.0 (* x x))])))
+          (when (lt hx 0)
+            (return (make LogParts [f:0.0 hfsq:0.0 s:0.0 r:0.0 k:0 done:true v:(/ (- x x) 0.0)])))
+          (set! k -54)
+          (set! x (* x 18014398509481984.0))
+          (set! bits (i64.reinterpret_f64 x))
+          (set! hx (call hi_word x)))
+        (if (gte hx 2146435072)
+            (return (make LogParts [f:0.0 hfsq:0.0 s:0.0 r:0.0 k:0 done:true v:x]))
+            (when (and (eq hx 1072693248) (eq (i32.wrap bits) 0))
+              (return (make LogParts [f:0.0 hfsq:0.0 s:0.0 r:0.0 k:0 done:true v:0.0])))))
+    (set! hx (+ hx 614242))
+    (set! k (+ k (- (shru hx 20) 1023)))
+    (set! hx (+ (bitand hx 1048575) 1072079006))
+    (set! x (call from_words hx (i32.wrap bits)))
+    (let f:f64 (- x 1.0))
+    (let hfsq:f64 (* (* 0.5 f) f))
+    (let s:f64 (/ f (+ 2.0 f)))
+    (let z:f64 (* s s))
+    (let w:f64 (* z z))
+    (let t1:f64 (* w (+ LG2 (* w (+ LG4 (* w LG6))))))
+    (let t2:f64 (* z (+ LG1 (* w (+ LG3 (* w (+ LG5 (* w LG7))))))))
+    (make LogParts [f:f hfsq:hfsq s:s r:(+ t2 t1) k:k done:false v:0.0]))
+
+  ;; The natural logarithm (FreeBSD e_log.c). ln(0) is -inf, ln of a negative number is NaN, ln(+inf) is +inf.
+  (fn ln [x:f64] -> f64 (pub)
+    (let p:LogParts (call log_split x))
+    (when (get p LogParts.done) (return (get p LogParts.v)))
+    (let f:f64 (get p LogParts.f))
+    (let hfsq:f64 (get p LogParts.hfsq))
+    (let dk:f64 (f64.convert_i32_s (get p LogParts.k)))
+    (+ (+ (- (+ (* (get p LogParts.s) (+ hfsq (get p LogParts.r))) (* dk LN2_LO)) hfsq) f) (* dk LN2_HI)))
+
+  ;; The logarithm base 2 (FreeBSD e_log2.c), with the high and low parts of 1/ln 2 kept apart for accuracy.
+  (fn log2 [x:f64] -> f64 (pub)
+    (let p:LogParts (call log_split x))
+    (when (get p LogParts.done) (return (get p LogParts.v)))
+    (let f:f64 (get p LogParts.f))
+    (let hfsq:f64 (get p LogParts.hfsq))
+    (let hi:f64 (call clear_lo (- f hfsq)))
+    (let lo:f64 (+ (- (- f hi) hfsq) (* (get p LogParts.s) (+ hfsq (get p LogParts.r)))))
+    (let val_hi:f64 (* hi IVLN2HI))
+    (let val_lo:f64 (+ (* (+ lo hi) IVLN2LO) (* lo IVLN2HI)))
+    (let y:f64 (f64.convert_i32_s (get p LogParts.k)))
+    (let w:f64 (+ y val_hi))
+    (set! val_lo (+ val_lo (+ (- y w) val_hi)))
+    (+ val_lo w))
+
+  ;; The logarithm base 10 (FreeBSD e_log10.c).
+  (fn log10 [x:f64] -> f64 (pub)
+    (let p:LogParts (call log_split x))
+    (when (get p LogParts.done) (return (get p LogParts.v)))
+    (let f:f64 (get p LogParts.f))
+    (let hfsq:f64 (get p LogParts.hfsq))
+    (let hi:f64 (call clear_lo (- f hfsq)))
+    (let lo:f64 (+ (- (- f hi) hfsq) (* (get p LogParts.s) (+ hfsq (get p LogParts.r)))))
+    (let val_hi:f64 (* hi IVLN10HI))
+    (let dk:f64 (f64.convert_i32_s (get p LogParts.k)))
+    (let y:f64 (* dk LOG10_2HI))
+    (let val_lo:f64 (+ (+ (* dk LOG10_2LO) (* (+ lo hi) IVLN10LO)) (* lo IVLN10HI)))
+    (let w:f64 (+ y val_hi))
+    (set! val_lo (+ val_lo (+ (- y w) val_hi)))
+    (+ val_lo w))
+
+  ;; log(1 + x), exact for small x (FreeBSD s_log1p.c). log1p(-1) is -inf; below -1 it is NaN.
+  (fn log1p [x:f64] -> f64 (pub)
+    (let hx:i32 (call hi_word x))
+    (let k:i32 1)
+    (let f:f64 0.0)
+    (let c:f64 0.0)
+    (if (lt hx 1071284858)
+        (block
+          (when (gteu hx -1074790400)
+            (when (eq x -1.0) (return (/ x 0.0)))
+            (return (/ (- x x) 0.0)))
+          (when (ltu (shl hx 1) 2034237440) (return x))
+          (when (lteu hx -1076707644)
+            (set! k 0)
+            (set! f x)))
+        (when (gte hx 2146435072) (return x)))
+    (when (gt k 0)
+      (let u:f64 (+ 1.0 x))
+      (let hu:i32 (+ (call hi_word u) 614242))
+      (set! k (- (shru hu 20) 1023))
+      (if (lt k 54)
+          (block
+            (set! c (if (gte k 2) (- 1.0 (- u x)) (- x (- u 1.0))))
+            (set! c (/ c u)))
+          (set! c 0.0))
+      (set! hu (+ (bitand hu 1048575) 1072079006))
+      (set! f (- (call from_words hu (call lo_word u)) 1.0)))
+    (let hfsq:f64 (* (* 0.5 f) f))
+    (let s:f64 (/ f (+ 2.0 f)))
+    (let z:f64 (* s s))
+    (let w:f64 (* z z))
+    (let t1:f64 (* w (+ LG2 (* w (+ LG4 (* w LG6))))))
+    (let t2:f64 (* z (+ LG1 (* w (+ LG3 (* w (+ LG5 (* w LG7))))))))
+    (let r:f64 (+ t2 t1))
+    (let dk:f64 (f64.convert_i32_s k))
+    (+ (+ (- (+ (* s (+ hfsq r)) (+ (* dk LN2_LO) c)) hfsq) f) (* dk LN2_HI)))
+
+  ;; e^x - 1, exact for small x (FreeBSD s_expm1.c). expm1(-inf) is -1, expm1(+inf) is +inf.
+  (fn expm1 [x0:f64] -> f64 (pub)
+    (let x:f64 x0)
+    (let hx:i32 (bitand (call hi_word x) 2147483647))
+    (let sign:i32 (shru (call hi_word x) 31))
+    (when (gte hx 1078159482)
+      (when (call is_nan x) (return x))
+      (when (neq sign 0) (return -1.0))
+      (when (gt x O_THRESHOLD) (return (* x 8.98846567431158e307))))
+    (let hi:f64 0.0)
+    (let lo:f64 0.0)
+    (let k:i32 0)
+    (let c:f64 0.0)
+    (if (gt hx 1071001154)
+        (block
+          (if (lt hx 1072734898)
+              (if (eq sign 0)
+                  (block (set! hi (- x LN2_HI)) (set! lo LN2_LO) (set! k 1))
+                  (block (set! hi (+ x LN2_HI)) (set! lo (call neg LN2_LO)) (set! k -1)))
+              (block
+                (set! k (i32.trunc_f64_s (+ (* INVLN2 x) (if (neq sign 0) -0.5 0.5))))
+                (let t:f64 (f64.convert_i32_s k))
+                (set! hi (- x (* t LN2_HI)))
+                (set! lo (* t LN2_LO))))
+          (set! x (- hi lo))
+          (set! c (- (- hi x) lo)))
+        (when (lt hx 1016070144) (return x)))
+    (let hfx:f64 (* 0.5 x))
+    (let hxs:f64 (* x hfx))
+    (let r1:f64 (+ 1.0 (* hxs (+ Q1 (* hxs (+ Q2 (* hxs (+ Q3 (* hxs (+ Q4 (* hxs Q5)))))))))))
+    (let t:f64 (- 3.0 (* r1 hfx)))
+    (let e:f64 (* hxs (/ (- r1 t) (- 6.0 (* x t)))))
+    (when (eq k 0) (return (- x (- (* x e) hxs))))
+    (set! e (- (* x (- e c)) c))
+    (set! e (- e hxs))
+    (when (eq k -1) (return (- (* 0.5 (- x e)) 0.5)))
+    (when (eq k 1)
+      (when (lt x -0.25) (return (* -2.0 (- e (+ x 0.5)))))
+      (return (+ 1.0 (* 2.0 (- x e)))))
+    (let twopk:f64 (f64.reinterpret_i64 (shl (i64.extend_s (+ 1023 k)) 52i64)))
+    (when (or (lt k 0) (gt k 56))
+      (let y:f64 (+ (- x e) 1.0))
+      (if (eq k 1024)
+          (set! y (* (* y 2.0) 8.98846567431158e307))
+          (set! y (* y twopk)))
+      (return (- y 1.0)))
+    (let uf:f64 (f64.reinterpret_i64 (shl (i64.extend_s (- 1023 k)) 52i64)))
+    (if (lt k 20)
+        (* (+ (- x e) (- 1.0 uf)) twopk)
+        (* (+ (- x (+ e uf)) 1.0) twopk)))
+
+  (const S1:f64 -0.16666666666666632)
+  (const S2:f64 0.00833333333332249)
+  (const S3:f64 -0.0001984126982985795)
+  (const S4:f64 2.7557313707070068e-6)
+  (const S5:f64 -2.5050760253406863e-8)
+  (const S6:f64 1.58969099521155e-10)
+  (const C1:f64 0.0416666666666666)
+  (const C2:f64 -0.001388888888887411)
+  (const C3:f64 2.480158728947673e-5)
+  (const C4:f64 -2.7557314351390663e-7)
+  (const C5:f64 2.087572321298175e-9)
+  (const C6:f64 -1.1359647557788195e-11)
+  (const INV_PIO2:f64 0.6366197723675814)
+  (const PIO2_1:f64 1.5707963267341256)
+  (const PIO2_1T:f64 6.077100506506192e-11)
+  (const PIO2_2:f64 6.077100506303966e-11)
+  (const PIO2_2T:f64 2.0222662487959506e-21)
+  (const PIO2_3:f64 2.0222662487111665e-21)
+  (const PIO2_3T:f64 8.4784276603689e-32)
+  (const PIO4:f64 0.7853981633974483)
+  (const PIO4_LO:f64 3.061616997868383e-17)
+  (const TO_INT:f64 6755399441055744.0)
+
+  ;; sin of x + y, for |x| <= pi/4 (FreeBSD k_sin.c): a degree-13 polynomial, y the tail of the reduced argument
+  ;; (iy 0 when there is none).
+  (fn k_sin [x:f64 y:f64 iy:i32] -> f64
+    (let z:f64 (* x x))
+    (let w:f64 (* z z))
+    (let r:f64 (+ (+ S2 (* z (+ S3 (* z S4)))) (* (* z w) (+ S5 (* z S6)))))
+    (let v:f64 (* z x))
+    (if (eq iy 0)
+        (+ x (* v (+ S1 (* z r))))
+        (- x (- (- (* z (- (* 0.5 y) (* v r))) y) (* v S1)))))
+
+  ;; cos of x + y, for |x| <= pi/4 (FreeBSD k_cos.c): a degree-14 polynomial.
+  (fn k_cos [x:f64 y:f64] -> f64
+    (let z:f64 (* x x))
+    (let w:f64 (* z z))
+    (let r:f64 (+ (* z (+ C1 (* z (+ C2 (* z C3))))) (* (* w w) (+ C4 (* z (+ C5 (* z C6)))))))
+    (let hz:f64 (* 0.5 z))
+    (let v:f64 (- 1.0 hz))
+    (+ v (+ (- (- 1.0 v) hz) (- (* z r) (* x y)))))
+
+  ;; tan of x + y (cot, negated, when odd is 1) for |x| <= pi/4 (FreeBSD k_tan.c): a degree-27 polynomial,
+  ;; and for |x| >= 0.6744 the identity tan(pi/4 - x).
+  (fn k_tan [x0:f64 y0:f64 odd:i32] -> f64
+    (let x:f64 x0)
+    (let y:f64 y0)
+    (let hx:i32 (call hi_word x))
+    (let big:bool (gte (bitand hx 2147483647) 1072010280))
+    (when big
+      (when (lt hx 0)
+        (set! x (call neg x))
+        (set! y (call neg y)))
+      (set! x (+ (- PIO4 x) (- PIO4_LO y)))
+      (set! y 0.0))
+    (let z:f64 (* x x))
+    (let w:f64 (* z z))
+    (let r1:f64 (+ 0.13333333333320124 (* w (+ 0.021869488294859542 (* w (+ 0.0035920791075913124 (* w (+ 0.0005880412408202641 (* w (+ 7.817944429395571e-5 (* w -1.8558637485527546e-5)))))))))))
+    (let v:f64 (* z (+ 0.05396825397622605 (* w (+ 0.0088632398235993 (* w (+ 0.0014562094543252903 (* w (+ 0.0002464631348184699 (* w (+ 7.140724913826082e-5 (* w 2.590730518636337e-5))))))))))))
+    (let s:f64 (* z x))
+    (let r:f64 (+ (+ y (* z (+ (* s (+ r1 v)) y))) (* s 0.3333333333333341)))
+    (let w2:f64 (+ x r))
+    (when big
+      (let sg:f64 (- 1.0 (* 2.0 (f64.convert_i32_s odd))))
+      (let v2:f64 (- sg (* 2.0 (+ x (- r (/ (* w2 w2) (+ w2 sg)))))))
+      (return (if (lt hx 0) (call neg v2) v2)))
+    (when (eq odd 0) (return w2))
+    ;; -1 / (x + r), with its low word cleared for the correction
+    (let w0:f64 (call clear_lo w2))
+    (let v3:f64 (- r (- w0 x)))
+    (let a:f64 (/ -1.0 w2))
+    (let a0:f64 (call clear_lo a))
+    (+ a0 (* a (+ (+ 1.0 (* a0 w0)) (* a0 v3)))))
+
+  ;; n, y0, y1 of an argument reduction: x = n * pi/2 + y0 + y1 (with |y0 + y1| <= pi/4, y1 the tail).
+  (struct Rem [n:i32 y0:f64 y1:f64] (value))
+
+  ;; x - k * pi/2 for k from 1 to 4, in two parts, for x near k * pi/2 (the sign of x says which way).
+  (fn rem_multiple [x:f64 k:i32 sign:i32] -> Rem
+    (let kf:f64 (f64.convert_i32_s k))
+    (if (eq sign 0)
+        (block
+          (let z:f64 (- x (* kf PIO2_1)))
+          (let y0:f64 (- z (* kf PIO2_1T)))
+          (make Rem [n:k y0:y0 y1:(- (- z y0) (* kf PIO2_1T))]))
+        (block
+          (let z:f64 (+ x (* kf PIO2_1)))
+          (let y0:f64 (+ z (* kf PIO2_1T)))
+          (make Rem [n:(- 0 k) y0:y0 y1:(+ (- z y0) (* kf PIO2_1T))]))))
+
+  ;; The reduction for |x| below 2^20 pi/2 (the "medium" case): n = round(x * 2/pi), then x - n pi/2 in up
+  ;; to three steps of 33 bits each, as many as the cancellation needs.
+  (fn rem_medium [x:f64 ix:i32] -> Rem
+    (let tmp:f64 (+ (* x INV_PIO2) TO_INT))
+    (let f_n:f64 (- tmp TO_INT))
+    (let n:i32 (i32.trunc_f64_s f_n))
+    (let r:f64 (- x (* f_n PIO2_1)))
+    (let w:f64 (* f_n PIO2_1T))
+    (let y0:f64 (- r w))
+    (let ey:i32 (bitand (shru (call hi_word y0) 20) 2047))
+    (let ex:i32 (shru ix 20))
+    (when (gt (- ex ey) 16)
+      (let t:f64 r)
+      (set! w (* f_n PIO2_2))
+      (set! r (- t w))
+      (set! w (- (* f_n PIO2_2T) (- (- t r) w)))
+      (set! y0 (- r w))
+      (let ey2:i32 (bitand (shru (call hi_word y0) 20) 2047))
+      (when (gt (- ex ey2) 49)
+        (let t2:f64 r)
+        (set! w (* f_n PIO2_3))
+        (set! r (- t2 w))
+        (set! w (- (* f_n PIO2_3T) (- (- t2 r) w)))
+        (set! y0 (- r w))))
+    (make Rem [n:n y0:y0 y1:(- (- r y0) w)]))
+
+  ;; The reduction of a huge argument (FreeBSD k_rem_pio2.c, double precision): the argument as three 24-bit
+  ;; pieces tx[0..nx), the exponent e0 of the first, multiplied by 2/pi kept to 396 hex digits.
+  (fn rem_large [tx:(arr f64) nx:i32 e0:i32] -> Rem
+    (let al:alloc.Allocator (call alloc.default))
+    (let ipio2:(arr i32) (arr.of i32 al
+      10680707 7228996 1387004 2578385 16069853 12639074 9804092 4427841 16666979 11263675 12935607
+      2387514 4345298 14681673 3074569 13734428 16653803 1880361 10960616 8533493 3062596 8710556
+      7349940 6258241 3772886 3769171 3798172 8675211 12450088 3874808 9961438 366607 15675153
+      9132554 7151469 3571407 2607881 12013382 4155038 6285869 7677882 13102053 15825725 473591
+      9065106 15363067 6271263 9264392 5636912 4652155 7056368 13614112 10155062 1944035 9527646
+      15080200 6658437 6231200 6832269 16767104 5075751 3212806 1398474 7579849 6349435 12618859))
+    (let pio2:(arr f64) (arr.of f64 al 1.570796251296997 7.549789415861596e-8 5.390302529957765e-15 3.282003415807913e-22 1.270655753080676e-29 1.2293330898111133e-36 2.7337005381646456e-44 2.1674168387780482e-51))
+    (let f:(arr f64) (arr.new f64 al 20))
+    (let fq:(arr f64) (arr.new f64 al 20))
+    (let q:(arr f64) (arr.new f64 al 20))
+    (let iq:(arr i32) (arr.new i32 al 20))
+    (for i 0 20
+      (arr.set f64 f i 0.0)
+      (arr.set f64 fq i 0.0)
+      (arr.set f64 q i 0.0)
+      (arr.set i32 iq i 0))
+    (let jk:i32 4)
+    (let jx:i32 (- nx 1))
+    (let jv:i32 (/ (- e0 3) 24))
+    (when (lt jv 0) (set! jv 0))
+    (let q0:i32 (- e0 (* 24 (+ jv 1))))
+    (let j:i32 (- jv jx))
+    (for i 0 (+ (+ jx jk) 1)
+      (arr.set f64 f i (if (lt j 0) 0.0 (f64.convert_i32_s (arr.get i32 ipio2 j))))
+      (set! j (+ j 1)))
+    (let fw:f64 0.0)
+    (for i 0 (+ jk 1)
+      (set! fw 0.0)
+      (for jj 0 (+ jx 1)
+        (set! fw (+ fw (* (arr.get f64 tx jj) (arr.get f64 f (- (+ jx i) jj))))))
+      (arr.set f64 q i fw))
+    (let jz:i32 jk)
+    (let z:f64 0.0)
+    (let n:i32 0)
+    (let ih:i32 0)
+    (let again:bool true)
+    (while again
+      (set! again false)
+      (let i:i32 0)
+      (set! z (arr.get f64 q jz))
+      (let jj:i32 jz)
+      (while (gte jj 1)
+        (set! fw (f64.convert_i32_s (i32.trunc_f64_s (* 5.960464477539063e-8 z))))
+        (arr.set i32 iq i (i32.trunc_f64_s (- z (* 16777216.0 fw))))
+        (set! z (+ (arr.get f64 q (- jj 1)) fw))
+        (set! i (+ i 1))
+        (set! jj (- jj 1)))
+      (set! z (call scalbn z q0))
+      (set! z (- z (* 8.0 (call floor (* z 0.125)))))
+      (set! n (i32.trunc_f64_s z))
+      (set! z (- z (f64.convert_i32_s n)))
+      (set! ih 0)
+      (cond
+        ((gt q0 0)
+         (set! i (shr (arr.get i32 iq (- jz 1)) (- 24 q0)))
+         (set! n (+ n i))
+         (arr.set i32 iq (- jz 1) (- (arr.get i32 iq (- jz 1)) (shl i (- 24 q0))))
+         (set! ih (shr (arr.get i32 iq (- jz 1)) (- 23 q0))))
+        ((eq q0 0) (set! ih (shr (arr.get i32 iq (- jz 1)) 23)))
+        ((gte z 0.5) (set! ih 2))
+        (else (block)))
+      (when (gt ih 0)
+        (set! n (+ n 1))
+        (let carry:i32 0)
+        (for ci 0 jz
+          (let cj:i32 (arr.get i32 iq ci))
+          (if (eq carry 0)
+              (when (neq cj 0)
+                (set! carry 1)
+                (arr.set i32 iq ci (- 16777216 cj)))
+              (arr.set i32 iq ci (- 16777215 cj))))
+        (when (gt q0 0)
+          (cond
+            ((eq q0 1) (arr.set i32 iq (- jz 1) (bitand (arr.get i32 iq (- jz 1)) 8388607)))
+            ((eq q0 2) (arr.set i32 iq (- jz 1) (bitand (arr.get i32 iq (- jz 1)) 4194303)))
+            (else (block))))
+        (when (eq ih 2)
+          (set! z (- 1.0 z))
+          (when (neq carry 0) (set! z (- z (call scalbn 1.0 q0))))))
+      (when (eq z 0.0)
+        (let bits:i32 0)
+        (let ii:i32 (- jz 1))
+        (while (gte ii jk)
+          (set! bits (bitor bits (arr.get i32 iq ii)))
+          (set! ii (- ii 1)))
+        (when (eq bits 0)
+          (let k:i32 1)
+          (while (eq (arr.get i32 iq (- jk k)) 0) (set! k (+ k 1)))
+          (for ki (+ jz 1) (+ (+ jz k) 1)
+            (arr.set f64 f (+ jx ki) (f64.convert_i32_s (arr.get i32 ipio2 (+ jv ki))))
+            (set! fw 0.0)
+            (for jj2 0 (+ jx 1)
+              (set! fw (+ fw (* (arr.get f64 tx jj2) (arr.get f64 f (- (+ jx ki) jj2))))))
+            (arr.set f64 q ki fw))
+          (set! jz (+ jz k))
+          (set! again true))))
+    (if (eq z 0.0)
+        (block
+          (set! jz (- jz 1))
+          (set! q0 (- q0 24))
+          (while (eq (arr.get i32 iq jz) 0)
+            (set! jz (- jz 1))
+            (set! q0 (- q0 24))))
+        (block
+          (set! z (call scalbn z (- 0 q0)))
+          (if (gte z 16777216.0)
+              (block
+                (set! fw (f64.convert_i32_s (i32.trunc_f64_s (* 5.960464477539063e-8 z))))
+                (arr.set i32 iq jz (i32.trunc_f64_s (- z (* 16777216.0 fw))))
+                (set! jz (+ jz 1))
+                (set! q0 (+ q0 24))
+                (arr.set i32 iq jz (i32.trunc_f64_s fw)))
+              (arr.set i32 iq jz (i32.trunc_f64_s z)))))
+    (set! fw (call scalbn 1.0 q0))
+    (let qi:i32 jz)
+    (while (gte qi 0)
+      (arr.set f64 q qi (* fw (f64.convert_i32_s (arr.get i32 iq qi))))
+      (set! fw (* fw 5.960464477539063e-8))
+      (set! qi (- qi 1)))
+    (let fi:i32 jz)
+    (while (gte fi 0)
+      (set! fw 0.0)
+      (let kk:i32 0)
+      (while (and (lte kk jk) (lte kk (- jz fi)))
+        (set! fw (+ fw (* (arr.get f64 pio2 kk) (arr.get f64 q (+ fi kk)))))
+        (set! kk (+ kk 1)))
+      (arr.set f64 fq (- jz fi) fw)
+      (set! fi (- fi 1)))
+    (set! fw 0.0)
+    (let si:i32 jz)
+    (while (gte si 0)
+      (set! fw (+ fw (arr.get f64 fq si)))
+      (set! si (- si 1)))
+    (let y0:f64 (if (eq ih 0) fw (call neg fw)))
+    (set! fw (- (arr.get f64 fq 0) fw))
+    (for ti 1 (+ jz 1)
+      (set! fw (+ fw (arr.get f64 fq ti))))
+    (let y1:f64 (if (eq ih 0) fw (call neg fw)))
+    (call (alloc.free_array i32) al ipio2)
+    (call (alloc.free_array f64) al pio2)
+    (call (alloc.free_array f64) al f)
+    (call (alloc.free_array f64) al fq)
+    (call (alloc.free_array f64) al q)
+    (call (alloc.free_array i32) al iq)
+    (make Rem [n:(bitand n 7) y0:y0 y1:y1]))
+
+  ;; x = n * pi/2 + y0 + y1 for any finite x (FreeBSD e_rem_pio2.c): a few multiples of pi/2 by subtraction
+  ;; for |x| < 5 pi, Cody-Waite steps up to 2^20 pi/2, and rem_large beyond. n is only right modulo 8.
+  (fn rem_pio2 [x:f64] -> Rem
+    (let sign:i32 (shru (call hi_word x) 31))
+    (let ix:i32 (bitand (call hi_word x) 2147483647))
+    (when (lte ix 1074752122)
+      (when (eq (bitand ix 1048575) 598523) (return (call rem_medium x ix)))
+      (return (call rem_multiple x (if (lte ix 1073928572) 1 2) sign)))
+    (when (lte ix 1075594811)
+      (if (lte ix 1075183036)
+          (block
+            (when (eq ix 1074977148) (return (call rem_medium x ix)))
+            (return (call rem_multiple x 3 sign)))
+          (block
+            (when (eq ix 1075388923) (return (call rem_medium x ix)))
+            (return (call rem_multiple x 4 sign)))))
+    (when (lt ix 1094263291) (return (call rem_medium x ix)))
+    (when (gte ix 2146435072)
+      (let y:f64 (- x x))
+      (return (make Rem [n:0 y0:y y1:y])))
+    ;; x as 2^23 * (1 + f) in three 24-bit pieces
+    (let bits:i64 (i64.reinterpret_f64 x))
+    (let z0:f64 (f64.reinterpret_i64 (bitor (bitand bits 4503599627370495i64) (shl 1046i64 52i64))))
+    (let a:alloc.Allocator (call alloc.default))
+    (let tx:(arr f64) (arr.new f64 a 3))
+    (let z:f64 z0)
+    (for i 0 2
+      (arr.set f64 tx i (f64.convert_i32_s (i32.trunc_f64_s z)))
+      (set! z (* (- z (arr.get f64 tx i)) 16777216.0)))
+    (arr.set f64 tx 2 z)
+    (let nx:i32 3)
+    (while (and (gt nx 1) (eq (arr.get f64 tx (- nx 1)) 0.0))
+      (set! nx (- nx 1)))
+    (let r:Rem (call rem_large tx nx (- (shr ix 20) 1046)))
+    (call (alloc.free_array f64) a tx)
+    (if (neq sign 0)
+        (make Rem [n:(- 0 (get r Rem.n)) y0:(call neg (get r Rem.y0)) y1:(call neg (get r Rem.y1))])
+        r))
+
+  ;; The sine (FreeBSD s_sin.c).
+  (fn sin [x:f64] -> f64 (pub)
+    (let ix:i32 (bitand (call hi_word x) 2147483647))
+    (when (lte ix 1072243195)
+      (when (lt ix 1045430272) (return x))
+      (return (call k_sin x 0.0 0)))
+    (when (gte ix 2146435072) (return (- x x)))
+    (let r:Rem (call rem_pio2 x))
+    (let m:i32 (bitand (get r Rem.n) 3))
+    (cond
+      ((eq m 0) (call k_sin (get r Rem.y0) (get r Rem.y1) 1))
+      ((eq m 1) (call k_cos (get r Rem.y0) (get r Rem.y1)))
+      ((eq m 2) (call neg (call k_sin (get r Rem.y0) (get r Rem.y1) 1)))
+      (else (call neg (call k_cos (get r Rem.y0) (get r Rem.y1))))))
+
+  ;; The cosine (FreeBSD s_cos.c).
+  (fn cos [x:f64] -> f64 (pub)
+    (let ix:i32 (bitand (call hi_word x) 2147483647))
+    (when (lte ix 1072243195)
+      (when (and (lt ix 1044816030) (eq (i32.trunc_f64_s x) 0)) (return 1.0))
+      (return (call k_cos x 0.0)))
+    (when (gte ix 2146435072) (return (- x x)))
+    (let r:Rem (call rem_pio2 x))
+    (let m:i32 (bitand (get r Rem.n) 3))
+    (cond
+      ((eq m 0) (call k_cos (get r Rem.y0) (get r Rem.y1)))
+      ((eq m 1) (call neg (call k_sin (get r Rem.y0) (get r Rem.y1) 1)))
+      ((eq m 2) (call neg (call k_cos (get r Rem.y0) (get r Rem.y1))))
+      (else (call k_sin (get r Rem.y0) (get r Rem.y1) 1))))
+
+  ;; The tangent (FreeBSD s_tan.c).
+  (fn tan [x:f64] -> f64 (pub)
+    (let ix:i32 (bitand (call hi_word x) 2147483647))
+    (when (lte ix 1072243195)
+      (when (lt ix 1044381696) (return x))
+      (return (call k_tan x 0.0 0)))
+    (when (gte ix 2146435072) (return (- x x)))
+    (let r:Rem (call rem_pio2 x))
+    (call k_tan (get r Rem.y0) (get r Rem.y1) (bitand (get r Rem.n) 1)))
+
+  (const ATANHI0:f64 0.4636476090008061)
+  (const ATANHI1:f64 0.7853981633974483)
+  (const ATANHI2:f64 0.982793723247329)
+  (const ATANHI3:f64 1.5707963267948966)
+  (const ATANLO0:f64 2.2698777452961687e-17)
+  (const ATANLO1:f64 3.061616997868383e-17)
+  (const ATANLO2:f64 1.3903311031230998e-17)
+  (const ATANLO3:f64 6.123233995736766e-17)
+  (const AT0:f64 0.3333333333333293)
+  (const AT1:f64 -0.19999999999876483)
+  (const AT2:f64 0.14285714272503466)
+  (const AT3:f64 -0.11111110405462356)
+  (const AT4:f64 0.09090887133436507)
+  (const AT5:f64 -0.0769187620504483)
+  (const AT6:f64 0.06661073137387531)
+  (const AT7:f64 -0.058335701337905735)
+  (const AT8:f64 0.049768779946159324)
+  (const AT9:f64 -0.036531572744216916)
+  (const AT10:f64 0.016285820115365782)
+  (const PI_LO:f64 1.2246467991473532e-16)
+  (const PIO2_HI:f64 1.5707963267948966)
+  (const PIO2_LO:f64 6.123233995736766e-17)
+  (const P_S0:f64 0.16666666666666666)
+  (const P_S1:f64 -0.3255658186224009)
+  (const P_S2:f64 0.20121253213486293)
+  (const P_S3:f64 -0.04005553450067941)
+  (const P_S4:f64 0.0007915349942898145)
+  (const P_S5:f64 3.479331075960212e-5)
+  (const Q_S1:f64 -2.403394911734414)
+  (const Q_S2:f64 2.0209457602335057)
+  (const Q_S3:f64 -0.6882839716054533)
+  (const Q_S4:f64 0.07703815055590194)
+  (const TWO53:f64 9007199254740992.0)
+  (const HUGE:f64 1.0e300)
+  (const TINY:f64 1.0e-300)
+  (const POW_L1:f64 0.5999999999999946)
+  (const POW_L2:f64 0.4285714285785502)
+  (const POW_L3:f64 0.33333332981837743)
+  (const POW_L4:f64 0.272728123808534)
+  (const POW_L5:f64 0.23066074577556175)
+  (const POW_L6:f64 0.20697501780033842)
+  (const POW_P1:f64 0.16666666666666602)
+  (const POW_P2:f64 -0.0027777777777015593)
+  (const POW_P3:f64 6.613756321437934e-5)
+  (const POW_P4:f64 -1.6533902205465252e-6)
+  (const POW_P5:f64 4.1381367970572385e-8)
+  (const POW_LG2:f64 0.6931471805599453)
+  (const POW_LG2_H:f64 0.6931471824645996)
+  (const POW_LG2_L:f64 -1.904654299957768e-9)
+  (const OVT:f64 8.008566259537294e-17)
+  (const CP:f64 0.9617966939259756)
+  (const CP_H:f64 0.9617967009544373)
+  (const CP_L:f64 -7.028461650952758e-9)
+  (const POW_IVLN2:f64 1.4426950408889634)
+  (const IVLN2_H:f64 1.4426950216293335)
+  (const IVLN2_L:f64 1.9259629911266175e-8)
+  (const DP_H1:f64 0.5849624872207642)
+  (const DP_L1:f64 1.350039202129749e-8)
+  (const KLN2:f64 1416.0996898839683)
+  (const SPLIT:f64 134217729.0)
+  (const CBRT_P0:f64 1.87595182427177)
+  (const CBRT_P1:f64 -1.8849797954337717)
+  (const CBRT_P2:f64 1.6214297201053545)
+  (const CBRT_P3:f64 -0.758397934778766)
+  (const CBRT_P4:f64 0.14599619288661245)
+
+  ;; |x|, by clearing the sign bit (so that -0.0 gives 0.0).
+  (fn fabs [x:f64] -> f64 (f64.reinterpret_i64 (bitand (i64.reinterpret_f64 x) 9223372036854775807i64)))
+
+  ;; -x, by flipping the sign (so that 0.0 gives -0.0).
+  (fn neg [x:f64] -> f64 (* -1.0 x))
+
+  ;; The arc tangent (FreeBSD s_atan.c): the argument brought into [-7/16, 7/16] by one of four identities,
+  ;; atan(x) = atanhi + atanlo + atan(reduced) from a degree-23 polynomial.
+  (fn atan [x0:f64] -> f64 (pub)
+    (let x:f64 x0)
+    (let hx:i32 (call hi_word x))
+    (let sign:i32 (shru hx 31))
+    (let ix:i32 (bitand hx 2147483647))
+    (when (gte ix 1141899264)
+      (when (call is_nan x) (return x))
+      (return (if (neq sign 0) (call neg ATANHI3) ATANHI3)))
+    (let id:i32 -1)
+    (if (lt ix 1071382528)
+        (when (lt ix 1044381696) (return x))
+        (block
+          (set! x (call fabs x))
+          (cond
+            ((lt ix 1072889856)
+             (if (lt ix 1072037888)
+                 (block (set! x (/ (- (* 2.0 x) 1.0) (+ 2.0 x))) (set! id 0))
+                 (block (set! x (/ (- x 1.0) (+ x 1.0))) (set! id 1))))
+            ((lt ix 1073971200)
+             (set! x (/ (- x 1.5) (+ 1.0 (* 1.5 x))))
+             (set! id 2))
+            (else
+             (set! x (/ -1.0 x))
+             (set! id 3)))))
+    (let z:f64 (* x x))
+    (let w:f64 (* z z))
+    (let s1:f64 (* z (+ AT0 (* w (+ AT2 (* w (+ AT4 (* w (+ AT6 (* w (+ AT8 (* w AT10))))))))))))
+    (let s2:f64 (* w (+ AT1 (* w (+ AT3 (* w (+ AT5 (* w (+ AT7 (* w AT9))))))))))
+    (when (lt id 0) (return (- x (* x (+ s1 s2)))))
+    (let hi:f64 (cond ((eq id 0) ATANHI0) ((eq id 1) ATANHI1) ((eq id 2) ATANHI2) (else ATANHI3)))
+    (let lo:f64 (cond ((eq id 0) ATANLO0) ((eq id 1) ATANLO1) ((eq id 2) ATANLO2) (else ATANLO3)))
+    (let r:f64 (- hi (- (- (* x (+ s1 s2)) lo) x)))
+    (if (neq sign 0) (call neg r) r))
+
+  ;; The angle of the point (x, y) from the positive x axis, in (-pi, pi] (FreeBSD e_atan2.c): the quadrant by
+  ;; the signs, atan(|y / x|) inside it, and the answers C names for zeros, infinities, and NaN.
+  (fn atan2 [y:f64 x:f64] -> f64 (pub)
+    (when (or (call is_nan x) (call is_nan y)) (return (+ x y)))
+    (let hx:i32 (call hi_word x))
+    (let lx:i32 (call lo_word x))
+    (let hy:i32 (call hi_word y))
+    (let ly:i32 (call lo_word y))
+    (when (and (eq hx 1072693248) (eq lx 0)) (return (call atan y)))
+    (let m:i32 (bitor (bitand (shru hy 31) 1) (bitand (shru hx 30) 2)))
+    (let ix:i32 (bitand hx 2147483647))
+    (let iy:i32 (bitand hy 2147483647))
+    (when (eq (bitor iy ly) 0)
+      (return (cond ((lte m 1) y) ((eq m 2) PI) (else (call neg PI)))))
+    (when (eq (bitor ix lx) 0)
+      (return (if (neq (bitand m 1) 0) (/ (call neg PI) 2.0) (/ PI 2.0))))
+    (when (eq ix 2146435072)
+      (if (eq iy 2146435072)
+          (return (cond ((eq m 0) (/ PI 4.0))
+                        ((eq m 1) (/ (call neg PI) 4.0))
+                        ((eq m 2) (/ (* 3.0 PI) 4.0))
+                        (else (/ (call neg (* 3.0 PI)) 4.0))))
+          (return (cond ((eq m 0) 0.0) ((eq m 1) (call neg 0.0)) ((eq m 2) PI) (else (call neg PI))))))
+    (when (or (ltu (+ ix 67108864) iy) (eq iy 2146435072))
+      (return (if (neq (bitand m 1) 0) (/ (call neg PI) 2.0) (/ PI 2.0))))
+    (let z:f64
+      (if (and (neq (bitand m 2) 0) (ltu (+ iy 67108864) ix))
+          0.0
+          (call atan (call fabs (/ y x)))))
+    (cond
+      ((eq m 0) z)
+      ((eq m 1) (call neg z))
+      ((eq m 2) (- PI (- z PI_LO)))
+      (else (- (- z PI_LO) PI))))
+
+  ;; The rational function asin and acos share (FreeBSD e_asin.c): (asin(sqrt z) - sqrt z) / sqrt z.
+  (fn asin_r [z:f64] -> f64
+    (let p:f64 (* z (+ P_S0 (* z (+ P_S1 (* z (+ P_S2 (* z (+ P_S3 (* z (+ P_S4 (* z P_S5))))))))))))
+    (let q:f64 (+ 1.0 (* z (+ Q_S1 (* z (+ Q_S2 (* z (+ Q_S3 (* z Q_S4)))))))))
+    (/ p q))
+
+  ;; The arc sine (FreeBSD e_asin.c); NaN outside [-1, 1].
+  (fn asin [x0:f64] -> f64 (pub)
+    (let x:f64 x0)
+    (let hx:i32 (call hi_word x))
+    (let ix:i32 (bitand hx 2147483647))
+    (when (gte ix 1072693248)
+      (if (eq (bitor (- ix 1072693248) (call lo_word x)) 0)
+          (return (+ (* x PIO2_HI) 7.52316384526264e-37))
+          (return (/ 0.0 (- x x)))))
+    (when (lt ix 1071644672)
+      (if (and (gte ix 1048576) (lt ix 1045430272))
+          (return x)
+          (return (+ x (* x (call asin_r (* x x)))))))
+    (let z:f64 (* (- 1.0 (call fabs x)) 0.5))
+    (let s:f64 (f64.sqrt z))
+    (let r:f64 (call asin_r z))
+    (if (gte ix 1072640819)
+        (set! x (- PIO2_HI (- (* 2.0 (+ s (* s r))) PIO2_LO)))
+        (block
+          (let f:f64 (call clear_lo s))
+          (let c:f64 (/ (- z (* f f)) (+ s f)))
+          (set! x (- (* 0.5 PIO2_HI) (- (- (* (* 2.0 s) r) (- PIO2_LO (* 2.0 c))) (- (* 0.5 PIO2_HI) (* 2.0 f)))))))
+    (if (lt hx 0) (call neg x) x))
+
+  ;; The arc cosine (FreeBSD e_acos.c); NaN outside [-1, 1].
+  (fn acos [x:f64] -> f64 (pub)
+    (let hx:i32 (call hi_word x))
+    (let ix:i32 (bitand hx 2147483647))
+    (when (gte ix 1072693248)
+      (when (eq (bitor (- ix 1072693248) (call lo_word x)) 0)
+        (when (neq (shru hx 31) 0) (return (+ (* 2.0 PIO2_HI) 7.52316384526264e-37)))
+        (return 0.0))
+      (return (/ 0.0 (- x x))))
+    (when (lt ix 1071644672)
+      (when (lte ix 1012924416) (return (+ PIO2_HI 7.52316384526264e-37)))
+      (return (- PIO2_HI (- x (- PIO2_LO (* x (call asin_r (* x x))))))))
+    (when (neq (shru hx 31) 0)
+      (let z1:f64 (* (+ 1.0 x) 0.5))
+      (let s1:f64 (f64.sqrt z1))
+      (let w1:f64 (- (* (call asin_r z1) s1) PIO2_LO))
+      (return (* 2.0 (- PIO2_HI (+ s1 w1)))))
+    (let z:f64 (* (- 1.0 x) 0.5))
+    (let s:f64 (f64.sqrt z))
+    (let df:f64 (call clear_lo s))
+    (let c:f64 (/ (- z (* df df)) (+ s df)))
+    (let w:f64 (+ (* (call asin_r z) s) c))
+    (* 2.0 (+ df w)))
+
+  ;; exp(x - 1417) scaled back by 2^2042, for the cosh and sinh of a large argument (FreeBSD k_exp.c's
+  ;; __ldexp_exp), which would overflow in exp(x) though the answer does not.
+  (fn expo2 [x:f64] -> f64
+    (* (* (call exp (- x KLN2)) 2.247116418577895e307) 2.247116418577895e307))
+
+  ;; The hyperbolic sine (FreeBSD e_sinh.c), from expm1.
+  (fn sinh [x:f64] -> f64 (pub)
+    (let h:f64 (if (lt (i64.reinterpret_f64 x) 0i64) -0.5 0.5))
+    (let absx:f64 (call fabs x))
+    (let w:i32 (call hi_word absx))
+    (when (lt w 1082535490)
+      (let t:f64 (call expm1 absx))
+      (when (lt w 1072693248)
+        (when (lt w 1045430272) (return x))
+        (return (* h (- (* 2.0 t) (/ (* t t) (+ t 1.0))))))
+      (return (* h (+ t (/ t (+ t 1.0))))))
+    (* (* 2.0 h) (call expo2 absx)))
+
+  ;; The hyperbolic cosine (FreeBSD e_cosh.c).
+  (fn cosh [x0:f64] -> f64 (pub)
+    (let x:f64 (call fabs x0))
+    (let w:i32 (call hi_word x))
+    (when (lt w 1072049730)
+      (when (lt w 1045430272) (return 1.0))
+      (let t:f64 (call expm1 x))
+      (return (+ 1.0 (/ (* t t) (* 2.0 (+ 1.0 t))))))
+    (when (lt w 1082535490)
+      (let t2:f64 (call exp x))
+      (return (* 0.5 (+ t2 (/ 1.0 t2)))))
+    (call expo2 x))
+
+  ;; The hyperbolic tangent (FreeBSD s_tanh.c).
+  (fn tanh [x0:f64] -> f64 (pub)
+    (let sign:bool (lt (i64.reinterpret_f64 x0) 0i64))
+    (let x:f64 (call fabs x0))
+    (let w:i32 (call hi_word x))
+    (let t:f64 0.0)
+    (cond
+      ((gt w 1071748074)
+       (if (gt w 1077149696)
+           (set! t (- 1.0 (/ 0.0 x)))
+           (block
+             (set! t (call expm1 (* 2.0 x)))
+             (set! t (- 1.0 (/ 2.0 (+ t 2.0)))))))
+      ((gt w 1070618798)
+       (set! t (call expm1 (* 2.0 x)))
+       (set! t (/ t (+ t 2.0))))
+      ((gte w 1048576)
+       (set! t (call expm1 (* -2.0 x)))
+       (set! t (/ (call neg t) (+ t 2.0))))
+      (else (set! t x)))
+    (if sign (call neg t) t))
+
+  ;; x * x as a sum of two doubles, hi + lo exactly (Dekker's split).
+  (struct Sq [hi:f64 lo:f64] (value))
+
+  (fn sq [x:f64] -> Sq
+    (let xc:f64 (* x SPLIT))
+    (let xh:f64 (+ (- x xc) xc))
+    (let xl:f64 (- x xh))
+    (let hi:f64 (* x x))
+    (make Sq [hi:hi lo:(+ (+ (- (* xh xh) hi) (* (* 2.0 xh) xl)) (* xl xl))]))
+
+  ;; sqrt(x*x + y*y) without overflow or underflow, and with an error under 1 ulp (musl's hypot): the
+  ;; squares as exact double sums, scaled by 2^700 where the arguments are very large or very small.
+  (fn hypot [x0:f64 y0:f64] -> f64 (pub)
+    (let uxi:i64 (bitand (i64.reinterpret_f64 x0) 9223372036854775807i64))
+    (let uyi:i64 (bitand (i64.reinterpret_f64 y0) 9223372036854775807i64))
+    (when (lt uxi uyi)
+      (let uti:i64 uxi)
+      (set! uxi uyi)
+      (set! uyi uti))
+    (let ex:i64 (shru uxi 52i64))
+    (let ey:i64 (shru uyi 52i64))
+    (let x:f64 (f64.reinterpret_i64 uxi))
+    (let y:f64 (f64.reinterpret_i64 uyi))
+    (when (eq ey 2047i64) (return y))
+    (when (or (eq ex 2047i64) (eq uyi 0i64)) (return x))
+    (when (gt (- ex ey) 64i64) (return (+ x y)))
+    (let z:f64 1.0)
+    (if (gt ex 1533i64)
+        (block
+          (set! z 5.260135901548374e210)
+          (set! x (* x 1.90109156629516e-211))
+          (set! y (* y 1.90109156629516e-211)))
+        (when (lt ey 573i64)
+          (set! z 1.90109156629516e-211)
+          (set! x (* x 5.260135901548374e210))
+          (set! y (* y 5.260135901548374e210))))
+    (let sx:Sq (call sq x))
+    (let sy:Sq (call sq y))
+    (* z (f64.sqrt (+ (+ (+ (get sy Sq.lo) (get sx Sq.lo)) (get sy Sq.hi)) (get sx Sq.hi)))))
+
+  ;; The cube root (FreeBSD s_cbrt.c): a bit-twiddled guess good to 5 bits, a polynomial to 23, one Newton
+  ;; step to 53; error under 0.667 ulp (not always the correctly rounded value).
+  (fn cbrt [x:f64] -> f64 (pub)
+    (let hx:i32 (bitand (call hi_word x) 2147483647))
+    (when (gte hx 2146435072) (return (+ x x)))
+    (if (lt hx 1048576)
+        (block
+          (let h2:i32 (bitand (call hi_word (* x 18014398509481984.0)) 2147483647))
+          (when (eq h2 0) (return x))
+          (set! hx (+ (/ h2 3) 696219795)))
+        (set! hx (+ (/ hx 3) 715094163)))
+    (let t0:f64 (call from_words (bitor (bitand (call hi_word x) -2147483648) hx) 0))
+    (let r0:f64 (* (* t0 t0) (/ t0 x)))
+    (let t1:f64 (* t0 (+ (+ CBRT_P0 (* r0 (+ CBRT_P1 (* r0 CBRT_P2)))) (* (* (* r0 r0) r0) (+ CBRT_P3 (* r0 CBRT_P4))))))
+    (let t2:f64 (f64.reinterpret_i64 (bitand (+ (i64.reinterpret_f64 t1) 2147483648i64) -1073741824i64)))
+    (let s:f64 (* t2 t2))
+    (let r1:f64 (/ x s))
+    (let w:f64 (+ t2 t2))
+    (let r2:f64 (/ (- r1 t2) (+ w r1)))
+    (+ t2 (* t2 r2)))
+
+  ;; x to the power y (FreeBSD e_pow.c): log2(x) as a sum of two doubles, times y as another, then 2^ of
+  ;; that: error under 0.7 ulp. Every case C names: pow(x, 0) and pow(1, y) are 1 (NaN included), a negative
+  ;; x with a y that is not a whole number is NaN, the signs of zeros and infinities follow the sign of y and
+  ;; the parity of a whole y.
+  (fn pow_f64 [x:f64 y:f64] -> f64 (pub)
+    (let hx:i32 (call hi_word x))
+    (let lx:i32 (call lo_word x))
+    (let hy:i32 (call hi_word y))
+    (let ly:i32 (call lo_word y))
+    (let ix:i32 (bitand hx 2147483647))
+    (let iy:i32 (bitand hy 2147483647))
+    (when (eq (bitor iy ly) 0) (return 1.0))
+    (when (and (eq hx 1072693248) (eq lx 0)) (return 1.0))
+    (when (or (or (gt ix 2146435072) (and (eq ix 2146435072) (neq lx 0)))
+              (or (gt iy 2146435072) (and (eq iy 2146435072) (neq ly 0))))
+      (return (+ x y)))
+    ;; whether y is an odd (1) or even (2) whole number, when x is negative
+    (let yisint:i32 0)
+    (when (lt hx 0)
+      (if (gte iy 1128267776)
+          (set! yisint 2)
+          (when (gte iy 1072693248)
+            (let ke:i32 (- (shr iy 20) 1023))
+            (if (gt ke 20)
+                (block
+                  (let jl:i32 (shru ly (- 52 ke)))
+                  (when (eq (shl jl (- 52 ke)) ly) (set! yisint (- 2 (bitand jl 1)))))
+                (when (eq ly 0)
+                  (let jh:i32 (shr iy (- 20 ke)))
+                  (when (eq (shl jh (- 20 ke)) iy) (set! yisint (- 2 (bitand jh 1)))))))))
+    (when (eq ly 0)
+      (when (eq iy 2146435072)
+        (return (cond ((eq (bitor (- ix 1072693248) lx) 0) 1.0)
+                      ((gte ix 1072693248) (if (gte hy 0) y 0.0))
+                      (else (if (gte hy 0) 0.0 (call neg y))))))
+      (when (eq iy 1072693248) (return (if (gte hy 0) x (/ 1.0 x))))
+      (when (eq hy 1073741824) (return (* x x)))
+      (when (and (eq hy 1071644672) (gte hx 0)) (return (f64.sqrt x))))
+    (let ax:f64 (call fabs x))
+    (when (and (eq lx 0) (or (or (eq ix 2146435072) (eq ix 0)) (eq ix 1072693248)))
+      (let zs:f64 ax)
+      (when (lt hy 0) (set! zs (/ 1.0 zs)))
+      (when (lt hx 0)
+        (if (eq (bitor (- ix 1072693248) yisint) 0)
+            (set! zs (/ (- zs zs) (- zs zs)))
+            (when (eq yisint 1) (set! zs (call neg zs)))))
+      (return zs))
+    (let s:f64 1.0)
+    (when (lt hx 0)
+      (when (eq yisint 0) (return (/ (- x x) (- x x))))
+      (when (eq yisint 1) (set! s -1.0)))
+    (let t1:f64 0.0)
+    (let t2:f64 0.0)
+    (if (gt iy 1105199104)
+        (block
+          (when (gt iy 1139802112)
+            (when (lte ix 1072693247) (return (if (lt hy 0) (* HUGE HUGE) (* TINY TINY))))
+            (when (gte ix 1072693248) (return (if (gt hy 0) (* HUGE HUGE) (* TINY TINY)))))
+          (when (lt ix 1072693247)
+            (return (if (lt hy 0) (* (* s HUGE) HUGE) (* (* s TINY) TINY))))
+          (when (gt ix 1072693248)
+            (return (if (gt hy 0) (* (* s HUGE) HUGE) (* (* s TINY) TINY))))
+          (let tt:f64 (- ax 1.0))
+          (let ww:f64 (* (* tt tt) (- 0.5 (* tt (- 0.3333333333333333 (* tt 0.25))))))
+          (let uu:f64 (* IVLN2_H tt))
+          (let vv:f64 (- (* tt IVLN2_L) (* ww POW_IVLN2)))
+          (set! t1 (call clear_lo (+ uu vv)))
+          (set! t2 (- vv (- t1 uu))))
+        (block
+          (let n:i32 0)
+          (let ax2:f64 ax)
+          (let ix2:i32 ix)
+          (when (lt ix2 1048576)
+            (set! ax2 (* ax2 TWO53))
+            (set! n (- n 53))
+            (set! ix2 (call hi_word ax2)))
+          (set! n (+ n (- (shr ix2 20) 1023)))
+          (let jj:i32 (bitand ix2 1048575))
+          (let k:i32 0)
+          (set! ix2 (bitor jj 1072693248))
+          (cond
+            ((lte jj 235662) (set! k 0))
+            ((lt jj 767610) (set! k 1))
+            (else
+             (set! k 0)
+             (set! n (+ n 1))
+             (set! ix2 (- ix2 1048576))))
+          (set! ax2 (call from_words ix2 (call lo_word ax2)))
+          (let bp:f64 (if (eq k 0) 1.0 1.5))
+          (let u:f64 (- ax2 bp))
+          (let v:f64 (/ 1.0 (+ ax2 bp)))
+          (let ss:f64 (* u v))
+          (let s_h:f64 (call clear_lo ss))
+          (let t_h:f64 (call from_words (+ (+ (bitor (shru ix2 1) 536870912) 524288) (shl k 18)) 0))
+          (let t_l:f64 (- ax2 (- t_h bp)))
+          (let s_l:f64 (* v (- (- u (* s_h t_h)) (* s_h t_l))))
+          (let s2:f64 (* ss ss))
+          (let r:f64 (* (* s2 s2) (+ POW_L1 (* s2 (+ POW_L2 (* s2 (+ POW_L3 (* s2 (+ POW_L4 (* s2 (+ POW_L5 (* s2 POW_L6))))))))))))
+          (set! r (+ r (* s_l (+ s_h ss))))
+          (let s3:f64 (* s_h s_h))
+          (let t_h2:f64 (call clear_lo (+ (+ 3.0 s3) r)))
+          (let t_l2:f64 (- r (- (- t_h2 3.0) s3)))
+          (let u2:f64 (* s_h t_h2))
+          (let v2:f64 (+ (* s_l t_h2) (* t_l2 ss)))
+          (let p_h:f64 (call clear_lo (+ u2 v2)))
+          (let p_l:f64 (- v2 (- p_h u2)))
+          (let z_h:f64 (* CP_H p_h))
+          (let dpl:f64 (if (eq k 0) 0.0 DP_L1))
+          (let dph:f64 (if (eq k 0) 0.0 DP_H1))
+          (let z_l:f64 (+ (+ (* CP_L p_h) (* p_l CP)) dpl))
+          (let tn:f64 (f64.convert_i32_s n))
+          (set! t1 (call clear_lo (+ (+ (+ z_h z_l) dph) tn)))
+          (set! t2 (- z_l (- (- (- t1 tn) dph) z_h)))))
+    ;; split y into y1 + y2 and compute (y1 + y2) * (t1 + t2)
+    (let y1:f64 (call clear_lo y))
+    (let p_l3:f64 (+ (* (- y y1) t1) (* y t2)))
+    (let p_h3:f64 (* y1 t1))
+    (let z:f64 (+ p_l3 p_h3))
+    (let j:i32 (call hi_word z))
+    (let i:i32 (call lo_word z))
+    (if (gte j 1083179008)
+        (block
+          (when (neq (bitor (- j 1083179008) i) 0) (return (* (* s HUGE) HUGE)))
+          (when (gt (+ p_l3 OVT) (- z p_h3)) (return (* (* s HUGE) HUGE))))
+        (when (gte (bitand j 2147483647) 1083231232)
+          (when (neq (bitor (+ j 1064252416) i) 0) (return (* (* s TINY) TINY)))
+          (when (lte p_l3 (- z p_h3)) (return (* (* s TINY) TINY)))))
+    ;; 2^(p_h + p_l)
+    (let ia:i32 (bitand j 2147483647))
+    (let k2:i32 (- (shr ia 20) 1023))
+    (let n2:i32 0)
+    (let p_h4:f64 p_h3)
+    (when (gt ia 1071644672)
+      (set! n2 (+ j (shr 1048576 (+ k2 1))))
+      (set! k2 (- (shr (bitand n2 2147483647) 20) 1023))
+      (let tt2:f64 (call from_words (bitand n2 (^ (shr 1048575 k2) -1)) 0))
+      (set! n2 (shr (bitor (bitand n2 1048575) 1048576) (- 20 k2)))
+      (when (lt j 0) (set! n2 (- 0 n2)))
+      (set! p_h4 (- p_h4 tt2)))
+    (let tt3:f64 (call clear_lo (+ p_l3 p_h4)))
+    (let uu3:f64 (* tt3 POW_LG2_H))
+    (let vv3:f64 (+ (* (- p_l3 (- tt3 p_h4)) POW_LG2) (* tt3 POW_LG2_L)))
+    (let z2:f64 (+ uu3 vv3))
+    (let w2:f64 (- vv3 (- z2 uu3)))
+    (let tt4:f64 (* z2 z2))
+    (let t1b:f64 (- z2 (* tt4 (+ POW_P1 (* tt4 (+ POW_P2 (* tt4 (+ POW_P3 (* tt4 (+ POW_P4 (* tt4 POW_P5)))))))))))
+    (let rr:f64 (- (/ (* z2 t1b) (- t1b 2.0)) (+ w2 (* z2 w2))))
+    (let z3:f64 (- 1.0 (- rr z2)))
+    (let jz:i32 (+ (call hi_word z3) (shl n2 20)))
+    (let z4:f64 (if (lte (shr jz 20) 0) (call scalbn z3 n2) (call from_words jz (call lo_word z3))))
+    (* s z4))
+
+)

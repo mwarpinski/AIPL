@@ -1,0 +1,92 @@
+;; The process operations (docs/design/SYS_PLAN.md D3): tests/test_sys.rs runs
+;; this with `--allow-run /bin/sh --allow-run /bin/cat`, once for each backend;
+;; every case prints a line, and what a program writes to standard output is
+;; passed through. A handle's number is never printed (what it is differs).
+(module proc_cases
+  (import alloc)
+  (import buf)
+  (import str)
+
+  ;; The arguments block for /bin/sh -c SCRIPT: each followed by a zero byte.
+  (fn sh_args [script:str] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_str b "sh") (call buf.push_byte b 0)
+    (call buf.push_str b "-c") (call buf.push_byte b 0)
+    (call buf.push_str b script) (call buf.push_byte b 0)
+    b)
+
+  (fn spawn_sh [script:str stdio:i32] -> i32
+    (let a:(ptr buf.Buf) (call sh_args script))
+    (let args:str.Bytes (call buf.bytes a))
+    (unsafe (proc.spawn (str.ptr "/bin/sh") 7 (call str.addr args) (get args str.Bytes.len) stdio)))
+
+  ;; Reads the pipe to its end, passing the bytes to standard output; the count.
+  (fn drain [h:i32] -> i32
+    (let chunk:i32 (unsafe (mem.alloc 256)))
+    (let total:i32 0)
+    (let more:bool true)
+    (while more
+      (let n:i32 (unsafe (proc.read h chunk 256)))
+      (if (gt n 0)
+          (block (unsafe (fs.write 1 chunk n)) (set! total (+ total n)))
+          (set! more false)))
+    total)
+
+  (fn say [label:str n:i32] -> void
+    (println "{label} {n}"))
+
+  (fn main [] -> i32
+    ;; a pipe each way through cat
+    (let p:i32 (call spawn_sh "cat" 5))
+    (let to:i32 (unsafe (proc.stream p 0)))
+    (let from:i32 (unsafe (proc.stream p 1)))
+    (let err:i32 (unsafe (proc.stream p 2)))
+    (call say "stderr_not_a_pipe" err)
+    (let sent:i32 (unsafe (proc.write to (str.ptr "hello\n") 6)))
+    (call say "sent" sent)
+    (call say "closed_input" (unsafe (proc.close to)))
+    (let got:i32 (call drain from))
+    (call say "read" got)
+    (call say "status" (unsafe (proc.wait p)))
+    (call say "status_again" (unsafe (proc.wait p)))
+    (call say "wrong_way" (unsafe (proc.read to (mem.alloc 8) 8)))
+    (call say "closed_output" (unsafe (proc.close from)))
+    (call say "read_closed" (unsafe (proc.read from (mem.alloc 8) 8)))
+    (call say "released" (unsafe (proc.close p)))
+    (call say "wait_released" (unsafe (proc.wait p)))
+    ;; a status, and a signal
+    (let q:i32 (call spawn_sh "exit 7" 0))
+    (call say "no_stream" (unsafe (proc.stream q 0)))
+    (call say "exit_7" (unsafe (proc.wait q)))
+    (let k:i32 (call spawn_sh "kill -9 $$" 0))
+    (call say "killed" (unsafe (proc.wait k)))
+    ;; output and error through one pipe (error 3 is the output's), a null output
+    (let m:i32 (call spawn_sh "echo out; echo err 1>&2; exit 2" 52))
+    (let both:i32 (call drain (unsafe (proc.stream m 1))))
+    (call say "merged" both)
+    (call say "merged_status" (unsafe (proc.wait m)))
+    (let n:i32 (call spawn_sh "echo hidden; exit 3" 8))
+    (call say "null_status" (unsafe (proc.wait n)))
+    ;; the arguments: the last word has no zero byte after it; the environment is the program's
+    (let a:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_str a "sh") (call buf.push_byte a 0)
+    (call buf.push_str a "-c") (call buf.push_byte a 0)
+    (call buf.push_str a "echo \"$0-$1 env=$AIPL_PROC_TEST\"") (call buf.push_byte a 0)
+    (call buf.push_str a "A") (call buf.push_byte a 0)
+    (call buf.push_str a "B")
+    (let ab:str.Bytes (call buf.bytes a))
+    (let r:i32 (unsafe (proc.spawn (str.ptr "/bin/sh") 7 (call str.addr ab) (get ab str.Bytes.len) 4)))
+    (call say "args" (call drain (unsafe (proc.stream r 1))))
+    (call say "args_status" (unsafe (proc.wait r)))
+    ;; what is refused
+    (call say "missing" (unsafe (proc.spawn (str.ptr "/no/such/program") 16 (str.ptr "x") 1 0)))
+    (call say "not_granted" (unsafe (proc.spawn (str.ptr "/bin/echo") 9 (str.ptr "echo") 4 0)))
+    (call say "bad_stdio" (unsafe (proc.spawn (str.ptr "/bin/sh") 7 (str.ptr "sh") 2 3)))
+    (call say "bad_stdio_high" (unsafe (proc.spawn (str.ptr "/bin/sh") 7 (str.ptr "sh") 2 64)))
+    (call say "bad_handle_wait" (unsafe (proc.wait 99999)))
+    (call say "bad_handle_read" (unsafe (proc.read 99999 (mem.alloc 8) 8)))
+    (call say "bad_handle_write" (unsafe (proc.write 99999 (str.ptr "x") 1)))
+    (call say "bad_handle_close" (unsafe (proc.close 99999)))
+    (call say "bad_handle_stream" (unsafe (proc.stream 99999 0)))
+    (call say "too_long" (unsafe (proc.spawn 1024 2000000000 1024 1 0)))
+    0))

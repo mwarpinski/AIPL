@@ -1,0 +1,56 @@
+;; shapes: a fixture for aipl doc (tests/test_doc.rs), with every kind of
+;; item it shows.
+;;
+;;   (call shapes.area s)
+(module shapes
+  (import cmp)
+
+  ;; ===== Types =====
+
+  ;; A shape's size, readable and writable.
+  (struct Box [(read w:i32) (pub h:i32) secret:i32] (pub))
+
+  ;; A point, held by value.
+  (struct Point [(read x:f64) (read y:f64)] (value) (pub))
+
+  ;; Nothing outside can read it.
+  (struct Hidden [a:i32 b:i32] (pub))
+
+  ;; A circle or a box.
+  (union Shape [(circle r:f64)
+                (boxed b:(ptr Box))] (pub))
+
+  ;; How it is drawn.
+  (enum Style [solid dashed] (pub))
+
+  ;; The largest side.
+  (const MAX:i32 4096 (pub))
+
+  ;; Shapes that know their area.
+  (interface (Area T) (pub)
+    (fn area_of [s:T] -> f64))
+
+  ;; This comment is separated by a blank line, so it documents nothing.
+
+  (fn undocumented [] -> i32 (pub) 0)
+
+  ;; The area of s.
+  (fn area [s:Shape] -> f64 (pub)
+    (match s
+      (Shape.circle [r] (* 3.0 (* r r)))   ;; a comment after code
+      (Shape.boxed [b] (f64.convert_i32_s (* (get b Box.w) (get b Box.h))))))
+
+  ;; The larger of a and b, for any ordered T.
+  (fn (larger T) [a:T b:T] -> T (pub) (where (cmp.Ord T))
+    (req true)
+    (if (gt (call (cmp.Ord.compare T) a b) 0) a b))
+
+  ;; A raw byte. Unsafe to call: any address.
+  (fn peek [addr:i32] -> i32 (pub) (unsafe)
+    (unsafe (mem.load8 addr)))
+
+  ;; Implementations are not shown.
+  (impl (Area (ptr Box)) (fn area_of [s:(ptr Box)] -> f64 (f64.convert_i32_s (get s Box.w))))
+
+  ;; Private: aipl doc shows it only with --private.
+  (fn helper [b:(ptr Box)] -> i32 (get b Box.secret)))

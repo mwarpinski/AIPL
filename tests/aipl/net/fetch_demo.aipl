@@ -1,0 +1,27 @@
+;; A client for tests/test_net.rs: fetches the URL given as its first argument with
+;; http.fetch and prints what came back, or why nothing did (an Error's status is 0 for a
+;; failure of the exchange itself). Needs --allow-connect for the address it fetches from.
+(module fetch_demo
+  (import alloc)
+  (import option)
+  (import str)
+  (import http)
+  (import os)
+  (import io)
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let url:str (call str.from_bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str ""))))
+    (match_result (call http.fetch a url (call http.default_limits))
+      (ok m
+        (println "status {(get m http.Message.status)} {(get m http.Message.reason)}")
+        (let xt:str.Bytes (call (option.unwrap_or str.Bytes) (call http.header m "x-test") (call str.from_str "none")))
+        (println "x-test {xt}")
+        (println "body {(get (get m http.Message.body) str.Bytes.len)} {(get m http.Message.body)}")
+        (call http.free_message m)
+        0)
+      (err e
+        (println "error {(get e http.Error.what)} ({(get e http.Error.status)})")
+        (call http.free_error a e)
+        0)))
+)

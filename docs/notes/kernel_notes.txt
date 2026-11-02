@@ -1,0 +1,74 @@
+Viewed lower.aipl:1-90
+
+You are actually **closer to booting a bare-metal kernel in AIPL than in almost any other language**—because [`aipl_src/native/`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/lower.aipl) *already* emits raw x86-64 machine code and ELF headers directly, with zero `libc`, zero `gcc`/`clang`, and zero external linker (`ld`).
+
+Look at how [`aipl_src/native/lower.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/lower.aipl#L31-L37) works right now:
+1. Every `(mem.load32 addr)` and `(mem.store32 addr val)` in AIPL compiles to a single x86-64 memory instruction `[r15 + addr]`, where `r15` is the linear memory base register.
+2. In normal user-space programs, the startup stub in [`runtime.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/runtime.aipl) calls Linux `mmap` and puts the heap base into `r15`.
+3. **In a `--kernel` / `--freestanding` mode:**
+   - If the startup stub sets `r15 = 0` (or identity-mapped physical RAM), then `(mem.store16 753664 val)` (`0xB8000`) in AIPL **literally writes directly to the physical VGA screen buffer** or MMIO hardware registers!
+   - Even better: you don't even have to write a BIOS bootloader from scratch to boot in QEMU or Firecracker—if [`elf.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/elf.aipl) emits a **16-byte Multiboot1 / PVH ELF note** in the ELF header, `qemu-system-x86_64 -kernel my_kernel.elf` will load your AIPL ELF binary straight into physical RAM and jump to `_start`!
+
+### The Only Hardware Primitives You'd Need to Add to AIPL
+
+Instead of full inline assembly strings (which are error-prone for LLMs to write), you only need **5 tiny `(unsafe ...)` hardware intrinsics** in `codegen.aipl` + `lower.aipl` (which represent ~80 lines of code in [`x64.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/x64.aipl)):
+
+1. **Port I/O (`in` / `out` instructions for serial console, PIC/APIC, keyboard, PCI):**
+   - `(cpu.in8 port:i32) -> i32` (`in al, dx`)
+   - `(cpu.out8 port:i32 byte:i32) -> void` (`out dx, al`)
+   - *(With just `cpu.out8` to port `0x3F8` (`COM1`), an AIPL kernel can print `"Hello from bare-metal AIPL kernel!\n"` over the QEMU serial console in 10 lines of AIPL!)*
+2. **Control & Model-Specific Registers (Paging & Syscall setup):**
+   - `(cpu.read_cr3) -> i64` / `(cpu.write_cr3 phys_addr:i64) -> void` (page table root)
+   - `(cpu.rdmsr msr:i32) -> i64` / `(cpu.wrmsr msr:i32 val:i64) -> void`
+3. **Interrupt & Descriptor Table Loaders (`lidt` / `lgdt` / `sti` / `cli` / `hlt`):**
+   - `(cpu.lidt addr:i64) -> void` (load Interrupt Descriptor Table)
+   - `(cpu.sti) -> void` / `(cpu.cli) -> void` / `(cpu.hlt) -> void`
+
+### Why an AIPL Kernel Would Actually Be Special
+
+In C, writing a kernel means every pointer dereference can corrupt arbitrary physical memory. In an AIPL kernel:
+- The physical page allocator and kernel data structures can use **64-bit generational `(ptr T)` and bounds-checked `(arr T)`**, meaning your kernel gets hardware-speed **use-after-free and out-of-bounds traps inside Ring 0** without needing a borrow checker or garbage collector.
+- Only the 50 lines of MMIO / page-table code have to sit inside `(unsafe ...)`.
+
+Whenever you want to try a fun weekend milestone, adding `--kernel` to [`aipl_src/native/`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/native.aipl) + `cpu.in8`/`cpu.out8` so `qemu-system-x86_64 -kernel kernel.elf -nographic` boots an AIPL kernel and runs an interactive shell over `COM1` would take maybe ~250 lines of AIPL total!
+
+Ran command: Native runtime syscall survey (`ls aipl_src/native/ && wc -l aipl_src/native/*.aipl && grep -n -i "syscall" aipl_src/native/runtime.aipl | head -60`)
+Ran command: Native syscall list (`grep -n -i -E "sys_[a-z_]+|SYS_[A-Z_]+|syscall number|;; .*\(syscall" aipl_src/native/wasi.aipl aipl_src/native/runtime.aipl aipl_src/native/native.aipl | head -60; grep -n -E "\(const SYS" -r aipl_src/native/ | head -40`)
+Ran command: Native syscall list (`grep -n -E "mov_ri32 c \(call rax\) [0-9]+|mov_ri32 c 0 [0-9]+|;; [a-z_]+ \([0-9]+\)|syscall [0-9]+|\(mmap|futex|clock_gettime|getrandom|openat|rt_sigaction|sigaltstack|clone|getdents|newfstatat|unlinkat" aipl_src/native/wasi.aipl aipl_src/native/native.aipl | head -60`)
+
+Yes, I think it's possible. But I owe you some corrections first, because my last answer made it sound easier than it is.
+
+### Where I was too optimistic
+
+1. **QEMU's `-kernel` with Multiboot won't load your ELF.** It refuses 64-bit ELF files. Both Multiboot and PVH also start the CPU in 32-bit mode, while AIPL's backend only produces 64-bit code. So you'd either need a small hand-written 32-to-64-bit trampoline, or (better) the **Limine** bootloader. Limine loads a 64-bit ELF, turns on paging and 64-bit mode, and passes you a memory map, so you skip the trampoline entirely.
+2. **WebAssembly has no hardware instructions.** The native backend translates Wasm to x86-64, and Wasm has no way to say `in`, `out`, `lidt`, or "set the page table." So `cpu.out8` and friends would have to be Wasm *imports* (say, an `aipl_cpu` module) that the native backend replaces with the real instruction. The backend already does this kind of thing: [`wasi.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/wasi.aipl) turns WASI imports into Linux syscalls. It's the right approach, but it's real backend work, not a quick addition.
+3. **Interrupt handlers need generated entry code.** An AIPL function can't be an interrupt handler directly. The backend has to emit a small stub that saves the registers, calls the AIPL function, and returns with `iretq`.
+4. **Two runtime assumptions break.** Out-of-bounds memory traps currently rely on Linux's segfault signal. In a kernel, your own page-fault handler has to do that job. Also, AIPL addresses are 32-bit offsets from one base register, so the kernel works inside a 4 GiB window (about 2 GiB in practice). That's fine for a hobby kernel, but you'd need a separate 64-bit physical-memory intrinsic for hardware mapped above that.
+5. **"~250 lines" was wrong.** A serial-console "hello" is more like a few hundred lines spread across both compilers (`wasm.rs` and `codegen.aipl`, with byte-for-byte parity tests) plus the kernel itself. Each new intrinsic gets paid for twice.
+
+### Why I still think it's realistic
+
+- **Other memory-safe languages have done it.** MIT's Biscuit was a POSIX kernel written in Go, garbage collector and all, and it ran nginx and Redis at roughly 90% of Linux's speed. Redox and Asterinas are Rust kernels; Asterinas is compatible with Linux programs. Microsoft's Singularity was written in C#.
+- **You've already done the hard part.** Most hobby kernels depend on GCC, `ld`, and linker scripts. You already have a compiler that emits raw x86-64 machine code and ELF files with no outside toolchain.
+- **AIPL's binaries need very little from the OS.** I checked: AIPL's native executables only use about 20 Linux syscalls (`write`, `mmap`, `mprotect`, `openat`/`openat2`, `close`, `lseek`, `getdents64`, `newfstatat`, `unlinkat`, `clock_gettime`, `getrandom`, `clone`, `arch_prctl`, `exit_group`, and a few more).
+
+That last point gives you a concrete version of "a fraction of Linux": **a kernel written in AIPL that implements those ~20 syscalls can run unmodified AIPL executables, including the AIPL compiler itself.** That would be the self-hosted compiler running on a self-hosted kernel. Rewriting actual Linux (around 30 million lines) isn't realistic. A kernel that runs the same programs for the subset AIPL uses is.
+
+### A plausible order of milestones
+
+| # | Milestone | What it needs |
+|---|---|---|
+| M0 | Boot and print to the serial port in QEMU | Limine, a `--freestanding` runtime with no syscalls, `cpu.out8` |
+| M1 | Exceptions, timer interrupt, keyboard | Interrupt table, entry stubs, `cli`/`sti`/`hlt` |
+| M2 | Physical page allocator, your own page tables, kernel heap | Page-table register access; the kernel heap could use AIPL's checked pointers, so use-after-free traps in kernel mode |
+| M3 | Load an ELF and run a user program with `write` and `exit` | Syscall entry via `wrmsr`, privilege switching |
+| M4 | RAM disk plus the ~20 syscalls, then run `aipl compile` inside your kernel | Mostly ordinary AIPL code at this point |
+| M5 (stretch) | Multiple cores, virtio drivers, networking | |
+
+### The honest risk, given what AIPL is for
+
+Kernel bugs often don't produce error messages. A triple fault just makes QEMU reboot silently, which is the opposite of the "explicit errors" approach that makes AIPL work so well for LLMs. You can claw most of that back with QEMU flags: `-no-reboot -d int,cpu_reset` logs every exception before the reset, and QEMU's `isa-debug-exit` device lets the kernel set QEMU's exit code. That way every milestone can be a scripted test that boots, checks the serial output, and passes or fails. That fits how you've built everything else here.
+
+If you want to try it, M0 is the right first step: it's small and will surface the real design questions (the imports, the freestanding runtime, Limine) quickly.
+
+A microkernel suits AIPL better than a monolithic kernel. The kernel stays tiny (scheduling, address spaces, message passing), and drivers and filesystems run as ordinary user processes, which can be normal, safe AIPL programs. AIPL's (plain T) types (no pointers at any depth) are already the right rule for messages between address spaces: anything plain can be copied from one process to another safely. Look at seL4, L4, or Minix 3 for the general shape.

@@ -1,0 +1,95 @@
+;; std/proc (docs/design/SYS_PLAN.md step 3): tests/test_sys.rs runs this with
+;; `--allow-run /bin/sh --allow-run /bin/cat --allow-run /no/such/program`, once
+;; for each backend. Each case prints a line; what a program writes is passed on.
+(module std_proc_cases
+  (import alloc)
+  (import buf)
+  (import str)
+  (import proc)
+
+  (fn sh [script:str] -> (ptr proc.Command)
+    (let c:(ptr proc.Command) (call proc.command (call alloc.default) "/bin/sh"))
+    (call proc.arg c "-c")
+    (call proc.arg c script)
+    c)
+
+  ;; Runs the command with the input, and prints what it wrote and its status or its error.
+  (fn show [label:str c:(ptr proc.Command) input:str]  -> void
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (match_result (call proc.run c (call str.from_str input) out)
+      (ok s
+        (let ex:bool (call proc.exited s))
+        (let sg:i32 (call proc.signal s))
+        (println "{label} status {s} exited {ex} signal {sg}"))
+      (err e
+        (let why:str (call proc.message e))
+        (println "{label} error: {why}")))
+    (call buf.print out)
+    (call buf.free out)
+    (call proc.free_command c))
+
+  (fn send [ch:proc.Child s:str] -> bool
+    (call proc.write ch (call str.from_str s)))
+
+  (fn count_of [ch:proc.Child out:(ptr buf.Buf) error:bool] -> i32
+    (if error (call proc.read_error ch out 4096) (call proc.read ch out 4096)))
+
+  (fn main [] -> i32
+    (call show "hello" (call sh "echo hello; exit 3") "")
+    (call show "input" (call proc.command (call alloc.default) "/bin/cat") "ping\n")
+    (call show "killed" (call sh "kill -9 $$") "")
+    (call show "merged" (call sh "echo out; echo err 1>&2") "")
+    (let spaced:(ptr proc.Command) (call sh "echo \"$1\"; echo \"$0\""))
+    (call proc.arg spaced "zero")
+    (call proc.arg spaced "a b  c")
+    (call show "args" spaced "")
+    (call show "not_granted" (call proc.command (call alloc.default) "/bin/echo") "")
+    (call show "not_found" (call proc.command (call alloc.default) "/no/such/program") "")
+    ;; a conversation with cat
+    (let cat:(ptr proc.Command) (call proc.command (call alloc.default) "/bin/cat"))
+    (match_result (call proc.spawn cat)
+      (ok ch
+        (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+        (let w1:bool (call send ch "a\n"))
+        (let r1:i32 (call proc.read ch out 100))
+        (let w2:bool (call send ch "b\n"))
+        (let r2:i32 (call proc.read ch out 100))
+        (println "wrote {w1} read {r1} wrote {w2} read {r2}")
+        (call proc.close_input ch)
+        (let end:i32 (call proc.read ch out 100))
+        (let st:i32 (call proc.wait ch))
+        (let again:i32 (call proc.wait ch))
+        (println "end {end} status {st} again {again}")
+        (call buf.print out)
+        (let late:bool (call send ch "c\n"))
+        (println "after close {late}")
+        (call proc.close ch))
+      (err e (println "spawn error: {(call proc.message e)}")))
+    ;; the error as a pipe of its own
+    (let both:(ptr proc.Command) (call sh "echo o; echo e 1>&2"))
+    (match_result (call proc.spawn_with both proc.Stream.null proc.Stream.pipe proc.Stream.pipe)
+      (ok ch
+        (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+        (let e:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+        (let on:i32 (call count_of ch o false))
+        (let en:i32 (call count_of ch e true))
+        (println "output {on} error {en}")
+        (call buf.print o)
+        (call buf.print e)
+        (let st:i32 (call proc.wait ch))
+        (println "status {st}")
+        (call proc.close ch))
+      (err e (println "spawn error: {(call proc.message e)}")))
+    ;; looking programs up
+    (let found:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let sh_found:bool (call proc.find "sh" found))
+    (let at:str.Bytes (call buf.bytes found))
+    (let tail:str.Bytes (call str.slice at (- (get at str.Bytes.len) 3) 3))
+    (let tail_ok:bool (call str.bytes_eq tail (call str.from_str "/sh")))
+    (println "find sh {sh_found} ends with /sh {tail_ok}")
+    (let nothing:bool (call proc.find "no_such_program_anywhere" found))
+    (call buf.clear found)
+    (let slash:bool (call proc.find "/bin/sh" found))
+    (let slash_missing:bool (call proc.find "/no/such/program" found))
+    (println "find nothing {nothing} with a slash {slash} missing {slash_missing}")
+    0))

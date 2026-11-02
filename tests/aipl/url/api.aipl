@@ -1,0 +1,51 @@
+;; std/url's query functions and std/json's get_path (tests/test_web.rs):
+;; a value looked up in a query, a Url put back together, and paths into
+;; parsed JSON, found and not.
+(module api
+  (import url)
+  (import json)
+  (import str)
+  (import alloc)
+  (import option)
+
+  (fn page [a:alloc.Allocator q:str name:str] -> str
+    (match_result (call url.query_get a (call str.from_str q) name)
+      (ok found
+        (match found
+          ((option.Option str) some [v] v)
+          ((option.Option str) none [] "(none)")))
+      (err e (call url.free_error a e) "(err)")))
+
+  (fn at_path [v:json.Value path:str] -> str
+    (match (call json.get_path v path)
+      ((option.Option json.Value) some [x]
+        (match x
+          (json.Value.number [n] (format "{n}"))
+          (json.Value.text [s] (call str.from_bytes s))
+          (else "(other)")))
+      ((option.Option json.Value) none [] "(none)")))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let p1:str (call page a "q=caf%C3%A9+au+lait&page=2&page=3" "page"))
+    (let p2:str (call page a "q=caf%C3%A9+au+lait&page=2" "q"))
+    (let p3:str (call page a "a=1" "b"))
+    (let p4:str (call page a "a=%zz" "a"))
+    (println "{p1} | {p2} | {p3} | {p4}")
+    (match_result (call url.parse a (call str.from_str "HTTPS://user@[::1]:8443/a/./b/../c?x#y"))
+      (ok u
+        (println "host {(get u url.Url.host)}, port {(get u url.Url.port)}, back {(call url.to_str u)}")
+        (call url.free u))
+      (err e (println "{(get e url.Error.what)}")))
+    (match_result (call json.parse a (call str.from_str "{\"a\": {\"b\": [10, {\"c\": \"deep\"}]}, \"x.y\": 1}"))
+      (ok v
+        (let s1:str (call at_path v "a.b[0]"))
+        (let s2:str (call at_path v "a.b[1].c"))
+        (let s3:str (call at_path v "a.b[2]"))
+        (let s4:str (call at_path v "a.q"))
+        (let s5:str (call at_path v ""))
+        (let bad:str "a..b")
+        (let good:str "[0][1].k")
+        (println "{s1} | {s2} | {s3} | {s4} | {s5} | valid: {(call json.valid_path bad)} {(call json.valid_path good)}"))
+      (err je (println "{(get je json.Error.what)}")))
+    0))

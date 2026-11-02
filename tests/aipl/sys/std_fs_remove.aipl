@@ -1,0 +1,24 @@
+;; std/fs's remove (docs/design/SYS_PLAN.md, section 10): test_sys.rs runs it in
+;; a directory holding a.txt, b.txt, dir/, and link (a link to ../outside.txt),
+;; once for each backend; each case prints its label and what fs.remove gave,
+;; as a number or a word.
+(module std_fs_remove
+  (import fs)
+  (import io)
+  (import str)
+
+  (fn show [label:str r:(result i32 io.Error)] -> void
+    (match_result r
+      (ok n (println "{label} ok {n}"))
+      (err e (let why:str (call io.message e))
+        (println "{label} {why}"))))
+
+  (fn main [] -> i32
+    (call show "plain" (call fs.remove "a.txt"))
+    (call show "again" (call fs.remove "a.txt"))
+    (call show "bytes" (call fs.remove_path (call str.from_str "b.txt")))
+    (call show "directory" (call fs.remove "dir"))
+    (call show "link" (call fs.remove "link"))
+    (call show "missing" (call fs.remove "no/such/file"))
+    (call show "dotdot" (call fs.remove "../outside.txt"))
+    0))

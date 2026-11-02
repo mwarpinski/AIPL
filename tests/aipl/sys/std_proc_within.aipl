@@ -1,0 +1,52 @@
+;; std/proc's waiting a limited time (readable, read_within, run_within): tests/test_sys.rs runs this with
+;; `--allow-run /bin/sh --allow-run /bin/cat` in every backend; each line is the same. The times are only
+;; bounds, never exact.
+(module proc_within
+  (import alloc)
+  (import buf)
+  (import option)
+  (import proc)
+  (import str)
+  (import time)
+
+  (fn sh [script:str] -> (ptr proc.Command)
+    (let c:(ptr proc.Command) (call proc.command (call alloc.default) "/bin/sh"))
+    (call proc.arg c "-c")
+    (call proc.arg c script)
+    c)
+
+  (fn show [label:str r:(result i32 proc.Error) out:(ptr buf.Buf)] -> void
+    (match_result r
+      (ok s (println "{label}: status {s}, output {(call buf.to_str out)}"))
+      (err e (println "{label}: {(call proc.message e)}, output {(call buf.to_str out)}"))))
+
+  (fn fresh [] -> (ptr buf.Buf) (call buf.make (call alloc.default) 64))
+
+  (fn main [] -> i32
+    ;; a program that ends in time
+    (let o1:(ptr buf.Buf) (call fresh))
+    (call show "quick" (call proc.run_within (call sh "echo hi; exit 3") (call str.from_str "") o1 10000000000i64) o1)
+    ;; input is sent, and what comes back is read
+    (let o2:(ptr buf.Buf) (call fresh))
+    (call show "cat" (call proc.run_within (call proc.command (call alloc.default) "/bin/cat") (call str.from_str "ping") o2 10000000000i64) o2)
+    ;; a program that writes and then hangs: killed at the limit, with what it wrote
+    (let o3:(ptr buf.Buf) (call fresh))
+    (let t0:i64 (call time.now))
+    (call show "hung" (call proc.run_within (call sh "echo partial; exec sleep 30") (call str.from_str "") o3 300000000i64) o3)
+    (println "hung took the limit: {(gte (- (call time.now) t0) 300000000i64)} and not 30 s: {(lt (- (call time.now) t0) 10000000000i64)}")
+    ;; a program that never reads a large input, and does not end
+    (let o4:(ptr buf.Buf) (call fresh))
+    (let big:(ptr buf.Buf) (call buf.make (call alloc.default) 200000))
+    (for i 0 200000 (call buf.push_byte big 120))
+    (call show "unread input" (call proc.run_within (call sh "exec sleep 30") (call buf.bytes big) o4 300000000i64) o4)
+    ;; read_within and readable on a program that speaks after a pause
+    (let c:(ptr proc.Command) (call sh "sleep 1; echo late"))
+    (let ch:proc.Child (match_result (call proc.spawn c) (ok x x) (err e (return 1))))
+    (let into:(ptr buf.Buf) (call fresh))
+    (println "readable now {(call proc.readable ch 0)} read_within {(call proc.read_within ch into 64 100)}")
+    (println "readable later {(call proc.readable ch 10000)}")
+    (let n:i32 (call proc.read_within ch into 64 10000))
+    (println "read_within {n} {(call buf.to_str into)}")
+    (println "at the end: {(call proc.read_within ch into 64 10000)} status {(call proc.wait ch)}")
+    (call proc.close ch)
+    0))

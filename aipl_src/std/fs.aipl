@@ -1,0 +1,244 @@
+;; std/fs: directories and file information (AIPL_SPEC.md 4.C), over
+;; fs.opendir, fs.readdir, fs.stat, and fs.chmod:
+;;
+;;   (match (call fs.list (call alloc.default) "data")
+;;     ((option.Option (ptr (vec.Vec str.Bytes))) some [names] ...)
+;;     ((option.Option (ptr (vec.Vec str.Bytes))) none ...))
+;;   (match (call fs.info "data/a.txt")
+;;     ((option.Option fs.Info) some [i] (get i fs.Info.size))
+;;     ((option.Option fs.Info) none -1i64))
+;;   (call fs.chmod "build/tool" fs.PROGRAM)    ;; (result i32 io.Error)
+;;
+;; A directory's names come sorted bytewise, without "." and "..", so a
+;; listing is the same in every backend and on every file system (the order
+;; a directory gives them in is the file system's). A path that cannot be
+;; read gives none.
+(module fs
+  (import alloc)
+  (import str)
+  (import vec)
+  (import option)
+  (import io)
+
+  ;; What a path names, after following symbolic links.
+  (enum Kind [file directory other] (pub))
+
+  ;; size in bytes, modified in nanoseconds since 1970 (UTC); a value
+  ;; (AIPL_SPEC.md 4.E), so nothing is allocated for it
+  (struct Info [(read kind:Kind) (read size:i64) (read modified:i64)] (value) (pub))
+
+  ;; ===== Directories =====
+
+  ;; The names in directory `path`, sorted; the vector and the names come
+  ;; from `a`.
+  (fn list [a:alloc.Allocator path:str] -> (option.Option (ptr (vec.Vec str.Bytes))) (pub)
+    (unsafe (call list_at a (str.ptr path) (str.len path))))
+
+  ;; list for a path held as bytes.
+  (fn list_path [a:alloc.Allocator path:str.Bytes] -> (option.Option (ptr (vec.Vec str.Bytes))) (pub)
+    (unsafe (call list_at a (call str.addr path) (get path str.Bytes.len))))
+
+  ;; Reads the directory 4096 bytes of WASI dirents at a time, from the
+  ;; cookie after the last whole entry (a dirent: d_next u64, d_ino u64,
+  ;; d_namlen u32, d_type u8, 3 bytes, then the name).
+  (fn list_at [a:alloc.Allocator addr:i32 len:i32] -> (option.Option (ptr (vec.Vec str.Bytes))) (unsafe)
+    (let fd:i32 (fs.opendir addr len))
+    (when (lt fd 0) (return (make (option.Option (ptr (vec.Vec str.Bytes))) none)))
+    (let names:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 16))
+    (let buf:i32 (call alloc.raw a 4096))
+    (let cookie:i64 0i64)
+    (let ok:bool true)
+    (let more:bool true)
+    (while more
+      (let used:i32 (fs.readdir fd buf 4096 cookie))
+      (when (lt used 0) (set! ok false) (break))
+      (let at:i32 0)
+      (let whole:i32 0)
+      (while (lte (+ at 24) used)
+        (let namlen:i32 (mem.load32 (+ buf (+ at 16))))
+        (when (gt (+ at (+ 24 namlen)) used) (break))
+        (let name:i32 (+ buf (+ at 24)))
+        (when (not (call dot_or_dotdot name namlen))
+            (call (vec.push str.Bytes) names (call copy a name namlen)))
+        (set! cookie (mem.load64 (+ buf at)))
+        (set! at (+ at (+ 24 namlen)))
+        (set! whole (+ whole 1)))
+      ;; a full buffer means more may follow; one that held no whole entry
+      ;; cannot (a name is at most 255 bytes), so it is an error
+      (set! more (eq used 4096))
+      (when (and more (eq whole 0)) (set! ok false) (break)))
+    (let _c:i32 (fs.close fd))
+    (call alloc.free_raw a buf 4096)
+    (when (not ok) (return (make (option.Option (ptr (vec.Vec str.Bytes))) none)))
+    (call (vec.sort_by str.Bytes) names (ref by_bytes))
+    (make (option.Option (ptr (vec.Vec str.Bytes))) some names))
+
+  (fn dot_or_dotdot [name:i32 n:i32] -> bool (unsafe)
+    (and (gte n 1) (and (lte n 2)
+         (and (eq (mem.load8 name) 46) (or (eq n 1) (eq (mem.load8 (+ name 1)) 46))))))
+
+  ;; n bytes at addr, copied into memory from a.
+  (fn copy [a:alloc.Allocator addr:i32 n:i32] -> str.Bytes (unsafe)
+    (let to:i32 (call alloc.raw a (if (gt n 0) n 1)))
+    (for i 0 n (mem.store8 (+ to i) (mem.load8 (+ addr i))))
+    (call str.bytes to n))
+
+  ;; byte order, a prefix first
+  (fn by_bytes [x:str.Bytes y:str.Bytes] -> i32
+    (let n:i32 (if (lt (get x str.Bytes.len) (get y str.Bytes.len)) (get x str.Bytes.len) (get y str.Bytes.len)))
+    (for i 0 n
+      (let d:i32 (- (call str.byte_at x i) (call str.byte_at y i)))
+      (when (neq d 0) (return d)))
+    (- (get x str.Bytes.len) (get y str.Bytes.len)))
+
+  ;; ===== File information =====
+
+  ;; What `path` names: its kind, size, and when it was last modified.
+  (fn info [path:str] -> (option.Option Info) (pub)
+    (unsafe (call info_at (str.ptr path) (str.len path))))
+
+  ;; info for a path held as bytes.
+  (fn info_path [path:str.Bytes] -> (option.Option Info) (pub)
+    (unsafe (call info_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; From a WASI filestat (64 bytes): the filetype at 16 (3 a directory, 4 a
+  ;; regular file), the size at 32, the modification time at 48.
+  (fn info_at [addr:i32 len:i32] -> (option.Option Info) (unsafe)
+    (let a:alloc.Allocator (call alloc.default))
+    (let st:i32 (call alloc.raw a 64))
+    (let r:i32 (fs.stat addr len st))
+    (let filetype:i32 (mem.load8 (+ st 16)))
+    (let i:Info (make Info [kind:(cond ((eq filetype 3) Kind.directory) ((eq filetype 4) Kind.file) (else Kind.other))
+                            size:(mem.load64 (+ st 32))
+                            modified:(mem.load64 (+ st 48))]))
+    (call alloc.free_raw a st 64)
+    (if (lt r 0) (make (option.Option Info) none) (make (option.Option Info) some i)))
+
+  ;; ===== Permissions =====
+
+  ;; Mode bits for chmod: owner read and write, everyone else read (0o644), the
+  ;; mode of an ordinary file.
+  (const FILE:i32 420 (pub))
+
+  ;; Owner read, write, and execute; everyone else read and execute (0o755), the
+  ;; mode of a program.
+  (const PROGRAM:i32 493 (pub))
+
+  ;; Sets the permission bits of `path`: `mode` is 0 to 0o777 (setuid, setgid,
+  ;; and sticky are refused). Needs no grant: the path is one the program could
+  ;; open, confined as fs.open is (a relative path stays in the working
+  ;; directory; under --sandbox, nothing outside it). The result is 0, or why
+  ;; not (a missing path not_found, a path out of reach denied, a bad mode
+  ;; other).
+  (fn chmod [path:str mode:i32] -> (result i32 io.Error) (pub)
+    (unsafe (call chmod_at (str.ptr path) (str.len path) mode)))
+
+  ;; chmod for a path held as bytes.
+  (fn chmod_path [path:str.Bytes mode:i32] -> (result i32 io.Error) (pub)
+    (unsafe (call chmod_at (call str.addr path) (get path str.Bytes.len) mode)))
+
+  ;; The operation, on a path in memory.
+  (fn chmod_at [addr:i32 len:i32 mode:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.chmod addr len mode))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; ===== Rename =====
+
+  ;; Moves `from` to `to`, replacing what is there: a file replaces a file, a
+  ;; directory replaces only an empty directory. A link is moved itself, not
+  ;; what it names. Needs no grant: both paths are ones the program could open,
+  ;; confined as fs.open is. The result is 0, or why not (a missing `from`
+  ;; not_found, a path out of reach denied, a directory onto a file or a file
+  ;; onto a directory other).
+  (fn rename [from:str to:str] -> (result i32 io.Error) (pub)
+    (unsafe (call rename_at (str.ptr from) (str.len from) (str.ptr to) (str.len to))))
+
+  ;; rename for paths held as bytes.
+  (fn rename_path [from:str.Bytes to:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call rename_at (call str.addr from) (get from str.Bytes.len)
+                            (call str.addr to) (get to str.Bytes.len))))
+
+  ;; The operation, on paths in memory.
+  (fn rename_at [oa:i32 ol:i32 na:i32 nl:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.rename oa ol na nl))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; ===== Remove =====
+
+  ;; Deletes the file `path` (a link is deleted itself, not what it names; a
+  ;; directory is refused, "is a directory"). Needs no grant: the path is one
+  ;; the program could open, confined as fs.open is. The result is 0, or why
+  ;; not (a missing path not_found, a path out of reach denied).
+  (fn remove [path:str] -> (result i32 io.Error) (pub)
+    (unsafe (call remove_at (str.ptr path) (str.len path))))
+
+  ;; remove for a path held as bytes.
+  (fn remove_path [path:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call remove_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; The operation, on a path in memory.
+  (fn remove_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.delete addr len))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; ===== Directories =====
+
+  ;; Makes the directory `path`, with the mode the umask leaves (0777 less it).
+  ;; Its parent must exist: there is no `mkdir -p`. Needs no grant: the path is
+  ;; one the program could open, confined as fs.open is. The result is 0, or
+  ;; why not (a missing parent, or a file as the parent, not_found; a path out
+  ;; of reach denied; a path that exists, a file or a link too, exists).
+  (fn mkdir [path:str] -> (result i32 io.Error) (pub)
+    (unsafe (call mkdir_at (str.ptr path) (str.len path))))
+
+  ;; mkdir for a path held as bytes.
+  (fn mkdir_path [path:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call mkdir_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; The operation, on a path in memory.
+  (fn mkdir_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.mkdir addr len))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; Removes the directory `path`, which must be empty. Needs no grant, and is
+  ;; confined as mkdir is. The result is 0, or why not (a missing path, or a
+  ;; file or a link, not_found: use remove for those; a path out of reach
+  ;; denied; a directory with anything in it not_empty).
+  (fn rmdir [path:str] -> (result i32 io.Error) (pub)
+    (unsafe (call rmdir_at (str.ptr path) (str.len path))))
+
+  ;; rmdir for a path held as bytes.
+  (fn rmdir_path [path:str.Bytes] -> (result i32 io.Error) (pub)
+    (unsafe (call rmdir_at (call str.addr path) (get path str.Bytes.len))))
+
+  ;; The operation, on a path in memory.
+  (fn rmdir_at [addr:i32 len:i32] -> (result i32 io.Error) (unsafe)
+    (let r:i32 (fs.rmdir addr len))
+    (if (lt r 0) (err:i32 (call io.error_of r)) (ok:io.Error r)))
+
+  ;; ===== Tests =====
+
+  ;; Pass count; test_suite.aipl expects 4. Run from the repository root.
+  (fn run_fs_tests [] -> i32 (pub)
+    (let p:i32 0)
+    (let a:alloc.Allocator (call alloc.default))
+    ;; the standard library's own directory: sorted, this file among it
+    (match (call list a "aipl_src/std")
+      ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
+        (let sorted:bool true)
+        (let found:bool false)
+        (for i 0 (call (vec.len str.Bytes) names)
+          (let n:str.Bytes (call (vec.at str.Bytes) names i))
+          (when (call str.bytes_eq n (call str.from_str "fs.aipl")) (set! found true))
+          (when (and (gt i 0) (gt (call by_bytes (call (vec.at str.Bytes) names (- i 1)) n) 0)) (set! sorted false)))
+        (when (and sorted found) (set! p (+ p 1))))
+      ((option.Option (ptr (vec.Vec str.Bytes))) none (block)))
+    (when (call (option.is_none (ptr (vec.Vec str.Bytes))) (call list a "no/such/directory")) (set! p (+ p 1)))
+    (match (call info "aipl_src/std/fs.aipl")
+      ((option.Option Info) some [f]
+        (when (and (eq (get f Info.kind) Kind.file) (and (gt (get f Info.size) 0i64) (gt (get f Info.modified) 0i64))) (set! p (+ p 1))))
+      ((option.Option Info) none (block)))
+    (match (call info "aipl_src/std")
+      ((option.Option Info) some [d] (when (eq (get d Info.kind) Kind.directory) (set! p (+ p 1))))
+      ((option.Option Info) none (block)))
+    p))

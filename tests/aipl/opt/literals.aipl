@@ -1,0 +1,23 @@
+;; Literals at the extremes of i32 and i64, folded and not, re-printed by
+;; the optimizer (docs/NOTES_REVIEW.md, painpoints: "large literals
+;; truncate to 32 bits when re-printed"): tools/opt_diff.py compares the
+;; optimized build with the unoptimized one (both printed what aipl eval
+;; prints, 2026-10-25).
+(module literals
+  (import io)
+  (const BIG:i64 9000000000i64)
+  (fn id64 [x:i64] -> i64 x)
+  (fn id32 [x:i32] -> i32 x)
+  (fn main [] -> i32
+    (println "a {9000000000i64}")
+    (println "b {-9223372036854775808i64}")
+    (println "c {9223372036854775807i64}")
+    (println "d {(+ BIG 1i64)}")
+    (println "e {(call id64 (* 4294967296i64 3i64))}")
+    (println "f {(i64.extend_u -1)}")
+    (println "g {(i64.extend_s -2147483648)}")
+    (println "h {(call id32 -2147483648)}")
+    (println "i {(i32.wrap 9000000000i64)}")
+    (println "j {(* 65536 65536)}")
+    (println "k {(f64.convert_i32_s 2147483647):.1}")
+    0))
