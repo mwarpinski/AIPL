@@ -1,0 +1,43 @@
+;; The name grants of a native executable (docs/design/SHIP_SELFHOSTED_PLAN.md, L3). A native executable has no
+;; resolver and no TLS: a program that connects to a host by name starts aipl-net, which does both. The helper
+;; must reach only the hosts the executable was granted (`--allow-connect example.com:443`), so the grants go in
+;; the file, and the helper reads them from its parent's: after the executable's last byte, the connect grants one
+;; HOST:PORT a line, their length as four little-endian bytes, and the eight bytes AIPLNET1 (src/bin/aipl_net.rs).
+;; The loader ignores what follows the program headers' segments, so the file runs as before.
+;; An executable with no name grant carries nothing, and is the bytes it always was.
+(module nettrailer
+  (import buf)
+  (import alloc)
+  (import ip)
+  (import str)
+
+  ;; The lines of `lines` (one grant a line) that are not name grants, added to `addrs`, each with its newline;
+  ;; whether any line is a name grant.
+  (fn split_names [lines:str.Bytes addrs:(ptr buf.Buf)] -> bool (pub)
+    (let any:bool false)
+    (let start:i32 0)
+    (let n:i32 (get lines str.Bytes.len))
+    (for i 0 (+ n 1)
+      (when (or (eq i n) (eq (call str.byte_at lines i) 10))
+        (let line:str.Bytes (call str.slice lines start (- i start)))
+        (set! start (+ i 1))
+        (when (gt (get line str.Bytes.len) 0)
+          (if (call ip.is_name_grant line)
+              (set! any true)
+              (block
+                (call buf.push_bytes addrs line)
+                (call buf.push_byte addrs 10))))))
+    any)
+
+  ;; `exe` with the trailer for `lines` (every connect grant, a line each) after it.
+  (fn append [exe:str.Bytes lines:str.Bytes] -> str.Bytes (pub)
+    (let n:i32 (get lines str.Bytes.len))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.forever) (+ (+ (get exe str.Bytes.len) n) 12)))
+    (call buf.push_bytes b exe)
+    (call buf.push_bytes b lines)
+    (call buf.push_byte b (bitand n 255))
+    (call buf.push_byte b (bitand (shru n 8) 255))
+    (call buf.push_byte b (bitand (shru n 16) 255))
+    (call buf.push_byte b (bitand (shru n 24) 255))
+    (call buf.push_str b "AIPLNET1")
+    (call buf.bytes b)))

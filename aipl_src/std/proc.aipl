@@ -57,6 +57,10 @@
   ;; A started program and the pipes to it (-1 where a stream is not a pipe).
   (struct Child [p:i32 input:i32 output:i32 error:i32] (value) (pub))
 
+  ;; A Child that is no program: all its handles are -1 (a Socket that is not a helper's holds one).
+  (fn none [] -> Child (pub) (no_leak)
+    (make Child [p:-1 input:-1 output:-1 error:-1]))
+
   ;; What a program's standard input, output, or error is: this program's own
   ;; (inherit), a pipe to it (pipe), the null device (null), or, for the error
   ;; only, the same as its output (merged).

@@ -22,6 +22,7 @@
   (import procs_arm64)
   (import sockets_arm64)
   (import fresh_arm64)
+  (import nettrailer)
 
   ;; The result of a compile: the ELF image, or the reason there is none. Its
   ;; first fields are what a host reads (native.aipl's Output has the same).
@@ -752,7 +753,10 @@
     (when (gt (call buf.len problem) 0) (return (call failure (call buf.bytes problem))))
     (let granted:(ptr (vec.Vec sockets_arm64.Grant)) (call sockets_arm64.parse_grants "--listen" (call buf.bytes addresses) false problem))
     (when (eq granted (ptr.null (vec.Vec sockets_arm64.Grant))) (return (call failure (call buf.bytes problem))))
-    (let connecting:(ptr (vec.Vec sockets_arm64.Grant)) (call sockets_arm64.parse_grants "--allow-connect" (call buf.bytes connect_lines) true problem))
+    ;; a name grant (example.com:443) is held by the trailer aipl-net reads (nettrailer.aipl), not by the routines
+    (let address_lines:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let named:bool (call nettrailer.split_names (call buf.bytes connect_lines) address_lines))
+    (let connecting:(ptr (vec.Vec sockets_arm64.Grant)) (call sockets_arm64.parse_grants "--allow-connect" (call buf.bytes address_lines) true problem))
     (when (eq connecting (ptr.null (vec.Vec sockets_arm64.Grant))) (return (call failure (call buf.bytes problem))))
     ;; `serve` is an address, then (for `aipl serve`) " requests=N" and " temporary": how many connections
     ;; to answer, and whether the executable removes itself as it starts
@@ -933,6 +937,7 @@
     (call fill_table l w starts)
     (call fill_chain_table l chain starts code_end)
     (call fill_position_table l positions)
-    (let exe:str.Bytes (call buf.bytes (call elf.image_arm64 (call buf.bytes c) entry (call buf.bytes data) 0)))
+    (let image:str.Bytes (call buf.bytes (call elf.image_arm64 (call buf.bytes c) entry (call buf.bytes data) 0)))
+    (let exe:str.Bytes (if named (call nettrailer.append image (call buf.bytes connect_lines)) image))
     (new Output (call alloc.forever) [addr:(call str.addr exe) len:(get exe str.Bytes.len) ok:true error:(call str.from_str "") exe:exe]))
 )

@@ -30,6 +30,11 @@ path = "src/main.rs"
 name = "aipl-run"
 path = "src/bin/aipl_run.rs"
 
+# host names and TLS for native executables, which cannot hold either (docs/design/SHIP_SELFHOSTED_PLAN.md)
+[[bin]]
+name = "aipl-net"
+path = "src/bin/aipl_net.rs"
+
 [lib]
 name = "aipl_core"
 path = "src/lib.rs"

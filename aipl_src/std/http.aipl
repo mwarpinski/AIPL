@@ -23,8 +23,8 @@
 ;;
 ;; fetch is a GET over a connection (std/net), which the program must be granted
 ;; (--allow-connect HOST:PORT): http:// to an address, or to a name and https:// where the host has
-;; a resolver and TLS (the VM, aipl-run, wasm bundles: not native executables, which can fetch
-;; plain http from an address). It sends `Connection: close`, reads to the end, and does not follow
+;; a resolver and TLS (the VM, aipl-run, wasm bundles), or in a native executable through the helper
+;; aipl-net (std/net). It sends `Connection: close`, reads to the end, and does not follow
 ;; redirects.
 (module http
   (import str)

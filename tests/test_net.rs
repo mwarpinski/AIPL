@@ -15,6 +15,15 @@ use std::time::{Duration, Instant};
 
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const RUNNER: &str = env!("CARGO_BIN_EXE_aipl-run");
+const NET: &str = env!("CARGO_BIN_EXE_aipl-net");
+
+/// $PATH with aipl-net's folder first: a native executable reaches host names and TLS through that helper,
+/// which the compiler and the program find on PATH (docs/design/SHIP_SELFHOSTED_PLAN.md, L3).
+fn net_path() -> std::ffi::OsString {
+    let dir = Path::new(NET).parent().unwrap().to_path_buf();
+    let rest = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&rest))).unwrap()
+}
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -336,16 +345,12 @@ fn fetch_commands_of(demo: &Path, dir: &Path, grants: &[&str]) -> Vec<Client> {
     let wasm = dir.join("fetch.wasm");
     let o = Command::new(AIPL).arg("compile").arg(demo).arg("-o").arg(&wasm).output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    // a native executable can hold only an address's grant (it has no resolver)
-    let is_address = |g: &str| {
-        let host = g.rsplit_once(':').map_or(g, |(h, _)| h);
-        host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_ok()
-    };
+    // a native executable holds a name's grant too: it reaches the host through aipl-net, found on PATH
     let exe = |name: &str, extra: &[&str]| {
         let out = dir.join(name);
         let mut c = Command::new(AIPL);
-        c.args(["compile", "--exe"]).args(extra);
-        for g in grants.iter().filter(|g| extra.contains(&"wasm") || is_address(g)) {
+        c.env("PATH", net_path()).args(["compile", "--exe"]).args(extra);
+        for g in grants {
             c.args(["--allow-connect", g]);
         }
         let o = c.arg(demo).arg("-o").arg(&out).output().unwrap();
@@ -384,7 +389,7 @@ fn fetch_commands_of(demo: &Path, dir: &Path, grants: &[&str]) -> Vec<Client> {
         ("bundle", Box::new(move |url: &str| { let mut c = Command::new(&bundle); c.arg(url); c })),
     ];
     if let Some(native) = native {
-        clients.insert(2, ("native", Box::new(move |url: &str| { let mut c = Command::new(&native); c.arg(url); c })));
+        clients.insert(2, ("native", Box::new(move |url: &str| { let mut c = Command::new(&native); c.env("PATH", net_path()).arg(url); c })));
     }
     clients
 }
@@ -544,7 +549,8 @@ fn a_fetch_that_cannot_happen_says_why_in_every_backend() {
     let (at, server) = http_server(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
     let granted = format!("127.0.0.1:{}", at.port());
     let not_granted = "error not granted: run the program with --allow-connect HOST:PORT (0)\n";
-    let no_host = "error host names and TLS are not in native executables: use an address and plain http, run it as a wasm module (aipl eval, aipl-run, compile --exe --target wasm), or put a proxy in front (0)\n";
+    // a native executable that was given no name grant is not allowed to start aipl-net
+    let no_host = "error host names and TLS in a native executable go through aipl-net, which was not found on PATH ($AIPL_NET names another), or this program was not compiled with --allow-connect for a host name (0)\n";
     // a grant for another port, none at all, a port nothing listens on (granted), a name that was not
     // granted (a native executable has no resolver at all), another scheme, and https (which needs a
     // host's TLS, and fails before it connects where there is none)
@@ -663,20 +669,21 @@ const TLS_ANSWER: &str = "status 200 OK\nx-test secure\nbody 5 hello\n";
 const HANDSHAKE_FAILED: &str = "error the TLS handshake failed: an untrusted or mismatched certificate, or a server that does not speak TLS (0)\n";
 
 #[test]
-fn https_and_names_work_in_the_rust_hosts() {
+fn https_and_names_work_in_every_backend() {
     let dir = scratch("tls");
     // a certificate for the name and for the address: each URL below must be accepted
-    let (port, pem, server) = tls_server(&dir, &["localhost", "127.0.0.1"], vec![TLS_REPLY; 6], true);
+    let backends_n = if native_args().is_some() { 4 } else { 3 };
+    let (port, pem, server) = tls_server(&dir, &["localhost", "127.0.0.1"], vec![TLS_REPLY; backends_n * 2], true);
     let (name_grant, ip_grant) = (format!("localhost:{port}"), format!("127.0.0.1:{port}"));
     let backends = fetch_commands(&dir, &[&name_grant, &ip_grant]);
-    for (name, cmd) in backends.iter().filter(|(n, _)| *n != "native") {
+    for (name, cmd) in backends.iter() {
         for url in [format!("https://localhost:{port}/p?x=1"), format!("https://127.0.0.1:{port}/p?x=1")] {
             let o = cmd(&url).env("AIPL_CA_FILE", &pem).output().unwrap();
             assert_eq!(printed(&o), TLS_ANSWER, "{name}, {url}: {}", String::from_utf8_lossy(&o.stderr));
         }
     }
     // the same bytes of request the plain fetches send, over TLS
-    assert_eq!(server.join().unwrap(), 6);
+    assert_eq!(server.join().unwrap(), backends_n * 2);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -686,7 +693,7 @@ fn a_certificate_that_is_not_trusted_or_not_for_the_name_is_refused() {
     // untrusted: the certificate is not in the roots (no AIPL_CA_FILE)
     let (port, pem, server) = tls_server(&dir, &["localhost"], vec![TLS_REPLY], true);
     let grant = format!("localhost:{port}");
-    for (name, cmd) in fetch_commands(&dir, &[&grant]).iter().filter(|(n, _)| *n != "native") {
+    for (name, cmd) in fetch_commands(&dir, &[&grant]).iter() {
         // the server's single connection is spent by the first client; the rest find the port closed
         let o = cmd(&format!("https://localhost:{port}/")).output().unwrap();
         assert!(printed(&o) == HANDSHAKE_FAILED || printed(&o).starts_with("error refused"), "{name}: {} {}", printed(&o), String::from_utf8_lossy(&o.stderr));
@@ -744,20 +751,90 @@ fn a_name_is_granted_by_name_and_plain_http_to_one_works() {
 }
 
 #[test]
-fn a_native_executable_says_it_has_no_names_or_tls() {
-    let dir = scratch("native_no_tls");
-    let (Some(native), Some((_, cmd))) = (native_args(), fetch_commands(&dir, &["127.0.0.1:*"]).into_iter().find(|(n, _)| *n == "native")) else {
+fn a_native_executable_given_no_host_name_cannot_reach_names_or_tls() {
+    let dir = scratch("native_no_names");
+    let Some((_, cmd)) = native_args().and(fetch_commands(&dir, &["127.0.0.1:*"]).into_iter().find(|(n, _)| *n == "native")) else {
         return;
     };
-    let want = "error host names and TLS are not in native executables: use an address and plain http, run it as a wasm module (aipl eval, aipl-run, compile --exe --target wasm), or put a proxy in front (0)\n";
+    // it holds no name grant, so it was not allowed to start aipl-net, wherever that is
+    let want = "error host names and TLS in a native executable go through aipl-net, which was not found on PATH ($AIPL_NET names another), or this program was not compiled with --allow-connect for a host name (0)\n";
     for url in ["https://127.0.0.1:9/", "http://localhost:9/", "https://example.com/"] {
         assert_eq!(printed(&cmd(url).output().unwrap()), want, "{url}");
     }
-    // a name grant cannot be fixed in a native executable
-    let o = Command::new(AIPL).args(["compile", "--exe"]).args(native).args(["--allow-connect", "example.com:443"]).arg(fetch_demo()).arg("-o").arg(dir.join("x")).output().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_name_grant_in_a_native_executable_needs_aipl_net_on_path_to_compile() {
+    let Some(native) = native_args() else { return };
+    let dir = scratch("native_name_grant");
+    let compile = |path: &str| {
+        Command::new(AIPL).env("PATH", path).args(["compile", "--exe"]).args(native).args(["--allow-connect", "example.com:443"]).arg(fetch_demo()).arg("-o").arg(dir.join("x")).output().unwrap()
+    };
+    let o = compile("/usr/bin:/bin");
     assert_eq!(
         String::from_utf8_lossy(&o.stderr).trim(),
-        "Error: --allow-connect example.com:443: a native executable has no name resolver: grant an address (127.0.0.1:8080, [::1]:*), or build with --target wasm"
+        "Error: --allow-connect names a host, which a native executable reaches through aipl-net, and aipl-net is not on PATH (it installs beside aipl; $AIPL_NET names another)"
     );
+    let o = compile(&net_path().to_string_lossy());
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // the grants are in the file, after the program: HOST:PORT lines, their length, AIPLNET1
+    let bytes = std::fs::read(dir.join("x")).unwrap();
+    assert!(bytes.starts_with(b"\x7fELF") && bytes.ends_with(b"example.com:443\n\x10\0\0\0AIPLNET1"), "{:?}", &bytes[bytes.len() - 40..]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// aipl-net is started with whatever arguments the program likes, and reaches only what the executable that
+/// started it was granted, which it reads from that executable: a program that skips std/net gets nothing more.
+#[test]
+fn aipl_net_started_by_a_program_reaches_only_the_hosts_that_program_was_granted() {
+    let Some(native) = native_args() else { return };
+    let dir = scratch("helper_grants");
+    let (at, server) = http_server(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"; 2]);
+    let port = at.port();
+    let demo = root().join("tests/aipl/net/spawn_helper.aipl");
+    let build = |name: &str, grants: &[String]| {
+        let out = dir.join(name);
+        let mut c = Command::new(AIPL);
+        c.env("PATH", net_path()).args(["compile", "--exe"]).args(native).args(["--allow-run", "*"]);
+        for g in grants {
+            c.args(["--allow-connect", g]);
+        }
+        let o = c.arg(&demo).arg("-o").arg(&out).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        out
+    };
+    let run = |exe: &Path, pairs: &[(&str, String)]| {
+        let mut c = Command::new(exe);
+        c.env("PATH", net_path());
+        for (h, p) in pairs {
+            c.arg(h).arg(p);
+        }
+        String::from_utf8_lossy(&c.output().unwrap().stdout).into_owned()
+    };
+    let other = free_port("127.0.0.1");
+    let asked = [("localhost", port.to_string()), ("127.0.0.1", port.to_string()), ("example.org", "80".to_string()), ("localhost", other.to_string())];
+    // granted: a name (so the file carries the trailer) and the same port by address
+    let exe = build("granted", &[format!("localhost:{port}"), format!("127.0.0.1:{port}")]);
+    assert_eq!(
+        run(&exe, &asked),
+        format!("localhost:{port} status 0\n127.0.0.1:{port} status 0\nexample.org:80 status 2\nlocalhost:{other} status 2\n")
+    );
+    // no name grant: no trailer, so the helper has nothing to go by and refuses every host
+    let exe = build("addresses_only", &[format!("127.0.0.1:{port}")]);
+    assert_eq!(run(&exe, &asked[..2]), format!("localhost:{port} status 2\n127.0.0.1:{port} status 2\n"));
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn an_executable_started_by_a_shell_has_no_grants_for_aipl_net() {
+    // aipl-net run by hand, or by anything that is not an executable with a trailer, reaches nothing
+    let o = Command::new(NET).args(["connect", "127.0.0.1", "9"]).output().unwrap();
+    assert_eq!(o.stdout, [2]);
+    assert_eq!(o.status.code(), Some(2));
+    let o = Command::new(NET).args(["connect", "localhost"]).output().unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).starts_with("usage: aipl-net connect HOST PORT [--tls]"));
 }

@@ -1,7 +1,7 @@
 # AIPL standalone: nothing Rust can do that AIPL cannot
 
 **Status: proposed (2026-10-27); S1 and S2 done 2026-10-29; S3's x86-64 and Linux AArch64 parts done 2026-10-30 to 31; S5's plain
-connecting done 2026-10-31 (host names and TLS are the Rust hosts' only).** A roadmap, not a design: each step below
+connecting done 2026-10-31; host names and TLS in native executables through the `aipl-net` helper, 2026-11-03.** A roadmap, not a design: each step below
 gets its own plan before code, as NET_PLAN.md did for sockets (S1's is
 SYS_PLAN.md, whose grant model the owner approved).
 
@@ -37,7 +37,7 @@ to run the referee tests.
 | Executables off Linux (macOS, Windows) | | the launcher bundle (aipl-run, wasmtime, about 18 MB) |
 | Listening on TCP | std/net over `aipl_net_v1` | `aipl-run` supplies the same imports |
 | Connecting out to an address (`net.connect`, `--allow-connect`, `http.fetch` over http) | std/net over `aipl_net_v1`, in every backend | |
-| Host names, TLS clients (`https://`) | | the hosts written in Rust (`aipl eval`, aipl-run, bundles: rustls and the system's resolver); native executables refuse them (NET_PLAN.md step 6) |
+| Host names, TLS clients (`https://`) | | the hosts written in Rust (`aipl eval`, aipl-run, bundles: rustls and the system's resolver); native executables through the `aipl-net` helper (SHIP_SELFHOSTED_PLAN.md, L3; before 2026-11-03 they refused them: NET_PLAN.md step 6) |
 
 ## Steps
 

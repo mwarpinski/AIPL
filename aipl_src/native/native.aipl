@@ -44,6 +44,7 @@
   (import procs)
   (import fresh)
   (import ip)
+  (import nettrailer)
   (import option)
 
   ;; The result: the executable, or why there is none. addr and len are
@@ -436,8 +437,7 @@
              (call buf.push_str problem flag)
              (call buf.push_byte problem 32)
              (call buf.push_bytes problem line)
-             (call buf.push_str problem (cond ((and wild (call ip.is_name_grant line)) ": a native executable has no name resolver: grant an address (127.0.0.1:8080, [::1]:*), or build with --target wasm")
-                                              (wild ": expected HOST:PORT or HOST:*, as 127.0.0.1:8080, [::1]:*, or example.com:443")
+             (call buf.push_str problem (cond (wild ": expected HOST:PORT or HOST:*, as 127.0.0.1:8080, [::1]:*, or example.com:443")
                                               (else ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")))
              (return (ptr.null (vec.Vec sockets.Grant))))))))
     out)
@@ -480,7 +480,10 @@
     (when (gt (call buf.len problem) 0) (return (call failure (call buf.bytes problem))))
     (let granted:(ptr (vec.Vec sockets.Grant)) (call grants "--listen" (call buf.bytes addresses) false problem))
     (when (eq granted (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))))
-    (let connecting:(ptr (vec.Vec sockets.Grant)) (call grants "--allow-connect" (call buf.bytes connect_lines) true problem))
+    ;; a name grant (example.com:443) is held by the trailer aipl-net reads (nettrailer.aipl), not by the routines
+    (let address_lines:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let named:bool (call nettrailer.split_names (call buf.bytes connect_lines) address_lines))
+    (let connecting:(ptr (vec.Vec sockets.Grant)) (call grants "--allow-connect" (call buf.bytes address_lines) true problem))
     (when (eq connecting (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))))
     ;; `serve` is an address, then (for `aipl serve`) " requests=N" and
     ;; " temporary": how many connections to answer, and whether the
@@ -619,7 +622,8 @@
                                                           ok:(zero bool)
                                                           error:(zero str.Bytes)
                                                           exe:(zero str.Bytes)]))
-    (let exe:str.Bytes (call buf.bytes (call elf.image (call buf.bytes c) entry (call buf.bytes data) 0)))
+    (let image:str.Bytes (call buf.bytes (call elf.image (call buf.bytes c) entry (call buf.bytes data) 0)))
+    (let exe:str.Bytes (if named (call nettrailer.append image (call buf.bytes connect_lines)) image))
     (put o Output.addr (call str.addr exe))
     (put o Output.len (get exe str.Bytes.len))
     (put o Output.ok true)

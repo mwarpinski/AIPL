@@ -9,6 +9,7 @@
   (import io)
   (import native)
   (import native_arm64)
+  (import nethelper)
 
   ;; A backend's result: the executable, or why there is none.
   (struct Built [(read ok:bool) (read error:str.Bytes) (read exe:str.Bytes)] (pub))
@@ -22,7 +23,20 @@
 
   ;; `wasm` as an executable. `target`: 0 for this machine's own, 1 for x86-64, 2 for AArch64. The grants
   ;; (`listen`: `run:PROGRAM` and ADDR:PORT lines) and `serve` are as native.compile_with takes them.
-  (fn build [wasm:str.Bytes sandbox:bool listen:str.Bytes serve:str.Bytes target:i32] -> (ptr Built) (pub)
+  (fn build [wasm:str.Bytes sandbox:bool grants:str.Bytes serve:str.Bytes target:i32] -> (ptr Built) (pub)
+    ;; a name grant (example.com:443) is reached through aipl-net, which the program is then granted to start
+    (let listen:str.Bytes grants)
+    (when (call nethelper.has_name grants)
+      (let helper:str.Bytes (call nethelper.run_lines))
+      (when (eq (get helper str.Bytes.len) 0)
+        (return (new Built (call alloc.forever) [ok:false
+                                                 error:(call str.from_str "--allow-connect names a host, which a native executable reaches through aipl-net, and aipl-net is not on PATH (it installs beside aipl; $AIPL_NET names another)")
+                                                 exe:(call str.from_str "")])))
+      (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+      (call buf.push_bytes b grants)
+      (call buf.push_byte b 10)
+      (call buf.push_bytes b helper)
+      (set! listen (call buf.bytes b)))
     (if (or (eq target 2) (and (eq target 0) (call host_is_arm64)))
         (block
           (let o:(ptr native_arm64.Output) (call native_arm64.compile_with wasm sandbox listen serve))

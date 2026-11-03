@@ -26,6 +26,7 @@ pub fn executable(wasm: &[u8], sandbox: bool) -> Result<Vec<u8>, String> {
 /// fresh copy of the program per connection (`--serve ADDR:PORT`,
 /// aipl_src/native/fresh.aipl); the native backend reads them with std/ip.
 pub fn executable_with(wasm: &[u8], sandbox: bool, listen: &[String], serve: Option<&str>) -> Result<Vec<u8>, String> {
+    let listen = &with_helper(listen)?;
     // the backend compiled once per process and kept between processes, as
     // the rest of the self-hosted toolchain is (src/selfhost.rs toolchain)
     static BACKEND: OnceLock<Result<(Engine, Module), String>> = OnceLock::new();
@@ -72,6 +73,33 @@ fn run_backend((engine, module): &(Engine, Module), wasm: &[u8], sandbox: bool, 
     Ok(bytes)
 }
 
+/// The grants an executable is compiled with, and when one names a host (`connect:example.com:443`) the
+/// `run:` grants for aipl-net, at the places std/net will find it: $AIPL_NET, then each absolute folder of
+/// $PATH that holds a file aipl-net (aipl_src/native/nethelper.aipl is the same in AIPL). It is how a native
+/// executable reaches a host by name, and a name grant with no helper to reach it is an error.
+fn with_helper(grants: &[String]) -> Result<Vec<String>, String> {
+    use crate::net::{GrantHost, Net};
+    let names = grants.iter().filter_map(|g| g.strip_prefix("connect:")).any(|g| matches!(Net::parse_connect_grant(g), Ok(c) if matches!(c.host, GrantHost::Name(_))));
+    let mut out = grants.to_vec();
+    if !names {
+        return Ok(out);
+    }
+    let before = out.len();
+    if let Some(p) = std::env::var_os("AIPL_NET").filter(|p| !p.is_empty()) {
+        out.push(format!("run:{}", p.to_string_lossy()));
+    }
+    for dir in std::env::var_os("PATH").iter().flat_map(std::env::split_paths) {
+        let file = dir.join("aipl-net");
+        if dir.is_absolute() && file.is_file() {
+            out.push(format!("run:{}", file.to_string_lossy()));
+        }
+    }
+    if out.len() == before {
+        return Err("--allow-connect names a host, which a native executable reaches through aipl-net, and aipl-net is not on PATH (it installs beside aipl; $AIPL_NET names another)".into());
+    }
+    Ok(out)
+}
+
 /// The AArch64 Linux executable for `wasm` (aipl_src/native/native_arm64.aipl,
 /// docs/design/ARM64_PLAN.md), or the backend's error. It runs where AArch64
 /// code does; this only builds it.
@@ -84,6 +112,7 @@ pub fn executable_arm64(wasm: &[u8]) -> Result<Vec<u8>, String> {
 /// lines) and the addresses it may listen on (`--listen`, as `ADDR:PORT` lines) fixed in it, and
 /// the address it serves on, a fresh copy per connection (`--serve`).
 pub fn executable_arm64_with(wasm: &[u8], sandbox: bool, grants: &[String], serve: Option<&str>) -> Result<Vec<u8>, String> {
+    let grants = &with_helper(grants)?;
     static BACKEND: OnceLock<Result<(Engine, Module), String>> = OnceLock::new();
     let t = crate::selfhost::toolchain("native/native_arm64", &BACKEND).map_err(|e| format!("native arm64 backend: {e}"))?;
     let (wasm, grants, serve) = (wasm.to_vec(), grants.to_vec(), serve.map(str::to_string));

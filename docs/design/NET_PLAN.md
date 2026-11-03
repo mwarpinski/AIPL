@@ -21,7 +21,7 @@ and fetching over it".
 | 3 | std/serve and the long-running server (A); `--max-memory` | **Done** 2026-10-20 |
 | 4 | A fresh instance per request (B): `serve.once`, `aipl serve --fresh`, `aipl compile --exe --serve` | **Done** 2026-10-20 |
 | 5 | Fetching: `connect`, `--allow-connect`, `http.fetch` (plain http to an address) | **Done** 2026-10-31 |
-| 6 | TLS from the host (rustls): `tls_connect`, `https://`, and host names (`connect_host`); `tls_accept` not | **Done** 2026-10-31 for the Rust hosts (clients only); native refuses |
+| 6 | TLS from the host (rustls): `tls_connect`, `https://`, and host names (`connect_host`); `tls_accept` not | **Done** 2026-10-31 for the Rust hosts (clients only); native executables through the `aipl-net` helper, 2026-11-03 (SHIP_SELFHOSTED_PLAN.md, L3) |
 | 7 | Measure requests a second per backend and mode (docs/BENCHMARKS.md) | **Done** 2026-10-31 |
 
 Also outstanding (small, found while building steps 3-4):
@@ -158,7 +158,7 @@ std/http reads and writes over them unchanged. A stream's callbacks are
 calls through function references, whose types carry the `(no_leak)`
 promise (step 1), so a `(no_leak)` handler may use streams.
 
-## 4. Fetching (steps 5 and 6 built; native executables cannot do names or TLS)
+## 4. Fetching (steps 5 and 6 built; native executables do names and TLS through `aipl-net`)
 
 `http.fetch` over `connect`, a request written and the response read
 with std/http:
@@ -291,7 +291,10 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
    front, as most servers are deployed anyway). *Built 2026-10-31 as the decision says: clients
    through rustls in src/net.rs (webpki-roots, and the PEM file AIPL_CA_FILE names, for a private
    authority or a test; the ring provider), in the VM, aipl-run, and bundles; native executables get -3 from
-   the two imports, and std/net says what to do instead. No `tls_accept`: a server sits behind a proxy.*
+   the two imports. No `tls_accept`: a server sits behind a proxy.* *Revised 2026-11-03: on -3 std/net starts `aipl-net` (src/bin/aipl_net.rs),
+   a Rust helper that resolves, connects, does the handshake and relays bytes over pipes; a native executable can now be granted a name
+   (`--allow-connect example.com:443`), which the compiler stores after the program for the helper to read from its parent
+   (aipl_src/native/nettrailer.aipl), and the helper path is granted to start. docs/design/SHIP_SELFHOSTED_PLAN.md, L3.*
    **A TLS written in AIPL is not planned** (revised 2026-10-20): it
    would add only HTTPS inside a native executable with no proxy, and
    hand-written cryptography is not fit for real traffic without an

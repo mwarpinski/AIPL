@@ -297,6 +297,38 @@ fn the_aipl_command_refuses_the_modes_only_the_rust_command_has() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A host-name grant puts a trailer after the executable and grants the helper's path: both commands do it, to the
+/// same bytes (docs/design/SHIP_SELFHOSTED_PLAN.md, L3).
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn both_commands_build_the_same_executable_for_a_host_name_grant() {
+    let dir = scratch("bootstrap_name_grant");
+    let aipl = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &aipl);
+    let net_dir = Path::new(env!("CARGO_BIN_EXE_aipl-net")).parent().unwrap().to_path_buf();
+    let path = std::env::join_paths(std::iter::once(net_dir).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))).unwrap();
+    let demo = root().join("tests/aipl/net/fetch_demo.aipl");
+    let build = |compiler: &Path, out: &Path| {
+        let o = Command::new(compiler)
+            .current_dir(root())
+            .env("PATH", &path)
+            .env("AIPL_STD", root().join("aipl_src/std/"))
+            .args(["compile", "--exe", "--allow-connect", "localhost:9", "--allow-connect", "127.0.0.1:*", "--allow-run", "/bin/true"])
+            .arg(&demo)
+            .arg("-o")
+            .arg(out)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}: {}", compiler.display(), String::from_utf8_lossy(&o.stderr));
+        std::fs::read(out).unwrap()
+    };
+    let (rust, ours) = (build(Path::new(AIPL), &dir.join("by_rust")), build(&aipl, &dir.join("by_aipl")));
+    assert!(rust.ends_with(b"localhost:9\n127.0.0.1:*\n\x18\0\0\0AIPLNET1"), "{:?}", &rust[rust.len() - 48..]);
+    assert!(rust == ours, "the Rust command and the AIPL one differ for a host-name grant");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native seed)")]

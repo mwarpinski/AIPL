@@ -1,0 +1,55 @@
+;; Where a native executable's helper for host names and TLS is (docs/design/SHIP_SELFHOSTED_PLAN.md, L3). The
+;; program starts `aipl-net` with proc.spawn, which needs a grant for the path it starts, and a grant is fixed when
+;; the executable is compiled. So the compiler, when it is given a name grant (`--allow-connect example.com:443`),
+;; also grants the helper at the paths std/net will find it: $AIPL_NET if that is set, and each folder of $PATH
+;; that holds a file aipl-net (std/net looks there with proc.find, and takes the first). src/native.rs does the
+;; same for the Rust command.
+(module nethelper
+  (import alloc)
+  (import buf)
+  (import fs)
+  (import ip)
+  (import option)
+  (import os)
+  (import str)
+
+  ;; Whether `grants` (the `connect:`, `run:` and ADDR:PORT lines the backend takes) has a `connect:` line naming
+  ;; a host rather than an address.
+  (fn has_name [grants:str.Bytes] -> bool (pub)
+    (let start:i32 0)
+    (let n:i32 (get grants str.Bytes.len))
+    (for i 0 (+ n 1)
+      (when (or (eq i n) (eq (call str.byte_at grants i) 10))
+        (let line:str.Bytes (call str.slice grants start (- i start)))
+        (set! start (+ i 1))
+        (when (and (gte (get line str.Bytes.len) 8) (call str.bytes_eq (call str.slice line 0 8) (call str.from_str "connect:")))
+          (when (call ip.is_name_grant (call str.slice line 8 (- (get line str.Bytes.len) 8))) (return true)))))
+    false)
+
+  ;; The `run:PATH` lines that grant the helper, one for each place it is found; empty when it is nowhere.
+  (fn run_lines [] -> str.Bytes (pub)
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let env:str.Bytes (call (option.unwrap_or str.Bytes) (call os.env "AIPL_NET") (call str.from_str "")))
+    (when (gt (get env str.Bytes.len) 0)
+      (call buf.push_str out "run:")
+      (call buf.push_bytes out env)
+      (call buf.push_byte out 10))
+    (let path:str.Bytes (call (option.unwrap_or str.Bytes) (call os.env "PATH") (call str.from_str "")))
+    (let n:i32 (get path str.Bytes.len))
+    (let start:i32 0)
+    (for i 0 (+ n 1)
+      (when (or (eq i n) (eq (call str.byte_at path i) 58))
+        (let dir:str.Bytes (call str.slice path start (- i start)))
+        (set! start (+ i 1))
+        ;; only an absolute folder names a path a grant can match
+        (when (and (gt (get dir str.Bytes.len) 0) (eq (call str.byte_at dir 0) 47))
+          (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+          (call buf.push_bytes b dir)
+          (call buf.push_str b "/aipl-net")
+          (match (call fs.info_path (call buf.bytes b))
+            ((option.Option fs.Info) some [_]
+             (call buf.push_str out "run:")
+             (call buf.push_bytes out (call buf.bytes b))
+             (call buf.push_byte out 10))
+            ((option.Option fs.Info) none (block))))))
+    (call buf.bytes out)))

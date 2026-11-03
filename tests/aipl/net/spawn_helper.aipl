@@ -1,0 +1,41 @@
+;; A program that starts aipl-net itself, not through std/net, as one that wanted a host it was not granted would:
+;; for each HOST PORT pair among its arguments it prints the helper's status byte (tests/test_net.rs). The helper,
+;; not this program, decides what is reachable: it reads the grants from this executable.
+(module spawn_helper
+  (import alloc)
+  (import buf)
+  (import str)
+  (import option)
+  (import os)
+  (import proc)
+
+  (fn try [host:str.Bytes port:str.Bytes] -> void
+    (let a:alloc.Allocator (call alloc.default))
+    (let path:(ptr buf.Buf) (call buf.make a 64))
+    (when (not (call proc.find "aipl-net" path))
+      (println "no aipl-net on PATH")
+      (return))
+    (let c:(ptr proc.Command) (call proc.command_path a (call buf.bytes path)))
+    (call proc.arg c "connect")
+    (call proc.arg_bytes c host)
+    (call proc.arg_bytes c port)
+    (match_result (call proc.spawn_with c proc.Stream.pipe proc.Stream.pipe proc.Stream.inherit)
+      (ok ch
+        (let out:(ptr buf.Buf) (call buf.make a 8))
+        (let n:i32 (call proc.read ch out 1))
+        (let status:i32 (if (gt n 0) (call str.byte_at (call buf.bytes out) 0) -1))
+        (println "{host}:{port} status {status}")
+        (call proc.close_input ch)
+        (let _w:i32 (call proc.wait ch))
+        (call proc.close ch))
+      (err e (println "{host}:{port} could not start it: {(call proc.message e)}")))
+    (call proc.free_command c))
+
+  (fn main [] -> i32
+    (let n:i32 (call os.arg_count))
+    (let i:i32 1)
+    (while (lt (+ i 1) n)
+      (call try (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str ""))
+                (call (option.unwrap_or str.Bytes) (call os.arg (+ i 1)) (call str.from_str "")))
+      (set! i (+ i 2)))
+    0))
