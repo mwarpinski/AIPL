@@ -186,11 +186,11 @@
         ;; a function other than main, and wasm, need the Rust command's VM and aipl-run
         ((and run_mode (call str.is a "--native")) (block))
         ((and run_mode (call str.is a "--wasm"))
-         (return (call fail_bytes "this aipl evaluates natively only: for --wasm use the Rust aipl: " a)))
+         (return (call fail_bytes "this aipl evaluates natively only, so it has no such option: " a)))
         ((and run_mode (or (call str.is a "-f") (call str.is a "--func")))
          (when (gte (+ i 1) n) (return (call usage)))
          (when (not (call str.is (call arg (+ i 1)) "main"))
-               (return (call fail_bytes "this aipl evaluates a program's main only: for another function (-f) use the Rust aipl, which runs it in the VM: " (call arg (+ i 1)))))
+               (return (call fail_bytes "this aipl evaluates a program's main only, so it has no such option: " (call arg (+ i 1)))))
          (set! i (+ i 1)))
         ((call str.is a "--target")
          (when (or run_mode (gte (+ i 1) n)) (return (call usage)))

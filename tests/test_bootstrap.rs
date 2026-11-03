@@ -231,6 +231,72 @@ fn the_bootstrap_finishes_where_openat2_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An installed `aipl` is started by its name, found through PATH (argv[0] has no /), from a directory with no
+/// checkout and no $AIPL_STD: it finds the library under share/aipl/std/ beside its bin/, as the tarball lays it out.
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn the_aipl_command_started_by_name_finds_its_library_beside_bin() {
+    let prefix = scratch("bootstrap_by_name");
+    std::fs::create_dir_all(prefix.join("bin")).unwrap();
+    std::fs::create_dir_all(prefix.join("share/aipl")).unwrap();
+    build_aipl(Path::new(AIPL), &prefix.join("bin/aipl"));
+    let copy = Command::new("cp").arg("-R").arg(root().join("aipl_src/std")).arg(prefix.join("share/aipl/std")).status().unwrap();
+    assert!(copy.success());
+    let work = prefix.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("hello.aipl"), "(module hello (import io) (fn main [] -> i32 (call io.println \"hello by name\") 0))\n").unwrap();
+    let by_name = |args: &str| {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!("aipl {args}"))
+            .current_dir(&work)
+            .env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", prefix.join("bin").display()))
+            .output()
+            .unwrap()
+    };
+    let o = by_name("run hello.aipl");
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "", "run");
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "hello by name\n");
+    let o = by_name("compile hello.aipl -o hello.wasm");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(work.join("hello.wasm").exists());
+    let o = by_name("doc str");
+    assert!(String::from_utf8_lossy(&o.stdout).starts_with("module str ("), "{}", String::from_utf8_lossy(&o.stderr));
+    // nothing beside it: the error says where it looked, and it is not a crash
+    std::fs::remove_dir_all(prefix.join("share")).unwrap();
+    let o = by_name("run hello.aipl");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("Cannot resolve import 'io'"), "{}", String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&prefix);
+}
+
+/// The modes only the Rust command has (docs/design/SHIP_SELFHOSTED_PLAN.md, L2) are refused with a message of their
+/// own: the Linux tarball has no Rust command to send the user to.
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn the_aipl_command_refuses_the_modes_only_the_rust_command_has() {
+    let dir = scratch("bootstrap_refusals");
+    let aipl = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &aipl);
+    std::fs::write(dir.join("hello.aipl"), "(module hello (import io) (fn main [] -> i32 (call io.println \"hi\") 0))\n").unwrap();
+    std::fs::write(dir.join("notests.aipl"), "(module notests (fn main [] -> i32 3))\n").unwrap();
+    for (args, mentions) in [
+        (vec!["test", "--vm", "notests.aipl"], "--vm"),
+        (vec!["test", "--all-backends", "notests.aipl"], "--all-backends"),
+        (vec!["test", "notests.aipl"], "no (test ...) in it"),
+        (vec!["eval", "--wasm", "hello.aipl"], "--wasm"),
+        (vec!["eval", "-f", "other", "hello.aipl"], "main only"),
+    ] {
+        let o = Command::new(&aipl).args(&args).current_dir(&dir).env("AIPL_STD", root().join("aipl_src/std/")).output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{args:?}: {err}");
+        assert!(err.starts_with("Error: ") && err.contains(mentions) && !err.contains("Rust"), "{args:?}: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native seed)")]

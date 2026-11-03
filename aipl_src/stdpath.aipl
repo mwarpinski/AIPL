@@ -1,10 +1,11 @@
 ;; Where the self-hosted commands (aipl.aipl, driver.aipl, doc.aipl) find
 ;; the standard library; src/library.rs is the Rust command's. In order:
 ;; $AIPL_STD; share/aipl/std/ beside the executable's folder, as a kit or an
-;; install lays it out (<prefix>/bin/aipl-native reads
-;; <prefix>/share/aipl/std/), when the command was started by a path (an
-;; argv[0] with a /); else aipl_src/std/ below the working directory (the
-;; repository's root, as bootstrap/build.sh runs it).
+;; install lays it out (<prefix>/bin/aipl reads <prefix>/share/aipl/std/),
+;; the executable found by argv[0] when it has a / and by the PATH entry that
+;; holds it when it has none (`aipl` typed in a shell); else aipl_src/std/
+;; below the working directory (the repository's root, as bootstrap/build.sh
+;; runs it).
 (module stdpath
   (import alloc)
   (import buf)
@@ -17,17 +18,45 @@
   (fn find [] -> str.Bytes (pub)
     (let env:str.Bytes (call (option.unwrap_or str.Bytes) (call os.env "AIPL_STD") (call str.from_str "")))
     (when (gt (get env str.Bytes.len) 0) (return env))
-    (let exe:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 0) (call str.from_str "")))
-    (let slash:i32 -1)
-    (for i 0 (get exe str.Bytes.len)
-      (when (eq (call str.byte_at exe i) 47) (set! slash i)))
-    (when (gte slash 0)
+    (let folder:str.Bytes (call exe_folder))
+    (when (gt (get folder str.Bytes.len) 0)
           (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-          (call buf.push_bytes b (call str.slice exe 0 slash))
+          (call buf.push_bytes b folder)
           (call buf.push_str b "/../share/aipl/std/")
           (let dir:str.Bytes (call buf.bytes b))
           (when (call has_std dir) (return dir)))
     (call str.from_str "aipl_src/std/"))
+
+  ;; The folder the executable is in, without a trailing /: argv[0]'s, when the command was started by a path
+  ;; (it has a /); else the first PATH entry that holds a file by argv[0]'s name, which is where the shell
+  ;; found it. Empty when neither says.
+  (fn exe_folder [] -> str.Bytes
+    (let exe:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 0) (call str.from_str "")))
+    (let slash:i32 -1)
+    (for i 0 (get exe str.Bytes.len)
+      (when (eq (call str.byte_at exe i) 47) (set! slash i)))
+    (when (gte slash 0) (return (call str.slice exe 0 slash)))
+    (when (eq (get exe str.Bytes.len) 0) (return exe))
+    (let path:str.Bytes (call (option.unwrap_or str.Bytes) (call os.env "PATH") (call str.from_str "")))
+    (let n:i32 (get path str.Bytes.len))
+    (let start:i32 0)
+    (for i 0 (+ n 1)
+      (when (or (eq i n) (eq (call str.byte_at path i) 58))
+            ;; an empty entry is the working directory
+            (let entry:str.Bytes (if (eq i start) (call str.from_str ".") (call str.slice path start i)))
+            (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+            (call buf.push_bytes b entry)
+            (call buf.push_str b "/")
+            (call buf.push_bytes b exe)
+            (when (call has_file (call buf.bytes b)) (return entry))
+            (set! start (+ i 1))))
+    (call str.from_str ""))
+
+  ;; Whether a file is at `path`.
+  (fn has_file [path:str.Bytes] -> bool
+    (match (call fs.info_path path)
+      ((option.Option fs.Info) some [_] true)
+      ((option.Option fs.Info) none false)))
 
   ;; Whether dir holds the standard library (its str.aipl).
   (fn has_std [dir:str.Bytes] -> bool

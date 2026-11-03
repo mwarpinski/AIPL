@@ -10,7 +10,8 @@
 ;; per test as `PROGRAM K`. A test passes when it exits 0. The output is the
 ;; Rust command's: the file's path, a line for each test, what a failed one
 ;; printed (its output and its error together, as one stream), and a count.
-;; What needs the VM stays in the Rust command: --vm, --all-backends, and a
+;; What needs the VM stays in the Rust command, which the repository's tests
+;; and CI use and the Linux tarballs do not ship: --vm, --all-backends, and a
 ;; file with no (test ...) in it, whose entry function that command runs.
 (module testcmd
   (import driver)
@@ -184,7 +185,7 @@
          (set! i (+ i 1)))
         ((call str.is x "--native") (block))
         ((or (call str.is x "--vm") (or (call str.is x "--all-backends") (or (call str.is x "-f") (or (call str.is x "--func") (call str.is x "--run-one")))))
-         (return (call fail_bytes "this aipl runs tests natively only: for the VM (--vm, --all-backends, or a file's entry function) use the Rust aipl: " x)))
+         (return (call fail_bytes "this aipl runs tests natively only, so it has no such option: " x)))
         ((call str.starts_with x (call str.from_str "-")) (return (call usage)))
         (have_path (return (call usage)))
         (else (set! have_path true) (set! path x)))
@@ -212,7 +213,7 @@
           (call buf.push_bytes m path)
           (call buf.push_str m (if (eq kind 2)
                                    ": no (test ...) in any .aipl file below it"
-                                   ": no (test ...) in it: this aipl runs a file's tests natively only; for one with an entry function and no tests use the Rust aipl"))
+                                   ": no (test ...) in it: aipl test runs a file's (test ...) forms"))
           (return (call fail_bytes "" (call buf.bytes m))))
 
     (let counts:(arr i32) (arr.new i32 (call alloc.forever) 2))
