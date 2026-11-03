@@ -10,7 +10,7 @@
 # --loops N sets how often A repeats its recompile-and-run (default 100).
 # --with-serve (with --full) keeps test_serve's three long loopback tests,
 # which take about 7 minutes on macOS: it has only 16,384 ephemeral ports,
-# and a closed one waits 30 s (docs/APPLE_SILICON_REPORT.md, Round 3).
+# and a closed one waits 30 s (docs/history/APPLE_SILICON_REPORT.md, Round 3).
 #
 # A  compile over an executable again and again, as test_opt.rs's flake did
 #    (macOS killed the next run of a rewritten binary: SIGKILL, "Code

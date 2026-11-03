@@ -2,7 +2,7 @@
 
 **Status: approved 2026-10-29, under way (NA1-NA3 done; NA4-NA8 begun: programs that print run on AArch64 Linux).** A design for adding native ARM64 (AArch64) execution to AIPL, beginning with Linux AArch64 ELF, while retaining the launcher bundle on macOS Darwin. The owner approved the plan with the recommended answers to section 6: Linux AArch64 ELF first with the launcher bundle staying the macOS answer; 64 KiB segment alignment for ARM64 only (x86-64's bytes do not change); a sibling `lower_arm64.aipl`; inline division checks; and GitHub's `ubuntu-24.04-arm` runner in the workflow.
 
-Written following the Apple Silicon port and investigation documented in `docs/APPLE_SILICON_REPORT.md` and following the structure of `docs/design/NATIVE_BACKEND_PLAN.md`.
+Written following the Apple Silicon port and investigation documented in `docs/history/APPLE_SILICON_REPORT.md` and following the structure of `docs/design/NATIVE_BACKEND_PLAN.md`.
 
 ## At a glance
 

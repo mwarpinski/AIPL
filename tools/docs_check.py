@@ -7,8 +7,8 @@ section 8: "the documentation check is rerun").
 1. Every file the documentation names exists: a `path/like/this.ext` in
    backticks, a Markdown link, and std/NAME (std/NAME.aipl under aipl_src/).
    A `:LINE` or `:A-B` after a path is dropped. The archives
-   (docs/history, docs/notes) and the dated records (docs/design/AGENT_FRICTION.md,
-   docs/NOTES_REVIEW.md, docs/HANDOFF.md's history) are skipped unless --all.
+   (docs/history, docs/notes) and the dated record docs/design/AGENT_FRICTION.md
+   are skipped unless --all.
 2. Words the language no longer has are not used as current (STALE below), in
    the documents a reader meets first.
 3. The numbers that can be counted are the numbers written: the test files
@@ -29,7 +29,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # archives and dated records: what they name may be gone, as the record says
-ARCHIVES = ("docs/history/", "docs/notes/", "docs/design/AGENT_FRICTION.md", "docs/NOTES_REVIEW.md", "docs/APPLE_SILICON")
+ARCHIVES = ("docs/history/", "docs/notes/", "docs/design/AGENT_FRICTION.md")
 # the documents a reader meets first
 FRONT = ("README.md", "AIPL_SPEC.md", "PROMPT_GUIDE_FOR_AIS.md", "docs/FAQ.md", "docs/TOUR.md", "docs/USING_AIPL.md", "ROADMAP.md", "DEVELOPING.md",
          "bootstrap/README.md", "tools/harness/README.md")

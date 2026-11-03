@@ -67,7 +67,7 @@ text is codegen.aipl's input (enums already numbers), not AIPL source.
 
 - **Its output is type-checked.** consts.expand_constants keeps enums, so
   the optimizer's text is AIPL the checker reads, and `codegen_opt
-  compile` checks it before code generation (docs/NOTES_REVIEW.md,
+  compile` checks it before code generation (docs/notes/REVIEW.md,
   final_thoughts: a rewrite once made code the checker would have
   refused, and native code crashed). A program that does not type-check is
   a compile error naming the optimizer and `--no-opt`, never wrong code.
@@ -197,14 +197,14 @@ re-measured both ways (tools/bench.py builds each AIPL version with and
 without `--no-opt`; best of five on a quiet i9-12900H): optimized over
 unoptimized, spectralnorm 0.64 natively and 0.57 under wasmtime,
 knucleotide 0.85 and 0.86, mandelbrot 0.89 and 0.90, the rest within 5%,
-nothing slower. docs/NOTES_REVIEW.md's codegen_opt rows have verdicts: the
+nothing slower. docs/notes/REVIEW.md's codegen_opt rows have verdicts: the
 speed claim true (spectralnorm more so), the missing output check fixed,
 literal truncation wrong (tests/aipl/opt/literals.aipl, in CI through
 opt_diff), the compile-error count still unchecked (no history before git).
 
 What was planned: the spec (6.x: what `aipl compile` does), the guide's one line on
 compiling, docs/BENCHMARKS.md re-measured both ways, and docs/notes'
-claims about codegen_opt given verdicts in docs/NOTES_REVIEW.md.
+claims about codegen_opt given verdicts in docs/notes/REVIEW.md.
 
 ### 4. The next speed: the biggest gaps to C
 
@@ -239,7 +239,7 @@ Changes, all general:
   an inlined call in a contract brought a `let` that code generation
   cannot see (contracts are now never rewritten;
   tests/aipl/opt/contracts.aipl). And one in the language, open: a `let`
-  inside a contract verifies but does not compile (docs/HANDOFF.md, Open
+  inside a contract verifies but does not compile (docs/history/HANDOFF.md, Open
   problems).
 - Left: storing each slot's hash would skip most comparisons (about 6% of
   knucleotide) but changes the order a map iterates in, which the

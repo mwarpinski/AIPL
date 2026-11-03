@@ -21,7 +21,7 @@ so in your report.
 - Every claim needs evidence: a command and its output, a test, or a file
   and line. The owner re-checks other agents' work, and an earlier outside
   review of this repository was checked claim by claim
-  (docs/NOTES_REVIEW.md); several of its claims were wrong. Write your
+  (docs/notes/REVIEW.md); several of its claims were wrong. Write your
   report so it can be checked the same way.
 - Disagree when the evidence says so. Do not paper over a failure: a red
   test is reported with its output, not skipped silently.
@@ -29,10 +29,10 @@ so in your report.
 
 ## 2. The repository, briefly
 
-Read, in this order: README.md, DEVELOPING.md, docs/HANDOFF.md (the state
+Read, in this order: README.md, DEVELOPING.md, docs/history/HANDOFF.md (the state
 of the work and the rules), docs/design/NATIVE_BACKEND_PLAN.md (how the
 native backend is built), and docs/notes/arm64_build.md with its verdicts
-in docs/NOTES_REVIEW.md, section "arm64_build" (one claim there is wrong:
+in docs/notes/REVIEW.md, section "arm64_build" (one claim there is wrong:
 ARM64's `sdiv` not trapping is a cost, not an advantage, since WebAssembly
 requires the trap, so an ARM64 backend must add the checks).
 
@@ -115,7 +115,7 @@ owner.
    - a server: `aipl eval --listen 127.0.0.1:8080 tests/aipl/net/serve_demo.aipl -- 127.0.0.1:8080 3`
      and three `curl http://127.0.0.1:8080/` calls.
 
-Deliverable: a section "Task 1" in docs/APPLE_SILICON_REPORT.md with the
+Deliverable: a section "Task 1" in docs/history/APPLE_SILICON_REPORT.md with the
 environment and each command's result.
 
 ### Task 2: make the test suite honest on macOS
@@ -227,7 +227,7 @@ owner approves it.
 When you stop (after task 5, or earlier if something blocks you):
 
 - Commit by explicit path on `features/apple-silicon` and push the branch.
-- The report, docs/APPLE_SILICON_REPORT.md, starts with a summary: what
+- The report, docs/history/APPLE_SILICON_REPORT.md, starts with a summary: what
   works on the Mac, what you changed (commit by commit), what is broken and
   why, and what you recommend next. Every claim with its evidence.
 - Do not merge into `development` or `main`.
@@ -302,7 +302,7 @@ that was Claude's mistake, and this is the rule now:
 `a_fresh_instance_per_request_isolates_a_crash`) as you proposed: the
 `native` host only where `NATIVE` is true, the other hosts everywhere.
 These tests start servers on loopback ports; if one is flaky on the Mac,
-say so with the output (docs/HANDOFF.md, "Open problems", explains the
+say so with the output (docs/history/HANDOFF.md, "Open problems", explains the
 port fixes made on Linux).
 
 **Task B: the correction above (6.2)**, across every file you gated.
@@ -316,7 +316,7 @@ counts per target), `./target/release/aipl test aipl_src/test_suite.aipl`,
 `python3 tools/run_fuzz.py --cases 500 --seed 1`, and the new
 `python3 tools/opt_diff.py` (optimized builds against `--no-opt` builds of
 every repository program; it should print no DIFFERS line). Put the
-results at the top of docs/APPLE_SILICON_REPORT.md under "Round 2",
+results at the top of docs/history/APPLE_SILICON_REPORT.md under "Round 2",
 correcting round 1's "61 of 62" with the honest counts. Commit by explicit
 path and push `features/apple-silicon`. **Then stop and hand back**; the
 owner merges.
@@ -337,7 +337,7 @@ branch `features/elf-offset0` from `features/apple-silicon`:
 - `sh bootstrap/build.sh` must still reach its fixed point (stage 3
   identical to stage 2). The seed itself keeps the old layout until a seed
   refresh, which only the owner approves: do not refresh it.
-- Report on that branch (a section in docs/APPLE_SILICON_REPORT.md) and
+- Report on that branch (a section in docs/history/APPLE_SILICON_REPORT.md) and
   push it. Do not merge it: Claude reruns the full CI on a native Linux
   x86-64 machine first, since emulation can hide what real hardware shows.
 
@@ -404,7 +404,7 @@ report (7.5): several statements were not measured.
 - **`openat2` (audit A5) is pinned by the owner.** Native executables
   cannot open files on Linux before 5.6 nor under Rosetta 2; that is now
   said in the spec (6.6), the FAQ, and ROADMAP, and the fix is planned in
-  docs/HANDOFF.md. Do not implement it.
+  docs/history/HANDOFF.md. Do not implement it.
 
 ### 7.2 Task D: Claude has it from here
 
@@ -467,7 +467,7 @@ and hand back**. Do not merge anything.
 ### 7.4 Files
 
 Yours this round: tests/*.rs, for the gating and test_opt's message only;
-tools/container_test.sh; docs/APPLE_SILICON_REPORT.md. Stay out of:
+tools/container_test.sh; docs/history/APPLE_SILICON_REPORT.md. Stay out of:
 aipl_src/, src/, bootstrap/, tools/harness/ (run its selftest only),
 install.sh, tools/make_kit.sh, AIPL_SPEC.md, PROMPT_GUIDE_FOR_AIS.md. If a
 fix needs one of them, describe it in your report instead.
@@ -515,7 +515,7 @@ into it; do not rebase). Since round 3:
 - **Task D is done** (the read-only first `PT_LOAD` at file offset 0), and
   the seed was refreshed twice (bootstrap/README.md). Under Rosetta the
   seed `--version` already ran, from the owner's check.
-- **The `openat2` fallback is in** (docs/HANDOFF.md, "The openat2
+- **The `openat2` fallback is in** (docs/history/HANDOFF.md, "The openat2
   fallback"): a native executable built without `--sandbox` that finds
   `openat2` failing (ENOSYS, or EPERM from a seccomp profile) opens files
   with plain `openat`; one built with `--sandbox` prints `this program was
@@ -594,7 +594,7 @@ repository mounted read-only at `/repo`:
 
 ### 8.3 Files
 
-Yours this round: docs/APPLE_SILICON_REPORT.md only (add a "Round 4"
+Yours this round: docs/history/APPLE_SILICON_REPORT.md only (add a "Round 4"
 section above round 3's). Stay out of everything else, as in 7.4: if a
 failure needs a change in aipl_src/, src/, bootstrap/, or a test, describe
 it in the report. Do not merge, refresh the seed, or touch `main`.

@@ -32,9 +32,9 @@ What is left, in the order to do it. Each item below points at its section.
 | # | Item | Who | State |
 |---|---|---|---|
 | 6 | Task D and the `openat2` fallback, so native executables load and open files under Rosetta 2 and on Linux before 5.6: the ELF headers are their own read-only first segment at file offset 0 (`features/elf-headers`, merged with the refreshed seed 2026-10-27; it replaces Gemini's `features/elf-offset0`), and a program without `--sandbox` opens with `openat` when `openat2` fails (a `--sandbox` program says it needs it and exits 1) | Claude; the Rosetta run is on the owner's Mac; the seed refresh is the owner's | Seen loading under Rosetta (the owner, Mac mini M4, 2026-10-27); the fallback is written and tested with `openat2` refused by a seccomp filter (`tools/without_openat2.py`, in CI): the native test suite and the whole bootstrap pass that way, and the seed refreshed 2026-10-27 (from 01bc216) has it; not yet run under Rosetta itself |
-| 7 | Gemini's round 3 on the Mac mini (docs/APPLE_SILICON_HANDOFF.md, section 7): review its report, then merge its macOS test gating into `development`, so a Mac user's `cargo test` is honest | Claude reviews; the owner merges | Round 3 pushed 2026-10-26, reviewed 2026-10-27 (tests and docs only; found the in-place overwrite bug, fixed on `features/replace-output`); `sh tools/mac_check.sh` is what to run on a Mac to confirm the fix and the README's paths; when it merges, README and the FAQ say macOS on Apple Silicon is tested (both say only Linux is, now) |
+| 7 | Gemini's round 3 on the Mac mini (docs/history/APPLE_SILICON_HANDOFF.md, section 7): review its report, then merge its macOS test gating into `development`, so a Mac user's `cargo test` is honest | Claude reviews; the owner merges | Round 3 pushed 2026-10-26, reviewed 2026-10-27 (tests and docs only; found the in-place overwrite bug, fixed on `features/replace-output`); `sh tools/mac_check.sh` is what to run on a Mac to confirm the fix and the README's paths; when it merges, README and the FAQ say macOS on Apple Silicon is tested (both say only Linux is, now) |
 
-**After launch** (each already stated in ROADMAP.md or docs/HANDOFF.md)
+**After launch** (each already stated in ROADMAP.md or docs/history/HANDOFF.md)
 
 - the rest of the way off Rust (ROADMAP.md, "Next" 3): an AIPL way to start a process (so
   `eval`, `run`, `test`, and `watch` can be self-hosted, and the test
@@ -46,7 +46,7 @@ What is left, in the order to do it. Each item below points at its section.
   step 7);
 - codegen_opt.aipl's pattern matcher (section 6), the self-hosted
   compiler's double parse, exact trap positions inside format
-  placeholders (docs/HANDOFF.md), and splitting the spec into a reference
+  placeholders (docs/history/HANDOFF.md), and splitting the spec into a reference
   and a tour (section 7).
 
 ---
@@ -180,7 +180,7 @@ more than usual.
   review. Readers will point their own models at the repository, so each
   claim gets a verdict with evidence (a test, a command, file:line): true
   and fixed, true and open (with an item here), wrong (and what shows
-  it), or by design (and why), all in one document: docs/NOTES_REVIEW.md
+  it), or by design (and why), all in one document: docs/notes/REVIEW.md
   (2026-10-19, all eight notes). Its open items are done: `str.Bytes` as a
   value struct (std/str.aipl, since MEMORY_PLAN.md M1); `io.read_file`,
   `os.arg`, `os.env` returning len -1 instead of an Option (2026-10-26:

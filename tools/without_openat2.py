@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Runs a command on a system without openat2, as Linux before 5.6, Rosetta 2, and
-container profiles that refuse it are (docs/HANDOFF.md, the openat2 fallback).
+container profiles that refuse it are (docs/history/HANDOFF.md, the openat2 fallback).
 
     without_openat2.py [--eperm] COMMAND [ARG...]
 

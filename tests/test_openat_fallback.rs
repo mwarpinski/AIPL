@@ -1,5 +1,5 @@
 //! Native executables on a system without openat2 (Linux before 5.6, Rosetta
-//! 2, a container profile that refuses it; docs/HANDOFF.md): tools/without_openat2.py
+//! 2, a container profile that refuses it; docs/history/HANDOFF.md): tools/without_openat2.py
 //! makes the system call fail (ENOSYS, or EPERM as an old Docker profile
 //! does) for a command and its children. A program built without --sandbox
 //! still opens, creates, lists, stats, and deletes files, the same as with

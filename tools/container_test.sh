@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs AIPL test and verification steps in Linux containers on Apple Silicon
-# via Docker Desktop (Task 4 in docs/APPLE_SILICON_HANDOFF.md).
+# via Docker Desktop (Task 4 in docs/history/APPLE_SILICON_HANDOFF.md).
 #
 # Usage:
 #   sh tools/container_test.sh arm64   # Test on linux/arm64 (native speed)

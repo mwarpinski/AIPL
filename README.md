@@ -345,8 +345,8 @@ independent implementations against each other.
 - [ROADMAP.md](ROADMAP.md): what comes next, and what AIPL does not do yet.
 - [DEVELOPING.md](DEVELOPING.md): building, testing, the repository layout,
   and the conventions the work follows.
-- [docs/](docs/): benchmarks, the launch checklist, design records of the
-  larger pieces of work, and history.
+- [docs/](docs/README.md): the index of everything else: benchmarks, the launch
+  checklist, design records of the larger pieces of work, history, and notes.
 
 ## License
 

@@ -12,7 +12,7 @@ they decide, are still to come.
 AIPL is written by models, and a model does best with one obvious way to
 do each thing: every second way is a choice it can get wrong, and a
 stale prompt or an old copy of the docs steers it to the wrong one.
-Sonnet's review (docs/NOTES_REVIEW.md, "sonnet", with a verdict on each
+Sonnet's review (docs/notes/REVIEW.md, "sonnet", with a verdict on each
 claim) found models choosing the second way: in AI-SQL's 4,100 lines,
 96 `loop`s and no `for`, 156 empty `(block)` elses beside 32 `when`s.
 This batch removes the second ways it found, makes the errors for what
@@ -281,7 +281,7 @@ owner's to overrule:
 - A seed refresh is optional (above); do it with the next change that needs
   one, and with the owner's approval.
 - Prose that still describes `loop` as a live form, left as history: docs/
-  notes/, docs/history/, docs/NOTES_REVIEW.md, and the other plans in
+  notes/, docs/history/, docs/notes/REVIEW.md, and the other plans in
   docs/design/. The spec's and the guide's live text was updated.
 
 ## 4. `when` is the only one-branch `if`
@@ -311,7 +311,7 @@ in five stages, each checked by the full CI before the next:
    position; `when` is in HEAD_NAMES (so `whn` gets a suggestion); a bare
    `(when)` says `when takes a condition and a body`. Full CI: every test
    passed except two in tests/test_serve.rs, the intermittent failures
-   being investigated (docs/HANDOFF.md, Open problems), not this change.
+   being investigated (docs/history/HANDOFF.md, Open problems), not this change.
 2. **Done** (2026-10-25; full CI before the commit): both printers print `(if c (block b...) (block))` as `(when c b...)`
    (only when the then is a block and the else an empty one), and the
    self-hosted code generator learns `when`. What was found reading

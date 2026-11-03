@@ -35,7 +35,7 @@ fn echo() -> PathBuf {
 
 /// A port nothing listens on now, for a server a test is about to start,
 /// and one no other test here was given. Two causes of empty answers, both
-/// found 2026-10-21 to 25 (docs/HANDOFF.md), shape it:
+/// found 2026-10-21 to 25 (docs/history/HANDOFF.md), shape it:
 ///
 /// - It comes from below the range the system takes ports from for bind(0)
 ///   and for every outgoing connection (/proc/sys/net/ipv4/ip_local_port_range,

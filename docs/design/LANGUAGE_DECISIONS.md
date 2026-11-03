@@ -3,7 +3,7 @@
 **Status: decided and done (2026-10-26), items 1-8** (7 is a decision not to
 build: the FAQ says why). Each item below keeps its proposal, then what the
 owner decided and what was built. Written by Claude (Opus 5.5) as step 2 of
-the release order (docs/HANDOFF.md):
+the release order (docs/history/HANDOFF.md):
 the changes that would break existing programs, settled before anything is
 measured or published, so the seed is refreshed once and the evidence for
 the launch post (LAUNCH_CHECKLIST.md section 5) is gathered on the final
@@ -216,7 +216,7 @@ many values it holds; a missing allocator, or a literal where it goes, is
 one message in both. tests/test_sugar.rs: alike in every backend, both
 toolchains' bytes, five message cases. Found on the way, open: sugar
 inside a formatting placeholder is rewritten by the self-hosted resolver
-but refused by the Rust one (docs/HANDOFF.md, Open problems).
+but refused by the Rust one (docs/history/HANDOFF.md, Open problems).
 
 ## 4. A heap struct is made in one form
 
@@ -428,7 +428,7 @@ there a `usize`?", says why.
 **Today.** `(= 1 1)` gives "Unknown op/keyword: =; to call a function,
 write (call = args...)" (checked 2026-10-26): the generic hint for an
 unknown head, which here points the wrong way. The outside review quoted
-a better message that never existed (NOTES_REVIEW.md).
+a better message that never existed (docs/notes/REVIEW.md).
 
 **Proposed.** `'=' is not an operator; equality is (eq a b)` (and the
 same for `==` and `!=`, which is `neq`), in both toolchains. Not a

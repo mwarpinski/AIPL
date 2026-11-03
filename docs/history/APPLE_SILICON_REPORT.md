@@ -20,7 +20,7 @@
    - Not a test failure (5 of 5 standalone runs on macOS passed all 11 tests), but 11x slower than Linux (`36.51s` in `linux/arm64`).
    - **Measured cause**: `test_serve.rs` opens 223,006 sequential loopback TCP connections across `many_requests_leave_memory_flat_natively` (101,002), `many_requests_leave_memory_flat_under_aipl_run` (101,002), and `twenty_thousand_requests_leave_memory_flat_in_the_vm` (21,002). On macOS (`sysctl net.inet.ip.portrange.first=49152 net.inet.ip.portrange.last=65535 net.inet.tcp.msl=15000`), the ephemeral port pool has only `16,384` ports (`65535 - 49152 + 1`) and closed client sockets remain in `TIME_WAIT` for `2 * MSL = 30 s`. Cycling `223,006` connections through `16,384` ports requires `13.61` full port-range cycles (`13.61 * 30 s = 408.3 s`), during which `TcpStream::connect` in `exchange()` sleeps in its 20 ms retry loop waiting for `TIME_WAIT` expiry.
 3. **Rosetta 2 `openat2` and seed refresh (`features/elf-offset0`)**:
-   - Pinned by the owner in `docs/HANDOFF.md` and `AIPL_SPEC.md` 6.6; Task D (`features/elf-offset0`) is kept by Claude on x86-64 hardware (handoff 7.1–7.2).
+   - Pinned by the owner in `docs/history/HANDOFF.md` and `AIPL_SPEC.md` 6.6; Task D (`features/elf-offset0`) is kept by Claude on x86-64 hardware (handoff 7.1–7.2).
 
 #### Recommended Next Steps
 1. **Fix in-place executable overwrite in `src/main.rs` (for Claude / owner; `src/` is off-limits in Round 3 per handoff 7.4)**:
@@ -37,7 +37,7 @@
 3. **`tests/test_native_elf.rs`**: Replaced the silent early return when `readelf` is absent in `readelf_accepts_the_executable_when_installed` with `#[cfg_attr(target_os = "macos", ignore = "needs readelf (binutils), which macOS lacks")]` and `.expect("readelf not found: Linux requires binutils")`.
 4. **`tests/test_bootstrap.rs`**: Replaced the file-wide `#![cfg(all(target_os = "linux", target_arch = "x86_64"))]` with `#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")), ignore = "runs Linux x86-64 executables (the native seed)")]` on both tests so they are counted as `2 ignored` on macOS and `linux/arm64`.
 5. **`tools/container_test.sh`**: Added `opt_diff.py --fuzz 500 --seed 1` and `harness.py selftest` to `arm64` mode, removed the stale Rosetta offset-`0x1000` note and `|| true` from `amd64` mode so the script exits with `cargo test`'s status, and excluded `./target` when copying `/repo` into `/build`.
-6. **`docs/APPLE_SILICON_REPORT.md`**: Added Round 3 findings and corrected the stale statements listed in Audit A7.
+6. **`docs/history/APPLE_SILICON_REPORT.md`**: Added Round 3 findings and corrected the stale statements listed in Audit A7.
 
 ---
 
@@ -217,7 +217,7 @@ Results (in addition to `410.03s` during the full suite run):
 
 ## Round 2 Verification (2026-10-26)
 
-Following instructions in `docs/APPLE_SILICON_HANDOFF.md` Section 6 from Claude and the owner, all protected file restrictions were lifted, `features/when` and the optimizer were merged into `features/apple-silicon`, honest test suite gating was implemented, and the complete verification suite was executed on both native macOS Apple Silicon and the `linux/arm64` container.
+Following instructions in `docs/history/APPLE_SILICON_HANDOFF.md` Section 6 from Claude and the owner, all protected file restrictions were lifted, `features/when` and the optimizer were merged into `features/apple-silicon`, honest test suite gating was implemented, and the complete verification suite was executed on both native macOS Apple Silicon and the `linux/arm64` container.
 
 ### 1. Honest Test Suite Gating & Correction (Tasks A & B)
 1. **`tests/test_serve.rs` Gated**:
@@ -284,12 +284,12 @@ This section records the initial Round 1 findings from 2026-10-25. Note that the
    - Initial gating of native tests and temp dir canonicalization. (Replaced in Round 2 with honest `cfg_attr` ignore attributes).
 2. **`78a7fcc`**: *Add macOS standalone launcher bundle test in tests/test_runner.rs*
    - Added `macos_launcher_bundle_executes_and_preserves_behavior` to `tests/test_runner.rs`.
-3. **`a5572c8`**: *Update docs/APPLE_SILICON_REPORT.md with Task 1, 2, and 3 findings*
+3. **`a5572c8`**: *Update docs/history/APPLE_SILICON_REPORT.md with Task 1, 2, and 3 findings*
 4. **`75c0b90`**: *Add tools/container_test.sh helper for container verification*
 5. **`3d6fdb1`**: *Add Task 4/5 report documentation and propose docs/design/ARM64_PLAN.md*
 6. **`4445888`**: *Round 2: Gate test_serve, apply honest cfg_attr test ignoring, and update report*
 7. **`3ec9b2e`**: *Task D: Map first PT_LOAD segment at file offset 0 for Rosetta 2 compatibility* (reverted on `features/apple-silicon` in `c9ddd1c`; kept on `features/elf-offset0`)
-8. **`83a71e6`**: *docs/APPLE_SILICON_REPORT.md: round 2 audit against the handoff*
+8. **`83a71e6`**: *docs/history/APPLE_SILICON_REPORT.md: round 2 audit against the handoff*
 
 ---
 
@@ -528,7 +528,7 @@ cargo test --release --no-fail-fast
 - **Only 1 target failed:** `tests/test_serve.rs` (2 tests failed: `a_fresh_server_that_cannot_listen_says_so` and `a_fresh_instance_per_request_isolates_a_crash`).
 
 ### 2.5 Protected File Report: `tests/test_serve.rs`
-Per repository rules in `docs/APPLE_SILICON_HANDOFF.md` Section 3, `tests/test_serve.rs` is being actively modified on `features/when` and must not be edited on this branch.
+Per repository rules in `docs/history/APPLE_SILICON_HANDOFF.md` Section 3, `tests/test_serve.rs` is being actively modified on `features/when` and must not be edited on this branch.
 - **Why it failed:** `tests/test_serve.rs` lines 365 and 407 unconditionally request `compile(&src, &exe, &["--exe", "--target", "native", ...])`. On non-Linux x86-64 platforms, the AIPL compiler intentionally refuses `--target native`.
 - **Recommended fix for `features/when` / owner:**
   In `tests/test_serve.rs`:

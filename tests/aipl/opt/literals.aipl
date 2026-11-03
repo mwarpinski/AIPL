@@ -1,5 +1,5 @@
 ;; Literals at the extremes of i32 and i64, folded and not, re-printed by
-;; the optimizer (docs/NOTES_REVIEW.md, painpoints: "large literals
+;; the optimizer (docs/notes/REVIEW.md, painpoints: "large literals
 ;; truncate to 32 bits when re-printed"): tools/opt_diff.py compares the
 ;; optimized build with the unoptimized one (both printed what aipl eval
 ;; prints, 2026-10-25).
