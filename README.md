@@ -118,12 +118,14 @@ irm https://raw.githubusercontent.com/mwarpinski/AIPL/main/install.ps1 | iex
 
 It takes its options from environment variables (`AIPL_VERSION`, `AIPL_HOME`,
 `AIPL_NO_PATH=1`; `$env:AIPL_UNINSTALL = 1` removes it); `install.ps1` itself lists them.
-What differs on Windows: a program sees the root of the drive it runs from as `/`
-(another drive's root is `/D:/`), so inside a program write `/Users/me/notes.txt` or a
-relative path; an argument you give it that is an absolute Windows path
-(`C:\Users\me\notes.txt`) is turned into that for you. Starting other programs
-(`std/proc`) works, but a signal there ends a process at once (status 256 plus the
-signal), and there are no native executables (`compile --exe` bundles the launcher).
+What differs on Windows: a program sees the root of the drive it runs from as `/`,
+and reaches no other drive, so keep what it reads and writes on that drive and write
+`/Users/me/notes.txt` or a relative path; an argument you give it that is an absolute
+path on that drive (`C:\Users\me\notes.txt`) is turned into that for you. (That goes
+for the compiler too: run `aipl compile` from the drive the source is on.) Starting
+other programs (`std/proc`) works, but a signal there ends a process at once (status
+256 plus the signal), and there are no native executables (`compile --exe` bundles
+the launcher).
 
 To build from source instead, you need git, a stable Rust toolchain
 ([rustup.rs](https://rustup.rs)), and a C compiler for linking (e.g.

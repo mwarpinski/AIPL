@@ -146,10 +146,9 @@ fn stays_inside(text: &Path) -> bool {
 
 /// A host path as the programs that run under wasmtime name it. They see the
 /// working directory (".") and `/`, and take `/` as their separator. On
-/// Windows `/` is the root of the working directory's drive and another
-/// drive's root is `/X:/` (`preopen_roots`), so `C:\a\b` becomes `/a/b` when C:
-/// is the working directory's drive and `/C:/a/b` when it is not; a verbatim
-/// prefix (`\\?\`) is dropped. Anywhere else a path is already what they use.
+/// Windows `/` is the root of the working directory's drive (`preopen_roots`),
+/// so `C:\a\b` becomes `/a/b` when C: is that drive and `/C:/a/b`, which a
+/// program cannot open, when it is not; a verbatim prefix (`\\?\`) is dropped. Anywhere else a path is already what they use.
 pub fn guest_path(path: &str) -> String {
     #[cfg(not(windows))]
     {
@@ -200,8 +199,9 @@ fn current_drive() -> Option<char> {
 }
 
 /// Gives a program `/`: the root of the file system on Unix; on Windows the
-/// root of the working directory's drive, and each other fixed drive's root
-/// as `/X:/` (see `guest_path`).
+/// root of the working directory's drive. A compiled program names every
+/// absolute path in that one directory, so another drive is out of its reach
+/// (`guest_path` still names it `/X:/...`, which is then not found).
 pub fn preopen_roots(b: &mut wasmtime_wasi::WasiCtxBuilder, perms: wasmtime_wasi::FsPerms) -> Result<(), String> {
     #[cfg(not(windows))]
     {
@@ -210,25 +210,8 @@ pub fn preopen_roots(b: &mut wasmtime_wasi::WasiCtxBuilder, perms: wasmtime_wasi
     }
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
-        const DRIVE_FIXED: u32 = 3;
-        let here = current_drive();
-        if let Some(d) = here {
+        if let Some(d) = current_drive() {
             b.preopened_dir(format!("{d}:\\"), "/", perms).map_err(|e| format!("cannot open {d}:\\: {e}"))?;
-        }
-        // SAFETY: no arguments
-        let mask = unsafe { GetLogicalDrives() };
-        for i in 0..26u32 {
-            let d = (b'A' + i as u8) as char;
-            if mask & (1 << i) == 0 || Some(d) == here {
-                continue;
-            }
-            let root = format!("{d}:\\");
-            let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
-            // SAFETY: a zero-terminated UTF-16 root path
-            if unsafe { GetDriveTypeW(wide.as_ptr()) } == DRIVE_FIXED {
-                b.preopened_dir(&root, format!("/{d}:/"), perms).map_err(|e| format!("cannot open {root}: {e}"))?;
-            }
         }
         Ok(())
     }

@@ -20,7 +20,7 @@ webpki-roots = "1.0.11"
 # the Windows host's calls that std does not make: WSAPoll for a socket's readiness, PeekNamedPipe for a
 # pipe's, TerminateProcess for a signal
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [[bin]]
 name = "aipl"

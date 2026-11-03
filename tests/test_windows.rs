@@ -13,21 +13,26 @@ fn case(name: &str) -> PathBuf {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("aipl_windows_{}_{name}", std::process::id()));
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("aipl_windows_{}_{n}_{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-/// Compiles tests/aipl/windows/NAME.aipl to a module, and runs it with the arguments.
+/// Compiles tests/aipl/windows/NAME.aipl to a module, and runs it with the arguments. Both run in a scratch
+/// directory: a program reaches only the drive its working directory is on, and the checkout and the system's
+/// temporary directory (where this puts the program's files) may be on different ones.
 fn run(name: &str, flags: &[&str], args: &[&str]) -> (String, i32) {
     let dir = scratch(name);
-    let wasm = dir.join(format!("{name}.wasm"));
-    let o = Command::new(AIPL).arg("compile").arg(case(name)).arg("-o").arg(&wasm).output().unwrap();
+    std::fs::copy(case(name), dir.join(format!("{name}.aipl"))).unwrap();
+    let o = Command::new(AIPL).current_dir(&dir).args(["compile", &format!("{name}.aipl"), "-o", &format!("{name}.wasm")]).output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let o = Command::new(RUNNER).args(flags).arg(&wasm).args(args).output().unwrap();
+    let o = Command::new(RUNNER).current_dir(&dir).args(flags).arg(format!("{name}.wasm")).args(args).output().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
-    (String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n"), o.status.code().unwrap_or(-1))
+    let out = format!("{}{}", String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n"), String::from_utf8_lossy(&o.stderr));
+    (out, o.status.code().unwrap_or(-1))
 }
 
 #[test]
