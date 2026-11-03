@@ -1038,10 +1038,6 @@ fn fits(got: &Type, want: &Type) -> bool {
         r
     }
 
-    pub fn get_struct_def(&self, name: &str) -> Option<&StructDef> {
-        self.struct_defs.get(name)
-    }
-
     fn check_fn_def(&self, f: &FnDef) -> Result<(), String> {
         self.in_unsafe_fn.set(f.is_unsafe);
         self.unsafe_depth.set(0);

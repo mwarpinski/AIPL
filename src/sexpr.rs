@@ -160,17 +160,4 @@ impl Sx {
         let (line, col) = at.position();
         Sx::Atom(Token { kind: TokenKind::Symbol(text), line, col })
     }
-
-    /// Rewrites every symbol atom in place.
-    pub fn map_symbols(&mut self, f: &mut dyn FnMut(&mut String)) {
-        match self {
-            Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) => f(s),
-            Sx::Atom(_) => {}
-            Sx::List { items, .. } => {
-                for i in items {
-                    i.map_symbols(f);
-                }
-            }
-        }
-    }
 }

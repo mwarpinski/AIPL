@@ -17,7 +17,6 @@ pub enum Value {
     Float32(f32),
     Bool(bool),
     Str(String),
-    Array(Vec<Value>),
     /// A value struct: its fields' values, in declaration order.
     Record(Vec<Value>),
     /// A union held by value (checker::SumLayout): its variant's index and

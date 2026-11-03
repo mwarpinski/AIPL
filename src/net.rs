@@ -45,7 +45,6 @@ pub struct ConnectGrant {
 
 /// `connect_host`'s and `tls_connect`'s results besides a handle or 0: not granted, not supported (a
 /// native executable), a name that does not resolve, a handshake that failed, a bad name.
-pub const NOT_SUPPORTED: i32 = -3;
 pub const NO_SUCH_HOST: i32 = -5;
 pub const TLS_FAILED: i32 = -1;
 pub const BAD_NAME: i32 = -6;

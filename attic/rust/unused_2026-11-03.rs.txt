@@ -1,0 +1,43 @@
+// Rust that nothing used: neither aipl, aipl-run, nor any test. Removed from src/ 2026-11-03.
+// (A text file, not Rust: it is not part of the build.)
+
+// ===== from src/checker.rs (never called) =====
+    pub fn get_struct_def(&self, name: &str) -> Option<&StructDef> {
+        self.struct_defs.get(name)
+    }
+
+
+// ===== from src/net.rs (never used (the doc comment above still names the case)) =====
+pub const NOT_SUPPORTED: i32 = -3;
+
+// ===== from src/sexpr.rs (never called) =====
+
+    /// Rewrites every symbol atom in place.
+    pub fn map_symbols(&mut self, f: &mut dyn FnMut(&mut String)) {
+        match self {
+            Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) => f(s),
+            Sx::Atom(_) => {}
+            Sx::List { items, .. } => {
+                for i in items {
+                    i.map_symbols(f);
+                }
+            }
+        }
+    }
+
+// ===== from src/vm.rs (never constructed or matched) =====
+    Array(Vec<Value>),
+
+// ===== from src/ast.rs (never called) =====
+    pub fn signed(self) -> bool {
+        matches!(self, Narrow::I8 | Narrow::I16)
+    }
+
+// ===== from src/compiler/mod.rs (never implemented or used) =====
+
+use crate::ast::Module;
+
+pub trait Compiler {
+    type Output;
+    fn compile(&self, module: &Module) -> Result<Self::Output, String>;
+}

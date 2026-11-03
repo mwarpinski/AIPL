@@ -27,10 +27,3 @@ pub fn memory_pages(text: &str) -> Result<u32, String> {
     }
     Ok((bytes / 65536) as u32)
 }
-
-use crate::ast::Module;
-
-pub trait Compiler {
-    type Output;
-    fn compile(&self, module: &Module) -> Result<Self::Output, String>;
-}

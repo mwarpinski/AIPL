@@ -67,9 +67,6 @@ impl Narrow {
             Narrow::U16 | Narrow::I16 => 2,
         }
     }
-    pub fn signed(self) -> bool {
-        matches!(self, Narrow::I8 | Narrow::I16)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
