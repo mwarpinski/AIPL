@@ -9,8 +9,10 @@ AI coding agents. It compiles to WebAssembly and to native Linux executables
 **Status: early, and honest about it.** The language, the standard library,
 and both compilers work and are heavily tested ([what works](#what-works-today),
 [how it is tested](#how-it-is-made-and-tested)). Native executables are Linux
-only (x86-64 and AArch64); WebAssembly runs wherever wasmtime does. CI tests Linux, on x86-64 and arm64;
-an Apple Silicon Mac is checked by hand, and Windows does not build.
+only (x86-64 and AArch64); WebAssembly runs wherever wasmtime does, and on Windows `aipl compile --exe`
+makes a single file that bundles the launcher. CI tests Linux, on x86-64 and arm64, and builds and
+smoke-tests Windows on x86-64 (programs cannot start other programs there yet); an Apple Silicon Mac is
+checked by hand.
 There are no packages yet, and the question the project exists to answer,
 whether agents write correct programs more often in AIPL than in other
 languages, has not been measured yet ([the plan](#what-is-next)).
@@ -104,6 +106,22 @@ less install.sh && sh install.sh
 other than the latest, `--no-modify-path`); `sh install.sh --uninstall`
 removes it. Run the installer again to update. Each release's files are also on
 the [releases page](https://github.com/mwarpinski/AIPL/releases) to download by hand.
+
+**On Windows 10 or 11 (x86-64)**, in PowerShell, `install.ps1` does the same: it
+needs no git, no Rust, no Visual C++ runtime, and no administrator rights, downloads the
+release zip, checks its SHA-256, unpacks it into `%USERPROFILE%\.aipl`, and adds
+`%USERPROFILE%\.aipl\bin` to your user `PATH` (open a new terminal to see it):
+
+```powershell
+irm https://raw.githubusercontent.com/mwarpinski/AIPL/main/install.ps1 | iex
+```
+
+It takes its options from environment variables (`AIPL_VERSION`, `AIPL_HOME`,
+`AIPL_NO_PATH=1`; `$env:AIPL_UNINSTALL = 1` removes it); `install.ps1` itself lists them.
+What differs on Windows: `std/proc` (starting other programs) reports an error, `aipl
+run --serve-fresh` is not available, and a program sees the root of the drive it runs
+from as `/` (another drive's root is `/D:/`), so write `/Users/me/notes.txt` or a
+relative path, not `C:\Users\me\notes.txt`.
 
 To build from source instead, you need git, a stable Rust toolchain
 ([rustup.rs](https://rustup.rs)), and a C compiler for linking (e.g.

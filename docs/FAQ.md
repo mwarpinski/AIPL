@@ -190,8 +190,10 @@ usually choose to write by hand, which is the trade it makes.
 
 Linux x86-64 is the one that is tested, and the only one with native
 executables. Elsewhere, programs compile to WebAssembly and run under the
-`aipl-run` launcher (built on wasmtime), which should work on macOS and
-Windows but is not tested there.
+`aipl-run` launcher (built on wasmtime). Windows (x86-64) builds, installs
+with `install.ps1`, and runs the toolchain and the AIPL test suite, checked in CI;
+starting other programs does not work there yet, and the Rust test suite assumes
+Linux. macOS is checked by hand.
 
 Native executables confine file access with a system call that arrived in
 Linux 5.6 (`openat2`). Where it is missing, on an older kernel or in an
