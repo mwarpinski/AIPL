@@ -229,11 +229,12 @@ fn the_self_hosted_aipl_runs_tests_as_the_rust_one_does() {
     }
     // the first of them is the file `rows.expected` holds
     assert_eq!(stdout(&run(&me, &["test", ROWS])), std::fs::read_to_string(root().join("tests/aipl/testing/rows.expected")).unwrap());
-    // what needs the VM, or is not a test file, is refused and says where to go
+    // what needs the VM, or is not a test file, is refused, and the message sends nowhere (no Rust command in the tarball)
     for args in [&["test", "--vm", ROWS][..], &["test", "--all-backends", ROWS], &["test", notests]] {
         let a = run(&me, args);
         assert_eq!(a.status.code(), Some(1), "{args:?}");
-        assert!(String::from_utf8_lossy(&a.stderr).contains("Rust aipl"), "{args:?}: {}", String::from_utf8_lossy(&a.stderr));
+        let err = String::from_utf8_lossy(&a.stderr);
+        assert!((err.contains("has no such option") || err.contains("no (test ...) in it")) && !err.contains("Rust"), "{args:?}: {err}");
     }
     // usage
     for args in [&["test"][..], &["test", ROWS, ROWS], &["test", "-k"], &["test", "--no-such-flag", ROWS]] {

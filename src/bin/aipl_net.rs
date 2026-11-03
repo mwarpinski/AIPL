@@ -76,6 +76,11 @@ mod linux {
         if out.write_all(&[status]).and_then(|_| out.flush()).is_err() || status != OK {
             return i32::from(status);
         }
+        // a hook for tests (tests/test_net.rs): wait before relaying, so that what a server sends right after the
+        // handshake (TLS 1.3 session tickets) is already waiting when the relay starts
+        if let Some(ms) = std::env::var("AIPL_NET_TEST_DELAY_MS").ok().and_then(|v| v.parse().ok()) {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         relay(&net, h, &mut out);
         0
     }

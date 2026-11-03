@@ -306,7 +306,10 @@ impl Net {
     /// `poll(h, events, timeout_ms)`: waits until the socket can be read (events 1) or written (2), for at most
     /// `timeout_ms` (-1: no limit; 0: look only): `events` when it can (reading: data, the end of the data, an
     /// error, or a connection to accept), 0 when the time ran out, -1 for a handle that is not open, events
-    /// that are not 1 or 2, or an error. A secure connection's plaintext already received counts.
+    /// that are not 1 or 2, or an error. A secure connection is readable when a read would not wait: plaintext is
+    /// waiting, or the end. Bytes that carry none (a server's session tickets, say, after the handshake) are taken
+    /// in and waited past, so a caller that reads only when this says so is never stuck in a read it cannot satisfy
+    /// while it has something to write.
     pub fn poll(&self, h: i32, events: i32, timeout_ms: i32) -> i32 {
         use std::io::BufRead;
         if events != 1 && events != 2 {
@@ -318,17 +321,34 @@ impl Net {
             Some(Sock::Tls(t, raw)) => (raw_sock(raw), Some(t.clone())),
             None => return -1,
         };
-        if let (1, Some(t)) = (events, secure) {
-            // decrypted bytes that no read has taken make it readable though the socket itself is quiet; a lock held
-            // by a read in progress cannot be asked, and the socket answers
-            if let Ok(mut t) = t.try_lock() {
-                match t.conn.reader().fill_buf() {
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    _ => return events,
+        let (1, Some(t)) = (events, secure) else { return poll_raw(fd, events, timeout_ms) };
+        let deadline = (timeout_ms >= 0).then(|| std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms as u64));
+        loop {
+            // a lock held by a read in progress (another thread) cannot be asked: the socket answers
+            let Ok(mut s) = t.try_lock() else { return poll_raw(fd, events, timeout_ms) };
+            match s.conn.reader().fill_buf() {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                // plaintext, the end of the data, or an error: a read has an answer
+                _ => return events,
+            }
+            drop(s);
+            let left = deadline.map_or(-1, |d| d.saturating_duration_since(std::time::Instant::now()).as_millis().min(i32::MAX as u128) as i32);
+            match poll_raw(fd, events, left) {
+                1 => {}
+                r => return r,
+            }
+            // the socket has bytes: into the TLS state, to learn whether they hold anything to read
+            let Ok(mut s) = t.try_lock() else { return events };
+            let rustls::StreamOwned { conn, sock } = &mut *s;
+            match conn.read_tls(sock) {
+                Ok(0) | Err(_) => return events,
+                Ok(_) => {
+                    if conn.process_new_packets().is_err() {
+                        return events;
+                    }
                 }
             }
         }
-        poll_raw(fd, events, timeout_ms)
     }
 
     /// `close(h)`: 0, or -1 for a handle that is not open. A connection is

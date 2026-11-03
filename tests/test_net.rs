@@ -687,6 +687,23 @@ fn https_and_names_work_in_every_backend() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A server's session tickets arrive right after the handshake, before any data: bytes on the socket that hold
+/// nothing to read. A relay (aipl-net) that read as soon as the socket was readable would wait for data while the
+/// request it had to send sat unsent, so the fetch stalled (found on CI, where the tickets were already there when
+/// the relay started). The hook makes that the case every time.
+#[test]
+fn a_tls_client_does_not_wait_for_data_while_the_server_waits_for_its_request() {
+    let Some(_) = native_args() else { return };
+    let dir = scratch("tls_tickets");
+    let (port, pem, server) = tls_server(&dir, &["localhost"], vec![TLS_REPLY], true);
+    let grant = format!("localhost:{port}");
+    let (_, cmd) = fetch_commands(&dir, &[&grant]).into_iter().find(|(n, _)| *n == "native").unwrap();
+    let o = cmd(&format!("https://localhost:{port}/")).env("AIPL_CA_FILE", &pem).env("AIPL_NET_TEST_DELAY_MS", "400").output().unwrap();
+    assert_eq!(printed(&o), TLS_ANSWER, "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(server.join().unwrap(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_certificate_that_is_not_trusted_or_not_for_the_name_is_refused() {
     let dir = scratch("tls_bad");

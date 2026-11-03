@@ -180,10 +180,10 @@ fn the_self_hosted_aipl_evaluates_as_the_rust_one_does_natively() {
     assert_eq!((o.status.code(), stdout(&o)), (Some(0), "args 3\narg a\narg b c\nstdin \n".to_string()), "{}", stderr(&o));
     let o = run(&me, &["eval", "tests/aipl/sys/run_target.aipl", "--", "seven"]);
     assert_eq!(o.status.code(), Some(7));
-    // what needs the VM or aipl-run
+    // what needs the VM or aipl-run is refused, and the message sends nowhere (the Linux tarball has no Rust command)
     for args in [&["eval", "-e", "1", "--wasm"][..], &["eval", "-f", "other", ROWS], &["eval", "--wasm", ROWS]] {
         let o = run(&me, args);
-        assert!(o.status.code() == Some(1) && stderr(&o).contains("Rust aipl"), "{args:?}: {}", stderr(&o));
+        assert!(o.status.code() == Some(1) && stderr(&o).contains("has no such option") && !stderr(&o).contains("Rust"), "{args:?}: {}", stderr(&o));
     }
     // usage
     for args in [&["eval"][..], &["eval", "-e"], &["eval", "-e", "1", "--no-such-flag"]] {
