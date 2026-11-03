@@ -4,3 +4,8 @@
 # headroom here instead of the 2 MiB default.
 [env]
 RUST_MIN_STACK = "268435456"
+
+# Windows: link the C runtime into the programs, so they run on a machine that
+# has no Visual C++ Redistributable (a fresh Windows has no vcruntime140.dll).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
