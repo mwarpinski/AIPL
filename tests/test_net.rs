@@ -77,7 +77,13 @@ fn free_port(ip: &str) -> u16 {
 fn nothing_listens(ip: &str, port: u16) -> bool {
     let host = if ip.contains(':') { format!("[{ip}]") } else { ip.to_string() };
     let addr: std::net::SocketAddr = format!("{host}:{port}").parse().unwrap();
-    matches!(TcpStream::connect_timeout(&addr, Duration::from_millis(200)), Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused)
+    // Windows retries a refused connection for about two seconds before reporting it, so a closed port
+    // there times out; a listening one connects at once
+    match TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => true,
+        Err(e) => cfg!(windows) && e.kind() == std::io::ErrorKind::TimedOut,
+        Ok(_) => false,
+    }
 }
 
 /// What each of the four connections sends, and the reply it must get: the

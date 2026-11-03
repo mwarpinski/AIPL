@@ -1,0 +1,15 @@
+;; proc.exec on Windows (tests/test_windows.rs runs this with `--allow-run '*'`): the process is replaced, in effect:
+;; the program runs, and this one ends with its status (5) without running anything after the call.
+(module windows_exec_case
+  (import alloc)
+  (import str)
+  (import proc)
+
+  (fn main [] -> i32
+    (println "before")
+    (let c:(ptr proc.Command) (call proc.command (call alloc.default) "cmd.exe"))
+    (call proc.arg c "/c")
+    (call proc.arg c "echo replaced& exit 5")
+    (let e:proc.Error (call proc.exec c))
+    (println "exec returned: {(call proc.message e)}")
+    0))

@@ -1,0 +1,59 @@
+;; std/proc on Windows (tests/test_windows.rs runs this with `--allow-run '*'`): each case prints a line.
+(module windows_proc_cases
+  (import alloc)
+  (import buf)
+  (import str)
+  (import option)
+  (import proc)
+
+  (fn cmd [script:str] -> (ptr proc.Command)
+    (let c:(ptr proc.Command) (call proc.command (call alloc.default) "cmd.exe"))
+    (call proc.arg c "/c")
+    (call proc.arg c script)
+    c)
+
+  ;; Runs the command with no input, and prints its status or its error, and what it wrote.
+  (fn show [label:str c:(ptr proc.Command)] -> void
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (match_result (call proc.run c (call str.from_str "") out)
+      (ok s
+        (let ex:bool (call proc.exited s))
+        (println "{label} status {s} exited {ex}"))
+      (err e
+        (println "{label} error: {(call proc.message e)}")))
+    (call buf.print out)
+    (call buf.free out)
+    (call proc.free_command c))
+
+  (fn main [] -> i32
+    (call show "hello" (call cmd "echo hello& exit 3"))
+    (call show "not_found" (call proc.command (call alloc.default) "no-such-program.exe"))
+    ;; a conversation with sort: it reads to the end of its input, then writes
+    (let sort:(ptr proc.Command) (call proc.command (call alloc.default) "sort.exe"))
+    (match_result (call proc.spawn sort)
+      (ok ch
+        (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+        (let w:bool (call proc.write ch (call str.from_str "b\r\na\r\n")))
+        (call proc.close_input ch)
+        (let n:i32 (call proc.read ch out 100))
+        (let end:i32 (call proc.read ch out 100))
+        (let st:i32 (call proc.wait ch))
+        (println "wrote {w} read {n} end {end} status {st}")
+        (call buf.print out)
+        (call proc.close ch))
+      (err e (println "spawn error: {(call proc.message e)}")))
+    ;; a program that does not end is killed (a signal ends it at once: status 256 + the signal)
+    (let ping:(ptr proc.Command) (call proc.command (call alloc.default) "ping.exe"))
+    (call proc.arg ping "-n")
+    (call proc.arg ping "60")
+    (call proc.arg ping "127.0.0.1")
+    (match_result (call proc.spawn_with ping proc.Stream.null proc.Stream.null proc.Stream.null)
+      (ok ch
+        (let alive:bool (match (call proc.try_wait ch) ((option.Option i32) some [s] false) ((option.Option i32) none true)))
+        (let killed:bool (call proc.kill ch 9))
+        (let st:i32 (call proc.wait ch))
+        (let sg:i32 (call proc.signal st))
+        (println "running {alive} killed {killed} status {st} signal {sg}")
+        (call proc.close ch))
+      (err e (println "spawn error: {(call proc.message e)}")))
+    0))

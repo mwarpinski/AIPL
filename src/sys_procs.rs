@@ -1,17 +1,23 @@
-//! The process table of `aipl_sys_v1` (docs/design/SYS_PLAN.md D2-D7) on Unix:
-//! `spawn`, pipes, `wait`, `kill` (a signal), `poll`, and `exec`. The same
-//! interface, as stubs, is sys_windows.rs.
+//! The process table of `aipl_sys_v1` (docs/design/SYS_PLAN.md D2-D7):
+//! `spawn`, pipes, `wait`, `kill`, `poll`, and `exec`, on Unix and on Windows.
+//! Where Windows differs: a program's name (argv[0]) is its path, a signal
+//! ends the program at once with the status 256 plus the signal's number, a
+//! pipe is polled by asking how much it holds, and `exec`, which Windows has
+//! none of, starts the program, waits for it, and ends this process with its
+//! status.
 
-use super::{EAGAIN, EBADF, EINVAL};
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
+use super::{os_str, EAGAIN, EBADF, EINVAL};
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
+#[cfg(unix)]
+use std::os::fd::{AsFd, OwnedFd as OwnedHandle};
+#[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::{Child, Command, Stdio};
+#[cfg(windows)]
+use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -76,13 +82,17 @@ impl Procs {
         if args.last() == Some(&0) || args.is_empty() {
             words.pop();
         }
-        let mut cmd = Command::new(OsStr::from_bytes(path));
+        let mut cmd = Command::new(os_str(path));
         let mut words = words.into_iter();
         if let Some(name) = words.next() {
-            cmd.arg0(OsStr::from_bytes(name));
+            #[cfg(unix)]
+            cmd.arg0(os_str(name));
+            // Windows starts a program with its path as its name
+            #[cfg(not(unix))]
+            let _ = name;
         }
         for w in words {
-            cmd.arg(OsStr::from_bytes(w));
+            cmd.arg(os_str(w));
         }
         cmd
     }
@@ -105,22 +115,22 @@ impl Procs {
                 1 => {
                     let (r, w) = std::io::pipe()?;
                     cmd.stdin(Stdio::from(r));
-                    kept[0] = Some(Pipe::Write(Arc::new(File::from(OwnedFd::from(w)))));
+                    kept[0] = Some(Pipe::Write(Arc::new(File::from(OwnedHandle::from(w)))));
                 }
                 _ => {
                     cmd.stdin(Stdio::null());
                 }
             }
             // the output's writing end, for the error to share (error 3)
-            let mut out_end: Option<OwnedFd> = None;
+            let mut out_end: Option<OwnedHandle> = None;
             match output {
                 0 => {}
                 1 => {
                     let (r, w) = std::io::pipe()?;
-                    let w = OwnedFd::from(w);
+                    let w = OwnedHandle::from(w);
                     out_end = Some(w.try_clone()?);
                     cmd.stdout(Stdio::from(w));
-                    kept[1] = Some(Pipe::Read(Arc::new(File::from(OwnedFd::from(r)))));
+                    kept[1] = Some(Pipe::Read(Arc::new(File::from(OwnedHandle::from(r)))));
                 }
                 _ => {
                     cmd.stdout(Stdio::null());
@@ -131,7 +141,7 @@ impl Procs {
                 1 => {
                     let (r, w) = std::io::pipe()?;
                     cmd.stderr(Stdio::from(w));
-                    kept[2] = Some(Pipe::Read(Arc::new(File::from(OwnedFd::from(r)))));
+                    kept[2] = Some(Pipe::Read(Arc::new(File::from(OwnedHandle::from(r)))));
                 }
                 2 => {
                     cmd.stderr(Stdio::null());
@@ -141,7 +151,7 @@ impl Procs {
                         cmd.stderr(Stdio::from(w));
                     }
                     (0, _) => {
-                        cmd.stderr(Stdio::from(std::io::stdout().as_fd().try_clone_to_owned()?));
+                        cmd.stderr(Stdio::from(dup_stdout()?));
                     }
                     _ => {
                         cmd.stderr(Stdio::null());
@@ -245,7 +255,7 @@ impl Procs {
             return s;
         }
         let result = match child.lock().unwrap().wait() {
-            Ok(st) => st.code().unwrap_or_else(|| 256 + st.signal().unwrap_or(0)),
+            Ok(st) => status_of(&st),
             Err(e) => return crate::vm::wasi_errno(&e) as i32,
         };
         reaped.store(true, Ordering::SeqCst);
@@ -269,7 +279,7 @@ impl Procs {
         }
         let Ok(mut child) = child.try_lock() else { return EAGAIN };
         let result = match child.try_wait() {
-            Ok(Some(st)) => st.code().unwrap_or_else(|| 256 + st.signal().unwrap_or(0)),
+            Ok(Some(st)) => status_of(&st),
             Ok(None) => return EAGAIN,
             Err(e) => return crate::vm::wasi_errno(&e) as i32,
         };
@@ -295,12 +305,7 @@ impl Procs {
         if reaped.load(Ordering::SeqCst) {
             return BAD_HANDLE;
         }
-        // SAFETY: kill(2) with a process id this program started and a signal number checked above
-        if unsafe { libc::kill(pid as libc::pid_t, sig) } == 0 {
-            0
-        } else {
-            crate::vm::wasi_errno(&std::io::Error::last_os_error()) as i32
-        }
+        send_signal(pid, sig)
     }
 
     /// `proc.poll`: waits until the pipe can be read (events 1: the read end of the program's output or error) or
@@ -308,18 +313,11 @@ impl Procs {
     /// when it can (reading: data, the end of the data, or an error), 0 when the time ran out, minus EBADF for a
     /// handle that is not such a pipe, minus EINVAL for events that are not 1 or 2.
     pub fn poll(&self, h: i32, events: i32, timeout_ms: i32) -> i32 {
-        use std::os::fd::AsRawFd;
         if events != 1 && events != 2 {
             return EINVAL;
         }
         let Some(f) = self.pipe_file(h, events == 1) else { return BAD_HANDLE };
-        let mut p = libc::pollfd { fd: f.as_raw_fd(), events: if events == 1 { libc::POLLIN } else { libc::POLLOUT }, revents: 0 };
-        // SAFETY: one valid pollfd, and a count of one
-        match unsafe { libc::poll(&mut p, 1, timeout_ms) } {
-            0 => 0,
-            n if n > 0 && p.revents & libc::POLLNVAL == 0 => events,
-            _ => crate::vm::wasi_errno(&std::io::Error::last_os_error()) as i32,
-        }
+        poll_pipe(&f, events, timeout_ms)
     }
 
     /// `proc.exec`: replaces this process with the program; does not return
@@ -329,6 +327,112 @@ impl Procs {
             return NOT_GRANTED;
         }
         let _ = std::io::stdout().flush();
-        crate::vm::wasi_errno(&Procs::command(path, args).exec()) as i32
+        let mut cmd = Procs::command(path, args);
+        #[cfg(unix)]
+        {
+            crate::vm::wasi_errno(&cmd.exec()) as i32
+        }
+        #[cfg(not(unix))]
+        {
+            match cmd.status() {
+                Ok(st) => std::process::exit(status_of(&st)),
+                Err(e) => crate::vm::wasi_errno(&e) as i32,
+            }
+        }
+    }
+}
+
+/// A program's status: its exit status, or 256 plus the signal that ended it.
+fn status_of(st: &ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        st.code().unwrap_or_else(|| 256 + st.signal().unwrap_or(0))
+    }
+    #[cfg(not(unix))]
+    {
+        st.code().unwrap_or(0)
+    }
+}
+
+/// This process's standard output, as a handle of its own (for a program's error to share).
+fn dup_stdout() -> std::io::Result<OwnedHandle> {
+    #[cfg(unix)]
+    {
+        std::io::stdout().as_fd().try_clone_to_owned()
+    }
+    #[cfg(windows)]
+    {
+        std::io::stdout().as_handle().try_clone_to_owned()
+    }
+}
+
+/// Sends `sig` (1 to 64) to the process `pid`: 0, or minus an errno.
+fn send_signal(pid: u32, sig: i32) -> i32 {
+    #[cfg(unix)]
+    {
+        // SAFETY: kill(2) with a process id this program started and a signal number checked by the caller
+        if unsafe { libc::kill(pid as libc::pid_t, sig) } == 0 {
+            0
+        } else {
+            crate::vm::wasi_errno(&std::io::Error::last_os_error()) as i32
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        // SAFETY: a handle opened here, used once, and closed here
+        unsafe {
+            let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if h.is_null() {
+                return crate::vm::wasi_errno(&std::io::Error::last_os_error()) as i32;
+            }
+            let done = TerminateProcess(h, 256 + sig as u32);
+            let err = std::io::Error::last_os_error();
+            CloseHandle(h);
+            if done != 0 {
+                0
+            } else {
+                crate::vm::wasi_errno(&err) as i32
+            }
+        }
+    }
+}
+
+/// Waits until the pipe can be read (`events` 1) or written (2), at most `timeout_ms` (-1: no limit).
+fn poll_pipe(f: &File, events: i32, timeout_ms: i32) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let mut p = libc::pollfd { fd: f.as_raw_fd(), events: if events == 1 { libc::POLLIN } else { libc::POLLOUT }, revents: 0 };
+        // SAFETY: one valid pollfd, and a count of one
+        match unsafe { libc::poll(&mut p, 1, timeout_ms) } {
+            0 => 0,
+            n if n > 0 && p.revents & libc::POLLNVAL == 0 => events,
+            _ => crate::vm::wasi_errno(&std::io::Error::last_os_error()) as i32,
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+        // a pipe's write end is taken to be always ready (a write blocks only when the pipe is full)
+        if events == 2 {
+            return 2;
+        }
+        let start = Instant::now();
+        loop {
+            let mut available = 0u32;
+            // SAFETY: a pipe handle this table owns, and one valid out parameter
+            let ok = unsafe { PeekNamedPipe(f.as_raw_handle(), std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut available, std::ptr::null_mut()) };
+            // data, or a pipe whose writer has gone (the read then says so)
+            if ok == 0 || available > 0 {
+                return events;
+            }
+            if timeout_ms == 0 || (timeout_ms > 0 && start.elapsed() >= Duration::from_millis(timeout_ms as u64)) {
+                return 0;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }

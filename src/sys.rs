@@ -222,11 +222,7 @@ pub fn preopen_roots(b: &mut wasmtime_wasi::WasiCtxBuilder, perms: wasmtime_wasi
 
 // ===== Processes (docs/design/SYS_PLAN.md D2-D7) =====
 
-#[cfg(unix)]
-#[path = "sys_unix.rs"]
-mod procs;
-#[cfg(not(unix))]
-#[path = "sys_windows.rs"]
+#[path = "sys_procs.rs"]
 mod procs;
 
 pub use procs::{Procs, NOT_GRANTED};
