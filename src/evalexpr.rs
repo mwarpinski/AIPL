@@ -58,8 +58,7 @@ pub fn run(exprs: &str, with: Option<&Path>, backend: Backend, runner: &Path, ar
             let file = std::env::temp_dir().join(format!("aipl_eval_{}{ext}", std::process::id()));
             std::fs::write(&file, &bytes).map_err(|e| format!("cannot write {}: {e}", file.display()))?;
             let mut cmd = if backend == Backend::Native {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+                crate::sys::make_executable(&file).map_err(|e| e.to_string())?;
                 std::process::Command::new(&file)
             } else {
                 let mut c = std::process::Command::new(runner);

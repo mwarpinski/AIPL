@@ -2769,14 +2769,22 @@ const WASI_DIRECTORY: u8 = 3;
 /// WASI's filetype for a file type: 0 unknown, 1 block device, 2 character
 /// device, 3 directory, 4 regular file, 6 socket, 7 symbolic link.
 fn wasi_filetype(t: &std::fs::FileType) -> u8 {
-    use std::os::unix::fs::FileTypeExt;
     if t.is_dir() {
         3
     } else if t.is_file() {
         4
     } else if t.is_symlink() {
         7
-    } else if t.is_block_device() {
+    } else {
+        special_filetype(t)
+    }
+}
+
+/// The filetype of a device or socket: Unix has them, Windows does not.
+#[cfg(unix)]
+fn special_filetype(t: &std::fs::FileType) -> u8 {
+    use std::os::unix::fs::FileTypeExt;
+    if t.is_block_device() {
         1
     } else if t.is_char_device() {
         2
@@ -2785,6 +2793,10 @@ fn wasi_filetype(t: &std::fs::FileType) -> u8 {
     } else {
         0
     }
+}
+#[cfg(not(unix))]
+fn special_filetype(_t: &std::fs::FileType) -> u8 {
+    0
 }
 
 /// A failed fs.* operation's result, as wasmtime and native executables

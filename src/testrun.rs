@@ -84,8 +84,7 @@ pub fn run_file(path: &Path, filter: Option<&str>, backends: &[Backend], me: &Pa
         std::fs::write(&wasm_file, &wasm).map_err(|e| e.to_string())?;
         if backends.contains(&Backend::Native) {
             std::fs::write(&exe_file, crate::native::executable(&wasm, false)?).map_err(|e| e.to_string())?;
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&exe_file, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+            crate::sys::make_executable(&exe_file).map_err(|e| e.to_string())?;
         }
     }
     let (mut passed, mut failed) = (0, 0);

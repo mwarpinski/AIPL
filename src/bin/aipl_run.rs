@@ -183,7 +183,7 @@ fn wasi(argv: &[String], sandbox: bool) -> Result<WasiP1Ctx, String> {
     b.inherit_stdio().inherit_env().args(argv);
     b.preopened_dir(".", ".", FsPerms::ReadWrite).map_err(|e| format!("cannot open the working directory: {e}"))?;
     if !sandbox {
-        b.preopened_dir("/", "/", FsPerms::ReadWrite).map_err(|e| format!("cannot open /: {e}"))?;
+        aipl_core::sys::preopen_roots(&mut b, FsPerms::ReadWrite)?;
     }
     Ok(b.build_p1())
 }
@@ -551,6 +551,8 @@ impl LineTable {
 /// The most a fresh instance's answer may be (aipl_src/native/fresh.aipl cap).
 const FRESH_CAP: usize = 64 << 20;
 
+// on Windows the loop below ends at its first connection (a socket is not a file there)
+#[cfg_attr(not(unix), allow(unused, unreachable_code))]
 fn serve_fresh(p: Program) -> i32 {
     use std::io::Write;
     let (at, requests) = p.fresh.expect("serve_fresh needs --serve-fresh");
@@ -595,9 +597,16 @@ fn serve_fresh(p: Program) -> i32 {
         let Ok(input) = conn.try_clone() else { continue };
         let output = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(FRESH_CAP);
         let mut b = WasiCtxBuilder::new();
+        // the connection is the program's standard input, as a file: a socket is not one on Windows
+        #[cfg(unix)]
         b.stdin(wasmtime_wasi::cli::InputFile::new(std::fs::File::from(std::os::fd::OwnedFd::from(input))));
+        #[cfg(not(unix))]
+        {
+            drop(input);
+            return fail("--serve-fresh is not available on Windows".into());
+        }
         b.stdout(output.clone()).inherit_stderr().inherit_env().args(&p.argv);
-        let opened = b.preopened_dir(".", ".", FsPerms::ReadWrite).is_ok() && (p.sandbox || b.preopened_dir("/", "/", FsPerms::ReadWrite).is_ok());
+        let opened = b.preopened_dir(".", ".", FsPerms::ReadWrite).is_ok() && (p.sandbox || aipl_core::sys::preopen_roots(&mut b, FsPerms::ReadWrite).is_ok());
         if !opened {
             return fail("cannot open the working directory".into());
         }

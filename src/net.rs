@@ -309,14 +309,13 @@ impl Net {
     /// that are not 1 or 2, or an error. A secure connection's plaintext already received counts.
     pub fn poll(&self, h: i32, events: i32, timeout_ms: i32) -> i32 {
         use std::io::BufRead;
-        use std::os::fd::AsRawFd;
         if events != 1 && events != 2 {
             return -1;
         }
         let (fd, secure) = match self.table.lock().unwrap().socks.get(&h) {
-            Some(Sock::Listener(l)) => (l.as_raw_fd(), None),
-            Some(Sock::Stream(s)) => (s.as_raw_fd(), None),
-            Some(Sock::Tls(t, raw)) => (raw.as_raw_fd(), Some(t.clone())),
+            Some(Sock::Listener(l)) => (raw_sock(l), None),
+            Some(Sock::Stream(s)) => (raw_sock(s), None),
+            Some(Sock::Tls(t, raw)) => (raw_sock(raw), Some(t.clone())),
             None => return -1,
         };
         if let (1, Some(t)) = (events, secure) {
@@ -329,13 +328,7 @@ impl Net {
                 }
             }
         }
-        let mut p = libc::pollfd { fd, events: if events == 1 { libc::POLLIN } else { libc::POLLOUT }, revents: 0 };
-        // SAFETY: one valid pollfd, and a count of one
-        match unsafe { libc::poll(&mut p, 1, timeout_ms) } {
-            0 => 0,
-            n if n > 0 && p.revents & libc::POLLNVAL == 0 => events,
-            _ => -1,
-        }
+        poll_raw(fd, events, timeout_ms)
     }
 
     /// `close(h)`: 0, or -1 for a handle that is not open. A connection is
@@ -386,4 +379,44 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
             Arc::new(config)
         })
         .clone()
+}
+
+/// A socket as the operating system names it: a file descriptor, or on
+/// Windows a SOCKET.
+#[cfg(unix)]
+type RawSock = std::os::fd::RawFd;
+#[cfg(windows)]
+type RawSock = std::os::windows::io::RawSocket;
+
+#[cfg(unix)]
+fn raw_sock<T: std::os::fd::AsRawFd>(s: &T) -> RawSock {
+    s.as_raw_fd()
+}
+#[cfg(windows)]
+fn raw_sock<T: std::os::windows::io::AsRawSocket>(s: &T) -> RawSock {
+    s.as_raw_socket()
+}
+
+/// Waits for one socket to be readable (events 1) or writable (2): `events`
+/// when it is, 0 when `timeout_ms` ran out (-1: no limit), -1 on an error.
+#[cfg(unix)]
+fn poll_raw(fd: RawSock, events: i32, timeout_ms: i32) -> i32 {
+    let mut p = libc::pollfd { fd, events: if events == 1 { libc::POLLIN } else { libc::POLLOUT }, revents: 0 };
+    // SAFETY: one valid pollfd, and a count of one
+    match unsafe { libc::poll(&mut p, 1, timeout_ms) } {
+        0 => 0,
+        n if n > 0 && p.revents & libc::POLLNVAL == 0 => events,
+        _ => -1,
+    }
+}
+#[cfg(windows)]
+fn poll_raw(fd: RawSock, events: i32, timeout_ms: i32) -> i32 {
+    use windows_sys::Win32::Networking::WinSock::{WSAPoll, POLLNVAL, POLLRDNORM, POLLWRNORM, WSAPOLLFD};
+    let mut p = WSAPOLLFD { fd: fd as usize, events: if events == 1 { POLLRDNORM } else { POLLWRNORM }, revents: 0 };
+    // SAFETY: one valid WSAPOLLFD, and a count of one
+    match unsafe { WSAPoll(&mut p, 1, timeout_ms) } {
+        0 => 0,
+        n if n > 0 && p.revents & POLLNVAL == 0 => events,
+        _ => -1,
+    }
 }

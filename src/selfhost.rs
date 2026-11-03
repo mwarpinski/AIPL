@@ -18,7 +18,7 @@ use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 /// (src/library.rs). The AIPL resolver reads AIPL_PATH itself (the VM sees
 /// the process environment).
 pub fn std_dir() -> String {
-    format!("{}/", crate::library::std_dir().display())
+    format!("{}/", crate::sys::guest_path(&crate::library::std_dir().to_string_lossy()))
 }
 
 /// One of the toolchain's modules (`aipl_src/NAME.aipl`) compiled to wasm
@@ -130,7 +130,7 @@ fn call_toolchain(t: &(Engine, WasmModule), entry: &str, path: &str, extra: Opti
     let mut b = WasiCtxBuilder::new();
     b.inherit_stderr().inherit_env();
     b.preopened_dir(".", ".", FsPerms::ReadWrite).map_err(|e| e.to_string())?;
-    b.preopened_dir("/", "/", FsPerms::ReadWrite).map_err(|e| e.to_string())?;
+    crate::sys::preopen_roots(&mut b, FsPerms::ReadWrite)?;
     let mut store = Store::new(engine, b.build_p1());
     let inst = linker.instantiate(&mut store, module).map_err(|e| e.to_string())?;
     let memory = inst.get_memory(&mut store, "memory").ok_or("no memory")?;
@@ -179,7 +179,7 @@ pub(crate) fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> Result<T, Stri
 pub fn resolve_with_aipl(path: &Path) -> Result<String, String> {
     static RESOLVER: OnceLock<Result<(Engine, WasmModule), String>> = OnceLock::new();
     let t = toolchain("resolver", &RESOLVER)?;
-    let path = path.to_string_lossy().into_owned();
+    let path = crate::sys::guest_path(&path.to_string_lossy());
     // Out [ok addr len]
     let ([ok, addr, len], data) = on_big_stack(move || call_toolchain(t, "resolve_file", &path, None))?;
     let text = String::from_utf8(bytes(&data, addr, len)).map_err(|e| e.to_string())?;
@@ -210,7 +210,7 @@ pub fn compile_optimized(path: &Path, max_pages: u32, tests: bool) -> Result<Vec
 fn driver_compile(entry: &'static str, path: &Path, max_pages: u32) -> Result<Vec<u8>, String> {
     static DRIVER: OnceLock<Result<(Engine, WasmModule), String>> = OnceLock::new();
     let t = toolchain("driver", &DRIVER)?;
-    let path = path.to_string_lossy().into_owned();
+    let path = crate::sys::guest_path(&path.to_string_lossy());
     // Out [status addr len]: 0 the module, 1 and 3 an error's text, 2 a compile error's code
     let ([status, addr, len], data) = on_big_stack(move || call_toolchain(t, entry, &path, Some(max_pages as i32)))?;
     match status {

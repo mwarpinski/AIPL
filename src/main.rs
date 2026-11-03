@@ -600,10 +600,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 cmd.args(["--requests", &n.to_string()]);
             }
             cmd.arg("--name").arg(&file).arg(&module_path).args(&args);
-            use std::os::unix::process::CommandExt;
-            let e = cmd.exec();
-            let _ = fs::remove_dir_all(&dir);
-            return Err(format!("cannot start aipl-run: {e}").into());
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                let e = cmd.exec();
+                let _ = fs::remove_dir_all(&dir);
+                return Err(format!("cannot start aipl-run: {e}").into());
+            }
+            // Windows has no exec: run it, wait, and end with its status
+            #[cfg(not(unix))]
+            {
+                let status = cmd.status();
+                let _ = fs::remove_dir_all(&dir);
+                match status {
+                    Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+                    Err(e) => return Err(format!("cannot start aipl-run: {e}").into()),
+                }
+            }
         }
         Commands::Run { file, sandbox, listen, allow_connect, allow_run, args } => {
             if file.ends_with(".aipl") {

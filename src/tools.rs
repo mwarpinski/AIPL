@@ -28,9 +28,9 @@ pub fn run(source: &str, name: &str, args: &[String]) -> Result<i32, String> {
     let argv: Vec<String> = std::iter::once(name.to_string()).chain(args.iter().cloned()).collect();
     let mut b = WasiCtxBuilder::new();
     b.inherit_stdio().inherit_env().args(&argv);
-    b.env("AIPL_STD", crate::library::std_dir().to_string_lossy());
+    b.env("AIPL_STD", crate::sys::guest_path(&crate::library::std_dir().to_string_lossy()));
     b.preopened_dir(".", ".", FsPerms::ReadWrite).map_err(|e| format!("cannot open the working directory: {e}"))?;
-    b.preopened_dir("/", "/", FsPerms::ReadOnly).map_err(|e| format!("cannot open /: {e}"))?;
+    crate::sys::preopen_roots(&mut b, FsPerms::ReadOnly)?;
     let mut store = Store::new(&engine, b.build_p1());
     let inst = linker.instantiate(&mut store, &module).map_err(|e| e.to_string())?;
     let start = inst.get_typed_func::<(), ()>(&mut store, "_start").map_err(|e| e.to_string())?;

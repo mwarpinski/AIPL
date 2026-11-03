@@ -8,9 +8,7 @@
 //! directory or reach out of it through a symbolic link, and under
 //! `--sandbox` there is no way to name an absolute path at all.
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
+use std::ffi::OsString;
 use std::path::{Component, Path};
 
 /// `chmod` for the hosts that run the toolchain's own modules and the tools
@@ -35,6 +33,7 @@ pub fn add_chmod(linker: &mut wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx>) ->
 /// WASI's EBADF, EINVAL, and EPERM, negated as the file operations' results are.
 const EBADF: i32 = -8;
 /// WASI's EAGAIN: not yet (try_wait on a program still running).
+#[cfg_attr(not(unix), allow(dead_code))]
 const EAGAIN: i32 = -6;
 const EINVAL: i32 = -28;
 const EPERM: i32 = -63;
@@ -63,13 +62,59 @@ pub fn chmod(path: &[u8], mode: i32, confined: bool) -> i32 {
     }
     // a path is bytes, as the kernel takes it (native executables do not
     // ask that it be UTF-8 either)
-    let text = Path::new(OsStr::from_bytes(path));
+    let owned = os_str(path);
+    let text = Path::new(&owned);
     if confined && !stays_inside(text) {
         return EPERM;
     }
-    match std::fs::set_permissions(text, std::fs::Permissions::from_mode(mode as u32)) {
+    match set_mode(text, mode as u32) {
         Ok(()) => 0,
         Err(e) => crate::vm::wasi_errno(&e) as i32,
+    }
+}
+
+/// A path or an argument the program gave as bytes, as the operating system
+/// takes it: unchanged on Unix, where a name is bytes; on Windows, where a name
+/// is text, as UTF-8 (bytes that are not are replaced).
+pub(crate) fn os_str(bytes: &[u8]) -> OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::OsStr::from_bytes(bytes).to_owned()
+    }
+    #[cfg(not(unix))]
+    {
+        OsString::from(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
+/// Sets the permission bits: the nine of `mode` on Unix; on Windows, which has
+/// no such bits, the read-only attribute, set when no one may write.
+fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    }
+    #[cfg(not(unix))]
+    {
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_readonly(mode & 0o222 == 0);
+        std::fs::set_permissions(path, perms)
+    }
+}
+
+/// Makes a file runnable (mode 0o755) where that is a permission, as the
+/// toolchain does for the executables it writes; Windows runs a file by its name.
+pub fn make_executable(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        set_mode(path, 0o755)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
     }
 }
 
@@ -97,331 +142,91 @@ fn stays_inside(text: &Path) -> bool {
     }
 }
 
+// ===== Paths and the file system a program sees =====
+
+/// A host path as the programs that run under wasmtime name it. They see the
+/// working directory (".") and `/`, and take `/` as their separator. On
+/// Windows `/` is the root of the working directory's drive and another
+/// drive's root is `/X:/` (`preopen_roots`), so `C:\a\b` becomes `/a/b` when C:
+/// is the working directory's drive and `/C:/a/b` when it is not; a verbatim
+/// prefix (`\\?\`) is dropped. Anywhere else a path is already what they use.
+pub fn guest_path(path: &str) -> String {
+    #[cfg(not(windows))]
+    {
+        path.to_string()
+    }
+    #[cfg(windows)]
+    {
+        let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+        let s = path.replace('\\', "/");
+        match drive_of(&s) {
+            Some(d) => {
+                let rest = &s[2..];
+                let rest = if rest.starts_with('/') { rest.to_string() } else { format!("/{rest}") };
+                if Some(d) == current_drive() { rest } else { format!("/{d}:{rest}") }
+            }
+            None => s,
+        }
+    }
+}
+
+/// The drive letter (upper case) a path starts with, as in `C:/x`.
+#[cfg(windows)]
+fn drive_of(s: &str) -> Option<char> {
+    let b = s.as_bytes();
+    (b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic()).then(|| (b[0] as char).to_ascii_uppercase())
+}
+
+/// The drive the working directory is on.
+#[cfg(windows)]
+fn current_drive() -> Option<char> {
+    let dir = std::env::current_dir().ok()?;
+    let s = dir.to_string_lossy().replace('\\', "/");
+    drive_of(s.strip_prefix("//?/").unwrap_or(&s))
+}
+
+/// Gives a program `/`: the root of the file system on Unix; on Windows the
+/// root of the working directory's drive, and each other fixed drive's root
+/// as `/X:/` (see `guest_path`).
+pub fn preopen_roots(b: &mut wasmtime_wasi::WasiCtxBuilder, perms: wasmtime_wasi::FsPerms) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        b.preopened_dir("/", "/", perms).map_err(|e| format!("cannot open /: {e}"))?;
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+        const DRIVE_FIXED: u32 = 3;
+        let here = current_drive();
+        if let Some(d) = here {
+            b.preopened_dir(format!("{d}:\\"), "/", perms).map_err(|e| format!("cannot open {d}:\\: {e}"))?;
+        }
+        // SAFETY: no arguments
+        let mask = unsafe { GetLogicalDrives() };
+        for i in 0..26u32 {
+            let d = (b'A' + i as u8) as char;
+            if mask & (1 << i) == 0 || Some(d) == here {
+                continue;
+            }
+            let root = format!("{d}:\\");
+            let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+            // SAFETY: a zero-terminated UTF-16 root path
+            if unsafe { GetDriveTypeW(wide.as_ptr()) } == DRIVE_FIXED {
+                b.preopened_dir(&root, format!("/{d}:/"), perms).map_err(|e| format!("cannot open {root}: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
 // ===== Processes (docs/design/SYS_PLAN.md D2-D7) =====
 
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+#[path = "sys_unix.rs"]
+mod procs;
+#[cfg(not(unix))]
+#[path = "sys_windows.rs"]
+mod procs;
 
-/// WASI's ENOTCAPABLE: a program that was not granted `--allow-run` for the
-/// program it asked to start.
-pub const NOT_GRANTED: i32 = -76;
-/// A handle that is not the program's.
-const BAD_HANDLE: i32 = EBADF;
-
-/// The processes a program started and the pipes to them, in tables of their
-/// own, apart from WASI's file descriptors: a pipe's handle counts up from 3,
-/// a process's from 1024, and neither is a descriptor (std/proc keeps them
-/// private; what a number means is each backend's). Shared by every thread of
-/// a program; blocking calls run outside the table's lock.
-#[derive(Clone, Default)]
-pub struct Procs {
-    allow: Arc<Vec<String>>,
-    table: Arc<Mutex<Table>>,
-}
-
-#[derive(Default)]
-struct Table {
-    next_pipe: i32,
-    next_proc: i32,
-    procs: HashMap<i32, Proc>,
-    pipes: HashMap<i32, Pipe>,
-}
-
-struct Proc {
-    child: Arc<Mutex<Child>>,
-    /// its process id, for `kill`, which must not wait for a thread that is blocked in `wait`
-    pid: u32,
-    /// set once the program has been waited for (its id may then be another process's)
-    reaped: Arc<AtomicBool>,
-    status: Arc<Mutex<Option<i32>>>,
-    /// the pipe handles of its input, output, and error, where they are pipes
-    streams: [Option<i32>; 3],
-}
-
-enum Pipe {
-    /// the program's output or error: this program reads it
-    Read(Arc<File>),
-    /// the program's input: this program writes it
-    Write(Arc<File>),
-}
-
-impl Procs {
-    /// A table whose program may start the programs `allow` names ("*": any).
-    pub fn new(allow: Vec<String>) -> Procs {
-        Procs { allow: Arc::new(allow), table: Arc::new(Mutex::new(Table { next_pipe: 3, next_proc: 1024, ..Table::default() })) }
-    }
-
-    fn granted(&self, path: &[u8]) -> bool {
-        self.allow.iter().any(|g| g == "*" || g.as_bytes() == path)
-    }
-
-    /// The command for the program at `path` with `args`: each argument
-    /// followed by a zero byte, the first the program's own name.
-    fn command(path: &[u8], args: &[u8]) -> Command {
-        let mut words: Vec<&[u8]> = args.split(|&b| b == 0).collect();
-        // the block ends with a zero byte, so the last piece is empty
-        if args.last() == Some(&0) || args.is_empty() {
-            words.pop();
-        }
-        let mut cmd = Command::new(OsStr::from_bytes(path));
-        let mut words = words.into_iter();
-        if let Some(name) = words.next() {
-            cmd.arg0(OsStr::from_bytes(name));
-        }
-        for w in words {
-            cmd.arg(OsStr::from_bytes(w));
-        }
-        cmd
-    }
-
-    /// `proc.spawn`: a process's handle, or minus an errno (-76 if not
-    /// granted, -28 for a `stdio` that is not one of the three fields' values).
-    pub fn spawn(&self, path: &[u8], args: &[u8], stdio: i32) -> i32 {
-        if !self.granted(path) {
-            return NOT_GRANTED;
-        }
-        let (input, output, error) = (stdio & 3, (stdio >> 2) & 3, (stdio >> 4) & 3);
-        if input == 3 || output == 3 || stdio >> 6 != 0 {
-            return EINVAL;
-        }
-        let mut cmd = Procs::command(path, args);
-        let mut kept: [Option<Pipe>; 3] = [None, None, None];
-        let made = (|| -> std::io::Result<()> {
-            match input {
-                0 => {}
-                1 => {
-                    let (r, w) = std::io::pipe()?;
-                    cmd.stdin(Stdio::from(r));
-                    kept[0] = Some(Pipe::Write(Arc::new(File::from(OwnedFd::from(w)))));
-                }
-                _ => {
-                    cmd.stdin(Stdio::null());
-                }
-            }
-            // the output's writing end, for the error to share (error 3)
-            let mut out_end: Option<OwnedFd> = None;
-            match output {
-                0 => {}
-                1 => {
-                    let (r, w) = std::io::pipe()?;
-                    let w = OwnedFd::from(w);
-                    out_end = Some(w.try_clone()?);
-                    cmd.stdout(Stdio::from(w));
-                    kept[1] = Some(Pipe::Read(Arc::new(File::from(OwnedFd::from(r)))));
-                }
-                _ => {
-                    cmd.stdout(Stdio::null());
-                }
-            }
-            match error {
-                0 => {}
-                1 => {
-                    let (r, w) = std::io::pipe()?;
-                    cmd.stderr(Stdio::from(w));
-                    kept[2] = Some(Pipe::Read(Arc::new(File::from(OwnedFd::from(r)))));
-                }
-                2 => {
-                    cmd.stderr(Stdio::null());
-                }
-                _ => match (output, out_end) {
-                    (1, Some(w)) => {
-                        cmd.stderr(Stdio::from(w));
-                    }
-                    (0, _) => {
-                        cmd.stderr(Stdio::from(std::io::stdout().as_fd().try_clone_to_owned()?));
-                    }
-                    _ => {
-                        cmd.stderr(Stdio::null());
-                    }
-                },
-            }
-            Ok(())
-        })();
-        if let Err(e) = made {
-            return crate::vm::wasi_errno(&e) as i32;
-        }
-        let child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => return crate::vm::wasi_errno(&e) as i32,
-        };
-        // the parent's copies of the program's ends go with `cmd`
-        drop(cmd);
-        let mut t = self.table.lock().unwrap();
-        let mut streams = [None, None, None];
-        for (k, pipe) in kept.into_iter().enumerate() {
-            if let Some(p) = pipe {
-                let h = t.next_pipe;
-                t.next_pipe += 1;
-                t.pipes.insert(h, p);
-                streams[k] = Some(h);
-            }
-        }
-        let p = t.next_proc;
-        t.next_proc += 1;
-        let pid = child.id();
-        t.procs.insert(p, Proc { child: Arc::new(Mutex::new(child)), pid, reaped: Arc::new(AtomicBool::new(false)), status: Arc::new(Mutex::new(None)), streams });
-        p
-    }
-
-    /// `proc.stream`: the pipe of process `p`'s input (0), output (1), or
-    /// error (2), or -1 if that stream is not a pipe, minus EBADF for no such process.
-    pub fn stream(&self, p: i32, which: i32) -> i32 {
-        let t = self.table.lock().unwrap();
-        match t.procs.get(&p) {
-            None => BAD_HANDLE,
-            Some(pr) => match usize::try_from(which).ok().and_then(|k| pr.streams.get(k)) {
-                Some(Some(h)) if t.pipes.contains_key(h) => *h,
-                _ => -1,
-            },
-        }
-    }
-
-    fn pipe_file(&self, h: i32, reading: bool) -> Option<Arc<File>> {
-        match self.table.lock().unwrap().pipes.get(&h)? {
-            Pipe::Read(f) if reading => Some(Arc::clone(f)),
-            Pipe::Write(f) if !reading => Some(Arc::clone(f)),
-            _ => None,
-        }
-    }
-
-    /// `proc.read`: up to `max` bytes (waits for some), 0 at the end, or minus an errno.
-    pub fn read(&self, h: i32, max: usize) -> Result<Vec<u8>, i32> {
-        let f = self.pipe_file(h, true).ok_or(BAD_HANDLE)?;
-        let mut buf = vec![0u8; max];
-        match (&*f).read(&mut buf) {
-            Ok(n) => {
-                buf.truncate(n);
-                Ok(buf)
-            }
-            Err(e) => Err(crate::vm::wasi_errno(&e) as i32),
-        }
-    }
-
-    /// `proc.write`: bytes written, or minus an errno (a program that has gone is -64, not a signal).
-    pub fn write(&self, h: i32, bytes: &[u8]) -> i32 {
-        let Some(f) = self.pipe_file(h, false) else { return BAD_HANDLE };
-        match (&*f).write(bytes) {
-            Ok(n) => n as i32,
-            Err(e) => crate::vm::wasi_errno(&e) as i32,
-        }
-    }
-
-    /// `proc.close`: closes a pipe (closing the input tells the program it
-    /// has ended), or lets go of a process (which keeps running); 0, or minus EBADF.
-    pub fn close(&self, h: i32) -> i32 {
-        let mut t = self.table.lock().unwrap();
-        if t.pipes.remove(&h).is_some() || t.procs.remove(&h).is_some() {
-            0
-        } else {
-            BAD_HANDLE
-        }
-    }
-
-    /// `proc.wait`: waits for the program to end: its exit status, or 256
-    /// plus the signal that ended it; the same on a second wait.
-    pub fn wait(&self, p: i32) -> i32 {
-        let (child, status, reaped) = {
-            let t = self.table.lock().unwrap();
-            match t.procs.get(&p) {
-                Some(pr) => (Arc::clone(&pr.child), Arc::clone(&pr.status), Arc::clone(&pr.reaped)),
-                None => return BAD_HANDLE,
-            }
-        };
-        let mut done = status.lock().unwrap();
-        if let Some(s) = *done {
-            return s;
-        }
-        let result = match child.lock().unwrap().wait() {
-            Ok(st) => st.code().unwrap_or_else(|| 256 + st.signal().unwrap_or(0)),
-            Err(e) => return crate::vm::wasi_errno(&e) as i32,
-        };
-        reaped.store(true, Ordering::SeqCst);
-        *done = Some(result);
-        result
-    }
-
-    /// `proc.try_wait`: `wait` that does not wait: the status if the program has ended, EAGAIN (-6) if it has
-    /// not (or if another thread is waiting for it just now), or minus an errno.
-    pub fn try_wait(&self, p: i32) -> i32 {
-        let (child, status, reaped) = {
-            let t = self.table.lock().unwrap();
-            match t.procs.get(&p) {
-                Some(pr) => (Arc::clone(&pr.child), Arc::clone(&pr.status), Arc::clone(&pr.reaped)),
-                None => return BAD_HANDLE,
-            }
-        };
-        let Ok(mut done) = status.try_lock() else { return EAGAIN };
-        if let Some(s) = *done {
-            return s;
-        }
-        let Ok(mut child) = child.try_lock() else { return EAGAIN };
-        let result = match child.try_wait() {
-            Ok(Some(st)) => st.code().unwrap_or_else(|| 256 + st.signal().unwrap_or(0)),
-            Ok(None) => return EAGAIN,
-            Err(e) => return crate::vm::wasi_errno(&e) as i32,
-        };
-        reaped.store(true, Ordering::SeqCst);
-        *done = Some(result);
-        result
-    }
-
-    /// `proc.kill`: sends the signal (1 to 64) to a process this program started and has not waited for: 0, or
-    /// minus an errno (EBADF for no such process or one waited for, EINVAL for a signal outside 1 to 64). It
-    /// takes no lock a waiting thread holds, so one thread can kill what another is waiting for.
-    pub fn kill(&self, p: i32, sig: i32) -> i32 {
-        let (pid, reaped) = {
-            let t = self.table.lock().unwrap();
-            match t.procs.get(&p) {
-                Some(pr) => (pr.pid, Arc::clone(&pr.reaped)),
-                None => return BAD_HANDLE,
-            }
-        };
-        if !(1..=64).contains(&sig) {
-            return EINVAL;
-        }
-        if reaped.load(Ordering::SeqCst) {
-            return BAD_HANDLE;
-        }
-        // SAFETY: kill(2) with a process id this program started and a signal number checked above
-        if unsafe { libc::kill(pid as libc::pid_t, sig) } == 0 {
-            0
-        } else {
-            crate::vm::wasi_errno(&std::io::Error::last_os_error()) as i32
-        }
-    }
-
-    /// `proc.poll`: waits until the pipe can be read (events 1: the read end of the program's output or error) or
-    /// written (2: the write end of its input), for at most `timeout_ms` (-1: no limit; 0: look only): `events`
-    /// when it can (reading: data, the end of the data, or an error), 0 when the time ran out, minus EBADF for a
-    /// handle that is not such a pipe, minus EINVAL for events that are not 1 or 2.
-    pub fn poll(&self, h: i32, events: i32, timeout_ms: i32) -> i32 {
-        use std::os::fd::AsRawFd;
-        if events != 1 && events != 2 {
-            return EINVAL;
-        }
-        let Some(f) = self.pipe_file(h, events == 1) else { return BAD_HANDLE };
-        let mut p = libc::pollfd { fd: f.as_raw_fd(), events: if events == 1 { libc::POLLIN } else { libc::POLLOUT }, revents: 0 };
-        // SAFETY: one valid pollfd, and a count of one
-        match unsafe { libc::poll(&mut p, 1, timeout_ms) } {
-            0 => 0,
-            n if n > 0 && p.revents & libc::POLLNVAL == 0 => events,
-            _ => crate::vm::wasi_errno(&std::io::Error::last_os_error()) as i32,
-        }
-    }
-
-    /// `proc.exec`: replaces this process with the program; does not return
-    /// except with minus an errno (-76 if not granted).
-    pub fn exec(&self, path: &[u8], args: &[u8]) -> i32 {
-        if !self.granted(path) {
-            return NOT_GRANTED;
-        }
-        let _ = std::io::stdout().flush();
-        crate::vm::wasi_errno(&Procs::command(path, args).exec()) as i32
-    }
-}
+pub use procs::{Procs, NOT_GRANTED};
