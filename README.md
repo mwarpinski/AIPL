@@ -122,7 +122,8 @@ What differs on Windows: a program sees the root of the drive it runs from as `/
 and reaches no other drive, so keep what it reads and writes on that drive and write
 `/Users/me/notes.txt` or a relative path; an argument you give it that is an absolute
 path on that drive (`C:\Users\me\notes.txt`) is turned into that for you. (That goes
-for the compiler too: run `aipl compile` from the drive the source is on.) Starting
+for the compiler too: run `aipl compile` from the drive the source is on; when that is not
+the drive the standard library is unpacked to, it is unpacked into `.aipl/` there.) Starting
 other programs (`std/proc`) works, but a signal there ends a process at once (status
 256 plus the signal), and there are no native executables (`compile --exe` bundles
 the launcher).

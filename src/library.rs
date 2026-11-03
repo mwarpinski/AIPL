@@ -9,7 +9,8 @@
 //! rebuild. Anywhere else (copied, installed, unpacked from a kit) it uses
 //! the copy built into it (build.rs), written once to the module cache's
 //! directory as library-HASH/ (src/selfhost.rs cache_dir; the temporary
-//! directory when there is no cache). `$AIPL_STD`, when set, is the
+//! directory when there is no cache; on Windows, `.aipl/` under the working
+//! directory when the cache is on another drive, which programs cannot reach). `$AIPL_STD`, when set, is the
 //! standard library for the programs it compiles and runs; the toolchain's
 //! own modules always use the library's.
 
@@ -48,13 +49,19 @@ fn checkout() -> Option<PathBuf> {
     let src = root.join("aipl_src");
     let target = root.join("target").canonicalize().ok()?;
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    (exe.starts_with(&target) && src.is_dir()).then_some(src)
+    // (a checkout on another drive than the working directory's is out of a Windows program's reach: the copy built in is used)
+    (exe.starts_with(&target) && src.is_dir() && crate::sys::on_working_drive(&src)).then_some(src)
 }
 
 /// The built-in copy, written out once (whole or not at all: into a
 /// temporary directory, then renamed) and used from there.
 fn unpack() -> Result<PathBuf, String> {
-    let base = crate::selfhost::cache_dir().unwrap_or_else(std::env::temp_dir);
+    let mut base = crate::selfhost::cache_dir().unwrap_or_else(std::env::temp_dir);
+    // On Windows the toolchain's programs reach only the working directory's drive: when the cache is on
+    // another, the library goes under the working directory instead (.aipl/).
+    if !crate::sys::on_working_drive(&base) {
+        base = std::env::current_dir().map_err(|e| e.to_string())?.join(".aipl");
+    }
     let dir = base.join(format!("library-{HASH}"));
     if dir.join(".complete").exists() {
         return Ok(dir);

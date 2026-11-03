@@ -148,7 +148,8 @@ fn stays_inside(text: &Path) -> bool {
 /// working directory (".") and `/`, and take `/` as their separator. On
 /// Windows `/` is the root of the working directory's drive (`preopen_roots`),
 /// so `C:\a\b` becomes `/a/b` when C: is that drive and `/C:/a/b`, which a
-/// program cannot open, when it is not; a verbatim prefix (`\\?\`) is dropped. Anywhere else a path is already what they use.
+/// program cannot open (`on_working_drive`), when it is not; a verbatim prefix
+/// (`\\?\`) is dropped. Anywhere else a path is already what they use.
 pub fn guest_path(path: &str) -> String {
     #[cfg(not(windows))]
     {
@@ -181,6 +182,25 @@ pub fn guest_arg(arg: &str) -> String {
         }
     }
     arg.to_string()
+}
+
+/// Whether a program can reach `path`: on Windows only the drive the working directory is on is open to it
+/// (`preopen_roots`), so a path on another drive, or a network path, is not; anywhere else every path is.
+pub fn on_working_drive(path: &Path) -> bool {
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        true
+    }
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy().replace('\\', "/");
+        let s = s.strip_prefix("//?/").unwrap_or(&s);
+        match drive_of(s) {
+            Some(d) => Some(d) == current_drive(),
+            None => !s.starts_with("//"),
+        }
+    }
 }
 
 /// The drive letter (upper case) a path starts with, as in `C:/x`.
