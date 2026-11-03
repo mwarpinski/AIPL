@@ -112,3 +112,54 @@ jobs:
           sh -c '. "$HOME/.aipl/env" && aipl --version'
           sh install.sh --uninstall
           [ ! -e "$HOME/.aipl" ]
+
+  windows:
+    # Windows x86-64 (windows-latest): the toolchain builds and runs what goes through WebAssembly (the Rust
+    # tests assume Linux and are not run here), then the release zip is packed and installed by install.ps1
+    # from this commit, as a user's machine would take it.
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - name: Clippy
+        run: cargo clippy --release --locked -- -D warnings
+      - name: AIPL test suite
+        run: ./target/release/aipl.exe test aipl_src/test_suite.aipl
+      - name: A program compiles and runs, as WebAssembly and as an executable
+        shell: pwsh
+        run: |
+          $d = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'prog')
+          Set-Location $d
+          @'
+          (module hello
+            (import io)
+            (fn main [] -> i32
+              (call io.println "hello from windows")
+              0))
+          '@ | Set-Content -Encoding ascii hello.aipl
+          $bin = Join-Path $env:GITHUB_WORKSPACE 'target\release'
+          & "$bin\aipl.exe" compile hello.aipl -o hello.wasm; if ($LASTEXITCODE) { exit 1 }
+          & "$bin\aipl-run.exe" hello.wasm; if ($LASTEXITCODE) { exit 1 }
+          & "$bin\aipl.exe" compile --exe hello.aipl -o hello.exe; if ($LASTEXITCODE) { exit 1 }
+          & .\hello.exe; if ($LASTEXITCODE) { exit 1 }
+      - name: Pack the release zip and install it (install, update, uninstall)
+        shell: pwsh
+        run: |
+          pwsh tools/package_release.ps1 dist
+          New-Item -ItemType Directory -Force dist-site/latest/download | Out-Null
+          Copy-Item dist/* dist-site/latest/download/
+          $env:AIPL_RELEASES = "file:///$((Resolve-Path dist-site).Path -replace '\\','/')"
+          $env:AIPL_HOME = Join-Path $env:RUNNER_TEMP 'aipl-home'
+          $env:AIPL_NO_PATH = '1'
+          pwsh install.ps1
+          pwsh install.ps1
+          if (-not (Test-Path "$env:AIPL_HOME/bin/aipl.exe")) { exit 1 }
+          $env:AIPL_UNINSTALL = '1'
+          pwsh install.ps1
+          if (Test-Path $env:AIPL_HOME) { exit 1 }
