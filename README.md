@@ -11,7 +11,7 @@ and both compilers work and are heavily tested ([what works](#what-works-today),
 [how it is tested](#how-it-is-made-and-tested)). Native executables are Linux
 only (x86-64 and AArch64); WebAssembly runs wherever wasmtime does, and on Windows `aipl compile --exe`
 makes a single file that bundles the launcher. CI tests Linux, on x86-64 and arm64, and builds and
-smoke-tests Windows on x86-64 (programs cannot start other programs there yet); an Apple Silicon Mac is
+tests Windows on x86-64 (the AIPL suite, processes, sockets, and the installer); an Apple Silicon Mac is
 checked by hand.
 There are no packages yet, and the question the project exists to answer,
 whether agents write correct programs more often in AIPL than in other
@@ -118,10 +118,12 @@ irm https://raw.githubusercontent.com/mwarpinski/AIPL/main/install.ps1 | iex
 
 It takes its options from environment variables (`AIPL_VERSION`, `AIPL_HOME`,
 `AIPL_NO_PATH=1`; `$env:AIPL_UNINSTALL = 1` removes it); `install.ps1` itself lists them.
-What differs on Windows: `std/proc` (starting other programs) reports an error, `aipl
-run --serve-fresh` is not available, and a program sees the root of the drive it runs
-from as `/` (another drive's root is `/D:/`), so write `/Users/me/notes.txt` or a
-relative path, not `C:\Users\me\notes.txt`.
+What differs on Windows: a program sees the root of the drive it runs from as `/`
+(another drive's root is `/D:/`), so inside a program write `/Users/me/notes.txt` or a
+relative path; an argument you give it that is an absolute Windows path
+(`C:\Users\me\notes.txt`) is turned into that for you. Starting other programs
+(`std/proc`) works, but a signal there ends a process at once (status 256 plus the
+signal), and there are no native executables (`compile --exe` bundles the launcher).
 
 To build from source instead, you need git, a stable Rust toolchain
 ([rustup.rs](https://rustup.rs)), and a C compiler for linking (e.g.
