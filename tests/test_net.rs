@@ -438,9 +438,11 @@ fn a_fetch_with_a_limit_gives_up_on_a_server_that_never_answers() {
     // a server that holds each connection for 4 seconds without answering, and one that answers at once
     let silent = TcpListener::bind("127.0.0.1:0").unwrap();
     let silent_at = silent.local_addr().unwrap();
+    // one connection from each backend: the VM, aipl-run and the bundle, and a native executable where there is one
+    let expected = 3 + usize::from(native_args().is_some());
     let holder = std::thread::spawn(move || {
         let mut held = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..expected {
             let (s, _) = silent.accept().unwrap();
             held.push(s);
         }

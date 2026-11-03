@@ -170,6 +170,20 @@ pub fn guest_path(path: &str) -> String {
     }
 }
 
+/// A command-line argument as a program should see it: one that is an absolute Windows path (`C:\x`,
+/// `D:/x`) becomes the guest's name for it (`guest_path`), so a program can open what it was given; any
+/// other argument is unchanged, as everywhere else.
+pub fn guest_arg(arg: &str) -> String {
+    #[cfg(windows)]
+    {
+        let s = arg.strip_prefix(r"\\?\").unwrap_or(arg);
+        if drive_of(&s.replace('\\', "/")).is_some() && matches!(s.as_bytes().get(2), Some(b'\\' | b'/')) {
+            return guest_path(arg);
+        }
+    }
+    arg.to_string()
+}
+
 /// The drive letter (upper case) a path starts with, as in `C:/x`.
 #[cfg(windows)]
 fn drive_of(s: &str) -> Option<char> {

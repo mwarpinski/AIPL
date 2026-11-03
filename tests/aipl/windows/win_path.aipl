@@ -1,0 +1,14 @@
+;; An absolute Windows path as an argument (tests/test_windows.rs): the program opens the file it names, and
+;; prints what is in it. aipl-run turns `C:\dir\f.txt` into the program's own name for the file.
+(module windows_path_case
+  (import os)
+  (import io)
+  (import str)
+  (import option)
+
+  (fn main [] -> i32
+    (let path:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "")))
+    (println "arg: {(call str.from_bytes path)}")
+    (match_result (call io.read_path path)
+      (ok data (block (println "read: {(call str.from_bytes data)}") 0))
+      (err e (block (println "cannot read") 1)))))

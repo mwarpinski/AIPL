@@ -114,8 +114,8 @@ jobs:
           [ ! -e "$HOME/.aipl" ]
 
   windows:
-    # Windows x86-64 (windows-latest): the toolchain builds and runs what goes through WebAssembly (the Rust
-    # tests assume Linux and are not run here), then the release zip is packed and installed by install.ps1
+    # Windows x86-64 (windows-latest): the toolchain builds and runs what goes through WebAssembly (most Rust
+    # tests assume Linux and are not run here; test_windows and test_net are), then the release zip is packed and installed by install.ps1
     # from this commit, as a user's machine would take it.
     runs-on: windows-latest
     timeout-minutes: 60
@@ -131,6 +131,8 @@ jobs:
         run: cargo clippy --release --locked -- -D warnings
       - name: AIPL test suite
         run: ./target/release/aipl.exe test aipl_src/test_suite.aipl
+      - name: Windows tests (processes, exec, absolute paths) and the socket tests
+        run: cargo test --release --locked --test test_windows --test test_net
       - name: A program compiles and runs, as WebAssembly and as an executable
         shell: pwsh
         run: |

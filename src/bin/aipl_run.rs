@@ -180,7 +180,9 @@ struct Host {
 
 fn wasi(argv: &[String], sandbox: bool) -> Result<WasiP1Ctx, String> {
     let mut b = WasiCtxBuilder::new();
-    b.inherit_stdio().inherit_env().args(argv);
+    // argv[0] is the program's name; an absolute Windows path after it is named as the program sees files
+    let argv: Vec<String> = argv.iter().enumerate().map(|(i, a)| if i == 0 { a.clone() } else { aipl_core::sys::guest_arg(a) }).collect();
+    b.inherit_stdio().inherit_env().args(&argv);
     b.preopened_dir(".", ".", FsPerms::ReadWrite).map_err(|e| format!("cannot open the working directory: {e}"))?;
     if !sandbox {
         aipl_core::sys::preopen_roots(&mut b, FsPerms::ReadWrite)?;
