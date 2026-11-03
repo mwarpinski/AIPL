@@ -34,6 +34,7 @@ Plans written before, and kept after, each piece of work: why it is the way it i
 | [aipl_standalone.md](design/aipl_standalone.md) | Nothing Rust can do that AIPL cannot |
 | [SYS_PLAN.md](design/SYS_PLAN.md) | System host imports: `chmod` and processes |
 | [NET_PLAN.md](design/NET_PLAN.md) | Networking: serving and fetching |
+| [SHIP_SELFHOSTED_PLAN.md](design/SHIP_SELFHOSTED_PLAN.md) | Shipping the self-hosted `aipl` in the Linux tarballs; host names and TLS through `aipl-net` |
 | [STDLIB_PLAN.md](design/STDLIB_PLAN.md) | A broader standard library, and string formatting |
 | [MEMORY_PLAN.md](design/MEMORY_PLAN.md) | Memory for programs that run for days |
 | [HEAP_PLAN.md](design/HEAP_PLAN.md) | Freeing memory: allocators in the style of Zig |
