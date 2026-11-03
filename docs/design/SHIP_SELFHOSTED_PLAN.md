@@ -52,6 +52,21 @@ Why not the alternatives: a TLS written in AIPL is not planned (NET_PLAN.md deci
 runtime's own machine code would need `socketpair`, `fork`, and `dup2` emitted by two code generators (x86-64, AArch64) for one
 feature; a loopback proxy daemon adds a lifecycle to manage.
 
+**The grant problem (found 2026-11-03, before any L3 code).** Today a native executable answers `connect_host` with -3 without
+asking any grant, and `compile --exe --allow-connect example.com:443` is refused ("a native executable has no name resolver").
+A helper the program starts would reach any host the program names unless something trusted holds the grant. Three ways:
+
+- **B (recommended): the native runtime holds name grants.** `--allow-connect HOST:PORT` is accepted for names, stored in the
+  executable like the address grants, and checked by the runtime's `connect_host` (a byte compare of the name and port, in
+  the x86-64 and AArch64 routines, sockets.aipl and sockets_arm64.aipl). It answers -2 if no grant names the host, and -3 (use
+  the helper) if one does. The program cannot reach a host it was not granted, as in every other backend. Cost: machine code
+  in two emitters.
+- **A: the helper holds them.** `aipl-net` reads the grants from its parent's executable (`/proc/PPID/exe`, the same trailer
+  aipl-run reads) and refuses a host they do not name. No code generator change, but it trusts the helper to find the right
+  parent, and Linux's /proc.
+- **C: `--allow-run aipl-net` is the grant.** A program allowed to start the helper may reach any host. Simplest; there is no
+  per-host grant for native programs.
+
 ## Steps
 
 - **L1: find the library when started by name. Built 2026-11-03.** `aipl_src/stdpath.aipl`; the test is
@@ -77,4 +92,5 @@ feature; a loopback proxy daemon adds a lifecycle to manage.
 1. **Dropping the VM-only modes (L2).** Recommended: drop, as above; they are the referee's tools.
 2. **A helper process for names and TLS (L3)**, one more file in the tarball, in place of a native executable carrying TLS.
    Recommended: yes. The alternative is the status quo, a proxy in front.
-3. **Linux only, for now (L4).** macOS and Windows keep the Rust `aipl` and `aipl-run` until their native backends exist.
+3. **How name grants are held (B, A, or C above).** Recommended: B.
+4. **Linux only, for now (L4).** macOS and Windows keep the Rust `aipl` and `aipl-run` until their native backends exist.
