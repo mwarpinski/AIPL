@@ -31,6 +31,13 @@ jobs:
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, but Cargo.toml says $v"; exit 1; }
       - name: Build
         run: cargo build --release --locked
+      - name: The self-hosted aipl, which the Linux tarballs ship (built from the checked-in seed: no Rust)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sh bootstrap/build.sh
+          v="${GITHUB_REF_NAME#v}"
+          [ "$(target/bootstrap/aipl --version)" = "aipl $v" ] || { echo "the tag is $GITHUB_REF_NAME, but the self-hosted aipl says: $(target/bootstrap/aipl --version) (aipl_src/aipl.aipl)"; exit 1; }
       - name: Package
         if: runner.os != 'Windows'
         run: sh tools/package_release.sh dist
@@ -41,7 +48,7 @@ jobs:
           mkdir -p dist-site/latest/download
           cp dist/* dist-site/latest/download/
           sh install.sh
-          sh -c '. "$HOME/.aipl/env" && aipl --version'
+          sh -c '. "$HOME/.aipl/env" && cd "$HOME" && aipl --version && aipl doc str | head -1'
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

@@ -3,14 +3,18 @@
 #
 #   sh tools/package_release.sh [OUT_DIR]      # default: target/dist
 #
-# It packs target/release/aipl and aipl-run (run `cargo build --release
-# --locked` first) and the documents and examples, as
+# On Linux it packs the self-hosted aipl (target/bootstrap/aipl: run `sh
+# bootstrap/build.sh` first, which needs no Rust), the helper for host names
+# and TLS (target/release/aipl-net) and the standard library (share/aipl/std,
+# which the self-hosted aipl finds beside bin/); elsewhere the Rust aipl and
+# aipl-run (target/release, from `cargo build --release --locked`). With the
+# documents and examples, either way, as
 # OUT_DIR/aipl-TARGET.tar.gz with OUT_DIR/aipl-TARGET.tar.gz.sha256 beside
 # it, where TARGET is the platform's name as install.sh spells it
 # (x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, aarch64-apple-darwin).
-# The tarball holds one folder, aipl-TARGET: bin/ (the two programs) and
-# share/ (README, the specification, the prompt guide, the licence, and the
-# examples). The binaries carry the standard library, so nothing else is
+# The tarball holds one folder, aipl-TARGET: bin/ (the programs) and share/
+# (README, the specification, the prompt guide, the licence, and the
+# examples; on Linux also aipl/std/, the standard library). Nothing else is
 # needed beside them.
 set -eu
 
@@ -24,15 +28,32 @@ case "$(uname -s)/$(uname -m)" in
     *) echo "package_release: no release target for $(uname -s) $(uname -m)" >&2; exit 1 ;;
 esac
 
-for b in aipl aipl-run; do
-    [ -x "$ROOT/target/release/$b" ] || { echo "package_release: build target/release/$b first" >&2; exit 1; }
-done
+case "$TARGET" in
+    *linux*)
+        [ -x "$ROOT/target/bootstrap/aipl" ] || { echo "package_release: run 'sh bootstrap/build.sh' first (target/bootstrap/aipl)" >&2; exit 1; }
+        [ -x "$ROOT/target/release/aipl-net" ] || { echo "package_release: build target/release/aipl-net first (cargo build --release --locked)" >&2; exit 1; }
+        PROGRAMS="$ROOT/target/bootstrap/aipl $ROOT/target/release/aipl-net"
+        ;;
+    *)
+        for b in aipl aipl-run; do
+            [ -x "$ROOT/target/release/$b" ] || { echo "package_release: build target/release/$b first" >&2; exit 1; }
+        done
+        PROGRAMS="$ROOT/target/release/aipl $ROOT/target/release/aipl-run"
+        ;;
+esac
 
 NAME="aipl-$TARGET"
 STAGE="$OUT/stage/$NAME"
 rm -rf "$OUT/stage"
 mkdir -p "$STAGE/bin" "$STAGE/share"
-cp "$ROOT/target/release/aipl" "$ROOT/target/release/aipl-run" "$STAGE/bin/"
+# shellcheck disable=SC2086
+cp $PROGRAMS "$STAGE/bin/"
+case "$TARGET" in
+    *linux*)
+        mkdir -p "$STAGE/share/aipl"
+        cp -R "$ROOT/aipl_src/std" "$STAGE/share/aipl/std"
+        ;;
+esac
 cp "$ROOT/README.md" "$ROOT/AIPL_SPEC.md" "$ROOT/PROMPT_GUIDE_FOR_AIS.md" "$ROOT/LICENSE" "$STAGE/share/"
 cp -R "$ROOT/examples" "$STAGE/share/examples"
 

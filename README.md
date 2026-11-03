@@ -87,9 +87,11 @@ Error: bad.aipl: 18:14: Arg 1 of 'gcd' expects i32, got bool
 On Linux (x86-64 or arm64) and macOS (Apple silicon), one command installs a
 prebuilt AIPL. It needs only `curl` and `tar`: no git, no Rust, and nothing
 runs as root. It downloads the release for your machine, checks it against its
-published SHA-256, and unpacks it into `~/.aipl` (the programs `aipl` and
-`aipl-run` in `bin`, the README, specification, and examples in `share`),
-and puts `~/.aipl/bin` on your `PATH`:
+published SHA-256, and unpacks it into `~/.aipl` (the programs in `bin`: on
+Linux `aipl`, the compiler written in AIPL itself, and `aipl-net`, a small
+helper for host names and HTTPS; on macOS `aipl` and `aipl-run`; and the
+README, specification, examples, and on Linux the standard library in
+`share`), and puts `~/.aipl/bin` on your `PATH`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/mwarpinski/AIPL/main/install.sh | sh
@@ -261,8 +263,9 @@ ways to start, where the compiler finds the library, and why.
   statistics (Python's, to the bit), regular expressions (linear-time, as
   Python's `re` matches), hashes (CRC-32, MD5, SHA-1, SHA-256, SHA-512,
   HMAC), DEFLATE, zlib, and gzip, URLs and HTTP messages, TCP sockets with an
-  HTTP server and client (HTTPS and host names where the host is Rust's:
-  `aipl eval`, aipl-run, `--target wasm` bundles), starting, signalling, and
+  HTTP server and client (HTTPS and host names through Rust's: `aipl eval`,
+  aipl-run, `--target wasm` bundles, and in a native executable the `aipl-net`
+  helper, which reaches only the hosts the program was granted), starting, signalling, and
   timing out other programs, big integers, UTC dates, vectors, hash maps,
   sets, command-line options, math (min, max, floor division, gcd, rounding,
   and exp, ln, pow, the trigonometric and hyperbolic functions, written in

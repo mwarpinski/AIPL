@@ -101,6 +101,7 @@ jobs:
       - name: Install a release tarball (the default install), as install.sh does with a downloaded one
         run: |
           cargo build --release --locked
+          sh bootstrap/build.sh
           sh tools/package_release.sh dist
           mkdir -p dist-site/latest/download
           cp dist/* dist-site/latest/download/
@@ -109,7 +110,8 @@ jobs:
           sh install.sh
           sh install.sh
           [ "$(grep -c aipl "$HOME/.profile")" = 1 ]
-          sh -c '. "$HOME/.aipl/env" && aipl --version'
+          # started by name, from outside any checkout: the installed library is found beside bin/
+          sh -c '. "$HOME/.aipl/env" && cd "$HOME" && aipl --version && aipl doc str | head -1'
           sh install.sh --uninstall
           [ ! -e "$HOME/.aipl" ]
 

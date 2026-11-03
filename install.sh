@@ -12,9 +12,10 @@
 #   1. finds the release built for this machine (Linux x86-64, Linux arm64,
 #      or macOS arm64) and downloads it with curl (or wget), and checks it
 #      against its published SHA-256; it needs no git and no Rust;
-#   2. unpacks it into ~/.aipl: the two programs, aipl and aipl-run, in
-#      ~/.aipl/bin, and the README, specification, and examples in
-#      ~/.aipl/share;
+#   2. unpacks it into ~/.aipl: its programs in ~/.aipl/bin (on Linux aipl,
+#      the self-hosted compiler, and aipl-net, the helper for host names and
+#      TLS; on macOS aipl and aipl-run), and the README, specification,
+#      examples, and on Linux the standard library in ~/.aipl/share;
 #   3. writes ~/.aipl/env, which puts ~/.aipl/bin on PATH, and adds one line
 #      sourcing it to ~/.profile, to ~/.bashrc if it exists, and to
 #      ~/.zshenv if it exists or zsh is installed (with fish, it writes
@@ -146,8 +147,8 @@ sha256_of() {
     fi
 }
 
-# The release for this machine, in AIPL_HOME: its two programs in bin, its
-# documents and examples in share.
+# The release for this machine, in AIPL_HOME: its programs in bin, its
+# documents and examples (and, on Linux, the standard library) in share.
 fetch_release() {
     name="aipl-$TARGET.tar.gz"
     if [ "$AIPL_VERSION" = latest ]; then
@@ -164,14 +165,15 @@ fetch_release() {
     [ "$(sha256_of "$tmp/$name")" = "$want" ] || err "the download does not match its SHA-256 ($want); not installing it"
     tar -C "$tmp" -xzf "$tmp/$name"
     dir="$tmp/aipl-$TARGET"
-    if [ ! -x "$dir/bin/aipl" ] || [ ! -x "$dir/bin/aipl-run" ]; then
+    if [ ! -x "$dir/bin/aipl" ]; then
         err "the download is not an AIPL release"
     fi
     mkdir -p "$AIPL_HOME/bin"
-    for b in aipl aipl-run; do
+    for f in "$dir"/bin/*; do
+        b="$(basename "$f")"
         # a source install links these into its build; remove the link, not its target
         rm -f "$AIPL_HOME/bin/$b"
-        cp "$dir/bin/$b" "$AIPL_HOME/bin/$b.new"
+        cp "$f" "$AIPL_HOME/bin/$b.new"
         mv -f "$AIPL_HOME/bin/$b.new" "$AIPL_HOME/bin/$b"
     done
     rm -rf "$AIPL_HOME/share"
@@ -203,7 +205,7 @@ build() {
     say "building (cargo build --release; this takes a few minutes)"
     (cd "$AIPL_HOME/src" && cargo build --release --locked) || err "the build failed (the messages above say why)"
     mkdir -p "$AIPL_HOME/bin"
-    for b in aipl aipl-run; do
+    for b in aipl aipl-run aipl-net; do
         ln -sf "../src/target/release/$b" "$AIPL_HOME/bin/$b"
     done
 }
@@ -252,7 +254,7 @@ check_install() {
     (call io.println "AIPL is installed")
     0))
 EOF
-    (cd "$tmp" && "$AIPL_HOME/bin/aipl" compile hello.aipl -o hello.wasm >/dev/null && "$AIPL_HOME/bin/aipl-run" hello.wasm) ||
+    (cd "$tmp" && "$AIPL_HOME/bin/aipl" compile hello.aipl -o hello.wasm >/dev/null && "$AIPL_HOME/bin/aipl" run hello.wasm) ||
         err "the installed aipl could not compile and run a test program"
     rm -rf "$tmp"
     version="$("$AIPL_HOME/bin/aipl" --version 2>/dev/null)" || version="aipl (a build without --version)"
