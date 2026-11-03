@@ -1,7 +1,8 @@
 # Publishes a release when a version tag is pushed (git tag v0.1.0 && git push
 # origin v0.1.0): the tarballs install.sh downloads, one per platform, built
 # here and each tried through install.sh, as a user would, before it is kept.
-# The Linux ones are built on Ubuntu 22.04 so they run on older glibc.
+# The Linux ones are built on Ubuntu 22.04 so they run on older glibc. Windows
+# ships as a zip installed by install.ps1; the others as tarballs, by install.sh.
 name: Release
 
 on:
@@ -17,26 +18,45 @@ jobs:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
           - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: The tag names the crate's version
+        shell: bash
         run: |
           v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, but Cargo.toml says $v"; exit 1; }
       - name: Build
         run: cargo build --release --locked
       - name: Package
+        if: runner.os != 'Windows'
         run: sh tools/package_release.sh dist
       - name: Install it as a user would, in an empty home
+        if: runner.os != 'Windows'
         run: |
           export HOME="$(mktemp -d)" AIPL_RELEASES="file://$PWD/dist-site"
           mkdir -p dist-site/latest/download
           cp dist/* dist-site/latest/download/
           sh install.sh
           sh -c '. "$HOME/.aipl/env" && aipl --version'
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pwsh tools/package_release.ps1 dist
+      - name: Install it as a user would, in an empty home (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist-site/latest/download | Out-Null
+          Copy-Item dist/* dist-site/latest/download/
+          $env:AIPL_RELEASES = "file:///$((Resolve-Path dist-site).Path -replace '\\','/')"
+          $env:AIPL_HOME = Join-Path $env:RUNNER_TEMP 'aipl-home'
+          $env:AIPL_NO_PATH = '1'
+          pwsh install.ps1
+          & "$env:AIPL_HOME/bin/aipl.exe" --version
       - uses: actions/upload-artifact@v4
         with:
           name: aipl-${{ matrix.target }}
