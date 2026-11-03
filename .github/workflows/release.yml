@@ -31,7 +31,7 @@ jobs:
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, but Cargo.toml says $v"; exit 1; }
       - name: Build
         run: cargo build --release --locked
-      - name: The self-hosted aipl, which the Linux tarballs ship (built from the checked-in seed: no Rust)
+      - name: The self-hosted aipl, which the Linux tarballs ship (built from the checked-in seed, with no Rust)
         if: runner.os == 'Linux'
         shell: bash
         run: |
