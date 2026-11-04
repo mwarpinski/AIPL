@@ -218,7 +218,7 @@ that understands Lisp parentheses gets you most of the way.
 
 ### Is it ready for real use?
 
-No. It is version 0.1.0, nothing about it is stable, and the language will
+No. It is version 0.2.0, nothing about it is stable, and the language will
 change. It is ready to read, run, and experiment with.
 
 ### How do I report a problem or contribute?

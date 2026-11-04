@@ -86,7 +86,7 @@ loopback proxy daemon adds a lifecycle to manage; and a check in the runtime alo
   `bootstrap/build.sh` (the aarch64 seed on the arm runner) and check that `aipl_src/aipl.aipl`'s `--version` names the tag's
   version (it is a constant there: bump it with Cargo.toml). Checked here by packing, installing from a `file://` release
   into an empty home, and compiling, running, `--exe`, `doc`, and a fetch by host name with the installed result. macOS and
-  Windows keep the Rust `aipl` and `aipl-run`. `aipl --version` of the self-hosted command is `aipl 0.1.0`, with no
+  Windows keep the Rust `aipl` and `aipl-run`. `aipl --version` of the self-hosted command is `aipl 0.2.0`, with no
   commit, where the Rust one adds it.
 - **L5: parity in CI. Partly built.** `the_aipl_command_matches_the_rust_command` compares compile output, errors, and
   `aipl doc` for every example, benchmark, and test program, and
