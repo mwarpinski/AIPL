@@ -181,7 +181,7 @@ aipl test rows.aipl                             # run a file's (test ...) items,
 aipl watch scratch.aipl                         # run it again on every save
 aipl eval -e '(call str.find (call str.from_str "a,b") (call str.from_str ","))'   # prints 1 : i32
 aipl compile examples/word_count.aipl -o wc.wasm
-aipl run wc.wasm -- README.md                   # run compiled WebAssembly
+aipl run examples/word_count.aipl README.md       # compile and run it (or: aipl run wc.wasm README.md)
 aipl compile --exe examples/word_count.aipl -o wc
 ./wc README.md                                  # a native executable
 ```
@@ -298,20 +298,14 @@ has every number and why.
 
 ## What is next
 
-In order ([ROADMAP.md](ROADMAP.md) has the details and everything else that
-is missing):
+[ROADMAP.md](ROADMAP.md) has the whole list, in the order a newcomer meets it. The big items:
 
-1. **Launch readiness** ([docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)):
-   the experiment measuring how well agents write AIPL (the A/B harness in
-   [tools/harness/](tools/harness/) is built; its results come first), the
-   native macOS (Apple Silicon) backend, and the final checks.
-2. **The standard library:** time zones, UDP, and the general way for
-   a program to use Rust components (HTTPS inside a native executable).
-3. **Rust out of the build path:** the seeds build the compiler on Linux
-   x86-64 and AArch64 today (AArch64 has the whole backend and an optimizer: docs/design/ARM64_OPT_PLAN.md); next, a
-   macOS seed (or a WebAssembly one), and an installer that needs no Rust. The Rust compiler stays as the referee.
-4. **Packages:** a registry with versioned packages, dependency resolution,
-   and lock files.
+1. **The first hour:** `aipl run` the same on every platform, editor support (a grammar, then a language server), better
+   error messages and a REPL, and a package story.
+2. **Platform parity:** native executables on macOS and Windows (today they bundle a launcher), and the self-hosted
+   `aipl` there, so every platform installs the same command Linux does.
+3. **A stability promise:** a language version and a deprecation policy, which packages need too.
+4. **Release hygiene:** signed releases, Homebrew/winget/apt packages, and the aipl.sh website.
 
 ## How it is made and tested
 

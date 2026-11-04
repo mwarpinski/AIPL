@@ -16,7 +16,7 @@ aipl test prog.aipl                         # run the (test ...) items in it
 aipl doc --find WORD                        # look for a library function before writing one
 ```
 
-`aipl run prog.wasm -- ARG...` is the same runner with arguments. `aipl`
+`aipl run prog.aipl ARG...` compiles a source file and runs it; `aipl run prog.wasm ARG...` is the same runner on a compiled module. `aipl`
 and `aipl-run` are two programs; keep them together.
 
 ## 2. A program's shape

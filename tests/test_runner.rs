@@ -75,6 +75,59 @@ fn the_runner_gives_programs_args_files_stdin_and_exit_codes() {
 }
 
 #[test]
+fn aipl_run_takes_a_source_file_as_it_takes_a_module() {
+    let dir = scratch("run_source");
+    let tmp = dir.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(
+        dir.join("prog.aipl"),
+        r#"(module prog
+  (import io) (import str) (import os) (import option)
+  (fn main [] -> i32
+    (let a:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "none")))
+    (let b:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 2) (call str.from_str "none")))
+    (println "args {a} {b}")
+    (let w:i32 (call str.count_words (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str "")))))
+    (println "stdin words: {w}")
+    3))"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("bad.aipl"), "(module bad (fn main [] -> i32 \"x\"))").unwrap();
+    let aipl = |args: &[&str], stdin: &str| {
+        let mut child = Command::new(AIPL)
+            .arg("run")
+            .args(args)
+            .env("AIPL_RUNNER", RUNNER)
+            .env("TMPDIR", &tmp)
+            .env("TEMP", &tmp)
+            .env("TMP", &tmp)
+            .current_dir(&dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    // the program's arguments follow the file, with or without a `--`; its status and stdin are the program's
+    for args in [&["prog.aipl", "x", "y"][..], &["prog.aipl", "--", "x", "y"], &["--no-opt", "--max-memory", "64M", "prog.aipl", "x", "y"]] {
+        let o = aipl(args, "a b c");
+        assert_eq!(stdout(&o), "args x y\nstdin words: 3\n", "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(o.status.code(), Some(3), "{args:?}");
+    }
+    // a word that looks like a flag, after the file, is the program's
+    assert!(stdout(&aipl(&["prog.aipl", "-c", "--sandbox"], "")).starts_with("args -c --sandbox\n"));
+    // an error in the source stops it before anything runs
+    let o = aipl(&["bad.aipl"], "");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("bad.aipl: 1:"), "{}", String::from_utf8_lossy(&o.stderr));
+    // and no module is left behind, however the run ended
+    assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0);
+}
+
+#[test]
 fn a_trap_is_reported_with_a_failing_status() {
     let dir = scratch("trap");
     std::fs::write(dir.join("t.aipl"), "(module t (fn main [] -> i32 (/ 1 0)))").unwrap();

@@ -134,11 +134,17 @@ enum Commands {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Run a compiled module with the aipl-run launcher: aipl run prog.wasm [-- ARGS...]
+    /// Run a program: aipl run prog.aipl|prog.wasm [-- ARGS...] (a source file is compiled first)
     Run {
         file: String,
         #[arg(long)]
         sandbox: bool,
+        /// Compile a source file without the optimizer
+        #[arg(long)]
+        no_opt: bool,
+        /// The most memory a source file's program may use, e.g. 64M
+        #[arg(long = "max-memory", value_name = "SIZE")]
+        max_memory: Option<String>,
         /// An address and port the program may listen on (repeatable)
         #[arg(long = "listen", value_name = "ADDR:PORT")]
         listen: Vec<String>,
@@ -148,7 +154,8 @@ enum Commands {
         /// A program the program may start (repeatable; * for any)
         #[arg(long = "allow-run", value_name = "PROGRAM")]
         allow_run: Vec<String>,
-        #[arg(last = true)]
+        /// Arguments for the program, with or without a `--` before them
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Parse and type-check an AIPL file without running it (contracts are
@@ -381,6 +388,24 @@ fn exit_with(program: &str, n: i64) -> ! {
 /// that was run is never opened for writing again: macOS kills the next run
 /// of a binary rewritten in place (its code signature is stale), and Linux can
 /// refuse the open with "Text file busy" just after the old run ends.
+/// The optimizer (docs/design/OPT_PLAN.md): driver.aipl's compile_file_opt under wasmtime, after the checks, so a
+/// program's errors read as they always have; its failure on a program those passed is a toolchain bug.
+fn optimized(file: &str, max_pages: u32, tests: bool) -> Result<Vec<u8>, String> {
+    aipl_core::selfhost::compile_optimized(Path::new(file), max_pages, tests)
+        .map_err(|e| format!("{e}\n(the optimized build failed on a program that checks: a toolchain bug; --no-opt builds without the optimizer)"))
+}
+
+/// A source file as WebAssembly: resolved, checked, and compiled as `aipl compile` does without `--self`.
+fn compile_source(file: &str, max_pages: u32, no_opt: bool, tests: bool) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let module = if tests { Resolver::resolve_tests(Path::new(file))?.0 } else { Resolver::resolve(Path::new(file))? };
+    TypeChecker::new().check_module(&module)?;
+    if no_opt {
+        Ok(WasmCompiler::compile_limited(&module, max_pages)?)
+    } else {
+        Ok(optimized(file, max_pages, tests)?)
+    }
+}
+
 fn write_replacing(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = format!("{path}.tmp{}", std::process::id());
     fs::write(&tmp, bytes).and_then(|_| fs::rename(&tmp, path)).inspect_err(|_| {
@@ -522,13 +547,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else if no_opt {
                 write_replacing(&output, &WasmCompiler::compile_limited(&module, max_pages)?)?;
             } else {
-                // the optimizer (docs/design/OPT_PLAN.md): driver.aipl's
-                // compile_file_opt under wasmtime, after the checks above, so a
-                // program's errors read as they always have; its failure on a
-                // program those passed is a toolchain bug
-                let bytes = aipl_core::selfhost::compile_optimized(Path::new(&file), max_pages, tests)
-                    .map_err(|e| format!("{e}\n(the optimized build failed on a program that checks: a toolchain bug; --no-opt builds without the optimizer)"))?;
-                write_replacing(&output, &bytes)?;
+                write_replacing(&output, &optimized(&file, max_pages, tests)?)?;
             }
             if exe {
                 // `output` holds the module; replace it with the executable
@@ -618,14 +637,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Run { file, sandbox, listen, allow_connect, allow_run, args } => {
-            if file.ends_with(".aipl") {
-                return Err(format!(
-                    "aipl run takes a compiled .wasm file, not source: run {file} with `aipl eval {file}`, or compile it first with `aipl compile {file} -o out.wasm`"
-                )
-                .into());
-            }
+        Commands::Run { file, sandbox, no_opt, max_memory, listen, allow_connect, allow_run, args } => {
             let mut cmd = std::process::Command::new(runner_path()?);
+            // a source file is compiled as `aipl compile` does, into a temporary module that aipl-run removes once
+            // it has read it; it names the program by its source, as `aipl eval` does
+            let temporary = if file.ends_with(".aipl") {
+                let max_pages = match &max_memory {
+                    Some(m) => aipl_core::compiler::memory_pages(m)?,
+                    None => aipl_core::vm::MAX_PAGES as u32,
+                };
+                let wasm = compile_source(&file, max_pages, no_opt, false)?;
+                let dir = std::env::temp_dir().join(format!("aipl_run_{}", std::process::id()));
+                fs::create_dir_all(&dir)?;
+                let module_path = dir.join("program.wasm");
+                fs::write(&module_path, &wasm)?;
+                cmd.args(["--temporary", "--name", &file]);
+                Some(module_path)
+            } else {
+                None
+            };
             if sandbox {
                 cmd.arg("--sandbox");
             }
@@ -638,8 +668,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for p in &allow_run {
                 cmd.arg("--allow-run").arg(p);
             }
-            let status = cmd.arg(&file).args(&args).status()?;
-            std::process::exit(status.code().unwrap_or(1));
+            let status = cmd.arg(temporary.as_deref().map_or(Path::new(&file), |p| p)).args(&args).status();
+            if let Some(dir) = temporary.as_deref().and_then(Path::parent) {
+                let _ = fs::remove_dir_all(dir);
+            }
+            std::process::exit(status?.code().unwrap_or(1));
         }
         Commands::Watch { file, test, max_runs, args } => {
             let me = std::env::current_exe().map_err(|e| e.to_string())?;
