@@ -24,7 +24,7 @@ by how soon a newcomer meets each item. Sizes are rough: **S** days, **M** a wee
 
 ## 1. The first hour
 
-1. **`aipl run FILE.aipl` the same everywhere.** *Built 2026-11-04 (not yet released).* The Rust command now compiles a
+1. **`aipl run FILE.aipl` the same everywhere.** *Built, in 0.2.1.* The Rust command now compiles a
    source file and runs it, takes `--no-opt` and `--max-memory`, and takes the program's arguments with or without a `--`,
    as the self-hosted command does (`aipl_run_takes_a_source_file_as_it_takes_a_module`, tests/test_runner.rs). Left:
    compare the two commands' `run` on the whole example corpus in tests/test_bootstrap.rs, as `compile` is.

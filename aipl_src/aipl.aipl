@@ -115,7 +115,7 @@
     (let n:i32 (call os.arg_count))
     (when (lt n 2) (return (call usage)))
     (let cmd:str.Bytes (call arg 1))
-    (when (call str.is cmd "--version") (call io.println "aipl 0.2.0") (return 0))
+    (when (call str.is cmd "--version") (call io.println "aipl 0.2.1") (return 0))
     (when (call str.is cmd "doc") (return (call doc.command 2)))
     (when (call str.is cmd "verify") (return (call verify n)))
     (when (call str.is cmd "test") (return (call testcmd.command 2)))

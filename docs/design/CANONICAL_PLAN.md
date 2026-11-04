@@ -56,7 +56,7 @@ tools/make_kit.sh):
 - `aipl --version` prints `aipl 0.1.0 (d7a02a9)` from the Rust command
   (build.rs records the commit). tools/make_kit.sh puts the same line at
   the top of the kit's three docs and checks it against the kit's
-  `aipl --version`. The self-hosted command still prints `aipl 0.2.0`
+  `aipl --version`. The self-hosted command still prints `aipl 0.2.1`
   (tests/test_bootstrap.rs compares the two): a compiled program cannot
   know its commit without a build step, and the kit's `aipl` is the Rust
   command anyway. Revisit when the Rust command is retired.
