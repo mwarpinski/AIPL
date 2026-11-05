@@ -408,6 +408,42 @@ fn an_error_shows_the_line_it_is_about() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Every .aipl file under `dir`, sorted.
+fn aipl_files(dir: &Path, out: &mut Vec<String>) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+    entries.sort();
+    for p in entries {
+        if p.is_dir() {
+            aipl_files(&p, out);
+        } else if p.extension().is_some_and(|e| e == "aipl") {
+            out.push(p.strip_prefix(root()).unwrap().to_string_lossy().to_string());
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn aipl_lint_says_the_same_in_both_commands() {
+    let dir = scratch("bootstrap_lint");
+    let aipl = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &aipl);
+    // the project's own source, which holds a finding of most rules, and its examples
+    let mut files = Vec::new();
+    for d in ["aipl_src", "examples", "benchmarks"] {
+        aipl_files(&root().join(d), &mut files);
+    }
+    assert!(files.len() > 50, "{} files", files.len());
+    let rust = run(Command::new(AIPL).arg("lint").args(&files));
+    let own = run(Command::new(&aipl).arg("lint").args(&files));
+    let (rust_out, own_out) = (String::from_utf8_lossy(&rust.stdout).to_string(), String::from_utf8_lossy(&own.stdout).to_string());
+    assert!(rust_out.contains("warning["), "the project's source has findings");
+    assert_eq!(rust.status.code(), own.status.code());
+    assert_eq!(String::from_utf8_lossy(&rust.stderr), String::from_utf8_lossy(&own.stderr));
+    assert!(rust_out == own_out, "aipl lint differs between the Rust command and the aipl command; diff the two outputs");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native seed)")]

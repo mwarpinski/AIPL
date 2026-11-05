@@ -14,6 +14,7 @@ aipl compile prog.aipl -o prog.wasm         # build it
 aipl-run prog.wasm < input.txt              # run it (standard input and output as usual)
 aipl test prog.aipl                         # run the (test ...) items in it
 aipl doc --find WORD                        # look for a library function before writing one
+aipl lint prog.aipl                         # code that is legal but probably a mistake
 ```
 
 `aipl run prog.aipl ARG...` compiles a source file and runs it; `aipl run prog.wasm ARG...` is the same runner on a compiled module. `aipl`
@@ -165,6 +166,29 @@ module's functions with their exact parameters and what they do; `aipl doc
 text.fields` shows one; `aipl doc prog.aipl` does the same for your own file
 (`--private` adds the private items). Look here before guessing a name or a
 signature.
+
+**`aipl lint FILE...`** points at code that compiles but is probably a
+mistake, or goes against how AIPL is written, and exits 1 if it finds any:
+
+```
+prog.aipl: 5:10: warning[unused-variable]: variable 'total' is never read
+  5 |     (let total:i32 0)
+    |          ^
+```
+
+It reads the file as you wrote it (it runs no checker and resolves no
+imports, so it works on a file that does not compile yet). The rules:
+`unused-variable`, `unused-parameter`, `unused-function` (private, and
+nothing in the file names it), `unused-import`, `unreachable-code` (after a
+`return`, `break`, `continue`, or `abort`), `leaky-in-loop` (`format` or
+`str.concat` in a loop makes a `str` every turn that nothing frees; use
+`format_to` or a `buf`), `redundant-bool` (`(eq x true)`, `(not (not x))`,
+`(if c true false)`), `empty-else` (`(if c x (block))` is `(when c x)`), and
+`naming` (functions in snake_case, types capitalised, constants in
+capitals). A name that starts with `_` is never reported. To keep a finding,
+write `;; lint:allow RULE` (or `lint:allow all`) on the line above it or at
+the end of its line. A function that only the host calls by name (a test
+harness's entry point) is not `(pub)`, so it needs the comment too.
 
 **`aipl watch FILE`** runs the file again each time it, or a file it
 imports, changes (`--test` runs its tests instead).

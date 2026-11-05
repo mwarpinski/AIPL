@@ -1,0 +1,493 @@
+;; lint: aipl lint FILE.aipl... finds code that is legal but probably a mistake, or that goes against how AIPL is
+;; written. It reads each file as the S-expressions it is (the tokenizer and tree of compiler.aipl), before any
+;; sugar is lowered, so it sees `when`, `format`, `println`, `(pub)` and constants as the programmer wrote them. It
+;; resolves no imports and runs no checker: it finds what the checker lets through. The Rust command (src/main.rs)
+;; runs this file the way it runs doc.aipl; the self-hosted aipl includes it.
+;;
+;;   prog.aipl: 4:5: warning[unused-variable]: variable 'total' is never read
+;;
+;; A finding is silenced by `;; lint:allow RULE` (or `lint:allow all`) on the line above it or at the end of its
+;; line. A name that begins with `_` is not meant to be read or called.
+;;
+;; Rules:
+;;   unused-variable    a (let ...) whose name is never read (a (set! ...) is not a read)
+;;   unused-parameter   a parameter that is never read
+;;   unused-function    a function without (pub) that nothing in the file names
+;;   unused-import      an (import ...) of which nothing in the file is used
+;;   unreachable-code   a form after a return, break, continue or abort in the same body
+;;   leaky-in-loop      format or str.concat in a loop: every turn makes a str that nothing frees
+;;   redundant-bool     (eq x true), (not (not x)), (if c true false)
+;;   empty-else         (if c x (block)) is (when c x)
+;;   naming             functions in snake_case, types begin with a capital, constants in capitals
+(module lint
+  (import alloc)
+  (import buf)
+  (import compiler)
+  (import excerpt)
+  (import front)
+  (import io)
+  (import checker)
+  (import map)
+  (import option)
+  (import os)
+  (import parser)
+  (import str)
+  (import vec)
+
+  ;; A finding: where, which rule, what to say.
+  (struct Found [(read at:i32) (read rule:str.Bytes) (read text:str.Bytes)])
+
+  ;; A name a function declares, and where.
+  (struct Decl [(read at:i32) (read name:str.Bytes) (read param:bool)])
+
+  ;; The file being read, what has been found, and what one function's walk collects: its declared names, its read
+  ;; names and how many loops deep the walk is. counts and prefixes are for the whole file: how often each symbol
+  ;; occurs, and which module names (the text before a first `.`) are used.
+  (struct St [(read text:str.Bytes)
+              (read found:(ptr (vec.Vec (ptr Found))))
+              (read decls:(ptr (vec.Vec (ptr Decl))))
+              (read reads:(ptr (map.Map str.Bytes bool)))
+              (read counts:(ptr (map.Map str.Bytes i32)))
+              (read prefixes:(ptr (map.Map str.Bytes bool)))
+              (read loops:i32)])
+
+  (fn none [] -> str.Bytes (call str.from_str ""))
+
+  (fn report [st:(ptr St) at:i32 rule:str text:str.Bytes] -> void
+    (let f:(ptr Found) (new Found (call alloc.default) [at:at rule:(call str.from_str rule) text:text]))
+    (call (vec.push (ptr Found)) (get st St.found) f))
+
+  ;; "prefix 'name' suffix" as one text.
+  (fn quoted [prefix:str name:str.Bytes suffix:str] -> str.Bytes
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_str b prefix)
+    (call buf.push_str b "'")
+    (call buf.push_bytes b name)
+    (call buf.push_str b "'")
+    (call buf.push_str b suffix)
+    (call buf.bytes b))
+
+  ;; ===== reading the tree =====
+
+  (fn is_null [n:(ptr compiler.Node)] -> bool (eq n (ptr.null compiler.Node)))
+
+  (fn is_kind [n:(ptr compiler.Node) k:compiler.Kind] -> bool
+    (and (not (call is_null n)) (eq (get n compiler.Node.kind) k)))
+
+  (fn is_group [n:(ptr compiler.Node)] -> bool (call is_kind n compiler.Kind.paren))
+
+  ;; The text of an atom (a symbol, or what is between a string's quotes); empty for anything else.
+  (fn text_of [st:(ptr St) n:(ptr compiler.Node)] -> str.Bytes
+    (if (or (call is_kind n compiler.Kind.symbol) (call is_kind n compiler.Kind.string))
+        (call str.slice (get st St.text) (get n compiler.Node.a) (get n compiler.Node.b))
+        (call none)))
+
+  ;; The nth child of a group (0 is the head), or null.
+  (fn child [n:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
+    (when (not (or (call is_kind n compiler.Kind.paren) (call is_kind n compiler.Kind.bracket))) (return (ptr.null compiler.Node)))
+    (let c:(ptr compiler.Node) (get n compiler.Node.first))
+    (for k 0 i
+      (when (call is_null c) (return c))
+      (set! c (get c compiler.Node.next)))
+    c)
+
+  (fn count_of [n:(ptr compiler.Node)] -> i32
+    (if (or (call is_kind n compiler.Kind.paren) (call is_kind n compiler.Kind.bracket)) (get n compiler.Node.b) 0))
+
+  ;; The text of a group's head when it is a symbol, else empty.
+  (fn head [st:(ptr St) n:(ptr compiler.Node)] -> str.Bytes
+    (if (call is_group n)
+        (block
+          (let h:(ptr compiler.Node) (get n compiler.Node.first))
+          (if (call is_kind h compiler.Kind.symbol) (call text_of st h) (call none)))
+        (call none)))
+
+  (fn head_is [st:(ptr St) n:(ptr compiler.Node) word:str] -> bool
+    (call str.is (call head st n) word))
+
+  ;; True when some byte of name is an upper-case letter.
+  (fn has_upper [name:str.Bytes] -> bool
+    (for k 0 (get name str.Bytes.len)
+      (let ch:i32 (call str.byte_at name k))
+      (when (and (gte ch 65) (lte ch 90)) (return true)))
+    false)
+
+  (fn starts_upper [name:str.Bytes] -> bool
+    (and (gt (get name str.Bytes.len) 0)
+         (and (gte (call str.byte_at name 0) 65) (lte (call str.byte_at name 0) 90))))
+
+  ;; True when name has no lower-case letter.
+  (fn all_capitals [name:str.Bytes] -> bool
+    (for k 0 (get name str.Bytes.len)
+      (let ch:i32 (call str.byte_at name k))
+      (when (and (gte ch 97) (lte ch 122)) (return false)))
+    true)
+
+  (fn underscore_first [name:str.Bytes] -> bool
+    (and (gt (get name str.Bytes.len) 0) (eq (call str.byte_at name 0) 95)))
+
+  (fn ident_byte [c:i32] -> bool
+    (or (and (gte c 97) (lte c 122))
+        (or (and (gte c 65) (lte c 90))
+            (or (and (gte c 48) (lte c 57)) (or (eq c 95) (eq c 46))))))
+
+  (fn ident_start [c:i32] -> bool
+    (or (and (gte c 97) (lte c 122)) (or (and (gte c 65) (lte c 90)) (eq c 95))))
+
+  ;; ===== what names are used =====
+
+  (fn note_count [st:(ptr St) name:str.Bytes] -> void
+    (let _c:i32 (call (map.add str.Bytes) (get st St.counts) name 1))
+    (let dot:i32 (call str.find_byte name 46))
+    (when (gt dot 0)
+      (call (map.set str.Bytes bool) (get st St.prefixes) (call str.slice name 0 dot) true)))
+
+  ;; The identifiers in the {...} of a format string, each as a name used (in the function's reads when fn_pass, and
+  ;; else in the file's counts).
+  (fn note_string [st:(ptr St) s:str.Bytes fn_pass:bool] -> void
+    (let depth:i32 0)
+    (let i:i32 0)
+    (let n:i32 (get s str.Bytes.len))
+    (while (lt i n)
+      (let c:i32 (call str.byte_at s i))
+      (cond
+        ((eq c 123) (set! depth (+ depth 1)) (set! i (+ i 1)))
+        ((eq c 125) (when (gt depth 0) (set! depth (- depth 1))) (set! i (+ i 1)))
+        ((and (gt depth 0) (call ident_start c))
+         (let from:i32 i)
+         (while (and (lt i n) (call ident_byte (call str.byte_at s i)))
+           (set! i (+ i 1)))
+         (let word:str.Bytes (call str.slice s from (- i from)))
+         (if fn_pass
+             (call (map.set str.Bytes bool) (get st St.reads) word true)
+             (call note_count st word)))
+        (else (set! i (+ i 1))))))
+
+  ;; Every symbol of the tree under n counted, and each module name it uses.
+  (fn count_names [st:(ptr St) n:(ptr compiler.Node)] -> void
+    (cond
+      ((call is_kind n compiler.Kind.symbol) (call note_count st (call text_of st n)))
+      ((call is_kind n compiler.Kind.string) (call note_string st (call text_of st n) false))
+      ((or (call is_kind n compiler.Kind.paren) (call is_kind n compiler.Kind.bracket))
+       (let c:(ptr compiler.Node) (get n compiler.Node.first))
+       (while (not (call is_null c))
+         (call count_names st c)
+         (set! c (get c compiler.Node.next))))
+      (else (block))))
+
+  ;; ===== a function =====
+
+  ;; True when n is a form that stops the code after it in its body.
+  (fn stops [st:(ptr St) n:(ptr compiler.Node)] -> bool
+    (let h:str.Bytes (call head st n))
+    (or (call str.is h "return") (or (call str.is h "break") (or (call str.is h "continue") (call str.is h "abort")))))
+
+  ;; True when the children of this form are a body: one form after another.
+  (fn is_body [st:(ptr St) n:(ptr compiler.Node)] -> bool
+    (let h:str.Bytes (call head st n))
+    (or (call str.is h "fn")
+    (or (call str.is h "block")
+    (or (call str.is h "unsafe")
+    (or (call str.is h "when")
+    (or (call str.is h "while")
+    (or (call str.is h "for")
+    (or (call str.is h "loop")
+    (or (call str.is h "counted_loop")
+    (or (call str.is h "test")
+    (or (call str.is h "else")
+    (or (call str.is h "ok")
+    (or (call str.is h "err")
+        ;; a clause of a cond: ((condition) forms...)
+        (call is_group (get n compiler.Node.first)))))))))))))))
+
+  (fn is_loop [st:(ptr St) n:(ptr compiler.Node)] -> bool
+    (let h:str.Bytes (call head st n))
+    (or (call str.is h "while") (or (call str.is h "for") (or (call str.is h "loop") (call str.is h "counted_loop")))))
+
+  (fn is_bool_atom [n:(ptr compiler.Node)] -> bool (call is_kind n compiler.Kind.bool))
+
+  ;; The checks that look at one form, before its children are read.
+  (fn check_form [st:(ptr St) n:(ptr compiler.Node)] -> void
+    (let h:str.Bytes (call head st n))
+    (let at:i32 (get n compiler.Node.pos))
+    (cond
+      ((and (call str.is h "format") (gt (get st St.loops) 0))
+       (call report st at "leaky-in-loop" (call str.from_str "format makes a new str on every turn of the loop, and nothing frees it; write into a buf with format_to")))
+      ((and (call str.is h "call") (and (gt (get st St.loops) 0) (call str.is (call text_of st (call child n 1)) "str.concat")))
+       (call report st at "leaky-in-loop" (call str.from_str "str.concat makes a new str on every turn of the loop, and nothing frees it; push onto a buf instead")))
+      ((and (or (call str.is h "eq") (call str.is h "neq")) (eq (call count_of n) 3))
+       (when (or (call is_bool_atom (call child n 1)) (call is_bool_atom (call child n 2)))
+         (call report st at "redundant-bool" (call str.from_str "comparing with true or false; use the condition itself (or `not`)"))))
+      ((and (call str.is h "not") (eq (call count_of n) 2))
+       (when (call head_is st (call child n 1) "not")
+         (call report st at "redundant-bool" (call str.from_str "`not` of `not` is the condition itself"))))
+      ((call str.is h "if")
+       (when (eq (call count_of n) 4)
+         (let t:(ptr compiler.Node) (call child n 2))
+         (let e:(ptr compiler.Node) (call child n 3))
+         (when (and (call is_bool_atom t) (call is_bool_atom e))
+           (call report st at "redundant-bool" (call str.from_str "an `if` that gives true or false is the condition itself (or `not`)")))
+         (when (and (call head_is st e "block") (eq (call count_of e) 1))
+           (call report st (get e compiler.Node.pos) "empty-else" (call str.from_str "the else is empty; write (when condition ...)")))))
+      (else (block)))
+    (when (call is_body st n)
+      (let c:(ptr compiler.Node) (get n compiler.Node.first))
+      (while (not (call is_null c))
+        (when (and (call stops st c) (not (call is_null (get c compiler.Node.next))))
+          (call report st (get c compiler.Node.pos) "unreachable-code" (call str.from_str "the code after this is never reached")))
+        (set! c (get c compiler.Node.next)))))
+
+  ;; The names a (let ...) declares are not reads; the target of a (set! ...) is not one either. Index of the
+  ;; child to leave out, or -1.
+  (fn skipped [st:(ptr St) n:(ptr compiler.Node)] -> i32
+    (if (or (call head_is st n "let") (call head_is st n "set!")) 1 -1))
+
+  ;; Every form under n: its checks, its declarations and its reads.
+  (fn walk [st:(ptr St) n:(ptr compiler.Node)] -> void
+    (cond
+      ((call is_kind n compiler.Kind.symbol) (call (map.set str.Bytes bool) (get st St.reads) (call text_of st n) true))
+      ((call is_kind n compiler.Kind.string) (call note_string st (call text_of st n) true))
+      ((or (call is_kind n compiler.Kind.paren) (call is_kind n compiler.Kind.bracket))
+       (when (call is_group n) (call check_form st n))
+       (let skip:i32 (call skipped st n))
+       (let loop_in:bool (call is_loop st n))
+       (when loop_in (put st St.loops (+ (get st St.loops) 1)))
+       (let c:(ptr compiler.Node) (get n compiler.Node.first))
+       (let i:i32 0)
+       (while (not (call is_null c))
+         (if (eq i skip)
+             (when (and (call head_is st n "let") (call is_kind c compiler.Kind.symbol))
+               (let d:(ptr Decl) (new Decl (call alloc.default) [at:(get c compiler.Node.pos) name:(call text_of st c) param:false]))
+               (call (vec.push (ptr Decl)) (get st St.decls) d))
+             (call walk st c))
+         (set! c (get c compiler.Node.next))
+         (set! i (+ i 1)))
+       (when loop_in (put st St.loops (- (get st St.loops) 1))))
+      (else (block))))
+
+  ;; The name of a function: the symbol after fn, or the first in (name T...).
+  (fn fn_name_node [f:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (let c:(ptr compiler.Node) (call child f 1))
+    (if (call is_group c) (get c compiler.Node.first) c))
+
+  (fn has_pub [st:(ptr St) f:(ptr compiler.Node)] -> bool
+    (let c:(ptr compiler.Node) (get f compiler.Node.first))
+    (while (not (call is_null c))
+      (when (and (call head_is st c "pub") (eq (call count_of c) 1)) (return true))
+      (set! c (get c compiler.Node.next)))
+    false)
+
+  ;; The findings about one fn, or one test (item), and whether it is a direct item of the module.
+  (fn lint_fn [st:(ptr St) f:(ptr compiler.Node) direct:bool] -> void
+    (let a:alloc.Allocator (call alloc.default))
+    (call (vec.clear (ptr Decl)) (get st St.decls))
+    (put st St.reads (call (map.make str.Bytes bool) a 16))
+    (put st St.loops 0)
+    (let is_fn:bool (call head_is st f "fn"))
+    (let params:(ptr compiler.Node) (ptr.null compiler.Node))
+    (when is_fn
+      (let nm:(ptr compiler.Node) (call fn_name_node f))
+      (let name:str.Bytes (call text_of st nm))
+      (when (call has_upper name)
+        (call report st (get nm compiler.Node.pos) "naming" (call quoted "function " name " should be written in snake_case")))
+      (when (and direct (and (not (call has_pub st f))
+                             (and (not (call underscore_first name))
+                                  (and (not (call str.is name "main"))
+                                       (lte (call (map.get_or str.Bytes i32) (get st St.counts) name 0) 1)))))
+        (call report st (get nm compiler.Node.pos) "unused-function" (call quoted "function " name " is private and nothing names it")))
+      ;; the parameters: the symbols in the first [...] that are followed by a colon
+      (let c:(ptr compiler.Node) (get f compiler.Node.first))
+      (while (and (not (call is_null c)) (not (call is_kind c compiler.Kind.bracket)))
+        (set! c (get c compiler.Node.next)))
+      (set! params c)
+      (when (not (call is_null params))
+        (let p:(ptr compiler.Node) (get params compiler.Node.first))
+        (while (not (call is_null p))
+          (when (and (call is_kind p compiler.Kind.symbol) (call is_kind (get p compiler.Node.next) compiler.Kind.colon))
+            (let d:(ptr Decl) (new Decl a [at:(get p compiler.Node.pos) name:(call text_of st p) param:true]))
+            (call (vec.push (ptr Decl)) (get st St.decls) d))
+          (set! p (get p compiler.Node.next)))))
+    ;; the body and clauses: everything but the parameter list
+    (call check_form st f)
+    (let c:(ptr compiler.Node) (get f compiler.Node.first))
+    (while (not (call is_null c))
+      (when (neq c params) (call walk st c))
+      (set! c (get c compiler.Node.next)))
+    (let decls:(ptr (vec.Vec (ptr Decl))) (get st St.decls))
+    (for k 0 (call (vec.len (ptr Decl)) decls)
+      (let d:(ptr Decl) (call (vec.at (ptr Decl)) decls k))
+      (let n:str.Bytes (get d Decl.name))
+      (when (and (not (call underscore_first n)) (not (call (map.has str.Bytes bool) (get st St.reads) n)))
+        (if (get d Decl.param)
+            (call report st (get d Decl.at) "unused-parameter" (call quoted "parameter " n " is never read"))
+            (call report st (get d Decl.at) "unused-variable" (call quoted "variable " n " is never read"))))))
+
+  ;; (import path) or (import path as alias): used when some symbol begins with its name and a `.`.
+  (fn lint_import [st:(ptr St) item:(ptr compiler.Node)] -> void
+    (let path:str.Bytes (call text_of st (call child item 1)))
+    (let used:str.Bytes path)
+    (let slash:i32 (call str.rfind path (call str.from_str "/")))
+    (when (gte slash 0) (set! used (call str.slice path (+ slash 1) (- (- (get path str.Bytes.len) slash) 1))))
+    (when (and (eq (call count_of item) 4) (call str.is (call text_of st (call child item 2)) "as"))
+      (set! used (call text_of st (call child item 3))))
+    (when (not (call (map.has str.Bytes bool) (get st St.prefixes) used))
+      (call report st (get item compiler.Node.pos) "unused-import" (call quoted "import " used " is never used"))))
+
+  ;; (struct|enum|union Name ...), also written (struct (Name T) ...).
+  (fn lint_type [st:(ptr St) item:(ptr compiler.Node)] -> void
+    (let nm:(ptr compiler.Node) (call fn_name_node item))
+    (let name:str.Bytes (call text_of st nm))
+    (when (and (gt (get name str.Bytes.len) 0) (not (call starts_upper name)))
+      (call report st (get nm compiler.Node.pos) "naming" (call quoted "type " name " should begin with a capital letter"))))
+
+  (fn lint_const [st:(ptr St) item:(ptr compiler.Node)] -> void
+    (let nm:(ptr compiler.Node) (call child item 1))
+    (let name:str.Bytes (call text_of st nm))
+    (when (and (gt (get name str.Bytes.len) 0) (not (call all_capitals name)))
+      (call report st (get nm compiler.Node.pos) "naming" (call quoted "constant " name " should be written in capitals"))))
+
+  (fn lint_item [st:(ptr St) item:(ptr compiler.Node) direct:bool] -> void
+    (cond
+      ((or (call head_is st item "fn") (call head_is st item "test")) (call lint_fn st item direct))
+      ((call head_is st item "import") (when direct (call lint_import st item)))
+      ((or (call head_is st item "struct") (or (call head_is st item "enum") (call head_is st item "union"))) (call lint_type st item))
+      ((call head_is st item "const") (call lint_const st item))
+      ((call head_is st item "impl")
+       (let c:(ptr compiler.Node) (get item compiler.Node.first))
+       (while (not (call is_null c))
+         (when (call is_group c) (call lint_item st c false))
+         (set! c (get c compiler.Node.next))))
+      (else (block))))
+
+  (fn lint_module [st:(ptr St) root:(ptr compiler.Node)] -> void
+    (when (not (call head_is st root "module")) (return))
+    ;; first the whole file's names (outside the imports), then each item
+    (let c:(ptr compiler.Node) (call child root 2))
+    (while (not (call is_null c))
+      (when (not (call head_is st c "import")) (call count_names st c))
+      (set! c (get c compiler.Node.next)))
+    (set! c (call child root 2))
+    (while (not (call is_null c))
+      (call lint_item st c true)
+      (set! c (get c compiler.Node.next))))
+
+  ;; ===== reporting =====
+
+  (fn by_position [a:(ptr Found) b:(ptr Found)] -> i32
+    (cond ((lt (get a Found.at) (get b Found.at)) -1) ((gt (get a Found.at) (get b Found.at)) 1) (else 0)))
+
+  ;; The index of the start of the line that holds offset `at`.
+  (fn line_start [text:str.Bytes at:i32] -> i32
+    (let k:i32 at)
+    (while (and (gt k 0) (neq (call str.byte_at text (- k 1)) 10))
+      (set! k (- k 1)))
+    k)
+
+  ;; The end (the newline, or the end of the text) of the line that holds offset `at`.
+  (fn line_end [text:str.Bytes at:i32] -> i32
+    (let k:i32 at)
+    (let n:i32 (get text str.Bytes.len))
+    (while (and (lt k n) (neq (call str.byte_at text k) 10))
+      (set! k (+ k 1)))
+    k)
+
+  ;; True when `line` asks to leave `rule` alone.
+  (fn allows [line:str.Bytes rule:str.Bytes] -> bool
+    (let i:i32 (call str.find line (call str.from_str "lint:allow")))
+    (when (lt i 0) (return false))
+    ;; the words after lint:allow (ten bytes)
+    (let rest:str.Bytes (call str.slice line (+ i 10) (- (- (get line str.Bytes.len) i) 10)))
+    (or (call str.contains rest rule) (call str.contains rest (call str.from_str "all"))))
+
+  ;; True when a lint:allow on the line of `at`, or the line before, names the rule.
+  (fn silenced [text:str.Bytes f:(ptr Found)] -> bool
+    (let at:i32 (get f Found.at))
+    (let s:i32 (call line_start text at))
+    (let e:i32 (call line_end text at))
+    (when (call allows (call str.slice text s (- e s)) (get f Found.rule)) (return true))
+    (when (lte s 0) (return false))
+    (let p:i32 (call line_start text (- s 1)))
+    (call allows (call str.slice text p (- (- s 1) p)) (get f Found.rule)))
+
+  ;; The findings of one file as `path: LINE:COL: warning[rule]: text` lines in out; how many, or -1 for a file
+  ;; that is not read or does not tokenize.
+  (fn lint_file [path:str.Bytes out:(ptr buf.Buf)] -> i32
+    (let text:str.Bytes (match_result (call io.read_path path)
+                          (ok t t)
+                          (err e (block
+                                   (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+                                   (call buf.push_str m "aipl lint: cannot read ")
+                                   (call buf.push_bytes m path)
+                                   (call buf.push_byte m 10)
+                                   (let _w:i32 (call buf.write m 2))
+                                   (return -1)))))
+    (let src:i32 (call str.addr text))
+    (let len:i32 (get text str.Bytes.len))
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
+    (let n:i32 (call compiler.tokenize src len toks))
+    (when (and (gt n 0) (eq (get (call compiler.token_at toks (- n 1)) compiler.Token.kind) compiler.Kind.bad))
+      ;; the parser words the tokenizer's complaint
+      (let r:(ptr parser.Parsed) (call parser.parse_tokens src toks n))
+      (let shown:(ptr buf.Buf) (call front.render src (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))
+      (call buf.push_bytes out path)
+      (call buf.push_str out ": ")
+      (call buf.push_bytes out (call buf.bytes shown))
+      (call buf.push_byte out 10)
+      (return -1))
+    (let nodes:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ n 2)))))
+    (let root:(ptr compiler.Node) (call compiler.parse_ast toks n nodes))
+    (let a:alloc.Allocator (call alloc.default))
+    (let st:(ptr St) (new St a [text:text
+                                found:(call (vec.make (ptr Found)) a 16)
+                                decls:(call (vec.make (ptr Decl)) a 8)
+                                reads:(call (map.make str.Bytes bool) a 16)
+                                counts:(call (map.make str.Bytes i32) a 64)
+                                prefixes:(call (map.make str.Bytes bool) a 16)
+                                loops:0]))
+    (call lint_module st root)
+    (let found:(ptr (vec.Vec (ptr Found))) (get st St.found))
+    (call (vec.sort_by (ptr Found)) found (ref by_position))
+    (let shown:i32 0)
+    (for k 0 (call (vec.len (ptr Found)) found)
+      (let f:(ptr Found) (call (vec.at (ptr Found)) found k))
+      (when (not (call silenced text f))
+        (let lc:(ptr compiler.LineCol) (call compiler.line_col src (get f Found.at)))
+        (call buf.push_bytes out path)
+        (call buf.push_str out ": ")
+        (call buf.push_int out (get lc compiler.LineCol.line))
+        (call buf.push_byte out 58)
+        (call buf.push_int out (get lc compiler.LineCol.col))
+        (call buf.push_str out ": warning[")
+        (call buf.push_bytes out (get f Found.rule))
+        (call buf.push_str out "]: ")
+        (call buf.push_bytes out (get f Found.text))
+        (call buf.push_byte out 10)
+        (set! shown (+ shown 1))))
+    shown)
+
+  (fn usage [] -> i32
+    (call io.eprintln "usage: aipl lint FILE.aipl...")
+    2)
+
+  (fn command [first:i32] -> i32 (pub)
+    (when (gte first (call os.arg_count)) (return (call usage)))
+    (let a:alloc.Allocator (call alloc.default))
+    (let out:(ptr buf.Buf) (call buf.make a 1024))
+    (let total:i32 0)
+    (let broken:i32 0)
+    (for i first (call os.arg_count)
+      (let x:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str "")))
+      (when (or (call str.is x "--help") (call str.is x "-h")) (return (call usage)))
+      (let n:i32 (call lint_file x out))
+      (if (lt n 0) (set! broken (+ broken 1)) (set! total (+ total n))))
+    (let shown:(ptr buf.Buf) (call excerpt.add a (call buf.bytes out)))
+    (let _w:i32 (call buf.write shown 1))
+    (when (and (eq total 0) (eq broken 0))
+      (call io.println "lint: no findings"))
+    (if (or (gt total 0) (gt broken 0)) 1 0))
+
+  (fn main [] -> i32 (call command 1))
+
+  ;; WASI command entry point: runs main and exits with its status.
+  (fn _start [] -> void
+    (sys.exit (call main))))

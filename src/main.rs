@@ -182,6 +182,12 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Find code that is legal but probably a mistake: aipl lint FILE.aipl...
+    /// (aipl_src/lint.aipl); exit 1 if it finds anything
+    Lint {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Run an AIPL test entrypoint and report pass/fail via the process exit
     /// code. The entrypoint owns all test/reporting logic (via sys.print) and
     /// must return an i32 failure count: 0 = every group passed, N = N
@@ -680,6 +686,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Doc { args } => {
             std::process::exit(aipl_core::tools::run("doc.aipl", "aipl doc", &args)?);
+        }
+        Commands::Lint { args } => {
+            std::process::exit(aipl_core::tools::run("lint.aipl", "aipl lint", &args)?);
         }
         Commands::Verify { file } => {
             // the file as a test build reads it, so that a mistake in a (test ...) is found here and not by
