@@ -347,7 +347,7 @@ fn main() {
         .and_then(|t| t.join().map_err(|_| "aipl: command thread panicked".to_string()))
         .and_then(|r| r);
     if let Err(e) = result {
-        eprintln!("Error: {e}");
+        eprintln!("Error: {}", aipl_core::excerpt::add(&e));
         std::process::exit(1);
     }
 }

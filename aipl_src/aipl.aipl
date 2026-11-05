@@ -34,6 +34,7 @@
   (import native/hostnative)
   (import os)
   (import io)
+  (import excerpt)
   (import fs)
   (import str)
   (import fmt)
@@ -69,8 +70,7 @@
 
   (fn fail_bytes [prefix:str b:str.Bytes] -> i32
     (call io.write_str 2 "Error: ")
-    (call io.write_str 2 prefix)
-    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len)))
+    (call excerpt.write 2 prefix b)
     (call io.eprintln "")
     1)
 

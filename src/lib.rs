@@ -9,6 +9,7 @@ pub mod sexpr;
 pub mod generics;
 pub mod consts;
 pub mod evalexpr;
+pub mod excerpt;
 pub mod formats;
 pub mod leaks;
 pub mod library;

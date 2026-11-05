@@ -329,6 +329,74 @@ fn both_commands_build_the_same_executable_for_a_host_name_grant() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An error shows the line it is about, with a caret under its column (src/excerpt.rs, aipl_src/excerpt.aipl): the
+/// same bytes from the Rust command and the AIPL one.
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
+fn an_error_shows_the_line_it_is_about() {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
+    let dir = scratch("bootstrap_excerpt");
+    let aipl = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &aipl);
+    let long = format!("(module long (fn main [] -> i32 (return y)) {})\n", (0..30).map(|i| format!("(fn f{i} [] -> i32 0)")).collect::<Vec<_>>().join(" "));
+    let cases: Vec<(&str, String, String)> = vec![
+        (
+            "plain",
+            "(module plain\n  (fn main [] -> i32\n    (return y)))\n".into(),
+            "Error: plain.aipl: 3:13: Undefined variable 'y'\n  3 |     (return y)))\n    |             ^\n".into(),
+        ),
+        (
+            "two",
+            "(module two\n  (fn a [] -> i32 (return y))\n  (fn main [] -> i32 (return z)))\n".into(),
+            "Error: two.aipl: 2:27: Undefined variable 'y'\n  2 |   (fn a [] -> i32 (return y))\n    |                           ^\ntwo.aipl: 3:30: Undefined variable 'z'\n  3 |   (fn main [] -> i32 (return z)))\n    |                              ^\n".into(),
+        ),
+        // a tab is one column, shown as one space; a carriage return is not shown
+        (
+            "tabs",
+            "(module tabs\n\t(fn main [] -> i32\n\t\t(return y)))\n".into(),
+            "Error: tabs.aipl: 3:11: Undefined variable 'y'\n  3 |   (return y)))\n    |           ^\n".into(),
+        ),
+        (
+            "crlf",
+            "(module crlf\r\n  (fn main [] -> i32\r\n    (return y)))\r\n".into(),
+            "Error: crlf.aipl: 3:13: Undefined variable 'y'\n  3 |     (return y)))\n    |             ^\n".into(),
+        ),
+        // the gutter is as wide as the line number
+        (
+            "tall",
+            format!("(module tall\n  (fn main [] -> i32\n{}    (return zz)))\n", (0..10).map(|i| format!("    (let v{i}:i32 {i})\n")).collect::<String>()),
+            "Error: tall.aipl: 13:13: Undefined variable 'zz'\n  13 |     (return zz)))\n     |             ^\n".into(),
+        ),
+        // the end of the last line, and a bracket that is never closed
+        (
+            "open",
+            "(module open\n  (fn main [] -> i32 (return 1) (return 2)\n".into(),
+            "Error: open.aipl: 2:3: this bracket is never closed\n  2 |   (fn main [] -> i32 (return 1) (return 2)\n    |   ^\n".into(),
+        ),
+        // a line over 200 bytes is not shown
+        ("long", long, "Error: long.aipl: 1:41: Undefined variable 'y'\n".into()),
+    ];
+    for (name, source, want) in &cases {
+        let file = format!("{name}.aipl");
+        std::fs::write(dir.join(&file), source).unwrap();
+        // run() works from the repository root, so the file is named from there
+        let rel = format!("target/bootstrap_excerpt/{file}");
+        let want = want.replace(&file, &rel);
+        for command in [Path::new(AIPL), aipl.as_path()] {
+            let o = run(Command::new(command).args(["verify", &rel]));
+            assert_eq!(o.status.code(), Some(1), "{name}: {}", command.display());
+            assert_eq!(text(&o.stderr), want, "{name}: {}", command.display());
+        }
+    }
+    // a file that is not there, and an error that names no place, get no excerpt
+    for command in [Path::new(AIPL), aipl.as_path()] {
+        let o = run(Command::new(command).args(["verify", "nothing_here.aipl"]));
+        assert!(!text(&o.stderr).contains(" | "), "{}", text(&o.stderr));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native seed)")]

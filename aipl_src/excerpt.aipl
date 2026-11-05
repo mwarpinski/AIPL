@@ -1,0 +1,130 @@
+;; excerpt: the source line under an error, as src/excerpt.rs prints it, byte for byte
+;; (tests/test_bootstrap.rs holds the two equal).
+;;
+;;   Error: prog.aipl: 1:30: Undefined variable 'y'
+;;     1 | (module m (fn main [] -> i32 (return y)))
+;;       |                               ^
+;;
+;; A line of a message that begins `FILE: LINE:COL: ` (the first place `: DIGITS:DIGITS: ` occurs in it) gets the
+;; excerpt when FILE can be read, LINE is in it, COL is on the line or just past its end, and the line is at most
+;; 200 bytes. Tabs show as spaces so that the caret stays under its column.
+(module excerpt
+  (import alloc)
+  (import buf)
+  (import io)
+  (import str)
+
+  ;; where a message line names a place: the file's length in the line (-1 for none), the line, and the column
+  (struct Loc [file_len:i32 line:i32 col:i32] (value))
+
+  (const LONGEST:i32 200)
+
+  ;; The index of the first byte at or after `from` that is not a digit.
+  (fn digits_end [b:str.Bytes from:i32] -> i32
+    (let n:i32 (get b str.Bytes.len))
+    (let k:i32 from)
+    (while (lt k n)
+      (let c:i32 (call str.byte_at b k))
+      (when (or (lt c 48) (gt c 57)) (return k))
+      (set! k (+ k 1)))
+    k)
+
+  ;; The decimal number in bytes from .. to - 1.
+  (fn number [b:str.Bytes from:i32 to:i32] -> i32
+    (let v:i32 0)
+    (for i from to
+      (set! v (+ (* v 10) (- (call str.byte_at b i) 48))))
+    v)
+
+  (fn locate [l:str.Bytes] -> Loc
+    (let n:i32 (get l str.Bytes.len))
+    (let i:i32 1)
+    (while (lt i n)
+      (when (and (lt (+ i 1) n) (and (eq (call str.byte_at l i) 58) (eq (call str.byte_at l (+ i 1)) 32)))
+        (let a:i32 (call digits_end l (+ i 2)))
+        (when (and (gt a (+ i 2)) (and (lte (- a (+ i 2)) 9) (and (lt a n) (eq (call str.byte_at l a) 58))))
+          (let c:i32 (call digits_end l (+ a 1)))
+          (when (and (gt c (+ a 1)) (and (lte (- c (+ a 1)) 9) (and (lt (+ c 1) n) (and (eq (call str.byte_at l c) 58) (eq (call str.byte_at l (+ c 1)) 32)))))
+            (return (make Loc [file_len:i line:(call number l (+ i 2) a) col:(call number l (+ a 1) c)])))))
+      (set! i (+ i 1)))
+    (make Loc [file_len:-1 line:0 col:0]))
+
+  (fn spaces [out:(ptr buf.Buf) n:i32] -> void
+    (for i 0 n (call buf.push_byte out 32)))
+
+  ;; The excerpt for `l`, after a newline, if there is one.
+  (fn excerpt [out:(ptr buf.Buf) l:str.Bytes] -> void
+    (let loc:Loc (call locate l))
+    (when (lt (get loc Loc.file_len) 1) (return))
+    (match_result (call io.read_path (call str.slice l 0 (get loc Loc.file_len)))
+      (ok text (call emit out text loc))
+      (err e (return))))
+
+  (fn emit [out:(ptr buf.Buf) text:str.Bytes loc:Loc] -> void
+    (let size:i32 (get text str.Bytes.len))
+    (let line:i32 (get loc Loc.line))
+    (let col:i32 (get loc Loc.col))
+    (when (lt line 1) (return))
+    ;; the start of line `line`: after the (line - 1)th newline
+    (let start:i32 0)
+    (for cur 1 line
+      (let k:i32 (call str.find_byte (call str.slice text start (- size start)) 10))
+      (when (lt k 0) (return))
+      (set! start (+ start (+ k 1))))
+    (let k:i32 (call str.find_byte (call str.slice text start (- size start)) 10))
+    (let stop:i32 (if (lt k 0) size (+ start k)))
+    (let n:i32 (- stop start))
+    (when (and (gt n 0) (eq (call str.byte_at text (- stop 1)) 13)) (set! n (- n 1)))
+    (when (or (gt n LONGEST) (or (lt col 1) (gt col (+ n 1)))) (return))
+    (call buf.push_str out "\n  ")
+    (call buf.push_int out line)
+    (call buf.push_str out " | ")
+    (for i 0 n
+      (let c:i32 (call str.byte_at text (+ start i)))
+      (call buf.push_byte out (if (eq c 9) 32 c)))
+    (call buf.push_str out "\n  ")
+    (call spaces out (call digits_of line))
+    (call buf.push_str out " | ")
+    (call spaces out (- col 1))
+    (call buf.push_str out "^"))
+
+  ;; How many decimal digits n (positive) has.
+  (fn digits_of [n:i32] -> i32
+    (let d:i32 1)
+    (let v:i32 n)
+    (while (gte v 10)
+      (set! v (/ v 10))
+      (set! d (+ d 1)))
+    d)
+
+  ;; `msg` with an excerpt after each of its lines that names a place in a readable file.
+  (fn add [a:alloc.Allocator msg:str.Bytes] -> (ptr buf.Buf) (pub)
+    (let size:i32 (get msg str.Bytes.len))
+    (let out:(ptr buf.Buf) (call buf.make a (+ size 256)))
+    (let pos:i32 0)
+    (let more:bool true)
+    (while more
+      (let k:i32 (call str.find_byte (call str.slice msg pos (- size pos)) 10))
+      (let stop:i32 (if (lt k 0) size (+ pos k)))
+      (let l:str.Bytes (call str.slice msg pos (- stop pos)))
+      (call buf.push_bytes out l)
+      (call excerpt out l)
+      (if (lt k 0)
+        (set! more false)
+        (block
+          (call buf.push_byte out 10)
+          (set! pos (+ stop 1)))))
+    out)
+
+  ;; `prefix` and `b`, with excerpts, on file descriptor `fd`.
+  (fn write [fd:i32 prefix:str b:str.Bytes] -> void (pub)
+    (let a:alloc.Allocator (call alloc.default))
+    (let whole:(ptr buf.Buf) (call buf.make a (+ (get b str.Bytes.len) 64)))
+    (call buf.push_str whole prefix)
+    (call buf.push_bytes whole b)
+    (let shown:(ptr buf.Buf) (call add a (call buf.bytes whole)))
+    (let t:str.Bytes (call buf.bytes shown))
+    (unsafe (fs.write fd (call str.addr t) (get t str.Bytes.len)))
+    (call buf.free whole)
+    (call buf.free shown))
+)
