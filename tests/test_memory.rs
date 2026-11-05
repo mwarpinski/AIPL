@@ -76,7 +76,9 @@ fn no_leak_names_each_broken_promise_and_its_chain() {
          {f}: 12:5: uses_format is marked (no_leak) but uses format (a str), whose memory is never freed\n\
          {f}: 14:27: uses_forever is marked (no_leak) but uses alloc.forever, whose memory is never freed\n"
     );
-    assert_eq!(String::from_utf8_lossy(&o.stderr), want);
+    // without the source lines the command shows under each error (src/excerpt.rs)
+    let stderr: String = String::from_utf8_lossy(&o.stderr).split_inclusive('\n').filter(|l| !l.starts_with("  ")).collect();
+    assert_eq!(stderr, want);
 }
 
 /// A (no_leak) handler run 10,000 times on a request arena reset after

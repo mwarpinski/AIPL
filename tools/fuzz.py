@@ -73,6 +73,9 @@ def run(cmd):
         return None, "timeout"
 
 
+EXCERPT = re.compile(r"^ +(?:[0-9]+ )?\| ?")
+
+
 def message(out):
     """An error message without file paths, one line per error."""
     # the CLI prints "Error: MESSAGE" last; aiplc prints only the errors.
@@ -82,7 +85,8 @@ def message(out):
         text = out[at + len("Error: "):]
     else:
         text = out
-    lines = [l.split(".aipl: ", 1)[-1] for l in text.split("\n") if l.strip()]
+    # the CLIs show the line under an error (src/excerpt.rs); aiplc does not, so those lines are left out
+    lines = [l.split(".aipl: ", 1)[-1] for l in text.split("\n") if l.strip() and not EXCERPT.match(l)]
     # the places searched for a missing module are listed in each toolchain's own path form
     return "\n".join(l.split(" found in ", 1)[0] for l in lines)
 
