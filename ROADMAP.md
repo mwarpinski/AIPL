@@ -31,9 +31,14 @@ by how soon a newcomer meets each item. Sizes are rough: **S** days, **M** a wee
 2. **Editor support.** *M, then L.* A TextMate grammar (VS Code, Zed, Sublime), a tree-sitter grammar (Neovim, Helix, Emacs),
    then a language server over what already exists: `aipl verify` for diagnostics, `aipl doc` for hover, and the resolver
    for go-to-definition. The server can be written in AIPL.
-3. **Error messages, and a REPL.** *M.* Audit the messages a newcomer meets first (one error per function today; an `if`
-   without an `else` reads `Unexpected token parsing expression: ')'`), report every error in a function, and make
-   `aipl eval` with no arguments a REPL.
+3. **Error messages, a linter, and a REPL.** *M.* Built on the branch `features/lint`, not yet released: an error shows
+   the source line with a caret under its column; arguments count from 1 (`Argument 2 of 'add' ...`); an undefined
+   variable suggests a near one (`did you mean total?`); `aipl lint` finds what compiles but is probably wrong (nine rules,
+   `;; lint:allow RULE` to keep one). Still to do, in this order: a small REPL (`aipl repl`, in this repository: it is for
+   people, since an AI has `aipl eval -e`, `verify`, `test` and `watch`), then every error in a function instead of the
+   first (a function with one mistake reports one today). Not decided: whether the standard library and `aipl_src`
+   must lint clean in CI (they hold about 80 findings today, most of them real dead code or unused names, and the
+   functions the Rust tests call by name, which want a `lint:allow`).
 4. **A package story.** *XL.* Versioned packages, dependency resolution, lock files, and a registry; the command is open
    (`aipl add`, `aipl build`). It needs language versioning (item 11) first. Imports today resolve by filename through the
    search path.
