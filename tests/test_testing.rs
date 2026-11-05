@@ -151,7 +151,7 @@ fn verify_checks_the_tests_of_a_file_too() {
         (
             "wrong_type",
             "(module wrong_type\n  (import str)\n  (fn main [] -> i32 0)\n  (test \"t\" (expect (call str.starts_with \"abc\" \"a\"))))\n",
-            Err("4:21: Arg 0 of 'str.starts_with' expects str.Bytes, got str"),
+            Err("4:21: Argument 1 of 'str.starts_with' expects str.Bytes, got str"),
         ),
         (
             "unknown_name",

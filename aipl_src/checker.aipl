@@ -1021,7 +1021,7 @@
                ((call str.is name "result") (call s b "; a function's result is named res, in its (ens ...)"))
                ((match (get c C.ret) (ast.MaybeType.none true) (ast.MaybeType.some [_] false))
                 (call s b "; a contract sees only the function's parameters, and res in (ens ...)"))
-               (else (block)))
+               (else (call var_hint b env name)))
              (call fail c b)
              (call void_t))))
       (ast.Expr.let_ [n_let] (let name:str.Bytes (get n_let ast.LetExpr.name)) (let lty:ast.Type (get n_let ast.LetExpr.ty)) (let val:ast.Expr (get n_let ast.LetExpr.val)) (call infer_let c env at name lty val))
@@ -1256,6 +1256,7 @@
     (when (not (call has env name))
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Undefined variable '") (call by b name) (call s b "' in set!")
+          (call var_hint b env name)
           (call fail c b) (return (call void_t)))
     (let var_t:ast.Type (call type_of env name))
     (let vt:ast.Type (call infer c val env))
@@ -1334,6 +1335,13 @@
 
   ;; What follows "Call to unknown function 'f'" (src/checker.rs, Expr::Call):
   ;; f is a function reference in scope, or the nearest function's name.
+  ;; "; did you mean x?" for a variable that is not in scope, when one in scope is near it (src/checker.rs's
+  ;; near_variable is the same rule).
+  (fn var_hint [b:(ptr buf.Buf) env:(ptr Env) name:str.Bytes] -> void
+    (let near:i32 (call suggest.nearest (get env Env.names) name))
+    (when (gte near 0)
+      (call s b "; did you mean ") (call by b (call (vec.at str.Bytes) (get env Env.names) near)) (call s b "?")))
+
   (fn unknown_fn_hint [c:(ptr C) b:(ptr buf.Buf) env:(ptr Env) func:str.Bytes] -> void
     (when (call has env func)
         (match (call type_of env func)
@@ -1381,7 +1389,7 @@
       (when (get c C.failed) (return (call void_t)))
       (when (not (call fits t (arr.get ast.Type ps k)))
             (let b:(ptr buf.Buf) (call msg c at))
-            (call s b "Arg ") (call buf.push_int b k) (call s b " of '") (call by b (call names.shown func)) (call s b "' expects ")
+            (call s b "Argument ") (call buf.push_int b (+ k 1)) (call s b " of '") (call by b (call names.shown func)) (call s b "' expects ")
             (call ty b (arr.get ast.Type ps k)) (call s b ", got ") (call ty b t)
             (call fit_why c b t (arr.get ast.Type ps k) (arr.get ast.Expr args k))
             (call fail c b) (return (call void_t))))

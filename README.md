@@ -79,7 +79,7 @@ the program runs (arguments are counted from 0):
 
 ```
 $ aipl verify bad.aipl
-Error: bad.aipl: 18:14: Arg 1 of 'gcd' expects i32, got bool
+Error: bad.aipl: 18:14: Argument 2 of 'gcd' expects i32, got bool
 ```
 
 ## Install

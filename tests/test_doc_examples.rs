@@ -315,7 +315,7 @@ fn the_usage_page_says_what_the_commands_do() {
         String::from_utf8_lossy(&o.stderr).to_string() + &String::from_utf8_lossy(&o.stdout)
     };
     let bad = verify("bad.aipl", "(module bad\n  (fn add [a:i32 b:i32] -> i32 (+ a b))\n  (fn main [] -> i32\n    (let x:i32 (call add 1 true))\n    (let y:i64 x)\n    (println \"{y}\")\n    0))\n");
-    assert!(bad.contains("Error: bad.aipl: 4:16: Arg 1 of 'add' expects i32, got bool"), "{bad}");
+    assert!(bad.contains("Error: bad.aipl: 4:16: Argument 2 of 'add' expects i32, got bool"), "{bad}");
     let syn = verify("syn.aipl", "(module syn (fn main [] -> i32 (if true 1)))");
     assert!(syn.contains("Error: syn.aipl: 1:42: Unexpected token parsing expression: ')'; if needs both branches: (if c then else); for one branch, write (when c then)"), "{syn}");
     let trap = dir.join("trap.aipl");

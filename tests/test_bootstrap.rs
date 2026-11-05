@@ -374,6 +374,17 @@ fn an_error_shows_the_line_it_is_about() {
             "(module open\n  (fn main [] -> i32 (return 1) (return 2)\n".into(),
             "Error: open.aipl: 2:3: this bracket is never closed\n  2 |   (fn main [] -> i32 (return 1) (return 2)\n    |   ^\n".into(),
         ),
+        // a name one edit from one in scope is suggested, and arguments count from 1
+        (
+            "typo",
+            "(module typo\n  (fn f [total:i32] -> i32\n    (return (+ total totl))))\n".into(),
+            "Error: typo.aipl: 3:22: Undefined variable 'totl'; did you mean total?\n  3 |     (return (+ total totl))))\n    |                      ^\n".into(),
+        ),
+        (
+            "arg",
+            "(module arg\n  (fn add [a:i32 b:i32] -> i32 (+ a b))\n  (fn main [] -> i32 (call add 1 true)))\n".into(),
+            "Error: arg.aipl: 3:22: Argument 2 of 'add' expects i32, got bool\n  3 |   (fn main [] -> i32 (call add 1 true)))\n    |                      ^\n".into(),
+        ),
         // a line over 200 bytes is not shown
         ("long", long, "Error: long.aipl: 1:41: Undefined variable 'y'\n".into()),
     ];

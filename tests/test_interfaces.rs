@@ -251,7 +251,7 @@ fn templates_are_checked_once_in_both_toolchains() {
         (r#"(module m (import option) (fn main [] -> i32 (let o:(option.Option void) (make (option.Option void) none)) 0))"#, "1:53: option.Option<void>: T is a value type, and void cannot be stored"),
         (r#"(module m (fn (f T) [] -> (ptr T) (ptr.null T)) (fn main [] -> i32 0))"#, "1:11: T is a type parameter that is not a struct: to use it as one, add (where (struct T)) (return type of 'f<T>')"),
         (r#"(module m (fn (f T) [a:T] -> i32 (req 5) 0) (fn main [] -> i32 0))"#, "1:39: Contract expression in 'f<T>' must evaluate to bool, got i32"),
-        (r#"(module m (fn (g T) [a:T] -> i32 0) (fn (f T) [a:T] -> i32 (call (g T) 5)) (fn main [] -> i32 0))"#, "1:60: Arg 0 of 'g<T>' expects T, got i32"),
+        (r#"(module m (fn (g T) [a:T] -> i32 0) (fn (f T) [a:T] -> i32 (call (g T) 5)) (fn main [] -> i32 0))"#, "1:60: Argument 1 of 'g<T>' expects T, got i32"),
         (r#"(module m (fn (g T) [a:T] -> i32 0) (fn (f T) [a:T] -> i32 (call (g T))) (fn main [] -> i32 0))"#, "1:60: Function 'g<T>' expects 1 arguments (T), got 0"),
         (r#"(module m (union (B T) [(full v:T) (empty)]) (fn (f T) [] -> (B T) (make (B T) full 5)) (fn main [] -> i32 0))"#, "1:68: make B<T>.full: field 'v' is T, got i32"),
         (r#"(module m (union (B T) [(full v:T) (empty)]) (fn (f T) [b:(B T)] -> i32 (match b ((B T) nope 0) (else 1))) (fn main [] -> i32 0))"#, "1:82: B<T> has no member 'nope'"),

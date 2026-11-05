@@ -498,7 +498,7 @@ Function types are strict like pointer types: a reference is never an `i32`, a r
 **`(no_leak)` in a function type.** `(fn [i32] -> i32 (no_leak))` is the type of a reference to a function that keeps no memory (section 3, "Memory that is never freed"). A call through it is not a leak site, so a `(no_leak)` function may call what it is handed, where through an ordinary `(fn [i32] -> i32)` it may not (its target is not known). Only a function that keeps no memory goes in: one marked `(no_leak)`, or one the checker proves allocates nothing that is never freed, directly or through what it calls, marked or not. Anything else is refused, with the chain that shows why:
 
 ```
-Arg 0 of 'apply' expects (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): keeps may keep memory (keeps calls str.concat; str.concat calls str.room; str.room uses mem.alloc)
+Argument 1 of 'apply' expects (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): keeps may keep memory (keeps calls str.concat; str.concat calls str.room; str.room uses mem.alloc)
 ```
 
 A promising reference fits an ordinary slot (it promises more than the slot asks), never the other way: a value already typed `(fn [i32] -> i32)` does not go into a promising slot, since what it refers to is no longer known. Where two values meet, the branches of an `if`, `cond`, `match`, or `match_result`, or the two sides of `eq` and `neq`, two function types that differ only in the promise meet at the type without it: `(if c (ref double) (ref keeps))` is a `(fn [i32] -> i32)`. The rule is for the whole value only: `(arr (fn [i32] -> i32 (no_leak)))` and `(arr (fn [i32] -> i32))` are different types, as `(ptr S)` and `(ptr T)` are. A generic instance names the promise: `(vec.Vec (fn [i32] -> i32 (no_leak)))` is `Vec<fn<i32->i32,no_leak>>`. tests/aipl/memory/no_leak_slots.aipl uses each form.
@@ -1482,7 +1482,7 @@ Representative messages, exactly as produced:
 | `return` with the wrong type | `3:5: return value has type bool, but the function returns i32` |
 | `cond` without `else` | `1:32: cond needs a final (else ...) clause, as if needs an else branch` |
 | wrong arity | `4:5: Function 'add' expects 2 arguments, got 1` |
-| wrong argument type | `4:5: Arg 1 of 'add' expects i32, got bool` |
+| wrong argument type | `4:5: Argument 2 of 'add' expects i32, got bool` |
 | body/return mismatch | `2:3: Function 'f' expects return type i32, but body returned bool` |
 | an op that does not exist | `3:5: there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap, or everything in a region at once with std/arena` |
 | non-`str` `sys.print` | `3:5: sys.print prints str values, got i32; for numbers and other values use the format forms, (print "{n}") or (println "n: {n}")` |

@@ -1166,11 +1166,11 @@ fn fits(got: &Type, want: &Type) -> bool {
                 } else {
                     // outside a function body (return_type is None) is a contract
                     let hint = if name == "result" {
-                        "; a function's result is named res, in its (ens ...)"
+                        "; a function's result is named res, in its (ens ...)".to_string()
                     } else if self.return_type.borrow().is_none() {
-                        "; a contract sees only the function's parameters, and res in (ens ...)"
+                        "; a contract sees only the function's parameters, and res in (ens ...)".to_string()
                     } else {
-                        ""
+                        near_variable(name, env)
                     };
                     Err(format!("{}:{}: Undefined variable '{}'{}", l, c, name, hint))
                 }
@@ -1194,7 +1194,7 @@ fn fits(got: &Type, want: &Type) -> bool {
                 let var_ty = env
                     .get(name)
                     .cloned()
-                    .ok_or_else(|| format!("{}:{}: Undefined variable '{}' in set!", l, c, name))?;
+                    .ok_or_else(|| format!("{}:{}: Undefined variable '{}' in set!{}", l, c, name, near_variable(name, env)))?;
                 let val_ty = self.infer_expr_type(val, env)?;
                 if !Self::fits(&val_ty, &var_ty) {
                     return Err(format!(
@@ -1304,8 +1304,8 @@ fn fits(got: &Type, want: &Type) -> bool {
                     let arg_ty = self.infer_expr_type(arg, env)?;
                     if !Self::fits(&arg_ty, &param_types[i]) {
                         return Err(format!(
-                            "{}:{}: Arg {} of '{}' expects {}, got {}{}",
-                            l, c, i, shown(func), param_types[i], arg_ty, self.fit_why(&arg_ty, &param_types[i], arg)
+                            "{}:{}: Argument {} of '{}' expects {}, got {}{}",
+                            l, c, i + 1, shown(func), param_types[i], arg_ty, self.fit_why(&arg_ty, &param_types[i], arg)
                         ));
                     }
                 }
@@ -2592,4 +2592,13 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom
     )
+}
+
+/// "; did you mean x?" for a variable that is not in scope, when one in scope is near it
+/// (aipl_src/checker.aipl's var_hint is the same rule).
+fn near_variable(name: &str, env: &HashMap<String, Type>) -> String {
+    match nearest_name(name, env.keys().map(|k| k.as_str())) {
+        Some(near) => format!("; did you mean {near}?"),
+        None => String::new(),
+    }
 }

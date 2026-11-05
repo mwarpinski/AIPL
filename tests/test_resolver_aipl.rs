@@ -617,22 +617,22 @@ fn wasm_toolchain_checks_no_leak_function_types_like_rust() {
     let cases = [
         // an argument, through std: the chain names each step
         ("arg", format!("(module arg (import str)\n  {apply}\n  {keeps}\n  (fn main [] -> i32 (call apply (ref keeps) 1)))"),
-         "5:22: Arg 0 of 'apply' expects (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): keeps may keep memory (keeps calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
+         "5:22: Argument 1 of 'apply' expects (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): keeps may keep memory (keeps calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
         // a let
         ("let", format!("(module lets (import str)\n  {keeps}\n  (fn main [] -> i32\n    (let g:(fn [i32] -> i32 (no_leak)) (ref keeps))\n    0))"),
          "4:5: Type mismatch in 'let': expected (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): keeps may keep memory (keeps calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
         // an ordinary function value into a promising slot: nothing to prove
         ("plain", format!("(module plain\n  {apply}\n  (fn id [x:i32] -> i32 x)\n  (fn main [] -> i32\n    (let g:(fn [i32] -> i32) (ref id))\n    (call apply g 1)))"),
-         "7:5: Arg 0 of 'apply' expects (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): this function value's type does not promise (no_leak)"),
+         "7:5: Argument 1 of 'apply' expects (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): this function value's type does not promise (no_leak)"),
         // a (no_leak) function calling through an ordinary signature
         ("through", "(module through\n  (fn run [f:(fn [i32] -> i32) x:i32] -> i32 (no_leak)\n    (call_ref (fn [i32] -> i32) f x))\n  (fn main [] -> i32 0))".to_string(),
          "3:5: run is marked (no_leak) but uses a call through a function type without (no_leak), which may keep memory (a signature with (no_leak) takes only functions that keep none)"),
         // a stream source of its own that keeps memory (std/stream takes only promising ones)
         ("stream_src", "(module stream_src (import alloc) (import buf) (import str) (import stream)\n  (fn fill [n:i32 into:(ptr buf.Buf)] -> i32\n    (call buf.push_str into (call str.concat \"a\" \"b\"))\n    0)\n  (fn main [] -> i32\n    (let r:(ptr stream.Reader) (call (stream.reader_of i32) (call alloc.default) 0 (ref fill)))\n    0))".to_string(),
-         "6:32: Arg 2 of 'stream.reader_of<i32>' expects (fn [i32 (ptr buf.Buf)] -> i32 (no_leak)), got (fn [i32 (ptr buf.Buf)] -> i32): fill may keep memory (fill calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
+         "6:32: Argument 3 of 'stream.reader_of<i32>' expects (fn [i32 (ptr buf.Buf)] -> i32 (no_leak)), got (fn [i32 (ptr buf.Buf)] -> i32): fill may keep memory (fill calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
         // a comparator that keeps memory (vec.sort_by takes only promising ones)
         ("sort_cmp", "(module sort_cmp (import alloc) (import vec) (import str)\n  (fn by_len [a:i32 b:i32] -> i32 (str.len (call str.concat \"a\" \"b\")))\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 4))\n    (call (vec.sort_by i32) v (ref by_len))\n    0))".to_string(),
-         "5:5: Arg 1 of 'vec.sort_by<i32>' expects (fn [i32 i32] -> i32 (no_leak)), got (fn [i32 i32] -> i32): by_len may keep memory (by_len calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
+         "5:5: Argument 2 of 'vec.sort_by<i32>' expects (fn [i32 i32] -> i32 (no_leak)), got (fn [i32 i32] -> i32): by_len may keep memory (by_len calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
         // a call_ref whose signature promises more than the value's type
         ("sig", "(module sig\n  (fn run [f:(fn [i32] -> i32) x:i32] -> i32\n    (call_ref (fn [i32] -> i32 (no_leak)) f x))\n  (fn main [] -> i32 0))".to_string(),
          "3:5: call_ref signature (fn [i32] -> i32 (no_leak)) does not match the function's type (fn [i32] -> i32)"),

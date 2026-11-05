@@ -176,7 +176,7 @@ says what to write. For example:
 
 ```text
 $ aipl verify bad.aipl
-Error: bad.aipl: 4:16: Arg 1 of 'add' expects i32, got bool
+Error: bad.aipl: 4:16: Argument 2 of 'add' expects i32, got bool
 $ aipl verify syn.aipl
 Error: syn.aipl: 1:42: Unexpected token parsing expression: ')'; if needs both branches: (if c then else); for one branch, write (when c then)
 ```
