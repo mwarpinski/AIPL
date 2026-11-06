@@ -60,6 +60,9 @@ enum Commands {
         #[arg(last = true)]
         args: Vec<String>,
     },
+    /// Type expressions and definitions at a prompt: each expression's value and type are shown
+    /// (for people at a keyboard; an AI uses `aipl eval -e`)
+    Repl,
     /// Compile an AIPL program to a WebAssembly module, or with --exe to a standalone executable;
     /// through the optimizer unless --no-opt
     Compile {
@@ -687,6 +690,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Doc { args } => {
             std::process::exit(aipl_core::tools::run("doc.aipl", "aipl doc", &args)?);
         }
+        Commands::Repl => std::process::exit(aipl_core::repl::command()?),
         Commands::Lint { args } => {
             std::process::exit(aipl_core::tools::run("lint.aipl", "aipl lint", &args)?);
         }

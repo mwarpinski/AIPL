@@ -178,6 +178,7 @@ aipl verify examples/word_count.aipl            # parse and type-check
 aipl doc text                                   # a module's functions and types, with their comments
 aipl doc --find split                           # search the standard library
 aipl lint rows.aipl                             # unused names, dead code, a leak in a loop; --help for the rules
+aipl repl                                       # type expressions and definitions; each shows its value and type
 aipl test rows.aipl                             # run a file's (test ...) items, each alone
 aipl watch scratch.aipl                         # run it again on every save
 aipl eval -e '(call str.find (call str.from_str "a,b") (call str.from_str ","))'   # prints 1 : i32

@@ -34,8 +34,9 @@ by how soon a newcomer meets each item. Sizes are rough: **S** days, **M** a wee
 3. **Error messages, a linter, and a REPL.** *M.* Built on the branch `features/lint`, not yet released: an error shows
    the source line with a caret under its column; arguments count from 1 (`Argument 2 of 'add' ...`); an undefined
    variable suggests a near one (`did you mean total?`); `aipl lint` finds what compiles but is probably wrong (nine rules,
-   `;; lint:allow RULE` to keep one). Still to do, in this order: a small REPL (`aipl repl`, in this repository: it is for
-   people, since an AI has `aipl eval -e`, `verify`, `test` and `watch`), then every error in a function instead of the
+   `;; lint:allow RULE` to keep one). `aipl repl` (for people, since an AI has `aipl eval -e`, `verify`, `test` and `watch`) is built in the Rust `aipl`
+   (src/repl.rs); the self-hosted `aipl` does not have it yet (it needs a way to tell a terminal from a pipe, and to run an
+   expression in the process it is). Still to do: every error in a function instead of the
    first (a function with one mistake reports one today). Not decided: whether the standard library and `aipl_src`
    must lint clean in CI (they hold about 80 findings today, most of them real dead code or unused names, and the
    functions the Rust tests call by name, which want a `lint:allow`).

@@ -3,6 +3,7 @@ pub mod checker;
 pub mod compiler;
 pub mod parser;
 pub mod printer;
+pub mod repl;
 pub mod resolver;
 pub mod selfhost;
 pub mod sexpr;

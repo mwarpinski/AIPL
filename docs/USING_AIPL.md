@@ -15,6 +15,7 @@ aipl-run prog.wasm < input.txt              # run it (standard input and output 
 aipl test prog.aipl                         # run the (test ...) items in it
 aipl doc --find WORD                        # look for a library function before writing one
 aipl lint prog.aipl                         # code that is legal but probably a mistake
+aipl repl                                   # a prompt for people: type an expression, see its value
 ```
 
 `aipl run prog.aipl ARG...` compiles a source file and runs it; `aipl run prog.wasm ARG...` is the same runner on a compiled module. `aipl`
@@ -189,6 +190,27 @@ capitals). A name that starts with `_` is never reported. To keep a finding,
 write `;; lint:allow RULE` (or `lint:allow all`) on the line above it or at
 the end of its line. A function that only the host calls by name (a test
 harness's entry point) is not `(pub)`, so it needs the comment too.
+
+**`aipl repl`** is a prompt for people at a keyboard (an AI uses `aipl eval -e`):
+
+```
+aipl> (+ 1 2)
+3 : i32
+aipl> (fn double [x:i32] -> i32 (* x 2))
+aipl> (call double 21)
+42 : i32
+```
+
+An expression shows its value and type, as `aipl eval -e` does. A definition
+(`fn`, `const`, `struct`, `enum`, `union`, `import`, `impl`) is kept for the
+lines after it, if the session still checks with it, and a new one replaces
+an old one of the same name. Nothing else is kept: every line is a new
+program, so a `(let ...)` lasts for its own line (a `const` keeps a value). A
+form may take several lines; the prompt changes to `...` until its brackets
+close. `:show` lists the definitions, `:reset` forgets them, `:help` and
+`:quit` do what they say, and so does the end of input. With the input not a
+terminal there are no prompts, so `echo '(+ 1 2)' | aipl repl` prints
+`3 : i32`. Only the Rust `aipl` has it so far; the self-hosted `aipl` says so.
 
 **`aipl watch FILE`** runs the file again each time it, or a file it
 imports, changes (`--test` runs its tests instead).
