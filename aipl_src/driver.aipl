@@ -33,6 +33,7 @@
   ;; status 3: the program does not type-check; "path: line:col: message" is at (addr, len)
   (struct Out [(read status:i32) (read addr:i32) (read len:i32)] (pub))
 
+  ;; lint:allow unused-function (the host invokes it by name)
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 
   ;; Compiles the program whose entry file is (path_addr, path_len), searching

@@ -60,6 +60,7 @@
 
   ;; Runs every verified-real module's self-test, prints one line each, and
   ;; returns the total number of failing groups (0 = everything passed).
+  ;; lint:allow unused-function (the entry point of aipl test, by name)
   (fn run_all [] -> i32
     (let failures:i32 0)
     (set! failures (+ failures (call report "compiler: tokenizer (2 tests)" (call compiler.run_tokenizer_tests) 2)))

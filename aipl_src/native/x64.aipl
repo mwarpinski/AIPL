@@ -43,7 +43,7 @@
 
   ;; Condition codes for jcc and setcc (the low nibble of their opcodes).
   ;; Unsigned: b ae be a. Signed: l ge le g.
-  (fn cc_o [] -> i32 0)   (fn cc_no [] -> i32 1)
+  (fn cc_o [] -> i32 0)   (fn cc_no [] -> i32 1)  ;; lint:allow unused-function (the condition codes are a complete table)
   (fn cc_b [] -> i32 (pub) 2)   (fn cc_ae [] -> i32 (pub) 3)
   (fn cc_e [] -> i32 (pub) 4)   (fn cc_ne [] -> i32 (pub) 5)
   (fn cc_be [] -> i32 (pub) 6)  (fn cc_a [] -> i32 (pub) 7)

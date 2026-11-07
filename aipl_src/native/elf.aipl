@@ -37,8 +37,6 @@
     (req (gte n 0))
     (bitand (+ n (- page 1)) (- 0 page)))
 
-  (fn align_page [n:i32] -> i32 (call align_to n 4096))
-
   ;; Where the segments land for `data_len` bytes of data and `bss` zero
   ;; bytes after them. The code starts on the first page past both (past
   ;; data_vaddr's page when both are empty, so the segments never share an

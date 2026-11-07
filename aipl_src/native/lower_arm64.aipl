@@ -436,28 +436,6 @@
     (call arm64.fmov_rr (get l L.code) ft d f)
     (call defined_fp l (if (eq ft 1) 2 1) d))
 
-  ;; the top value in a float register of its own, which the caller must free (or hand to vpush): the register
-  ;; it was in, or one it is loaded into
-  (fn take_fp [l:(ptr L) ft:i32] -> i32
-    (let n:i32 (get l L.vn))
-    (let k:i32 (if (gt n 0) (arr.get i32 (get l L.vkind) (- n 1)) -1))
-    (cond
-      ((or (eq k 1) (eq k 2))
-       (let e:i32 (arr.get i32 (get l L.vreg) (- n 1)))
-       (call vtake l)
-       e)
-      ;; a local in a register: the operation writes its result in the register it takes, so copy it
-      ((or (eq k 7) (eq k 8))
-       (let d:i32 (call alloc_fp l))
-       (call arm64.fmov_rr (get l L.code) ft d (arr.get i32 (get l L.vreg) (- (get l L.vn) 1)))
-       (call vtake l)
-       d)
-      (else
-       (let d:i32 (call alloc_fp l))
-       (call pop l 16)
-       (call arm64.fmov_to_fp (get l L.code) ft d 16)
-       d)))
-
   ;; Before `local.set i` writes a register: an entry below the top that refers to it would see the new
   ;; value, so the stack goes to memory first, where it keeps the old one.
   (fn sync_local [l:(ptr L) r:i32] -> void

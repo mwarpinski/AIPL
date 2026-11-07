@@ -91,6 +91,14 @@ fn format_and_concat_in_a_loop_leak() {
 }
 
 #[test]
+fn what_a_return_makes_in_a_loop_is_made_once() {
+    clean(
+        "exits",
+        "(module exits\n  (fn f [n:i32] -> (result i32 str)\n    (for i 0 n\n      (when (eq i 2) (return (err:i32 (format \"stopped at {i}\")))))\n    (ok:str 0))\n  (fn main [] -> i32 (match_result (call f 3) (ok v v) (err e 1))))\n",
+    );
+}
+
+#[test]
 fn a_comparison_with_true_and_an_empty_else() {
     finds(
         "bools",

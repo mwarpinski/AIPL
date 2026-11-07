@@ -1296,7 +1296,6 @@
   ;; The types of a struct's readable fields, groups made plain.
   (fn readable_field_types [m:(ptr Mod) list:(ptr compiler.Node) levels:(ptr (map.Map str.Bytes i32)) out:(ptr (vec.Vec (ptr compiler.Node)))] -> void
     (when (eq list (ptr.null compiler.Node)) (return))
-    (let src:(ptr Src) (get m Mod.src))
     ;; plain triples: the name, then the type two further on
     (let pending:(ptr compiler.Node) (ptr.null compiler.Node))
     (let k:i32 0)
@@ -2475,11 +2474,13 @@
 
   ;; ===== Host interface =====
 
+  ;; lint:allow unused-function (the host invokes it by name: src/selfhost.rs)
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 
   ;; Resolves the file at (path_addr, path_len), with the standard library
   ;; directory at (std_addr, std_len). The Out holds the flat source (ok 1)
   ;; or the error (ok 0).
+  ;; lint:allow unused-function (the host invokes it by name: src/selfhost.rs)
   (fn resolve_file [path_addr:i32 path_len:i32 std_addr:i32 std_len:i32] -> (ptr Out)
     (unsafe (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))

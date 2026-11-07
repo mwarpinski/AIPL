@@ -10,22 +10,6 @@
     (req (gte ptr 0))
     (unsafe (atomic.add ptr val)))
 
-  (fn atomic_cas [ptr:i32 expected:i32 new_val:i32] -> bool
-    (req (gte ptr 0))
-    (unsafe (atomic.cas ptr expected new_val)))
-
-  ;; Acquires the lock word at mutex_ptr, waiting while another thread holds it. mutex_ptr must be an address dedicated to this lock,
-  ;; distinct from any data it protects - the lock word IS that memory.
-  (fn atomic_lock [mutex_ptr:i32] -> i32
-    (req (gte mutex_ptr 0))
-    (unsafe (atomic.lock mutex_ptr)
-    1))
-
-  (fn atomic_unlock [mutex_ptr:i32] -> i32
-    (req (gte mutex_ptr 0))
-    (unsafe (atomic.unlock mutex_ptr)
-    0))
-
   ;; Runs worker(arg) on a new OS thread; returns a handle for thread_join.
   (fn thread_spawn [worker:(fn [i32] -> i32) arg:i32] -> i32
     (unsafe (thread.spawn worker arg)))

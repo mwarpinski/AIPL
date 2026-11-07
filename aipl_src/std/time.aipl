@@ -31,7 +31,7 @@
       (mem.store64 (+ p 24) ns)
       (mem.store64 (+ p 32) 0i64)
       (mem.store16 (+ p 40) 0)
-      (let r:i32 (sys.poll p (+ p 48) 1 (+ p 80)))
+      (let _r:i32 (sys.poll p (+ p 48) 1 (+ p 80)))
       (call alloc.free_raw a p 96)))
 
   ;; Nanoseconds since `start` (a value from now).

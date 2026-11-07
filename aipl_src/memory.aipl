@@ -10,9 +10,6 @@
 
 (module memory
 
-  ;; The heap begins at 1024; bytes 0-1023 are the runtime block.
-  (fn heap_start [] -> i32 1024)
-
   ;; Thin wrapper over the `mem.alloc` primitive. Never returns an address
   ;; inside the runtime block.
   (fn aipl_heap_alloc [size:i32] -> i32

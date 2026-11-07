@@ -15,7 +15,6 @@
 ;; failing function adds its first error to C.problems, as in Rust.
 (module checker
   (import alloc)
-  (import compiler)
   (import ast)
   (import printer)
   (import names)
@@ -85,9 +84,6 @@
     (let b:(ptr buf.Buf) (call msg c at))
     (call s b x)
     (call fail c b))
-
-  ;; Rust's {:?} of a name: "name" (names have no characters to escape).
-  (fn quoted [b:(ptr buf.Buf) x:str.Bytes] -> void (call s b "\"") (call by b x) (call s b "\""))
 
   ;; A type as AIPL source writes it ((ptr Point), (arr i64)), as
   ;; checker.rs prints types in messages (ast.rs Display, printer.rs type_str).
@@ -164,7 +160,6 @@
       (else true)))
 
   (fn is_void [t:ast.Type] -> bool (eq (call tag t) 6))
-  (fn is_i64 [t:ast.Type] -> bool (eq (call tag t) 1))
   (fn is_i32 [t:ast.Type] -> bool (eq (call tag t) 0))
   (fn is_int [t:ast.Type] -> bool (or (eq (call tag t) 0) (eq (call tag t) 1)))
 
@@ -1568,7 +1563,7 @@
 
   ;; arr.set, with an optional path into a value struct element.
   (fn infer_arr_set [c:(ptr C) env:(ptr Env) at:i32 ety:ast.Type ptr:ast.Expr index:ast.Expr val:ast.Expr path:(arr (ptr ast.Step))] -> ast.Type
-    (let r:ast.Type (call infer_arr_parts c env at ety ptr index true false val))
+    (let _r:ast.Type (call infer_arr_parts c env at ety ptr index true false val))
     (when (get c C.failed) (return (call void_t)))
     (let target:ast.Type (call value_of ety))
     (when (gt (arr.len path) 0)
@@ -2258,9 +2253,6 @@
   ;; Whether format_to's target t is a (ptr stream.Writer) (fmtlower).
   (fn is_writer [t:ast.Type] -> bool (pub) (call ptr_to t "stream.Writer"))
 
-  (fn printable [t:ast.Type] -> bool
-    (or (lte (call tag t) 5) (or (eq (call tag t) 12) (call ptr_to t "str.Bytes"))))
-
   (fn is_float [t:ast.Type] -> bool (or (eq (call tag t) 2) (eq (call tag t) 3)))
 
   (fn check_format [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
@@ -2429,9 +2421,6 @@
     (let b:(ptr buf.Buf) (call msg c at))
     (call s b (call op_debug o)) (call s b x)
     (call fail c b))
-
-  (fn pair_msg [c:(ptr C) at:i32 x:str t1:ast.Type y:str t2:ast.Type] -> void
-    (call pair_msg_hint c at x t1 y t2 ""))
 
   (fn pair_msg_hint [c:(ptr C) at:i32 x:str t1:ast.Type y:str t2:ast.Type hint:str] -> void
     (let b:(ptr buf.Buf) (call msg c at))

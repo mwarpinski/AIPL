@@ -574,7 +574,7 @@
   ;; Whether child index `idx` (0-based) inside paren group `g` with head `ht`
   ;; is a value expression (as opposed to a keyword, type name, field name,
   ;; binder, or callee symbol).
-  (fn is_expr_child [g:(ptr ONode) ht:str.Bytes idx:i32 total:i32] -> bool
+  (fn is_expr_child [_g:(ptr ONode) ht:str.Bytes idx:i32 total:i32] -> bool
     (when (eq idx 0) (return false))
     (cond
       ((or (call str.is ht "struct") (or (call str.is ht "union") (or (call str.is ht "const") (call str.is ht "enum"))))

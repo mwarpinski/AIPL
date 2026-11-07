@@ -511,7 +511,7 @@
 
   ;; emit_path_to_stack without saving rsp: for a second path, copied below
   ;; the first, with r12 already holding the routine's own rsp.
-  (fn emit_copy_path [l:(ptr lower.L) w:(ptr W)] -> void
+  (fn emit_copy_path [l:(ptr lower.L) _w:(ptr W)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     ;; room for the path, its NUL, and alignment: (len + 16) & ~15
     (call x64.lea c 64 (call rcx) (call x64.mem (call r14) 16))
@@ -1170,7 +1170,6 @@
   ;; Start-up: opens the preopened directories, fd 3 = "." and fd 4 = "/"
   ;; (skipped with sandbox), as O_PATH directory descriptors.
   (fn emit_preopens [l:(ptr lower.L) w:(ptr W) sandbox:bool] -> void (pub)
-    (let c:(ptr buf.Buf) (get l lower.L.code))
     (when sandbox (call emit_openat2_probe l))
     (call emit_preopen l w 3 ".")
     (when (not sandbox) (call emit_preopen l w 4 "/")))

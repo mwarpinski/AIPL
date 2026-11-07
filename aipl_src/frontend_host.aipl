@@ -25,12 +25,15 @@
         (call put_result out false (call front.render src (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))))
 
   ;; parser.aipl then printer.aipl (no constant expansion).
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_checker_aipl.rs)
   (fn parse_print [src:i32 len:i32 out:i32] -> i32 (call put_parsed src out (call parser.parse src len)))
 
   ;; expand.aipl, parser.aipl, then printer.aipl.
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_checker_aipl.rs)
   (fn expand_print [src:i32 len:i32 out:i32] -> i32 (call put_parsed src out (call front.parse src len)))
 
   ;; The whole front end: "ok", or the errors, one per line.
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_checker_aipl.rs)
   (fn check_text [src:i32 len:i32 out:i32] -> i32
     (let pr:(ptr checker.Problem) (call front.check src len))
     (if (eq pr (ptr.null checker.Problem))
@@ -38,10 +41,16 @@
         (call put_result out false (call front.render src pr))))
 
   ;; parser.aipl's operator and keyword names, one per line.
-  (fn head_names [src:i32 len:i32 out:i32] -> i32 (call put_result out true (call parser.head_names_text)))
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_checker_aipl.rs)
+  (fn head_names [_src:i32 _len:i32 out:i32] -> i32 (call put_result out true (call parser.head_names_text)))
 
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_checker_aipl.rs)
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_checker_aipl.rs)
   (fn token_size [] -> i32 (sizeof compiler.Token))
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_checker_aipl.rs)
   (fn tokenize [src:i32 len:i32 out:i32] -> i32 (call compiler.tokenize src len out))
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_checker_aipl.rs)
   (fn line_of [src:i32 pos:i32] -> i32 (get (call compiler.line_col src pos) compiler.LineCol.line))
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_checker_aipl.rs)
   (fn col_of [src:i32 pos:i32] -> i32 (get (call compiler.line_col src pos) compiler.LineCol.col)))

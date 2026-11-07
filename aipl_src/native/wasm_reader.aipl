@@ -820,6 +820,7 @@
 
   ;; ===== Host interface =====
 
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_native_reader.rs)
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 
   ;; Bytes for a Rust host (the tests), as a pointer to [addr len], the
@@ -831,6 +832,7 @@
     h)
 
   ;; The summary of the module at (addr, len).
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_native_reader.rs)
   (fn summarize [addr:i32 len:i32] -> (ptr HostBytes)
     (call host_bytes (unsafe (call summary (call decode (call str.bytes addr len))))))
 

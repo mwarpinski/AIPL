@@ -154,7 +154,7 @@
   ;; The wrapped module: `src` up to the module's last ')', the imports the
   ;; expressions need, `(fn __eval [] -> ret `, the expressions and ')', then
   ;; `extra` (more functions) and the rest of `src`. place is filled in.
-  (fn wrap [src:str.Bytes close:i32 name:str.Bytes imports:(ptr buf.Buf) ret:str.Bytes exprs:str.Bytes extra:str.Bytes place:(ptr Place)] -> str.Bytes
+  (fn wrap [src:str.Bytes close:i32 _name:str.Bytes imports:(ptr buf.Buf) ret:str.Bytes exprs:str.Bytes extra:str.Bytes place:(ptr Place)] -> str.Bytes
     (let head:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (call buf.push_bytes head (call str.slice src 0 close))
     (call buf.push_byte head 10)

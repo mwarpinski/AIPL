@@ -86,6 +86,7 @@
         (Kind.flag (call opt_text s ""))
         (Kind.option (call opt_text s (call upper (get s Spec.name))))
         (Kind.positional (get s Spec.name))
+        ;; lint:allow leaky-in-loop (the help text is built once, as the program ends)
         (Kind.rest (format "{(get s Spec.name)}..."))))
       (when (gt (str.len left) width) (set! width (str.len left)))
       (call (vec.push str) lefts left))

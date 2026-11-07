@@ -1771,7 +1771,7 @@
     scount)
 
   ;; Lays out every struct not laid out yet.
-  (fn collect_structs [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
+  (fn collect_structs [cg:(ptr Cg) _root:(ptr compiler.Node)] -> i32
     (for i 0 (get cg Cg.nstructs)
       (call layout_struct cg (arr.get (ptr StructInfo) (get cg Cg.structs) i)))
     (get cg Cg.nstructs))
@@ -2016,7 +2016,7 @@
 
   ;; The StructInfo of a result's slots, its sides' kinds ok_k and er_k
   ;; (checker.rs sum_layout).
-  (fn build_sum [cg:(ptr Cg) ok_k:(ptr (vec.Vec Ty)) er_k:(ptr (vec.Vec Ty))] -> (ptr StructInfo)
+  (fn build_sum [_cg:(ptr Cg) ok_k:(ptr (vec.Vec Ty)) er_k:(ptr (vec.Vec Ty))] -> (ptr StructInfo)
     (let si:(ptr StructInfo) (new StructInfo (call alloc.forever) [name_pos:(zero i32)
                                                                    name_len:(zero i32)
                                                                    size:(zero i32)
@@ -2431,6 +2431,7 @@
         0)
     p))
 
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_selfhost.rs)
   (fn alloc_src [len:i32] -> i32
     (mem.alloc len))
 
@@ -3907,7 +3908,7 @@
   ;; i64 add/sub: the sign test; i64 mul: r / a must be b when a != 0. Both
   ;; operands are evaluated before the hidden locals are written.
   ;; Whether the node is an integer literal of type ty (an i32 or an i64 one), and its value.
-  (fn is_literal_of [cg:(ptr Cg) n:(ptr compiler.Node) ty:Ty] -> bool
+  (fn is_literal_of [_cg:(ptr Cg) n:(ptr compiler.Node) ty:Ty] -> bool
     (or (and (eq ty Ty.i32) (eq (call node_kind n) compiler.Kind.int))
         (and (eq ty Ty.i64) (eq (call node_kind n) compiler.Kind.int64))))
   (fn literal_of [cg:(ptr Cg) n:(ptr compiler.Node) ty:Ty] -> i64
@@ -4011,7 +4012,6 @@
     (call emit_local_get o r))
 
   (fn compile_op [cg:(ptr Cg) op_id:Kw node:(ptr compiler.Node) o:(ptr Out)] -> void
-    (let import_cnt:i32 (get cg Cg.nimports))
     (let io_a:i32 (+ (get cg Cg.scratch) 3))
     (let io_b:i32 (+ (get cg Cg.scratch) 4))
     (let done:bool false)

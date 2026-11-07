@@ -135,7 +135,6 @@
           (call (vec.push str.Bytes) (get x X.deferred) name)
           (call (vec.push i32) (get x X.deferred_at) vi)
           (return))
-    (let tname:str "")
     (let fits:bool false)
     (cond
       ((call str.is ty "i32")

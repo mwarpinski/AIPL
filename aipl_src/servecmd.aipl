@@ -26,7 +26,6 @@
   (import alloc)
   (import option)
   (import os)
-  (import vec)
 
   (fn usage [] -> i32
     (call io.eprintln "usage: aipl serve --fresh FILE --listen ADDR:PORT [--requests N] [-- ARGS...]")

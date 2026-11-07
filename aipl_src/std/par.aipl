@@ -150,7 +150,7 @@
   (fn triple [s:Scale xs:(arr i32) i:i32] -> i32
     (* (get s Scale.by) (arr.get i32 xs i)))
   ;; a worker changing its copy changes nothing else
-  (fn scribble [s:Scale xs:(arr i32) i:i32] -> i32
+  (fn scribble [_s:Scale xs:(arr i32) i:i32] -> i32
     (arr.set i32 xs i -1)
     (arr.get i32 xs i))
 
@@ -159,7 +159,7 @@
   (fn plus [a:i64 b:i64] -> i64 (+ a b))
   ;; a result made of two numbers: the sum and the largest
   (struct Stats [sum:i64 max:i32] (value))
-  (fn note [s:Scale xs:(arr i32) i:i32 acc:Stats] -> Stats
+  (fn note [_s:Scale xs:(arr i32) i:i32 acc:Stats] -> Stats
     (let x:i32 (arr.get i32 xs i))
     (make Stats [sum:(+ (get acc Stats.sum) (i64.extend_s x))
                  max:(if (gt x (get acc Stats.max)) x (get acc Stats.max))]))
@@ -167,7 +167,7 @@
     (make Stats [sum:(+ (get a Stats.sum) (get b Stats.sum))
                  max:(if (gt (get b Stats.max) (get a Stats.max)) (get b Stats.max) (get a Stats.max))]))
   ;; the parts are joined in order: text-like, order-sensitive joining
-  (fn digit [s:Scale xs:(arr i32) i:i32 acc:i64] -> i64 (+ (* acc 10i64) (i64.extend_s (% i 10))))
+  (fn digit [_s:Scale _xs:(arr i32) i:i32 acc:i64] -> i64 (+ (* acc 10i64) (i64.extend_s (% i 10))))
   (fn shift_join [a:i64 b:i64] -> i64 (+ (* a 1000i64) b))
 
   ;; Pass count; test_suite.aipl expects 8.

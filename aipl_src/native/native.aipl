@@ -784,18 +784,22 @@
 
   ;; For hosts (tests, the driver): compile the `len` bytes at `addr`.
   ;; Returns the Output's address.
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_native.rs and src/native.rs)
   (fn compile_at [addr:i32 len:i32] -> (ptr Output)
     (unsafe (call compile (call str.bytes addr len))))
 
   ;; compile_at with sandbox (only the working directory).
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_native.rs and src/native.rs)
   (fn compile_sandboxed_at [addr:i32 len:i32] -> (ptr Output)
     (unsafe (call compile_with (call str.bytes addr len) true (call str.from_str "") (call str.from_str ""))))
 
   ;; compile_at with sandbox (non-zero: only the working directory), the
   ;; `glen` bytes at `gaddr`: the --listen grants, one ADDR:PORT a line,
   ;; and the `slen` at `saddr`: the --serve address, or none.
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_native.rs and src/native.rs)
   (fn compile_full_at [addr:i32 len:i32 sandbox:i32 gaddr:i32 glen:i32 saddr:i32 slen:i32] -> (ptr Output)
     (unsafe (call compile_with (call str.bytes addr len) (neq sandbox 0) (call str.bytes gaddr glen) (call str.bytes saddr slen))))
 
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_native.rs and src/native.rs)
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 )

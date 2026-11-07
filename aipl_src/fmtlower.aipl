@@ -458,7 +458,7 @@
 
   ;; (call PUT (call show.start) VAR ...): the variable prefix num written
   ;; onto a new buffer as the formatting forms write a value of f's type.
-  (fn put_value [l:(ptr L) at:i32 f:(ptr checker.Fmt) prefix:str.Bytes num:str.Bytes] -> void
+  (fn put_value [l:(ptr L) _at:i32 f:(ptr checker.Fmt) prefix:str.Bytes num:str.Bytes] -> void
     (let out:(ptr buf.Buf) (get l L.out))
     (let t:ast.Type (get f checker.Fmt.ty))
     (let en:str.Bytes (match t (ast.Type.enum_ [e] e) (else (call str.absent))))

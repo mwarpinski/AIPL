@@ -15,7 +15,8 @@
 ;;   unused-function    a function without (pub) that nothing in the file names
 ;;   unused-import      an (import ...) of which nothing in the file is used
 ;;   unreachable-code   a form after a return, break, continue or abort in the same body
-;;   leaky-in-loop      format or str.concat in a loop: every turn makes a str that nothing frees
+;;   leaky-in-loop      format or str.concat in a loop: every turn makes a str that nothing frees (not in a return's value:
+;;                      the loop ends there)
 ;;   redundant-bool     (eq x true), (not (not x)), (if c true false)
 ;;   empty-else         (if c x (block)) is (when c x)
 ;;   naming             functions in snake_case, types begin with a capital, constants in capitals
@@ -259,6 +260,9 @@
        (let skip:i32 (call skipped st n))
        (let loop_in:bool (call is_loop st n))
        (when loop_in (put st St.loops (+ (get st St.loops) 1)))
+       ;; what a return makes is made once, since the loop ends there: not a leak per turn
+       (let loops_out:i32 (get st St.loops))
+       (when (call head_is st n "return") (put st St.loops 0))
        (let c:(ptr compiler.Node) (get n compiler.Node.first))
        (let i:i32 0)
        (while (not (call is_null c))
@@ -269,6 +273,7 @@
              (call walk st c))
          (set! c (get c compiler.Node.next))
          (set! i (+ i 1)))
+       (put st St.loops loops_out)
        (when loop_in (put st St.loops (- (get st St.loops) 1))))
       (else (block))))
 

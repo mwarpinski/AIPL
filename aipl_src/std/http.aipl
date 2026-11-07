@@ -230,7 +230,6 @@
     (call parse a text lim false))
 
   (fn parse [a:alloc.Allocator text:str.Bytes lim:Limits request:bool] -> (result (ptr Message) (ptr Error))
-    (let n:i32 (get text str.Bytes.len))
     (let head_limit:i32 (get lim Limits.head_bytes))
     (let empty:str.Bytes (call view text 0 0))
     (let first:i32 (call line_end text 0 head_limit))

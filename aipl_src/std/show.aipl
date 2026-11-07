@@ -46,6 +46,7 @@
     s)
 
   ;; The end of (format_to b "..."): the text stays in b.
+  ;; lint:allow unused-parameter (the form format_to ends with a call of this fixed shape)
   (fn end_to [b:(ptr buf.Buf)] -> void (pub) (block))
 
   ;; A pointer or array inside a value being shown (formats.rs

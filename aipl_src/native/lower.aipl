@@ -599,7 +599,6 @@
     (call vpop l (get l L.oa))
     (call load_op l (get l L.oa) reg))
   (fn pop_rax [l:(ptr L)] -> void (call pop_to l (call rax)))
-  (fn spill [l:(ptr L)] -> void (call flush l))
 
   ;; `call` to function index `func`, patched once every function is placed.
   (fn emit_call [l:(ptr L) func:i32] -> void (pub)
@@ -777,7 +776,7 @@
 
   ;; Writes the register-held locals back to their slots (to_slots), or
   ;; reloads them, around code that uses rbx and r12-r14.
-  (fn sync_locals [l:(ptr L) np:i32 to_slots:bool] -> void
+  (fn sync_locals [l:(ptr L) _np:i32 to_slots:bool] -> void
     (let c:(ptr buf.Buf) (get l L.code))
     (for i 0 (get l L.nall)
       (let r:i32 (call reg_of l i))
@@ -936,7 +935,6 @@
           (call note_position l (get e wasm_reader.LinePos.file) (get e wasm_reader.LinePos.line) (get e wasm_reader.LinePos.col)))))
 
   (fn instr [l:(ptr L) w:(ptr wasm_reader.Wasm) np:i32 nres:i32 ins:(ptr wasm_reader.Instr)] -> void
-    (let c:(ptr buf.Buf) (get l L.code))
     (put l L.taken 0)
     (put l L.taken_x 0)
     (let op:i32 (get ins wasm_reader.Instr.op))
@@ -1343,7 +1341,7 @@
   ;; Loads, stores, memory.size, memory.grow. Returns false for any other
   ;; opcode. `align` (the memarg's) is a hint only: wasm does not trap on
   ;; unaligned plain accesses, and neither does x86.
-  (fn memory_op [l:(ptr L) op:i32 align:i32 offset:i32] -> bool
+  (fn memory_op [l:(ptr L) op:i32 _align:i32 offset:i32] -> bool
     (let c:(ptr buf.Buf) (get l L.code))
     (cond
       ;; i32/i64/f32/f64.load, i32.load8_s/u, i32.load16_s/u: the value's bits into a slot
@@ -1407,7 +1405,6 @@
 
   ;; The i32 atomics, notify and wait32. Returns false for any other opcode.
   (fn atomic_op [l:(ptr L) op:i32 offset:i32] -> bool
-    (let c:(ptr buf.Buf) (get l L.code))
     ;; operands in fixed registers, so everything else onto the stack, and
     ;; locals in r8 and r9 (which these use) written back, reloaded after
     (let atomic:bool (call clobbers_r8_r9 op))
@@ -1591,7 +1588,7 @@
   ;; from r15 (every 32-bit address plus every offset), has no access, so an
   ;; access outside the memory faults, and the fault handler turns that into
   ;; the out-of-bounds trap (runtime.emit_fault_handler).
-  (fn checked_address [l:(ptr L) ar:i32 offset:i32 width:i32] -> (ptr x64.Mem)
+  (fn checked_address [l:(ptr L) ar:i32 offset:i32 _width:i32] -> (ptr x64.Mem)
     ;; an offset past the largest memory (or negative as i32, i.e. 2 GiB and
     ;; up as u32) can never be in bounds (in 64 bits: the maximum, 32768
     ;; pages, is 2^31 bytes)

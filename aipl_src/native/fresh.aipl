@@ -34,7 +34,7 @@
   (import sockets)
 
   ;; Registers (x64.aipl numbering)
-  (fn rax [] -> i32 0) (fn rcx [] -> i32 1) (fn rdx [] -> i32 2) (fn rbx [] -> i32 3)
+  (fn rax [] -> i32 0) (fn rcx [] -> i32 1) (fn rdx [] -> i32 2) (fn rbx [] -> i32 3)  ;; lint:allow unused-function (the register table is complete)
   (fn rsp [] -> i32 4) (fn rsi [] -> i32 6) (fn rdi [] -> i32 7)
   (fn r8 [] -> i32 8) (fn r9 [] -> i32 9) (fn r10 [] -> i32 10)
   (fn r12 [] -> i32 12) (fn r13 [] -> i32 13) (fn r14 [] -> i32 14)

@@ -503,7 +503,7 @@
   (fn sc_push [sc:(ptr Sc)] -> void
     (call (vec.push (ptr (map.Map str.Bytes str.Bytes))) (get sc Sc.stack) (call (map.make str.Bytes str.Bytes) (call alloc.default) 4)))
   (fn sc_pop [sc:(ptr Sc)] -> void
-    (let top:(ptr (map.Map str.Bytes str.Bytes)) (call (vec.pop (ptr (map.Map str.Bytes str.Bytes))) (get sc Sc.stack))))
+    (let _top:(ptr (map.Map str.Bytes str.Bytes)) (call (vec.pop (ptr (map.Map str.Bytes str.Bytes))) (get sc Sc.stack))))
   (fn sc_top [sc:(ptr Sc)] -> (ptr (map.Map str.Bytes str.Bytes))
     (call (vec.at (ptr (map.Map str.Bytes str.Bytes))) (get sc Sc.stack) (- (call (vec.len (ptr (map.Map str.Bytes str.Bytes))) (get sc Sc.stack)) 1)))
 
@@ -886,11 +886,6 @@
       (when (eq (call (vec.at (ptr compiler.Node)) taken k) c) (return true)))
     false)
 
-  ;; Expands the generics of flat program `flat` into `out`; false with a
-  ;; message in `err` on a malformed or unbounded use.
-  (fn expand [flat:str.Bytes out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
-    (call expand_mapped flat out err (ptr.null origins.Origins) (ptr.null Failure)))
-
   ;; expand, noting in `gen` (if not null) where each token of the result
   ;; comes from in `flat`; nothing is noted when there are no generics (the
   ;; result is `flat` itself).
@@ -1125,7 +1120,7 @@
       (else (call buf.push_bytes out (call text st n)))))
 
   ;; An environment putting `ty` in for the interface's parameter.
-  (fn iface_env [st:(ptr St) i:(ptr Iface) ty:(ptr compiler.Node) tn:str.Bytes] -> (ptr Env)
+  (fn iface_env [_st:(ptr St) i:(ptr Iface) ty:(ptr compiler.Node) tn:str.Bytes] -> (ptr Env)
     (let e:(ptr Env) (new Env (call alloc.forever) [names:(call (vec.make str.Bytes) (call alloc.default) 1)
                                                     args:(zero (ptr (vec.Vec (ptr compiler.Node))))
                                                     outer:(zero (ptr Env))

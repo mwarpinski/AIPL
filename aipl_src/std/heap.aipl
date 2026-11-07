@@ -118,7 +118,7 @@
     p)
 
   ;; A freed block handed out again: it must still hold the junk pattern.
-  (fn reuse [h:(ptr Heap) p:i32] -> void (unsafe)
+  (fn reuse [_h:(ptr Heap) p:i32] -> void (unsafe)
     (req (not (call written_after_free p))))
 
   ;; Whether freed block p (its first 8 bytes are the free list link) has

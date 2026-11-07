@@ -288,6 +288,7 @@
                                                                 len:(get b str.Bytes.len)]))
     h)
 
+  ;; lint:allow unused-function (the host invokes it by name: tests/test_native_elf.rs)
   (fn hello_exe [] -> (ptr HostBytes)
     (let data:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_str data "hello from native AIPL")

@@ -33,6 +33,7 @@
     (new Output (call alloc.forever) [addr:(call str.addr msg) len:(get msg str.Bytes.len) ok:false error:msg exe:(call str.from_str "")]))
 
   ;; For a host to put the module in memory.
+  ;; lint:allow unused-function (the host invokes it by name)
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 
   (fn export_func [w:(ptr wasm_reader.Wasm) name:str] -> i32

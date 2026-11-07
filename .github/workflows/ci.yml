@@ -51,6 +51,8 @@ jobs:
         run: python3 tools/grammar_check.py
       - name: The standard library reference, against aipl doc
         run: python3 tools/std_reference.py --check
+      - name: aipl lint, clean on the standard library and on aipl_src
+        run: ./target/release/aipl lint aipl_src/std/*.aipl aipl_src/*.aipl aipl_src/native/*.aipl
       - name: The conformance suite, on the Rust aipl and on the self-hosted one
         run: |
           python3 tools/conformance.py --aipl target/release/aipl --backend run --backend wasm --backend native
