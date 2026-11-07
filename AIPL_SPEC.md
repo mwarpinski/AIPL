@@ -16,7 +16,7 @@ AIPL source is `.aipl` text: a context-free, parenthesis-delimited S-expression 
 
 ---
 
-## 2. Updated Formal Grammar (EBNF)
+## 2. Grammar (EBNF)
 
 ```ebnf
 program        ::= "(" "module" identifier item* ")" ;
@@ -284,7 +284,7 @@ See "Memory layout" (section 7.9) for the reserved runtime block below address 1
 A `str` is a pointer to immutable UTF-8 bytes preceded by a 4-byte little-endian length. String literals are interned once per module, in first-use order, into the data area that starts at address 1024; the heap starts at the first 8-aligned address after them (section 7.9). Literals are read-only: a store into one traps like a store into the runtime block.
 The literals and the heap start must fit in the first 1 MiB of memory. `(str.len s)` returns the byte length as `i32`; `(str.ptr s)` returns the address of the bytes as `i32`, which is how a string becomes the `(ptr, len)` pair that `fs.*` and other pointer-taking ops expect (identity in both backends: the VM places the literals at the same addresses as wasm when it loads a module, and copies a string onto the heap only if it is not one of the first-loaded module's literals).
 Two literals with the same text share one address. Strings do not compare with `eq`, `neq`, or `lt`: a string made at run time has an address of its own, so `eq` would compare addresses compiled and contents in the VM. Compare contents with `(call str.same a b)` and order with `(call (cmp.Ord.compare str) a b)`; `(eq s "x")` is the error `eq on str: compare strings by content with (call str.same a b), ...`.
-There is no `+` on strings (`+ does not join strings: join two with (call str.concat a b), ...`). The VM represents a `str` as a Rust string rather than a pointer; the observable semantics above are the same.
+There is no `+` on strings (`+ does not join strings: join two with (call str.concat a b), ...`).
 
 **Which kind of text to use.** AIPL has three, and converts between them only by calling a function, so each copy is visible:
 
@@ -915,7 +915,7 @@ A module may hold tests, next to the code they check:
 
 `(test "name" body...)` is an item of the module, so its body may call the module's private functions. Its statements run in order; `(expect c)`, allowed only inside a test, checks a `bool`: when it is false, the test fails, and `FILE:LINE:COL: (expect c)` is written to standard error, with both sides when `c` is a comparison (`eq`, `neq`, `lt`, `lte`, `gt`, `gte`) whose sides the formatting forms print (section 4.K): `rows.aipl:9:5: (expect (eq n 3)): left 2, right 3`. Each side is evaluated once. The test goes on after a failed `expect`, so one run shows every failure; a trap ends the test (and only it) with its message and call chain.
 
-Tests are left out of every build but a test build, so they cost an ordinary program nothing. `aipl compile --tests FILE -o OUT` makes the test build: test K of the file (not of its imports) is `(fn __test_K [] -> void body...)`, and a `_start` runs the test its first argument names, then exits with that test's failure count (at most 125); std/testing (section 10) and std/os are imported. A module with its own `_start` cannot have a test build. Both toolchains make it, byte for byte alike.
+Tests are left out of every build but a test build, so they cost an ordinary program nothing. In a test build, test K of the file (not of its imports) is a function, and the program runs the test its first argument names, then exits with that test's failure count (at most 125). A module with its own `_start` cannot have a test build.
 
 A test runs in a fresh process, so tests share no state. It passes when its body ends with no failed `expect` and no trap, and the tool that runs it shows a failing test's output under its name. (The `aipl test` command is described in docs/IMPLEMENTATION.md.)
 
@@ -1090,7 +1090,7 @@ The suite is organised by the sections of this document, and each case names the
 
 ## 7. Typing and Evaluation Rules by Example
 
-### 7.1 Typing and Scoping Rules (P7 Specification)
+### 7.1 Typing and scoping rules
 
 Six rules govern types and scopes:
 
@@ -1545,7 +1545,7 @@ The reference has, for each module, what it is for and every public item. `aipl 
 - `(import name)` finds `name.aipl` by searching, in order: the importing file's directory, the entry file's directory, the standard library (`$AIPL_STD` when set, else the library's `std/`, below), then each directory listed in the colon-separated `AIPL_PATH` environment variable. The first match wins, so a local `io.aipl` shadows the standard one.
 - **Every module a file names, it imports.** A call, a type, a field path, a `ref`, a constant, or an interface written with a module's prefix (`str.Bytes`, `(call vec.push ...)`, `(get b str.Bytes.len)`) needs that module's `(import ...)` in the same file, even when an imported module imports it too; otherwise `'str.Bytes' is in module str, which this file does not import: add (import str)`, from both resolvers. Using a module's functions that use another module needs nothing: that is the other module's import. What the compiler writes for a form (`new` and `arr.new` call `alloc.create` and `alloc.array`, the formatting forms std/show, a test build's `_start` std/testing and std/os) is not the file's to import. The resolver parses it and merges its functions into the entry module renamed as `name.fn`. `(import name as u)` lets you write `(call u.double ...)` locally; it is rewritten to `util.double` before checking.
 - An import may name a file in a subdirectory: `(import native/wasm_reader)` finds `native/wasm_reader.aipl` in the same places, relative to each. The module is named by the last segment (`wasm_reader.decode`), so a sibling inside `native/` that writes `(import wasm_reader)` reaches the same module. Two different files with the same name in one program are an error (`two different modules are named 'x'`). An import path is names separated by `/`: no leading `/`, no `.` or `..`.
-- Resolution is implemented twice: `src/resolver.rs` (used by every `aipl` command) and `aipl_src/resolver.aipl` (used by `aipl compile --self` and by the self-hosted toolchain compiled to wasm). The AIPL resolver produces flat source text: every struct, then every function, imported modules first in resolution order, comments dropped. The host passes the standard library directory; the resolver reads `AIPL_PATH` itself with `std/os`. `tests/test_resolver_aipl.rs` requires both to produce the same compiled bytes for every program with imports in the repository, plus aliases, diamonds, cycles, and missing modules (`PATH: Circular import detected: ...`, `Cannot resolve import 'NAME': no 'NAME.aipl' found in ...` listing the places searched).
+- Resolution turns the imported modules and the entry module into one program: every struct, then every function, imported modules first in resolution order. A cycle is an error (`PATH: Circular import detected: ...`), and so is a module that cannot be found (`Cannot resolve import 'NAME': no 'NAME.aipl' found in ...`, listing the places searched). `AIPL_PATH` is read by the resolver itself.
 - Import depth is flattened to one level: a function from a module imported by an import is still `directimport.fn`, not `a.b.fn`. Diamond imports produce one copy. Cycles are an error naming the file.
 - The entry module's own functions keep bare names. In a compiled `.wasm`, exports are `main` and `util.double`.
 - Structs follow the same rule: `(struct Node ...)` in `util` is `util.Node` everywhere outside `util` (`(ptr util.Node)`, `(new util.Node a [...])`, `(get p util.Node.val)`), aliases included, so two imports may each define `Node`. An importer's bare `Node` never reaches into an import.
@@ -1738,7 +1738,7 @@ lines: 4
 words: 15
 bytes: 81
 ```
-`tests/test_wasi.rs` runs this program in both backends against a generated input and against the shipped `examples/input.txt`, and asserts the exact stdout and exit status; `aipl compile --self` reports byte parity for it and for each `std` module.
+The repository's tests run this program in both backends against a generated input and against the shipped `examples/input.txt`, and check the exact standard output and exit status.
 
 ## 13. Pitfalls for Code Generators
 
