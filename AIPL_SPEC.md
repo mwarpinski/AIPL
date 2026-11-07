@@ -18,64 +18,84 @@ AIPL source is `.aipl` text: a context-free, parenthesis-delimited S-expression 
 ## 2. Updated Formal Grammar (EBNF)
 
 ```ebnf
-program        ::= "(" "module" identifier import* ( struct_def | enum_def | union_def | const_def | fn_def | interface_def | impl_def )* ")" ;
-import         ::= "(" "import" import_path [ "as" identifier ] ")" ;
-import_path    ::= identifier ( "/" identifier )* ;
-struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" [ "(" "value" ")" ] where* ")" ;   (* (value): a value struct (section 4.E) *)
-field          ::= identifier ":" type ;
+program        ::= "(" "module" identifier item* ")" ;
+item           ::= import | language_decl | struct_def | enum_def | union_def | const_def | fn_def | interface_def | impl_def | test_def ;   (* in any order *)
+import         ::= "(" "import" path [ "as" identifier ] ")" ;   (* path: std names like io, or dir/name *)
+language_decl  ::= "(" "language" integer ")" ;                   (* the language version the module is written for (docs/LANGUAGE_VERSIONING.md) *)
+pub_mark       ::= "(" "pub" ")" ;                                (* visible to other modules (section 11.1) *)
+struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" ( value_mark | pub_mark | where )* ")" ;
+value_mark     ::= "(" "value" ")" ;                              (* a value struct (section 4.E) *)
+field          ::= identifier ":" type
+                 | "(" ( "pub" | "read" ) identifier ":" type ")" ;   (* (pub f:T): other modules read and write it; (read f:T): they read it only *)
 generic_head   ::= "(" identifier type_param+ ")" ;
-type_param     ::= identifier ;                     (* starts with an uppercase letter *)
+enum_def       ::= "(" "enum" identifier "[" ( identifier | "(" identifier integer ")" )+ "]" pub_mark? ")" ;
+const_def      ::= "(" "const" identifier ":" type const_value pub_mark? ")" ;   (* NAME in capitals; i32 i64 f64 bool str *)
+const_value    ::= literal | identifier | "(" ( identifier | "+" | "-" | "*" | "/" | "%" | "^" ) const_value+ ")" ;   (* a constant expression (section 4.I) *)
+union_def      ::= "(" "union" ( identifier | generic_head ) "[" variant+ "]" ( where | pub_mark )* ")" ;
+variant        ::= "(" identifier field* ")" ;
+test_def       ::= "(" "test" string expr* ")" ;                  (* section 4.L *)
 
-enum_def       ::= "(" "enum" identifier "[" ( identifier | "(" identifier integer ")" )+ "]" ")" ;
-const_def      ::= "(" "const" identifier ":" type const_value ")" ;   (* NAME in capitals; i32 i64 f64 bool str *)
-const_value    ::= literal | identifier | "(" identifier const_value+ ")" ;   (* a constant expression (section 4.I) *)
-union_def      ::= "(" "union" ( identifier | generic_head ) "[" ( "(" identifier field* ")" )+ "]" where* ")" ;
-
-fn_def         ::= "(" "fn" ( identifier | generic_head ) "[" param* "]" "->" type where* contract* expr* ")" ;
+fn_def         ::= "(" "fn" ( identifier | generic_head ) "[" param* "]" "->" type ( fn_clause | expr )* ")" ;   (* a clause may stand anywhere among the body: where it is makes no difference *)
+fn_clause      ::= where | contract | pub_mark ;
 where          ::= "(" "where" "(" ( identifier | "struct" | "plain" ) type_param ")" ")" ;   (* generics only (section 4.H) *)
-interface_def  ::= "(" "interface" "(" identifier type_param ")" fn_sig+ ")" ;
+interface_def  ::= "(" "interface" "(" identifier type_param ")" pub_mark? fn_sig+ ")" ;
 fn_sig         ::= "(" "fn" identifier "[" param* "]" "->" type contract* ")" ;   (* no body *)
 impl_def       ::= "(" "impl" "(" identifier type ")" fn_def+ ")" ;
 param          ::= identifier ":" type ;
-contract       ::= "(" ("req" | "ens" | "inv") expr ")"
+contract       ::= "(" ( "req" | "ens" | "inv" ) expr ")"
                  | "(" "unsafe" ")"                  (* the function is unsafe to call (section 3) *)
                  | "(" "no_leak" ")" ;               (* the function makes no memory that is never freed (section 3) *)
 
 type           ::= "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void"
                  | "u8" | "i8" | "u16" | "i16"         (* storage types: a struct field or an array element only (section 4.A) *)
                  | "(" "result" type type ")"
-                 | "(" "ptr" struct_name ")"
+                 | "(" "ptr" struct_ref ")"
                  | "(" "arr" type ")"
-                 | "(" "fn" "[" type* "]" "->" type ( "(" "no_leak" ")" )? ")"   (* with (no_leak): only functions that keep no memory (section 4.G) *)
-                 | "(" struct_name type+ ")"          (* a generic struct instance: behind ptr, or a value struct's *)
+                 | "(" "fn" "[" type* "]" "->" type [ "(" "no_leak" ")" ] ")"   (* with (no_leak): only functions that keep no memory (section 4.G) *)
+                 | "(" identifier type+ ")"           (* a generic struct or union instance: (vec.Vec i32), (option.Option str) *)
                  | type_param                         (* inside a generic definition *)
                  | identifier ;                       (* an enum, a union, or a value struct, e.g. Color, Shape, Vec3 *)
-struct_name    ::= identifier                       (* "m.S" for a struct from imported module m *)
-struct_ref     ::= struct_name | "(" struct_name type+ ")" ;
-field_ref      ::= struct_name "." identifier ;
+struct_ref     ::= identifier | "(" identifier type+ ")" ;      (* "m.S" for a struct from imported module m *)
+field_inits    ::= "[" ( identifier ":" expr )* "]" ;   (* [x:1 y:2]: each field by name, in declaration order *)
+field_ref      ::= identifier ;                       (* one symbol, StructName.fieldName, split at its last "." *)
 fn_name        ::= identifier | "(" identifier type+ ")" ;   (* the second form instantiates a generic, or names an interface's function: (Hash.hash i32) *)
+literal        ::= integer | integer64 | float | float32 | string | boolean ;
 
 expr           ::= literal
                  | identifier
                  | "(" "let" identifier ":" type expr ")"
                  | "(" "set!" identifier expr ")"
                  | "(" "if" expr expr expr ")"
+                 | "(" "when" expr expr* ")"
                  | "(" "for" identifier expr expr expr* ")"
+                 | "(" "counted_loop" identifier expr expr expr expr* ")"   (* what for becomes: start, end exclusive, step *)
                  | "(" "while" expr expr* ")"
                  | "(" "call" fn_name expr* ")"
                  | "(" "block" expr* ")"
                  | "(" "unsafe" expr+ ")"            (* a block allowing unchecked operations (section 3) *)
+                 | "(" "defer" expr+ ")"             (* runs when the function returns (section 4.F) *)
                  | "(" "return" [ expr ] ")" | "(" "break" ")" | "(" "continue" ")"
                  | "(" "cond" ( "(" expr expr+ ")" )+ "(" "else" expr+ ")" ")"
-                 | "(" ("ok" | "err") ":" type expr ")"   (* the result's other side: (ok:E v), (err:T e) *)
+                 | "(" ( "ok" | "err" ) [ ":" type ] expr ")"   (* the result's other side: (ok:E v), (err:T e) *)
                  | "(" "match_result" expr "(" "ok" identifier expr* ")" "(" "err" identifier expr* ")" ")"
-                 | "(" "new" struct_ref expr ")"        (* the allocator to make it from (section 4.E) *)
-                 | "(" "get" expr struct_name "." identifier ")"
-                 | "(" "get" expr field_ref field_ref+ ")"   (* a path into value structs held inline (section 4.E) *)
-                 | "(" "get" expr "(" struct_name type+ ")" identifier ")"
-                 | "(" "put" expr struct_name "." identifier expr ")"
-                 | "(" "put" expr field_ref field_ref+ expr ")"   (* one field of a value struct held in the field *)
-                 | "(" "put" expr "(" struct_name type+ ")" identifier expr ")"
+                 | "(" "try" expr [ expr ] ")"       (* (try r), (try r (ref convert)) (section 4.F) *)
+                 | "(" "try_opt" expr ")"
+                 | "(" "try_or" expr expr ")"
+                 | "(" "drop" expr ")"
+                 | "(" "assert" expr [ expr ] ")"    (* section 3 *)
+                 | "(" "abort" expr ")"
+                 | "(" ( "print" | "println" | "eprintln" ) string ")"     (* section 4.K *)
+                 | "(" "format" string ")"
+                 | "(" "format_to" expr string ")"
+                 | "(" "dbg" expr ")"
+                 | "(" "expect" expr ")"             (* only inside a test (section 4.L) *)
+                 | "(" "zero" type ")"
+                 | "(" "arr.of" type expr expr* ")"  (* the array literal: the allocator, then the elements (section 4.M) *)
+                 | "(" "new" struct_ref expr [ field_inits ] ")"   (* the allocator to make it from, then the fields by name (section 4.E) *)
+                 | "(" "get" expr field_ref+ ")"     (* more than one: a path into value structs held inline (section 4.E) *)
+                 | "(" "get" expr "(" identifier type+ ")" identifier ")"
+                 | "(" "put" expr field_ref+ expr ")"   (* the names before the last item are a path, as for get *)
+                 | "(" "put" expr "(" identifier type+ ")" identifier expr ")"
                  | "(" "sizeof" ( struct_ref | type ) ")"
                  | "(" "arr.new" type expr expr ")"    (* the allocator, then the length *)
                  | "(" "arr.get" type expr expr field_ref* ")"      (* a path reads one field of a value struct element *)
@@ -89,9 +109,10 @@ expr           ::= literal
                  | "(" "ref" fn_name ")"
                  | "(" "enum.cast" identifier expr ")" | "(" "enum.ord" expr ")"
                  | "(" "call_ref" type expr expr* ")"
-                 | "(" "make" identifier expr* ")"     (* Union.variant, or a value struct *)
+                 | "(" "make" identifier ( expr* | field_inits ) ")"     (* Union.variant, or a value struct; fields by name or in order *)
                  | "(" "with" expr field_ref expr ")"  (* a copy of a value struct with one field changed *)
-                 | "(" "make" "(" identifier type+ ")" identifier expr* ")"   (* a generic union's variant (section 4.J) *)
+                 | "(" "make" "(" identifier type+ ")" identifier ( expr* | field_inits ) ")"   (* a generic union's variant (section 4.J) *)
+                 | "(" "make" "(" identifier type+ ")" ( expr* | field_inits ) ")"   (* a generic value struct (section 4.H) *)
                  | "(" "match" expr match_arm+ ")"
                  | "(" op expr* ")" ;
 
@@ -123,6 +144,22 @@ proc_op        ::= "args.sizes" | "args.get" | "env.sizes" | "env.get" ;
 thread_op      ::= "thread.spawn" | "thread.join" ;
 str_op         ::= "str.len" | "str.ptr" ;
 ```
+
+**Lexical classes.** The grammar uses these names for tokens it does not spell out. A program is first cut into tokens (the five single characters `(` `)` `[` `]` `:`, the arrow `->`, strings, and symbols, which run to the next space, bracket, or colon), and each token is then a terminal of the grammar (`"let"`, `"+"`) or a member of one class:
+
+| Class | A token that is |
+|---|---|
+| `identifier` | a symbol of letters, digits, `_`, `.`, and `-` that begins with a letter or `_`: a name, or a qualified one (`io.println`, `Shape.circle`, `counter.Counter.n`) |
+| `path` | the same, with `/` allowed as well: the name in an `(import ...)` (`io`, `native/lower`) |
+| `type_param` | an `identifier` that begins with an uppercase letter |
+| `integer` | an `i32` literal: decimal, `0x` hexadecimal, or `0b` binary, with an optional sign and single `_` between digits (details below) |
+| `integer64` | an integer as above with the suffix `i64` |
+| `float` | decimal digits with a `.` and an optional exponent: `1.0`, `.5`, `1.5e3` |
+| `float32` | a float with the suffix `f32` |
+| `string` | text in double quotes, on one line; the escapes are `\n \t \r \0 \\ \"` |
+| `boolean` | `true` or `false` |
+
+Comments start with `;;` and run to the end of the line; they are not tokens. `tools/grammar_check.py` reads the EBNF above and every program in the repository by exactly these rules, and CI fails when the two disagree.
 
 Notes on the grammar as implemented by `src/parser.rs`:
 - A module body is imports followed by struct, enum, union, constant, and function definitions, in any order. `let` and `set!` are expressions that appear inside function bodies, not at module level.

@@ -47,6 +47,8 @@ jobs:
         run: python3 tools/harness/harness.py selftest
       - name: The documentation, against the repository
         run: python3 tools/docs_check.py
+      - name: The grammar in the specification, against every program in the repository
+        run: python3 tools/grammar_check.py
 
   arm64:
     # AArch64 Linux: the Rust test suite (the AArch64 backend's executables run on this
