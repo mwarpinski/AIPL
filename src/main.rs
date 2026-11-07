@@ -495,7 +495,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 // a run-time error is a trap: status 134 and the call chain, as compiled code ends
                 Err(e) => {
-                    eprintln!("{file}: {e}\n{}", vm.call_chain().trim_end());
+                    eprintln!("Error: {}", format!("{e}\n{}", vm.call_chain()).trim_end());
                     std::process::exit(134)
                 }
                 Ok(v) => v,

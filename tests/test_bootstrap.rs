@@ -448,7 +448,7 @@ fn aipl_lint_says_the_same_in_both_commands() {
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native seed)")]
 fn aipl_run_says_the_same_in_both_commands() {
-    let dir = scratch("bootstrap_run");
+    let dir = scratch("bootstrap_run_corpus");
     let aipl = dir.join("aipl");
     build_aipl(Path::new(AIPL), &aipl);
     // every example and test program, run with no input: the same status, output, and error text. Left out: the
