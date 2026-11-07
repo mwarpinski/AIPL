@@ -52,6 +52,30 @@ run to run. Nothing is slower. The biggest gaps to C left are
 knucleotide (8.9x natively), nbody natively (3.3x; 1.7x under wasmtime),
 and pidigits: OPT_PLAN.md step 4.
 
+### What the overflow checks cost
+
+Since 2026-11-07 integer `+ - *` trap on overflow (AIPL_SPEC.md section 8.2). Best of five on arcadia (a different
+machine than the tables above: compare the two columns here, not these times with those), the compiler before the
+change (b42503e) and after, optimizer on, `--no-opt` builds left out:
+
+| Benchmark | Before: native / wasmtime | After: native / wasmtime | Slower by |
+|---|---|---|---|
+| binarytrees | 0.306 s / 0.269 s | 0.386 s / 0.344 s | 26% / 28% |
+| fannkuch | 0.310 s / 0.229 s | 0.345 s / 0.259 s | 11% / 13% |
+| knucleotide | 0.329 s / 0.317 s | 0.376 s / 0.360 s | 14% / 14% |
+| mandelbrot | 0.058 s / 0.079 s | 0.061 s / 0.081 s | 5% / 3% |
+| nbody | 0.166 s / 0.093 s | 0.167 s / 0.094 s | 1% / 1% |
+| pidigits | 4.193 s / 2.163 s | 4.167 s / 2.169 s | none (the limb loops of `std/bigint` use `wrap.*`, their comments show they cannot overflow) |
+| spectralnorm | 0.087 s / 0.071 s | 0.140 s / 0.128 s | 61% / 80% |
+| spigot | 1.444 s / 1.615 s | 2.020 s / 2.050 s | 40% / 27% |
+
+A checked `+` costs about 0.4 ns where a wrapping one costs about 0.2 (a loop of 400 million, native), so the cost
+is the share of a program's time that goes to integer `+ - *`: spectralnorm and spigot are nearly all of it,
+nbody (floats) none. `x + c` and `x - c` with a literal `c` are cheaper than the general case (one comparison of
+`x`). Where a hot loop cannot overflow, or wraps on purpose, `wrap.add`, `wrap.sub`, and `wrap.mul` skip the check.
+The native backends could test the processor's overflow flag instead of widening to `i64`: that is the way to get
+most of this back.
+
 ### Before the optimizer
 
 AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
