@@ -158,7 +158,8 @@ fn doc_examples_run_in_both_backends() {
         }
     }
     let mut fragments = 0;
-    for src in lisp_blocks("AIPL_SPEC.md") {
+    // the specification, and the implementation notes that took its toolchain sections
+    for src in lisp_blocks("AIPL_SPEC.md").into_iter().chain(lisp_blocks("docs/IMPLEMENTATION.md")) {
         let code: String = src.lines().filter(|l| !l.trim_start().starts_with(";;")).collect::<Vec<_>>().join("\n");
         let file = scratch.join("example.aipl");
         if !code.trim_start().starts_with("(module") {

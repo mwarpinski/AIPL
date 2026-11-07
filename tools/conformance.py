@@ -292,6 +292,7 @@ def main():
     ap.add_argument("-j", "--jobs", type=int, default=4)
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    args.aipl = os.path.abspath(args.aipl)    # the cases run in a scratch directory of their own
 
     all_cases = discover()
     findings, seen = check_cases(all_cases)

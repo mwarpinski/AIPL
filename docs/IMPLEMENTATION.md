@@ -494,7 +494,7 @@ To run compiled I/O outside the tests: `aipl run module.wasm` (the working direc
 
 ### 10.7 Documentation examples (`tests/test_doc_examples.rs`)
 
-Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md`, `README.md`, and this specification is checked. A complete module must parse, check, and compile, and if it defines `main`, `main` must return the value listed in the test's `EXPECTED` table in both the VM and wasmtime (with WASI and a scratch directory); the few spec modules that cannot run that way are listed with a reason in `SPEC_SPECIAL`. A fragment of this specification (a few definitions without `(module`) is wrapped in a module and type-checked; the deliberately invalid example in 7.3 must fail with its documented message. Adding an example with a `main` means adding its expected value there. This test found that a `match_result` used as a statement compiled to invalid wasm.
+Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md`, `README.md`, and this specification and docs/IMPLEMENTATION.md is checked. A complete module must parse, check, and compile, and if it defines `main`, `main` must return the value listed in the test's `EXPECTED` table in both the VM and wasmtime (with WASI and a scratch directory); the few spec modules that cannot run that way are listed with a reason in `SPEC_SPECIAL`. A fragment of this specification (a few definitions without `(module`) is wrapped in a module and type-checked; the deliberately invalid example in 7.3 must fail with its documented message. Adding an example with a `main` means adding its expected value there. This test found that a `match_result` used as a statement compiled to invalid wasm.
 
 ---
 
