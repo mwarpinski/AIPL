@@ -1,0 +1,9 @@
+;; @spec 7.6
+;; @kind trap
+;; @trap Post-condition failed
+(module ens_checked_after_early_return
+  (fn f [n:i32] -> i32
+    (ens (gt res 0))
+    (when (lt n 0) (return n))
+    n)
+  (fn main [] -> i32 (call f -1)))

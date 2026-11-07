@@ -1,0 +1,16 @@
+;; @spec 4.K
+;; @kind run
+;; @out Ada ran 3 tests, mean 2.72
+;; @out [    3] [3    ] [  3  ] [***3***] [00003] [+3]
+;; @out ff FF 101 -ff
+;; @out {braces} 3 true 0.1 100.0 1e+16 1.5e-07
+(module placeholders_and_specs
+  (fn main [] -> i32
+    (let name:str "Ada")
+    (let n:i32 3)
+    (let mean:f64 2.71828)
+    (println "{name} ran {n} tests, mean {mean:.2}")
+    (println "[{n:>5}] [{n:<5}] [{n:^5}] [{n:*^7}] [{n:05}] [{n:+}]")
+    (println "{255:x} {255:X} {5:b} {-255:x}")
+    (println "{{braces}} {(+ 1 2)} {true} {0.1} {100.0} {1.0e16} {0.00000015}")
+    0))

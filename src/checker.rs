@@ -1056,7 +1056,7 @@ fn fits(got: &Type, want: &Type) -> bool {
         }
         self.validate_type(&f.return_type, f.span)
             .map_err(|e| format!("{} (return type of '{}')", e, shown(&f.name)))?;
-        // the program's main gives its exit status (AIPL_SPEC.md 6.5)
+        // the program's main gives its exit status (AIPL_SPEC.md 6.1)
         let status = matches!(&f.return_type, Type::I32 | Type::Void)
             || matches!(&f.return_type, Type::ResultType(ok, err) if **ok == Type::I32 && **err == Type::Str);
         if f.name == "main" && f.params.is_empty() && !status {

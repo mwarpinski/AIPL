@@ -1,0 +1,16 @@
+;; @spec 4.F
+;; @kind run
+;; @out 8
+;; @out one
+(module try_with_conversion
+  (fn code_text [code:i32] -> str
+    (if (eq code 1) "one" "other"))
+  (fn inner [n:i32] -> (result i32 i32)
+    (if (gt n 0) (ok:i32 n) (err:i32 1)))
+  (fn outer [n:i32] -> (result i32 str)
+    (let v:i32 (try (call inner n) (ref code_text)))
+    (ok:str (* v 2)))
+  (fn main [] -> i32
+    (match_result (call outer 4) (ok v (println "{v}")) (err e (println "{e}")))
+    (match_result (call outer 0) (ok v (println "{v}")) (err e (println "{e}")))
+    0))

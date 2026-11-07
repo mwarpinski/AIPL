@@ -1,4 +1,4 @@
-//! std/encode (AIPL_SPEC.md 12.6): tests/aipl/encode/vectors.aipl encodes
+//! std/encode (docs/STD_REFERENCE.md): tests/aipl/encode/vectors.aipl encodes
 //! random bytes as base64 (both alphabets, padded or not), hex, and
 //! percent-encoding, and decodes texts heavy in near misses, accepting and
 //! refusing what Python accepts and refuses (tools/encode_vectors.py);

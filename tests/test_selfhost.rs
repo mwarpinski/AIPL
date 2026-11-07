@@ -16,7 +16,7 @@ fn run_self_hosted(src: &str, name: &str) -> Vec<u8> {
 /// by the Rust toolchain, under wasmtime (in the VM until 2026-10-20, many
 /// times slower; codegen.aipl compiling itself, below, still runs in the
 /// VM). Returns the module bytes or the compile error code it reported
-/// (AIPL_SPEC.md 6.4).
+/// (docs/IMPLEMENTATION.md 5).
 fn self_host(src: &str) -> Result<Vec<u8>, String> {
     self_host_named(src, "")
 }

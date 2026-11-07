@@ -301,7 +301,7 @@
           (when (eq status 2)
                 (call io.write_str 2 "Error: compile error ")
                 (call write_int 2 (get res driver.Out.len))
-                (call io.eprintln " (AIPL_SPEC.md 6.4)")
+                (call io.eprintln " (docs/IMPLEMENTATION.md 5)")
                 (return 1))
           (set! bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))))
     (when exe

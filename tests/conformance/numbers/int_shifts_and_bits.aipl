@@ -1,0 +1,15 @@
+;; @spec 8
+;; @kind run
+;; @out 2 -4 2147483644
+;; @out 3 2 -2147483648
+;; @out -1 8 14 6
+;; @out 31 3 8 32 32
+;; @out 2 64 64
+(module int_shifts_and_bits
+  (fn main [] -> i32
+    (println "{(shl 1 33)} {(shr -8 1)} {(shru -8 1)}")
+    (println "{(rotl 0x80000001 1)} {(rotl 1 33)} {(rotr 1 1)}")
+    (println "{(bitnot 0)} {(bitand 12 10)} {(bitor 12 10)} {(^ 12 10)}")
+    (println "{(clz 1)} {(ctz 8)} {(popcnt 255)} {(clz 0)} {(ctz 0)}")
+    (println "{(shl 1i64 65i64)} {(clz 0i64)} {(popcnt -1i64)}")
+    0))

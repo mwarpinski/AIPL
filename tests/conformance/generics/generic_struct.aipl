@@ -1,0 +1,13 @@
+;; @spec 4.H
+;; @kind run
+;; @out 5 text
+(module generic_struct
+  (import alloc)
+  (struct (Box T) [value:T next:(ptr (Box T))])
+  (fn (box T) [v:T] -> (ptr (Box T))
+    (new (Box T) (call alloc.forever) [value:v next:(zero (ptr (Box T)))]))
+  (fn main [] -> i32
+    (let a:(ptr (Box i64)) (call (box i64) 5i64))
+    (let b:(ptr (Box str)) (call (box str) "text"))
+    (println "{(get a (Box i64) value)} {(get b (Box str) value)}")
+    0))

@@ -1,0 +1,9 @@
+;; @spec 4.E
+;; @kind trap
+;; @trap Array index out of bounds
+(module array_index_out_of_bounds_traps
+  (import alloc)
+  (fn main [] -> i32
+    (let a:(arr i32) (arr.new i32 (call alloc.default) 3))
+    (println "{(arr.get i32 a 3)}")
+    0))

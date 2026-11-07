@@ -1,0 +1,8 @@
+;; @spec 5.4
+;; @kind trap
+;; @trap integer overflow
+(module i64_add_overflow_traps
+  (fn add [a:i64 b:i64] -> i64 (+ a b))
+  (fn main [] -> i32
+    (let x:i64 (call add 9223372036854775807i64 1i64))
+    0))

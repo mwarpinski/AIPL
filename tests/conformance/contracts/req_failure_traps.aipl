@@ -1,0 +1,8 @@
+;; @spec 7.6
+;; @kind trap
+;; @trap Pre-condition failed
+(module req_failure_traps
+  (fn safe_div [num:i32 den:i32] -> i32
+    (req (neq den 0))
+    (/ num den))
+  (fn main [] -> i32 (call safe_div 10 0)))

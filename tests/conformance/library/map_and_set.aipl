@@ -1,0 +1,24 @@
+;; @spec 10
+;; @kind run
+;; @out 2 11 -1
+;; @out true true false
+;; @out some{value: 11}
+;; @out true false true 1
+(module map_and_set
+  (import map)
+  (import set)
+  (import alloc)
+  (fn main [] -> i32
+    (let m:(ptr (map.Map str i32)) (call (map.make str i32) (call alloc.default) 0))
+    (call (map.set str i32) m "one" 1)
+    (call (map.set str i32) m "two" 2)
+    (call (map.set str i32) m "one" 11)
+    (let one:str "one")
+    (let two:str "two")
+    (let three:str "three")
+    (println "{(call (map.count str i32) m)} {(call (map.get_or str i32) m one -1)} {(call (map.get_or str i32) m three -1)}")
+    (println "{(call (map.has str i32) m two)} {(call (map.remove str i32) m two)} {(call (map.has str i32) m two)}")
+    (println "{(call (map.find str i32) m one)}")
+    (let s:(ptr (set.Set i32)) (call (set.make i32) (call alloc.default) 0))
+    (println "{(call (set.add i32) s 5)} {(call (set.add i32) s 5)} {(call (set.has i32) s 5)} {(call (set.count i32) s)}")
+    0))

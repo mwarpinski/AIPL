@@ -1,0 +1,7 @@
+;; @spec 4.B
+;; @kind reject
+;; @reject 6:16 does not join strings | str
+(module plus_on_str_rejected
+  (fn main [] -> i32
+    (let s:str (+ "a" "b"))
+    0))

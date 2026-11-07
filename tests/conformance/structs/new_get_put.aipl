@@ -1,0 +1,11 @@
+;; @spec 4.E
+;; @kind run
+;; @out 13 4 8
+(module new_get_put
+  (import alloc)
+  (struct Point [x:i32 y:i32])
+  (fn main [] -> i32
+    (let p:(ptr Point) (new Point (call alloc.default) [x:3 y:4]))
+    (put p Point.x (+ (get p Point.x) 10))
+    (println "{(get p Point.x)} {(get p Point.y)} {(sizeof Point)}")
+    0))

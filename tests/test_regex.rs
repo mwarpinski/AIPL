@@ -1,4 +1,4 @@
-//! std/regex (AIPL_SPEC.md 12.6): tests/aipl/regex/vectors.aipl compiles
+//! std/regex (docs/STD_REFERENCE.md): tests/aipl/regex/vectors.aipl compiles
 //! 1,500 generated patterns (every quantifier greedy and lazy, groups of
 //! each kind, classes, anchors, flags) and matches them against generated
 //! texts with a newline and a non-ASCII letter, giving what Python's re

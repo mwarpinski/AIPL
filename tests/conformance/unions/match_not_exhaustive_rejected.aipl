@@ -1,0 +1,9 @@
+;; @spec 4.J
+;; @kind reject
+;; @reject 7:5 c | exhaustive | member | variant
+(module match_not_exhaustive_rejected
+  (union T [(a) (b) (c)])
+  (fn f [t:T] -> i32
+    (match t
+      (T.a 1)
+      (T.b 2))))

@@ -1,0 +1,12 @@
+;; @spec 5.3
+;; @kind run
+;; @out then
+;; @out c2
+;; @out 1 1
+(module if_evaluates_one_branch
+  (fn say [s:str] -> i32 (println "{s}") 1)
+  (fn main [] -> i32
+    (let a:i32 (if (lt 1 2) (call say "then") (call say "else")))
+    (let b:i32 (cond ((gt 1 2) (call say "c1")) ((lt 1 2) (call say "c2")) (else (call say "c3"))))
+    (println "{a} {b}")
+    0))

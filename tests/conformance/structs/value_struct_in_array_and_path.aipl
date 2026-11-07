@@ -1,0 +1,15 @@
+;; @spec 4.E
+;; @kind run
+;; @out 40 2.0 3.0
+;; @out true false
+(module value_struct_in_array_and_path
+  (import alloc)
+  (struct Vec2 [x:f64 y:f64] (value))
+  (struct Particle [pos:Vec2 vel:Vec2 alive:bool] (value))
+  (fn main [] -> i32
+    (let ps:(arr Particle) (arr.new Particle (call alloc.forever) 2))
+    (arr.set Particle ps 0 (make Particle [pos:(make Vec2 [x:1.0 y:2.0]) vel:(make Vec2 [x:0.5 y:0.5]) alive:true]))
+    (arr.set Particle ps 1 Particle.vel Vec2.y 3.0)
+    (println "{(sizeof Particle)} {(arr.get Particle ps 0 Particle.pos Vec2.y)} {(arr.get Particle ps 1 Particle.vel Vec2.y)}")
+    (println "{(arr.get Particle ps 0 Particle.alive)} {(arr.get Particle ps 1 Particle.alive)}")
+    0))

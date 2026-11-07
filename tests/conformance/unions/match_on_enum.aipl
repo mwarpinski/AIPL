@@ -1,0 +1,14 @@
+;; @spec 4.J
+;; @kind run
+;; @out east north
+(module match_on_enum
+  (enum Dir [north east south west])
+  (fn turn [d:Dir] -> Dir
+    (match d
+      (Dir.north Dir.east)
+      (Dir.east Dir.south)
+      (Dir.south Dir.west)
+      (Dir.west Dir.north)))
+  (fn main [] -> i32
+    (println "{(call turn Dir.north)} {(call turn Dir.west)}")
+    0))

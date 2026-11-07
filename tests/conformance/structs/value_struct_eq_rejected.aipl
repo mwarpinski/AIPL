@@ -1,0 +1,10 @@
+;; @spec 4.E
+;; @kind reject
+;; @reject 9:20 do not compare | value struct
+(module value_struct_eq_rejected
+  (struct V [x:i32] (value))
+  (fn main [] -> i32
+    (let a:V (make V [x:1]))
+    (let b:V (make V [x:1]))
+    (let same:bool (eq a b))
+    0))

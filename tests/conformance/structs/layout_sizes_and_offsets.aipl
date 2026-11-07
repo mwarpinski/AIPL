@@ -1,0 +1,9 @@
+;; @spec 4.E
+;; @kind run
+;; @out 2 4 8 8
+(module layout_sizes_and_offsets
+  (struct Mixed [a:u8 b:i32 c:i64 d:u16 e:f64])
+  (struct Small [a:u8 b:u8])
+  (fn main [] -> i32
+    (println "{(sizeof Small)} {(sizeof i32)} {(sizeof i64)} {(sizeof f64)}")
+    0))

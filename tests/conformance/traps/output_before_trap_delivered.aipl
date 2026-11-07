@@ -1,0 +1,13 @@
+;; @spec 5.6
+;; @kind trap
+;; @out one
+;; @out two
+;; @trap divide by zero | division by zero
+(module output_before_trap_delivered
+  (fn main [] -> i32
+    (println "one")
+    (println "two")
+    (let z:i32 0)
+    (println "{(/ 1 z)}")
+    (println "three")
+    0))

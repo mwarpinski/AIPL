@@ -1,0 +1,22 @@
+;; @spec 10
+;; @kind run
+;; @out a/b/c.txt /abs
+;; @out z.tar.gz /x/y
+;; @out z.tar .gz true
+;; @out a/b/d
+(module path_functions
+  (import path)
+  (fn main [] -> i32
+    (let p:str "/x/y/z.tar.gz")
+    (let t:str "z.tar.gz")
+    (let q:str "/q")
+    (let ugly:str "a//b/./c/../d")
+    (let ab:str "a/b")
+    (let c:str "c.txt")
+    (let a:str "a")
+    (let abs:str "/abs")
+    (println "{(call path.join ab c)} {(call path.join a abs)}")
+    (println "{(call path.file_name p)} {(call path.parent p)}")
+    (println "{(call path.stem t)} {(call path.extension t)} {(call path.is_absolute q)}")
+    (println "{(call path.normalize ugly)}")
+    0))

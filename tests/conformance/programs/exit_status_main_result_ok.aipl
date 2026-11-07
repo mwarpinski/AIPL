@@ -1,0 +1,8 @@
+;; @spec 6.1
+;; @kind run
+;; @out fine
+;; @exit 3
+(module exit_status_main_result_ok
+  (fn main [] -> (result i32 str)
+    (println "fine")
+    (ok:str 3)))

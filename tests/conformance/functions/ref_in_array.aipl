@@ -1,0 +1,16 @@
+;; @spec 4.G
+;; @kind run
+;; @out -6
+(module ref_in_array
+  (import alloc)
+  (fn inc [x:i32] -> i32 (+ x 1))
+  (fn neg [x:i32] -> i32 (- 0 x))
+  (fn main [] -> i32
+    (let fs:(arr (fn [i32] -> i32)) (arr.new (fn [i32] -> i32) (call alloc.forever) 2))
+    (arr.set (fn [i32] -> i32) fs 0 (ref inc))
+    (arr.set (fn [i32] -> i32) fs 1 (ref neg))
+    (let x:i32 5)
+    (for i 0 2
+      (set! x (call_ref (fn [i32] -> i32) (arr.get (fn [i32] -> i32) fs i) x)))
+    (println "{x}")
+    0))

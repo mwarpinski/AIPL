@@ -1,0 +1,7 @@
+;; @spec 11.1
+;; @kind reject
+;; @reject 7:11 private
+(module private_item_rejected
+  (import helper_sibling)
+  (fn main [] -> i32
+    (call helper_sibling.hidden 1)))

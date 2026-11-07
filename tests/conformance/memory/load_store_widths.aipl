@@ -1,0 +1,19 @@
+;; @spec 4.A
+;; @kind run
+;; @out 255 -1 65535 -1
+;; @out 1 2 3 4
+;; @out 44 4464
+;; @out -2 -2
+(module load_store_widths
+  (fn main [] -> i32 (unsafe
+    (let p:i32 (mem.alloc 16))
+    (mem.store32 p -1)
+    (println "{(mem.load8 p)} {(mem.load8_s p)} {(mem.load16_u p)} {(mem.load16_s p)}")
+    (mem.store32 p 0x04030201)
+    (println "{(mem.load8 p)} {(mem.load8 (+ p 1))} {(mem.load8 (+ p 2))} {(mem.load8 (+ p 3))}")
+    (mem.store8 (+ p 8) 300)
+    (mem.store16 (+ p 10) 70000)
+    (println "{(mem.load8 (+ p 8))} {(mem.load16_u (+ p 10))}")
+    (mem.store64 (+ p 8) -2i64)
+    (println "{(mem.load64 (+ p 8))} {(mem.load32 (+ p 8))}")
+    0)))

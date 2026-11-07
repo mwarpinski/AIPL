@@ -1,0 +1,14 @@
+;; @spec 4.K
+;; @kind run
+;; @out ab1
+;; @out x=7
+;; @err e2
+(module print_forms_streams
+  (fn main [] -> i32
+    (print "a")
+    (print "b{1}")
+    (println "")
+    (eprintln "e{2}")
+    (let s:str (format "x={7}"))
+    (println "{s}")
+    0))

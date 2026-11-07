@@ -1,0 +1,8 @@
+;; @spec 4.M
+;; @kind reject
+;; @reject 7:29 two real branches | empty
+(module if_with_empty_branch_rejected
+  (fn main [] -> i32
+    (let n:i32 0)
+    (if (lt n 1) (set! n 1) (block))
+    n))

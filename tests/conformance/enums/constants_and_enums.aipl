@@ -1,0 +1,21 @@
+;; @spec 4.I
+;; @kind run
+;; @out 12 0.5 shape 24 5
+;; @out 3 4 6 7
+;; @out octagon 7 true
+(module constants_and_enums
+  (const MAX_SIDES:i32 12)
+  (const UNIT:f64 0.5)
+  (const LABEL:str "shape")
+  (const DOUBLE:i32 (* MAX_SIDES 2))
+  (enum Kind [triangle square (hexagon 6) octagon])
+  (fn sides [k:Kind] -> i32
+    (cond
+      ((eq k Kind.triangle) 3)
+      ((eq k Kind.square) 4)
+      (else (enum.ord k))))
+  (fn main [] -> i32
+    (println "{MAX_SIDES} {UNIT} {LABEL} {DOUBLE} {(str.len LABEL)}")
+    (println "{(call sides Kind.triangle)} {(call sides Kind.square)} {(call sides Kind.hexagon)} {(call sides (enum.cast Kind 7))}")
+    (println "{Kind.octagon} {(enum.ord Kind.octagon)} {(neq Kind.square Kind.triangle)}")
+    0))

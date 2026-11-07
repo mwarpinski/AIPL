@@ -1,0 +1,8 @@
+;; @spec 3
+;; @kind reject
+;; @reject 7:5 unsafe
+(module unsafe_required_for_raw_memory
+  (fn main [] -> i32
+    (let p:i32 (mem.alloc 8))
+    (mem.store32 p 1)
+    0))

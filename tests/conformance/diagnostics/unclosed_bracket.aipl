@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @syntax
+;; @reject 5:1 never closed | bracket
+(module unclosed_bracket
+  (fn main [] -> i32
+    0)

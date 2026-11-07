@@ -1,0 +1,8 @@
+;; @spec 4.K
+;; @kind reject
+;; @reject 7:14 decimals | f32 | .N
+(module unknown_spec_rejected
+  (fn main [] -> i32
+    (let s:str "text")
+    (println "{s:.2}")
+    0))

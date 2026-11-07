@@ -1,0 +1,6 @@
+;; @spec 9
+;; @kind reject
+;; @reject 6:5 Undefined variable
+(module undefined_variable
+  (fn main [] -> i32
+    x))

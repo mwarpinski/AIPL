@@ -1,0 +1,6 @@
+;; @spec 6.1
+;; @kind run
+;; @out done
+;; @exit 42
+(module exit_status_main_i32
+  (fn main [] -> i32 (println "done") 42))

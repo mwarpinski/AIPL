@@ -1,0 +1,8 @@
+;; @spec 11
+;; @kind run
+;; @out 42
+(module local_module
+  (import helper_sibling)
+  (fn main [] -> i32
+    (println "{(call helper_sibling.double 21)}")
+    0))

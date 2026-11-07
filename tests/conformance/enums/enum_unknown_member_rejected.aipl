@@ -1,0 +1,8 @@
+;; @spec 9
+;; @kind reject
+;; @reject 7:17 no member | member
+(module enum_unknown_member_rejected
+  (enum Kind [a b])
+  (fn main [] -> i32
+    (let k:Kind Kind.circle)
+    0))

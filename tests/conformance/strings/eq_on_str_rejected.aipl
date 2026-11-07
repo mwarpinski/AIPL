@@ -1,0 +1,7 @@
+;; @spec 4.B
+;; @kind reject
+;; @reject 6:17 compare strings by content | str
+(module eq_on_str_rejected
+  (fn main [] -> i32
+    (let b:bool (eq "a" "b"))
+    0))

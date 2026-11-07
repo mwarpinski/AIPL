@@ -1,0 +1,10 @@
+;; @spec 4.G
+;; @kind run
+;; @out 42 49
+(module ref_and_call_ref
+  (fn double [x:i32] -> i32 (* x 2))
+  (fn square [x:i32] -> i32 (* x x))
+  (fn apply [f:(fn [i32] -> i32) x:i32] -> i32 (call_ref (fn [i32] -> i32) f x))
+  (fn main [] -> i32
+    (println "{(call apply (ref double) 21)} {(call apply (ref square) 7)}")
+    0))

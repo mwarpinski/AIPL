@@ -1,0 +1,7 @@
+;; @spec 8.1
+;; @kind reject
+;; @reject 6:16 Type mismatch
+(module mixed_int_widths_rejected
+  (fn main [] -> i32
+    (let x:i64 (+ 1 2i64))
+    0))

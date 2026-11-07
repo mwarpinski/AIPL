@@ -386,7 +386,7 @@ fn exit_with(program: &str, n: i64) -> ! {
     std::process::exit(134)
 }
 
-/// A standalone executable (AIPL_SPEC.md 6.5): the launcher, then the module,
+/// A standalone executable (docs/IMPLEMENTATION.md 6): the launcher, then the module,
 /// then the grants (one a line: --listen's ADDR:PORT, or `run:PROGRAM` for each
 /// --allow-run), then a 20-byte trailer
 /// [flags u32 LE][grants length u32 LE][module length u32 LE]["AIPLEXE2"].
@@ -488,7 +488,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 r => r.map_err(|e| format!("{e}\n{}", vm.call_chain()).trim_end().to_string())?,
             };
             say!("[AIPL Result]: {:?}", res);
-            // main's value is the exit status (AIPL_SPEC.md 6.5), as compiled
+            // main's value is the exit status (AIPL_SPEC.md 6.1), as compiled
             // programs exit: an i32, or a (result i32 str)'s ok, or 1 after
             // err's message on standard error
             if func == "main" {

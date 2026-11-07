@@ -1,0 +1,11 @@
+;; @spec 10
+;; @kind trap
+;; @trap Pre-condition failed
+(module vec_index_out_of_range_traps
+  (import vec)
+  (import alloc)
+  (fn main [] -> i32
+    (let v:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (call (vec.push i32) v 1)
+    (println "{(call (vec.at i32) v 1)}")
+    0))

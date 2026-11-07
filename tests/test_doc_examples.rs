@@ -1,6 +1,6 @@
 //! Every ```lisp block in PROMPT_GUIDE_FOR_AIS.md and README.md is a complete
 //! module that, run as a program, must print what the document states and
-//! exit with its status (AIPL_SPEC.md 6.5), in the VM (`aipl eval`) and
+//! exit with its status (AIPL_SPEC.md 6.1), in the VM (`aipl eval`) and
 //! compiled under wasmtime (`_start`, with WASI and a scratch directory,
 //! since some examples do I/O). AIPL_SPEC.md's blocks are checked too: complete modules
 //! run like the others (with the exceptions in SPEC_SPECIAL), and fragments

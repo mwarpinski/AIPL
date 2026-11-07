@@ -1,0 +1,14 @@
+;; @spec 4.E
+;; @kind run
+;; @out 2 true false 1
+(module pointer_identity
+  (import alloc)
+  (struct Cell [v:i32])
+  (fn bump [c:(ptr Cell)] -> void (put c Cell.v (+ (get c Cell.v) 1)))
+  (fn main [] -> i32
+    (let a:(ptr Cell) (new Cell (call alloc.default) [v:1]))
+    (let b:(ptr Cell) a)
+    (let c:(ptr Cell) (new Cell (call alloc.default) [v:1]))
+    (call bump b)
+    (println "{(get a Cell.v)} {(eq a b)} {(eq a c)} {(get c Cell.v)}")
+    0))

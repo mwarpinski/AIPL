@@ -1,0 +1,12 @@
+;; @spec 4.J
+;; @kind run
+;; @out 8 -1
+(module match_else_arm
+  (union T [(a x:i32) (b) (c) (d)])
+  (fn f [t:T] -> i32
+    (match t
+      (T.a [x] x)
+      (else -1)))
+  (fn main [] -> i32
+    (println "{(call f (make T.a 8))} {(call f (make T.c))}")
+    0))

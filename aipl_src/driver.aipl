@@ -29,7 +29,7 @@
 
   ;; status 0: the wasm module is at (addr, len)
   ;; status 1: import resolution failed; the message is at (addr, len)
-  ;; status 2: codegen failed; len is the compile error code (AIPL_SPEC.md 6.4)
+  ;; status 2: codegen failed; len is the compile error code (docs/IMPLEMENTATION.md 5)
   ;; status 3: the program does not type-check; "path: line:col: message" is at (addr, len)
   (struct Out [(read status:i32) (read addr:i32) (read len:i32)] (pub))
 
@@ -267,7 +267,7 @@
        (let digits:i32 (mem.alloc 11))
        (call io.write_str 2 "compile error ")
        (fs.write 2 digits (call fmt.int_to_bytes (get res Out.len) digits))
-       (call io.eprintln " (AIPL_SPEC.md 6.4)")
+       (call io.eprintln " (docs/IMPLEMENTATION.md 5)")
        1))))
 
   ;; WASI command entry point: runs main and exits with its status.

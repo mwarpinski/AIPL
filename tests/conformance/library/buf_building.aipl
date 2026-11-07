@@ -1,0 +1,18 @@
+;; @spec 10
+;; @kind run
+;; @out n=-42;3+4=7 11
+;; @out n=
+(module buf_building
+  (import buf)
+  (import alloc)
+  (fn main [] -> i32
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 4))
+    (call buf.push_str b "n=")
+    (call buf.push_int b -42)
+    (call buf.push_byte b 59)
+    (format_to b "{3}+{4}={(+ 3 4)}")
+    (println "{(call buf.bytes b)} {(call buf.len b)}")
+    (call buf.truncate b 2)
+    (println "{(call buf.bytes b)}")
+    (call buf.free b)
+    0))

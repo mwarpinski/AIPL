@@ -1,4 +1,4 @@
-//! The aipl-run launcher and standalone executables (AIPL_SPEC.md 6.5),
+//! The aipl-run launcher and standalone executables (docs/IMPLEMENTATION.md 6),
 //! exercised through the real `aipl` and `aipl-run` binaries.
 
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::process::{Command, Output, Stdio};
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const RUNNER: &str = env!("CARGO_BIN_EXE_aipl-run");
 
-/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+/// The native backend targets Linux x86-64 only (docs/IMPLEMENTATION.md 7).
 const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
 
 fn root() -> PathBuf {

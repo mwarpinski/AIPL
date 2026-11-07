@@ -1,0 +1,7 @@
+;; @spec 3
+;; @kind trap
+;; @trap no negatives here
+(module abort_traps
+  (fn main [] -> i32
+    (when true (abort "no negatives here"))
+    0))

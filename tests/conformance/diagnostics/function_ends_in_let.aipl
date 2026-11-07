@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @reject 5:3 expects return type
+(module function_ends_in_let
+  (fn f [] -> i32
+    (let x:i32 1))
+  (fn main [] -> i32 0))

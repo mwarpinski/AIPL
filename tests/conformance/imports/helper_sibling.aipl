@@ -1,0 +1,5 @@
+;; A module the cases in this directory import (it is not a case: it has no @kind). The imports/ cases find it
+;; because an import looks first in the importing file's own directory (AIPL_SPEC.md 11).
+(module helper_sibling
+  (fn double [x:i32] -> i32 (pub) (* x 2))
+  (fn hidden [x:i32] -> i32 (* x 3)))

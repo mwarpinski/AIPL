@@ -1,0 +1,11 @@
+;; @spec 5.7
+;; @kind run
+;; @out to stdout
+;; @out-raw no newline
+;; @err to stderr
+(module streams_stdout_stderr
+  (fn main [] -> i32
+    (println "to stdout")
+    (eprintln "to stderr")
+    (print "no newline")
+    0))

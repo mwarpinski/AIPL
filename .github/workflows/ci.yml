@@ -49,6 +49,12 @@ jobs:
         run: python3 tools/docs_check.py
       - name: The grammar in the specification, against every program in the repository
         run: python3 tools/grammar_check.py
+      - name: The standard library reference, against aipl doc
+        run: python3 tools/std_reference.py --check
+      - name: The conformance suite, on the Rust aipl and on the self-hosted one
+        run: |
+          python3 tools/conformance.py --aipl target/release/aipl --backend run --backend wasm --backend native
+          python3 tools/conformance.py --aipl bootstrap/aipl-linux-x86_64 --backend run --backend wasm --backend native
 
   arm64:
     # AArch64 Linux: the Rust test suite (the AArch64 backend's executables run on this
@@ -70,6 +76,8 @@ jobs:
         run: cargo test --release --no-fail-fast
       - name: AIPL test suite
         run: ./target/release/aipl test aipl_src/test_suite.aipl
+      - name: The conformance suite (the native executables are AArch64 ones)
+        run: python3 tools/conformance.py --aipl target/release/aipl --backend run --backend wasm --backend native
       - name: The AArch64 seed builds the compiler, and rebuilds it unchanged
         run: sh bootstrap/build.sh
       - name: The compiler for AArch64 compiles itself

@@ -1,0 +1,6 @@
+;; @spec 9
+;; @kind reject
+;; @reject 6:5 bool
+(module non_bool_condition
+  (fn main [] -> i32
+    (if 1 2 3)))

@@ -15,7 +15,7 @@ Corrections to the plan below, from checking it against the code
 (2026-10-19):
 
 1. **The instruction set (3.1) is not complete.** Every allocation
-   compiles to `i32.atomic.rmw.add` (AIPL_SPEC.md 6.2), and the native
+   compiles to `i32.atomic.rmw.add` (docs/IMPLEMENTATION.md 3), and the native
    backend implements the atomics (aipl_src/native/lower.aipl, NE9). Take
    the set from what lower.aipl accepts, which is what codegen.aipl
    emits, not from a list. `thread.spawn` is refused with a clear error.

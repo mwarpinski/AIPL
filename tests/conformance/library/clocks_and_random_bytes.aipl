@@ -1,0 +1,13 @@
+;; @spec 4.C
+;; @kind run
+;; @out true true
+;; @out 0
+(module clocks_and_random_bytes
+  (fn main [] -> i32
+    (let t0:i64 (sys.monotonic))
+    (let t1:i64 (sys.monotonic))
+    (println "{(gte t1 t0)} {(gt (sys.time) 1700000000000000000i64)}")
+    (unsafe
+      (let p:i32 (mem.alloc 16))
+      (println "{(sys.random p 16)}"))
+    0))

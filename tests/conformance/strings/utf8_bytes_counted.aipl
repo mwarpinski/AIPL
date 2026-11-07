@@ -1,0 +1,8 @@
+;; @spec 4.B
+;; @kind run
+;; @out 6
+(module utf8_bytes_counted
+  (fn main [] -> i32
+    (let s:str "héllo")
+    (println "{(str.len s)}")
+    0))

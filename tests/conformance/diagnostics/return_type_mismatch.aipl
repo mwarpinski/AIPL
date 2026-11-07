@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @reject 6:5 return
+(module return_type_mismatch
+  (fn main [] -> i32
+    (return true)
+    0))

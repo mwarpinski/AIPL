@@ -1,0 +1,19 @@
+;; @spec 10
+;; @kind run
+;; @out 6 10 -5
+;; @out -5 10
+;; @out 10 5
+;; @out some{value: 3} none
+(module vec_list
+  (import vec)
+  (import alloc)
+  (fn main [] -> i32
+    (let v:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (for i 0 6 (call (vec.push i32) v (- 10 (* i 3))))
+    (println "{(call (vec.len i32) v)} {(call (vec.at i32) v 0)} {(call (vec.at i32) v 5)}")
+    (call (vec.sort i32) v)
+    (println "{(call (vec.at i32) v 0)} {(call (vec.at i32) v 5)}")
+    (println "{(call (vec.pop i32) v)} {(call (vec.len i32) v)}")
+    (println "{(call (vec.index_of i32) v 4)} {(call (vec.index_of i32) v 99)}")
+    (call (vec.free i32) v)
+    0))

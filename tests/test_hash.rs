@@ -1,4 +1,4 @@
-//! std/hash (AIPL_SPEC.md 12.6): tests/aipl/hash/vectors.aipl hashes
+//! std/hash (docs/STD_REFERENCE.md): tests/aipl/hash/vectors.aipl hashes
 //! random bytes of every length up to a few blocks with MD5, SHA-1,
 //! SHA-256, and SHA-512, whole and in pieces, computes HMACs (RFC 4231's
 //! cases and random keys up to twice a block), CRC-32 and Adler-32, giving

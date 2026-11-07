@@ -1,0 +1,11 @@
+;; @spec 7.7
+;; @kind run
+;; @out ok 3
+;; @out err true
+(module ok_names_the_error_type
+  (fn f [n:i32] -> (result i32 bool)
+    (if (lt n 0) (err:i32 true) (ok:bool n)))
+  (fn main [] -> i32
+    (match_result (call f 3) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    (match_result (call f -3) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    0))

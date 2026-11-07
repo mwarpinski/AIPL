@@ -1,4 +1,4 @@
-//! std/stream (AIPL_SPEC.md 12.6): tests/aipl/stream/lines.aipl reads its
+//! std/stream (docs/STD_REFERENCE.md): tests/aipl/stream/lines.aipl reads its
 //! standard input a line at a time and writes through a buffered stdout
 //! writer with format_to, then writes a file and counts its lines back with
 //! try and defer. Its output is what Rust's str::lines gives for the same

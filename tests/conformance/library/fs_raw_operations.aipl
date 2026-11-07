@@ -1,0 +1,23 @@
+;; @spec 4.C
+;; @kind run
+;; @out 9
+;; @out 0
+;; @out 9
+;; @out 0
+;; @out 0
+;; @out -44
+(module fs_raw_operations
+  (fn main [] -> i32
+    (let name:str "conf_raw.txt")
+    (unsafe
+      (let fd:i32 (fs.open (str.ptr name) (str.len name) 1))
+      (let msg:str "raw bytes")
+      (println "{(fs.write fd (str.ptr msg) (str.len msg))}")
+      (println "{(fs.close fd)}")
+      (let rd:i32 (fs.open (str.ptr name) (str.len name) 0))
+      (let buf:i32 (mem.alloc 32))
+      (println "{(fs.read rd buf 32)}")
+      (println "{(fs.close rd)}")
+      (println "{(fs.delete (str.ptr name) (str.len name))}")
+      (println "{(fs.delete (str.ptr name) (str.len name))}"))
+    0))

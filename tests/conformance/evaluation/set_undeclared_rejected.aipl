@@ -1,0 +1,7 @@
+;; @spec 7.1
+;; @kind reject
+;; @reject 6:5 Undefined variable
+(module set_undeclared_rejected
+  (fn main [] -> i32
+    (set! x 1)
+    0))

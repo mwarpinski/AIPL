@@ -1,0 +1,13 @@
+;; @spec 4.B
+;; @kind run
+;; @out true false
+;; @out true false
+(module equal_literals_share_address
+  (import str)
+  (fn main [] -> i32
+    (let a:str "same")
+    (let b:str "same")
+    (let c:str "other")
+    (println "{(eq (str.ptr a) (str.ptr b))} {(eq (str.ptr a) (str.ptr c))}")
+    (println "{(call str.same a b)} {(call str.same a c)}")
+    0))

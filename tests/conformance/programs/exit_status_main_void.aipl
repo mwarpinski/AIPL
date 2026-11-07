@@ -1,0 +1,6 @@
+;; @spec 6.1
+;; @kind run
+;; @out void main
+;; @exit 0
+(module exit_status_main_void
+  (fn main [] -> void (println "void main")))

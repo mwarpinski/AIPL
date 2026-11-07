@@ -1,0 +1,9 @@
+;; @spec 4.A
+;; @kind run
+;; @out 16909060 4
+(module unaligned_access_allowed
+  (fn main [] -> i32 (unsafe
+    (let p:i32 (mem.alloc 16))
+    (mem.store32 (+ p 1) 0x01020304)
+    (println "{(mem.load32 (+ p 1))} {(mem.load8 (+ p 1))}")
+    0)))

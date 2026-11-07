@@ -1,0 +1,8 @@
+;; @spec 4.I
+;; @kind reject
+;; @reject 7:17 eq/neq | compare only
+(module enum_order_comparison_rejected
+  (enum Kind [a b])
+  (fn main [] -> i32
+    (let x:bool (lt Kind.a Kind.b))
+    0))

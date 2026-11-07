@@ -1,0 +1,11 @@
+;; @spec 7.1
+;; @kind run
+;; @out 1.5
+;; @out 3
+;; @out true
+(module scope_sibling_redeclare
+  (fn main [] -> i32
+    (block (let y:f64 1.5) (println "{y}"))
+    (block (let y:i32 3) (println "{y}"))
+    (when true (let y:bool true) (println "{y}"))
+    0))

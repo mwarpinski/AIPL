@@ -1,0 +1,8 @@
+;; @spec 6.1
+;; @kind trap
+;; @err main
+;; @trap divide by zero | division by zero
+(module call_chain_in_message
+  (fn inner [z:i32] -> i32 (/ 10 z))
+  (fn outer [z:i32] -> i32 (call inner z))
+  (fn main [] -> i32 (call outer 0)))

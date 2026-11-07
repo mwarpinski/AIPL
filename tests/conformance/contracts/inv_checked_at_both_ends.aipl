@@ -1,0 +1,8 @@
+;; @spec 7.6
+;; @kind trap
+;; @trap invariant failed | invariant
+(module inv_checked_at_both_ends
+  (fn f [n:i32] -> i32
+    (inv (gt n 0))
+    n)
+  (fn main [] -> i32 (call f 0)))

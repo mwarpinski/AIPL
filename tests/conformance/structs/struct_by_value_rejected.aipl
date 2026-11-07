@@ -1,0 +1,7 @@
+;; @spec 4.E
+;; @kind reject
+;; @reject 6:3 ptr | pointer
+(module struct_by_value_rejected
+  (struct Point [x:i32])
+  (fn f [p:Point] -> i32 0)
+  (fn main [] -> i32 0))

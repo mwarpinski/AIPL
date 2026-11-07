@@ -1,0 +1,15 @@
+;; @spec 5.4
+;; @kind run
+;; @out 0.30000000000000004 1.5 0.25
+;; @out inf -inf
+;; @out 1.4142135623730951 4.0
+;; @out 0.3 0.1
+;; @out 0.5
+(module float_arithmetic
+  (fn main [] -> i32
+    (println "{(+ 0.1 0.2)} {(* 3.0 0.5)} {(/ 1.0 4.0)}")
+    (println "{(/ 1.0 0.0)} {(/ -1.0 0.0)}")
+    (println "{(f64.sqrt 2.0)} {(f64.sqrt 16.0)}")
+    (println "{(+ 0.1f32 0.2f32)} {(f32.demote 0.1)}")
+    (println "{(f64.promote 0.5f32)}")
+    0))

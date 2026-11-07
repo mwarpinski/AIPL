@@ -1,0 +1,20 @@
+;; @spec 5.7
+;; @kind run
+;; @out wrote 18
+;; @out line one
+;; @out line two
+;; @out not_found
+(module io_file_round_trip
+  (import io)
+  (import str)
+  (fn main [] -> i32
+    (match_result (call io.write_file "conf_roundtrip.txt" (call str.from_str "line one\nline two\n"))
+      (ok n (println "wrote {n}"))
+      (err e (println "write failed")))
+    (match_result (call io.read_file "conf_roundtrip.txt")
+      (ok b (print "{b}"))
+      (err e (println "read failed")))
+    (match_result (call io.read_file "conf_no_such_file.txt")
+      (ok b (println "read it?"))
+      (err e (println "{(get e io.Error.kind)}")))
+    0))

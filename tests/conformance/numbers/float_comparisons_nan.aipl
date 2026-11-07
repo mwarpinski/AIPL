@@ -1,0 +1,11 @@
+;; @spec 5.4
+;; @kind run
+;; @out false true false false false
+;; @out true false
+(module float_comparisons_nan
+  (fn nan [] -> f64 (/ 0.0 0.0))
+  (fn main [] -> i32
+    (let n:f64 (call nan))
+    (println "{(eq n n)} {(neq n n)} {(lt n 1.0)} {(gt n 1.0)} {(lte n n)}")
+    (println "{(eq 0.0 -0.0)} {(lt -0.0 0.0)}")
+    0))

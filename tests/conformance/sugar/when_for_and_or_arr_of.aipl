@@ -1,0 +1,16 @@
+;; @spec 4.M
+;; @kind run
+;; @out 3 0 30
+;; @out 50
+;; @out true true false
+(module when_for_and_or_arr_of
+  (import alloc)
+  (fn main [] -> i32
+    (let a:(arr i32) (arr.of i32 (call alloc.default) 10 20 30))
+    (let e:(arr i32) (arr.of i32 (call alloc.default)))
+    (println "{(arr.len a)} {(arr.len e)} {(arr.get i32 a 2)}")
+    (let total:i32 0)
+    (for i 0 (arr.len a) (when (gt (arr.get i32 a i) 10) (set! total (+ total (arr.get i32 a i)))))
+    (println "{total}")
+    (println "{(and true true true)} {(or false false true)} {(and true false true)}")
+    0))

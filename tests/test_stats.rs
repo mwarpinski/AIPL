@@ -1,4 +1,4 @@
-//! std/stats (AIPL_SPEC.md 12.6): tests/aipl/stats/vectors.aipl computes
+//! std/stats (docs/STD_REFERENCE.md): tests/aipl/stats/vectors.aipl computes
 //! every statistic of 300 generated data sets as Python's statistics module
 //! and math.fsum do, to the last bit (tools/stats_vectors.py), and
 //! tests/aipl/stats/api.aipl the ones Python has no counterpart for; each

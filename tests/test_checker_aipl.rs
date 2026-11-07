@@ -788,7 +788,7 @@ fn checkers_agree_on_every_operator_and_operand() {
 /// form, and definitions; full modules or bodies of `main` (wrapped with
 /// HEADER). Both checkers must give the same verdict and message.
 const FORMS: &[&str] = &[
-    // main gives the program's exit status (AIPL_SPEC.md 6.5)
+    // main gives the program's exit status (AIPL_SPEC.md 6.1)
     "M:(module m (fn main [] -> i64 0i64))",
     "M:(module m (fn main [] -> bool true))",
     "M:(module m (fn main [] -> (result i32 i32) (ok:i32 0)))",

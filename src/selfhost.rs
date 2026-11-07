@@ -215,7 +215,7 @@ fn driver_compile(entry: &'static str, path: &Path, max_pages: u32) -> Result<Ve
     let ([status, addr, len], data) = on_big_stack(move || call_toolchain(t, entry, &path, Some(max_pages as i32)))?;
     match status {
         0 => Ok(bytes(&data, addr, len)),
-        2 => Err(format!("compile error {len} (see AIPL_SPEC.md 6.4)")),
+        2 => Err(format!("compile error {len} (see docs/IMPLEMENTATION.md 5)")),
         _ => Ok(String::from_utf8_lossy(&bytes(&data, addr, len)).into_owned()).and_then(Err),
     }
 }

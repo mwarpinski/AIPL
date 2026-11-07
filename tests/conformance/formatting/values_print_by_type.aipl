@@ -1,0 +1,19 @@
+;; @spec 4.K
+;; @kind run
+;; @out V{a: 1, b: 2.5} green
+;; @out [1, 2, 3]
+;; @out 0.1
+(module values_print_by_type
+  (import alloc)
+  (struct V [a:i32 b:f64] (value))
+  (enum Color [red green])
+  (fn main [] -> i32
+    (let v:V (make V [a:1 b:2.5]))
+    (let c:Color Color.green)
+    (println "{v} {c}")
+    (let a:(arr i32) (arr.new i32 (call alloc.default) 3))
+    (arr.set i32 a 0 1) (arr.set i32 a 1 2) (arr.set i32 a 2 3)
+    (println "{a}")
+    (let f32v:f32 0.1f32)
+    (println "{f32v}")
+    0))

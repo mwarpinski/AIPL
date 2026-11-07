@@ -1,0 +1,9 @@
+;; @spec 5.6
+;; @kind trap
+;; @trap divide by zero | division by zero
+(module defer_does_not_run_on_trap
+  (fn risky [] -> i32
+    (defer (println "deferred"))
+    (let z:i32 0)
+    (/ 1 z))
+  (fn main [] -> i32 (call risky)))

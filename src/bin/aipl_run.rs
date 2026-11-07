@@ -1,4 +1,4 @@
-//! aipl-run: the native launcher for compiled AIPL (AIPL_SPEC.md 6.5).
+//! aipl-run: the native launcher for compiled AIPL (docs/IMPLEMENTATION.md 6).
 //!
 //! This is the one piece of the toolchain that has to be native code: wasm
 //! cannot start itself, so something native loads wasmtime, hands it the

@@ -1,0 +1,17 @@
+;; @spec 7.10
+;; @kind run
+;; @out n=1
+;; @out n=2
+;; @out n=4
+;; @out n=5
+;; @out left at 6
+(module loops_break_continue
+  (fn main [] -> i32
+    (let n:i32 0)
+    (while (lt n 10)
+      (set! n (+ n 1))
+      (when (eq n 3) (continue))
+      (when (eq n 6) (break))
+      (println "n={n}"))
+    (println "left at {n}")
+    0))

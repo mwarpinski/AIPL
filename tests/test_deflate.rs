@@ -1,4 +1,4 @@
-//! std/deflate (AIPL_SPEC.md 12.6): tests/aipl/deflate/vectors.aipl
+//! std/deflate (docs/STD_REFERENCE.md): tests/aipl/deflate/vectors.aipl
 //! decompresses Python's raw, zlib, and gzip streams at every level and
 //! strategy (every block type), with one bit flipped or cut short
 //! (refusing what zlib refuses, else the same bytes), and compresses at

@@ -1,0 +1,9 @@
+;; @spec 9
+;; @kind reject
+;; @reject 9:5 no field
+(module unknown_field_rejected
+  (import alloc)
+  (struct P [x:i32])
+  (fn main [] -> i32
+    (let p:(ptr P) (new P (call alloc.default) [x:1]))
+    (get p P.z)))

@@ -1,0 +1,8 @@
+;; @spec 7.1
+;; @kind reject
+;; @reject 7:5 If branch type mismatch
+(module if_branch_mismatch_rejected
+  (fn main [] -> i32
+    (let n:i32 0)
+    (if (lt n 0) (set! n 0) 1)
+    n))

@@ -1,0 +1,16 @@
+;; @spec 4.F
+;; @kind run
+;; @out 42
+;; @out not a digit
+(module try_propagates_error
+  (import str)
+  (fn digit [c:i32] -> (result i32 str)
+    (if (and (gte c 48) (lte c 57)) (ok:str (- c 48)) (err:i32 "not a digit")))
+  (fn two [s:str.Bytes] -> (result i32 str)
+    (let a:i32 (try (call digit (call str.byte_at s 0))))
+    (let b:i32 (try (call digit (call str.byte_at s 1))))
+    (ok:str (+ (* a 10) b)))
+  (fn main [] -> i32
+    (match_result (call two (call str.from_str "42")) (ok v (println "{v}")) (err e (println "{e}")))
+    (match_result (call two (call str.from_str "4x")) (ok v (println "{v}")) (err e (println "{e}")))
+    0))

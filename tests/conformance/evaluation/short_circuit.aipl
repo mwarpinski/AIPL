@@ -1,0 +1,18 @@
+;; @spec 5.3
+;; @kind run
+;; @out false
+;; @out true
+;; @out evaluated
+;; @out true
+;; @out evaluated
+;; @out false
+;; @out false
+(module short_circuit
+  (fn say [b:bool] -> bool (println "evaluated") b)
+  (fn main [] -> i32
+    (println "{(and false (call say true))}")
+    (println "{(or true (call say false))}")
+    (println "{(and true (call say true))}")
+    (println "{(or false (call say false))}")
+    (println "{(and true true false (call say true))}")
+    0))

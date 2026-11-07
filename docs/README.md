@@ -7,7 +7,9 @@ Everything written about AIPL lives here or at the top of the repository, and th
 | Document | What it is |
 |---|---|
 | [README.md](../README.md) | What AIPL is, how to install it, what works today |
-| [AIPL_SPEC.md](../AIPL_SPEC.md) | The language and toolchain reference: every form, library module, and command |
+| [AIPL_SPEC.md](../AIPL_SPEC.md) | The language: grammar, types, every form, what a program means, what an implementation must do |
+| [STD_REFERENCE.md](STD_REFERENCE.md) | The standard library: every module, every public function (generated from the source) |
+| [IMPLEMENTATION.md](IMPLEMENTATION.md) | How the tools here work: commands, pipeline, backends, the compiled module, the optimizer, the tests |
 | [PROMPT_GUIDE_FOR_AIS.md](../PROMPT_GUIDE_FOR_AIS.md) | What an AI agent needs to write AIPL well |
 | [DEVELOPING.md](../DEVELOPING.md) | Working on AIPL itself: layout, tests, rules, decisions already made |
 | [ROADMAP.md](../ROADMAP.md) | What is done and what is next |

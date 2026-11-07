@@ -1,0 +1,17 @@
+;; @spec 4.A
+;; @kind run
+;; @out 200 -3 4
+;; @out 44 -2 2
+(module storage_types
+  (import alloc)
+  (struct Pixel [r:u8 g:u8 b:u8 a:i8])
+  (struct Rec [tag:u8 half:i16])
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let p:(ptr Pixel) (new Pixel a [r:200 g:100 b:50 a:-3]))
+    (println "{(get p Pixel.r)} {(get p Pixel.a)} {(sizeof Pixel)}")
+    (let q:(ptr Rec) (new Rec a [tag:0 half:0]))
+    (put q Rec.tag 300)
+    (put q Rec.half -2)
+    (println "{(get q Rec.tag)} {(get q Rec.half)} {(sizeof u16)}")
+    0))

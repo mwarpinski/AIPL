@@ -2,8 +2,8 @@
 
 How to build, test, and change AIPL, and the decisions and conventions the
 work follows. [ROADMAP.md](ROADMAP.md) has what comes next and what AIPL
-does not do yet; [AIPL_SPEC.md](AIPL_SPEC.md) is the language as
-implemented; [docs/design/](docs/design/) holds the design records of the
+does not do yet; [AIPL_SPEC.md](AIPL_SPEC.md) is the language and
+[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) how these tools implement it; [docs/design/](docs/design/) holds the design records of the
 larger pieces of work, [docs/history/](docs/history/) the dated work log, the
 2026-10 audit, the handoffs and the Apple Silicon report, and [docs/notes/](docs/notes/)
 outside reviews; [docs/README.md](docs/README.md) indexes them all.

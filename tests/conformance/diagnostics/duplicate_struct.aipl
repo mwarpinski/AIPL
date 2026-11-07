@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @reject 6:3 Duplicate struct | P
+(module duplicate_struct
+  (struct P [x:i32])
+  (struct P [y:i32])
+  (fn main [] -> i32 0))

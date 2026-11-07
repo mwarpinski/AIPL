@@ -1,0 +1,19 @@
+;; @spec 7.10
+;; @kind run
+;; @out 1 0 5 9
+(module return_in_value_position
+  (import alloc)
+  (fn first_neg [xs:(arr i32)] -> i32
+    (for i 0 (arr.len xs)
+      (when (lt (arr.get i32 xs i) 0) (return i)))
+    -1)
+  (fn clamp [n:i32] -> i32
+    (let x:i32 (if (lt n 0) (return 0) n))
+    (if (gt x 9) 9 x))
+  (fn main [] -> i32
+    (let a:(arr i32) (call (alloc.array i32) (call alloc.default) 3))
+    (arr.set i32 a 0 5)
+    (arr.set i32 a 1 -2)
+    (arr.set i32 a 2 7)
+    (println "{(call first_neg a)} {(call clamp -4)} {(call clamp 5)} {(call clamp 50)}")
+    0))

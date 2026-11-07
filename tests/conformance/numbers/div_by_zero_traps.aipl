@@ -1,0 +1,6 @@
+;; @spec 5.4
+;; @kind trap
+;; @trap divide by zero | division by zero
+(module div_by_zero_traps
+  (fn div [a:i32 b:i32] -> i32 (/ a b))
+  (fn main [] -> i32 (call div 1 0)))

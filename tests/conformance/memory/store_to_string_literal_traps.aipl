@@ -1,0 +1,8 @@
+;; @spec 4.B
+;; @kind trap
+;; @trap read-only | unreachable | literal
+(module store_to_string_literal_traps
+  (fn poke [s:str] -> void (unsafe (mem.store8 (str.ptr s) 88)))
+  (fn main [] -> i32
+    (call poke "literal")
+    0))

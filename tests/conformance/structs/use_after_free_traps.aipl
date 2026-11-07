@@ -1,0 +1,15 @@
+;; @spec 4.E
+;; @kind trap
+;; @out 5
+;; @trap Use after free
+(module use_after_free_traps
+  (import heap)
+  (struct Cell [v:i32])
+  (fn main [] -> i32
+    (let h:(ptr heap.Heap) (call heap.make))
+    (let p:(ptr Cell) (call (heap.create Cell) h))
+    (put p Cell.v 5)
+    (println "{(get p Cell.v)}")
+    (call (heap.destroy Cell) h p)
+    (println "{(get p Cell.v)}")
+    0))

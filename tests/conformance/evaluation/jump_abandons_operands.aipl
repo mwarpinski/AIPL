@@ -1,0 +1,11 @@
+;; @spec 7.10
+;; @kind run
+;; @out done 0
+(module jump_abandons_operands
+  (fn side [] -> i32 (println "side") 1)
+  (fn main [] -> i32
+    (let n:i32 0)
+    (while true
+      (set! n (+ (block (when (eq n 0) (break)) 1) (call side))))
+    (println "done {n}")
+    0))

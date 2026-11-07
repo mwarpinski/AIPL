@@ -1,4 +1,4 @@
-//! std/csv (AIPL_SPEC.md 12.6): tests/aipl/csv/vectors.aipl reads 400
+//! std/csv (docs/STD_REFERENCE.md): tests/aipl/csv/vectors.aipl reads 400
 //! generated texts and writes 200 generated rows, giving what Python's csv
 //! module gives (tools/csv_vectors.py), and tests/aipl/csv/api.aipl uses
 //! headers, columns by name, typed fields and their errors, a whole text at

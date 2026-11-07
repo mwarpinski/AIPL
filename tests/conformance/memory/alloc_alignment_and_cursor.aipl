@@ -1,0 +1,13 @@
+;; @spec 4.A
+;; @kind run
+;; @out 8 8 16
+;; @out 0
+(module alloc_alignment_and_cursor
+  (fn main [] -> i32 (unsafe
+    (let a:i32 (mem.alloc 1))
+    (let b:i32 (mem.alloc 1))
+    (let c:i32 (mem.alloc 9))
+    (let d:i32 (mem.alloc 0))
+    (println "{(- b a)} {(- c b)} {(- d c)}")
+    (println "{(remu a 8)}")
+    0)))

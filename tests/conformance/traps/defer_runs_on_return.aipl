@@ -1,0 +1,20 @@
+;; @spec 4.F
+;; @kind run
+;; @out cleanup 2
+;; @out cleanup 1
+;; @out 1
+;; @out body
+;; @out cleanup 2
+;; @out cleanup 1
+;; @out 2
+(module defer_runs_on_return
+  (fn work [early:bool] -> i32
+    (defer (println "cleanup 1"))
+    (defer (println "cleanup 2"))
+    (when early (return 1))
+    (println "body")
+    2)
+  (fn main [] -> i32
+    (println "{(call work true)}")
+    (println "{(call work false)}")
+    0))

@@ -72,7 +72,7 @@ fn call_i32(w: &mut Wasi, name: &str) -> Result<i32, wasmtime::Error> {
     f.call(&mut w.store, ())
 }
 
-/// Runs `_start`: the program's exit status (AIPL_SPEC.md 6.5).
+/// Runs `_start`: the program's exit status (AIPL_SPEC.md 6.1).
 fn exit_status(w: &mut Wasi) -> i32 {
     let f: TypedFunc<(), ()> = w.instance.get_typed_func(&mut w.store, "_start").expect("_start");
     match f.call(&mut w.store, ()) {
@@ -138,7 +138,7 @@ fn sys_print_writes_each_argument_and_a_newline_to_stdout() {
                (sys.print "hello, wasi")
                0))"#,
     );
-    // proc_exit: _start exits with main's status (AIPL_SPEC.md 6.5)
+    // proc_exit: _start exits with main's status (AIPL_SPEC.md 6.1)
     assert_eq!(import_names(&wasm), vec!["wasi_snapshot_preview1::fd_write".to_string(), "wasi_snapshot_preview1::proc_exit".to_string()]);
     let dir = scratch_dir("print");
     let mut w = instantiate(&wasm, &dir);

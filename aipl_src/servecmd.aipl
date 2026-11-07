@@ -102,7 +102,7 @@
           (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
           (call buf.push_str m "compile error ")
           (call buf.push_int m (get res driver.Out.len))
-          (call buf.push_str m " (AIPL_SPEC.md 6.4)")
+          (call buf.push_str m " (docs/IMPLEMENTATION.md 5)")
           (return (call fail_bytes "" (call buf.bytes m))))
     (let wasm:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
     (let spec:(ptr buf.Buf) (call buf.make (call alloc.default) 64))

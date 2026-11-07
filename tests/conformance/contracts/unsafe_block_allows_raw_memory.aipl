@@ -1,0 +1,11 @@
+;; @spec 3
+;; @kind run
+;; @out 42
+(module unsafe_block_allows_raw_memory
+  (fn main [] -> i32
+    (unsafe
+      (let p:i32 (mem.alloc 8))
+      (mem.store32 p 40)
+      (mem.store32 (+ p 4) 2)
+      (println "{(+ (mem.load32 p) (mem.load32 (+ p 4)))}"))
+    0))

@@ -375,7 +375,7 @@ fn once_answers_a_piped_request_alike_everywhere() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+/// The native backend targets Linux x86-64 only (docs/IMPLEMENTATION.md 7).
 const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
 
 /// A fresh instance per connection, from each host: `aipl serve --fresh`

@@ -37,7 +37,7 @@ fn run_both(src: &str, f: &str) -> i32 {
     wasmparser::Validator::new().validate_all(&wasm).expect("valid wasm");
     let engine = Engine::default();
     let m = WasmModule::new(&engine, &wasm).unwrap();
-    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.1)
     let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
     let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
@@ -120,7 +120,7 @@ fn refs_in_an_imported_module_point_at_its_qualified_functions() {
     let wasm = WasmCompiler::compile(&module).unwrap();
     let engine = Engine::default();
     let m = WasmModule::new(&engine, &wasm).unwrap();
-    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.1)
     let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
     let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());

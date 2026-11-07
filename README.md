@@ -334,8 +334,12 @@ independent implementations against each other.
   people.
 - [docs/FAQ.md](docs/FAQ.md): why S-expressions, why so verbose, why not an
   existing language, and the other questions people ask first.
-- [AIPL_SPEC.md](AIPL_SPEC.md): the language as implemented, with its
-  pitfalls for code generators.
+- [AIPL_SPEC.md](AIPL_SPEC.md): the language: grammar, types, forms, what a
+  program means, what an implementation must do, and the pitfalls for code
+  generators. [docs/STD_REFERENCE.md](docs/STD_REFERENCE.md) is the standard
+  library, every module and function; [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)
+  is how this repository's tools work; `tests/conformance/` is what any
+  implementation has to pass.
 - [PROMPT_GUIDE_FOR_AIS.md](PROMPT_GUIDE_FOR_AIS.md): a compact guide to
   give an agent that will write AIPL.
 - [ROADMAP.md](ROADMAP.md): what comes next, and what AIPL does not do yet.

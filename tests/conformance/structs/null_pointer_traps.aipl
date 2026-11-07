@@ -1,0 +1,9 @@
+;; @spec 4.E
+;; @kind trap
+;; @trap Null pointer
+(module null_pointer_traps
+  (struct Cell [v:i32])
+  (fn main [] -> i32
+    (let p:(ptr Cell) (ptr.null Cell))
+    (println "{(get p Cell.v)}")
+    0))

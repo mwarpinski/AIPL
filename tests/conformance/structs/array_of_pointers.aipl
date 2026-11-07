@@ -1,0 +1,17 @@
+;; @spec 4.E
+;; @kind run
+;; @out 33
+(module array_of_pointers
+  (import alloc)
+  (struct Point [x:i32 y:i32])
+  (fn main [] -> i32
+    (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
+    (for i 0 3
+      (let p:(ptr Point) (new Point (call alloc.forever) [x:i y:(* i 10)]))
+      (arr.set (ptr Point) ps i p))
+    (let sum:i32 0)
+    (for i 0 (arr.len ps)
+      (let p:(ptr Point) (arr.get (ptr Point) ps i))
+      (set! sum (+ sum (+ (get p Point.x) (get p Point.y)))))
+    (println "{sum}")
+    0))

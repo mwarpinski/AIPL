@@ -1,0 +1,11 @@
+;; @spec 4.A
+;; @kind run
+;; @out 1
+;; @out -1
+(module grow_returns_previous_pages
+  (fn main [] -> i32 (unsafe
+    (let before:i32 (mem.grow 1))
+    (let after:i32 (mem.grow 0))
+    (println "{(- after before)}")
+    (println "{(mem.grow 100000)}")
+    0)))

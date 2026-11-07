@@ -1,0 +1,8 @@
+;; @spec 9
+;; @kind reject
+;; @syntax
+;; @reject 7:17 eq | equality
+(module c_operator_hint
+  (fn main [] -> i32
+    (let b:bool (== 1 2))
+    0))

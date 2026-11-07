@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @reject 6:5 Type mismatch
+(module let_type_mismatch
+  (fn main [] -> i32
+    (let x:i32 true)
+    0))

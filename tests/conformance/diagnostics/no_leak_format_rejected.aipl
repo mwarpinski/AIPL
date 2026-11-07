@@ -1,0 +1,8 @@
+;; @spec 3
+;; @kind reject
+;; @reject 6:16 no_leak | never freed | leak
+(module no_leak_format_rejected
+  (fn f [n:i32] -> i32 (no_leak)
+    (let s:str (format "n={n}"))
+    n)
+  (fn main [] -> i32 (call f 1)))

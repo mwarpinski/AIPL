@@ -1,0 +1,6 @@
+;; @spec 5.4
+;; @kind trap
+;; @trap integer overflow
+(module int_sub_overflow_traps
+  (fn sub [a:i32 b:i32] -> i32 (- a b))
+  (fn main [] -> i32 (call sub 0 -2147483648)))

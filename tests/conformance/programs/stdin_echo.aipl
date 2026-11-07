@@ -1,0 +1,12 @@
+;; @spec 6.1
+;; @kind run
+;; @stdin hello\nworld\n
+;; @out hello
+;; @out world
+(module stdin_echo
+  (import io)
+  (fn main [] -> i32
+    (match_result (call io.read_stdin)
+      (ok b (print "{b}"))
+      (err e (println "read failed")))
+    0))

@@ -1,0 +1,7 @@
+;; @spec 5.5
+;; @kind trap
+;; @trap out of bounds
+(module load_out_of_bounds_traps
+  (fn main [] -> i32 (unsafe
+    (println "{(mem.load32 2000000000)}")
+    0)))

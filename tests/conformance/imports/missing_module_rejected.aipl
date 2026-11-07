@@ -1,0 +1,6 @@
+;; @spec 11
+;; @kind reject
+;; @reject - Cannot resolve import | no_such_module_anywhere
+(module missing_module_rejected
+  (import no_such_module_anywhere)
+  (fn main [] -> i32 0))

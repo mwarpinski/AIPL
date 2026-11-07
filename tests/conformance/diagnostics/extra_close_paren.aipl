@@ -1,0 +1,6 @@
+;; @spec 9
+;; @kind reject
+;; @syntax
+;; @reject 6:25 unexpected
+(module extra_close_paren
+  (fn main [] -> i32 0)))

@@ -1,0 +1,7 @@
+;; @spec 7.9
+;; @kind reject
+;; @reject 6:5 heap cursor | cursor
+(module store_to_cursor_rejected
+  (fn main [] -> i32 (unsafe
+    (mem.store32 0 5)
+    0)))

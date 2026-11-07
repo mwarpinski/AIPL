@@ -1,0 +1,8 @@
+;; @spec 9
+;; @kind reject
+;; @syntax
+;; @reject 7:14 Unterminated string
+(module unterminated_string
+  (fn main [] -> i32
+    (println "oops)
+    0))

@@ -1,0 +1,9 @@
+;; @spec 4.H
+;; @kind reject
+;; @reject 9:11 Area | implementation | impl
+(module missing_implementation_rejected
+  (interface (Area T)
+    (fn area [x:T] -> i32))
+  (fn (describe T) [x:T] -> i32 (where (Area T)) (call (Area.area T) x))
+  (fn main [] -> i32
+    (call (describe i32) 5)))

@@ -1,0 +1,8 @@
+;; @spec 4.F
+;; @kind reject
+;; @reject 7:5 dropped | result
+(module result_dropped_rejected
+  (fn f [] -> (result i32 i32) (ok:i32 1))
+  (fn main [] -> i32
+    (call f)
+    0))

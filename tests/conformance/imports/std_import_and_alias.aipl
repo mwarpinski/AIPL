@@ -1,0 +1,14 @@
+;; @spec 11
+;; @kind run
+;; @out 7 -4 1
+;; @out 1
+(module std_import_and_alias
+  (import math)
+  (import vec as v)
+  (import alloc)
+  (fn main [] -> i32
+    (println "{(call math.max 3 7)} {(call math.floor_div -7 2)} {(call math.floor_mod -7 2)}")
+    (let xs:(ptr (v.Vec i32)) (call (v.make i32) (call alloc.default) 4))
+    (call (v.push i32) xs 5)
+    (println "{(call (v.len i32) xs)}")
+    0))

@@ -1,4 +1,4 @@
-//! std/math (AIPL_SPEC.md 12.6): thousands of generated calls, answered by
+//! std/math (docs/STD_REFERENCE.md): thousands of generated calls, answered by
 //! Python (tools/math_vectors.py: // and % as Python writes them, math.gcd,
 //! math.isqrt, math.floor, an exact round-half-away, i32 and i64 at their
 //! edges), the same through the interpreter, under aipl-run, and as an

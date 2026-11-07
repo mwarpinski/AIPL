@@ -1,0 +1,6 @@
+;; @spec 4.I
+;; @kind reject
+;; @reject 5:18 overflow | BIG
+(module constant_overflow_rejected
+  (const BIG:i32 (* 65536 65536))
+  (fn main [] -> i32 BIG))

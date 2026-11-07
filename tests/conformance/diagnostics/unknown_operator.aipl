@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @syntax
+;; @reject 7:5 Unknown op/keyword
+(module unknown_operator
+  (fn main [] -> i32
+    (badop 1 2)))

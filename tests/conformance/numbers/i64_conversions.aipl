@@ -1,0 +1,9 @@
+;; @spec 8.1
+;; @kind run
+;; @out -1 4294967295 5
+;; @out -2147483648
+(module i64_conversions
+  (fn main [] -> i32
+    (println "{(i64.extend_s -1)} {(i64.extend_u -1)} {(i32.wrap 4294967301i64)}")
+    (println "{(i32.wrap (+ (i64.extend_s 2147483647) 1i64))}")
+    0))

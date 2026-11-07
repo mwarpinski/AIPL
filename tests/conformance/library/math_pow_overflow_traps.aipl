@@ -1,0 +1,8 @@
+;; @spec 10
+;; @kind trap
+;; @trap overflow | does not fit | Pre-condition
+(module math_pow_overflow_traps
+  (import math)
+  (fn main [] -> i32
+    (println "{(call math.pow 2 40)}")
+    0))

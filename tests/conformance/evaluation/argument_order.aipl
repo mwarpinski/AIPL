@@ -1,0 +1,13 @@
+;; @spec 5.3
+;; @kind run
+;; @out 1
+;; @out 2
+;; @out 3
+;; @out = 6
+(module argument_order
+  (fn say [n:i32] -> i32 (println "{n}") n)
+  (fn add3 [a:i32 b:i32 c:i32] -> i32 (+ a (+ b c)))
+  (fn main [] -> i32
+    (let r:i32 (call add3 (call say 1) (call say 2) (call say 3)))
+    (println "= {r}")
+    0))

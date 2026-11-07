@@ -12,7 +12,7 @@ use std::process::{Command, Output};
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const ROWS: &str = "tests/aipl/testing/rows.aipl";
 
-/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+/// The native backend targets Linux x86-64 only (docs/IMPLEMENTATION.md 7).
 const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
 
 fn root() -> PathBuf {

@@ -31,7 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # archives and dated records: what they name may be gone, as the record says
 ARCHIVES = ("docs/history/", "docs/notes/", "docs/design/AGENT_FRICTION.md")
 # the documents a reader meets first
-FRONT = ("README.md", "AIPL_SPEC.md", "PROMPT_GUIDE_FOR_AIS.md", "docs/FAQ.md", "docs/TOUR.md", "docs/USING_AIPL.md", "ROADMAP.md", "DEVELOPING.md",
+FRONT = ("README.md", "AIPL_SPEC.md", "docs/IMPLEMENTATION.md", "docs/STD_REFERENCE.md", "PROMPT_GUIDE_FOR_AIS.md", "docs/FAQ.md", "docs/TOUR.md", "docs/USING_AIPL.md", "ROADMAP.md", "DEVELOPING.md",
          "bootstrap/README.md", "tools/harness/README.md")
 
 # (regex, what is wrong), checked in FRONT only, outside a line that says it is history
@@ -77,7 +77,7 @@ def run(*cmd):
 
 
 def aipl():
-    exe = os.path.join(ROOT, "target", "release", "aipl")
+    exe = os.environ.get("AIPL") or os.path.join(ROOT, "target", "release", "aipl")
     if not os.path.exists(exe):
         sys.exit("docs_check: build first (cargo build --release): it asks aipl doc what the library exports")
     return exe
@@ -125,16 +125,22 @@ def check_names(files, docs, show_all):
                 if mod in mods and name not in mods[mod] and f"{mod}.{name}" not in heads and not re.search(r"\b(was|were|removed|gone|retired|renamed|replaced)\b|^\s*[|-].*io\.(print|println)_", line, re.I):
                     if re.search(r"`[^`]*\b%s\.%s\b" % (mod, re.escape(name)), line) or re.search(r"\(call \(?%s\.%s\b" % (mod, re.escape(name)), line):
                         findings.append(f"{doc}:{n}: {mod}.{name} is not exported by std/{mod}")
-    spec = open(os.path.join(ROOT, "AIPL_SPEC.md"), encoding="utf-8").read().split("\n")
-    for n, line in enumerate(spec, 1):
-        row = re.match(r"^\| `([a-z0-9_]+)` \| (.*)", line)
-        if not row or row.group(1) not in mods:
+    # the summaries in docs/STD_REFERENCE.md: a `name [params]` in a module's section is a function the module exports
+    ref = open(os.path.join(ROOT, "docs", "STD_REFERENCE.md"), encoding="utf-8").read().split("\n")
+    mod, fenced = None, False
+    for n, line in enumerate(ref, 1):
+        if line.startswith("```"):
+            fenced = not fenced
             continue
-        mod = row.group(1)
-        for tok in re.findall(r"`([^`]+)`", row.group(2)):
+        h = re.match(r"^### std/([a-z0-9_]+)$", line)
+        if h:
+            mod = h.group(1)
+        if fenced or mod not in mods:
+            continue
+        for tok in re.findall(r"`([^`]+)`", line):
             w = re.match(r"^\(?([a-z_][a-z0-9_]*)(?:\s|$|\))", tok)
             if w and re.match(r"^[a-z_][a-z0-9_]*\s*\[", tok) and w.group(1) not in mods[mod] and w.group(1) not in ("alloc_fn", "free_fn"):
-                findings.append(f"AIPL_SPEC.md:{n}: the std/{mod} row names {w.group(1)}, which std/{mod} does not export")
+                findings.append(f"docs/STD_REFERENCE.md:{n}: the std/{mod} summary names {w.group(1)}, which std/{mod} does not export")
     return findings
 
 
@@ -189,15 +195,15 @@ def spec_sections(spec):
 
 
 def check_sections(files):
-    """Every section of the spec that a document, a source comment, or a test
-    names is one the spec has: "section 4.M" inside AIPL_SPEC.md, and
-    "AIPL_SPEC.md 4.K" or "AIPL_SPEC.md section 6.5" anywhere."""
-    spec = open(os.path.join(ROOT, "AIPL_SPEC.md"), encoding="utf-8").read()
-    valid = spec_sections(spec)
+    """Every section of the spec or of the implementation notes that a document, a source comment, or a test names is
+    one that document has: "section 4.M" inside AIPL_SPEC.md (and "section 3" inside docs/IMPLEMENTATION.md), and
+    "AIPL_SPEC.md 4.K", "AIPL_SPEC.md section 6.1", or "docs/IMPLEMENTATION.md 5" anywhere."""
+    docs = {"AIPL_SPEC.md": "AIPL_SPEC.md", "docs/IMPLEMENTATION.md": "IMPLEMENTATION.md"}
+    valid = {d: spec_sections(open(os.path.join(ROOT, d), encoding="utf-8").read()) for d in docs}
     findings = []
     ids = r"\d+(?:\.[0-9A-Z])?(?:\.\d+)?"
     inside = re.compile(r"\b[Ss]ections? (%s(?:(?:,| and|, and) %s)*)" % (ids, ids))
-    outside = re.compile(r"AIPL_SPEC\.md[`,]? (?:section |sections )?(%s(?:(?:,| and|, and) %s)*)" % (ids, ids))
+    outs = {d: re.compile(r"%s[`,]? (?:section |sections )?(%s(?:(?:,| and|, and) %s)*)" % (re.escape(short), ids, ids)) for d, short in docs.items()}
     for f in sorted(files):
         if not f.endswith((".md", ".rs", ".aipl", ".py", ".sh")) or f.startswith(("docs/history/", "docs/notes/")):
             continue
@@ -205,29 +211,33 @@ def check_sections(files):
             lines = open(os.path.join(ROOT, f), encoding="utf-8").read().split("\n")
         except (UnicodeDecodeError, FileNotFoundError):
             continue
-        rx = [inside, outside] if f == "AIPL_SPEC.md" else [outside]
         for n, line in enumerate(lines, 1):
-            for r in rx:
-                for m in r.finditer(line):
-                    for sid in re.findall(ids, m.group(1)):
-                        if sid not in valid and sid.rsplit(".", 1)[0] not in ("",) and not (f == "AIPL_SPEC.md" and f"{sid}" in ("1", "2", "3")):
-                            findings.append(f"{f}:{n}: names section {sid} of the spec, which has no such heading")
+            for d in docs:
+                rxs = [outs[d]] + ([inside] if f == d else [])
+                for r in rxs:
+                    for m in r.finditer(line):
+                        if r is outs[d] and d == "AIPL_SPEC.md" and line[max(0, m.start() - 5):m.start()] == "docs/":
+                            continue
+                        for sid in re.findall(ids, m.group(1)):
+                            if sid not in valid[d] and not (f == d and sid in ("1", "2", "3") and d == "AIPL_SPEC.md"):
+                                findings.append(f"{f}:{n}: names section {sid} of {d}, which has no such heading")
     return findings
 
 
 def check_flags(docs):
     """Every --flag in the spec's command table is one a command has."""
-    helps = run(aipl(), "--help")
+    rust = os.path.join(ROOT, "target", "release", "aipl")    # its --help lists every flag; the self-hosted one's is shorter
+    helps = run(rust, "--help")
     for c in re.findall(r"^  ([a-z-]+)\s", helps, re.M):
-        helps += run(aipl(), c, "--help")
+        helps += run(rust, c, "--help")
     helps += run(os.path.join(ROOT, "target", "release", "aipl-run"), "--help") if os.path.exists(os.path.join(ROOT, "target", "release", "aipl-run")) else ""
     known = set(re.findall(r"--[a-z][a-z-]+", helps)) | {"--help", "--version", "--sandbox", "--listen", "--serve-fresh", "--requests", "--name", "--temporary"}
     findings = []
-    for n, line in enumerate(open(os.path.join(ROOT, "AIPL_SPEC.md"), encoding="utf-8"), 1):
+    for n, line in enumerate(open(os.path.join(ROOT, "docs", "IMPLEMENTATION.md"), encoding="utf-8"), 1):
         if re.match(r"^\| `aipl", line):
             for fl in sorted(set(re.findall(r"(?<![A-Za-z-])--[a-z][a-z-]+", line))):
                 if fl not in known:
-                    findings.append(f"AIPL_SPEC.md:{n}: the command table has {fl}, which no command takes")
+                    findings.append(f"docs/IMPLEMENTATION.md:{n}: the command table has {fl}, which no command takes")
     return findings
 
 
@@ -280,15 +290,16 @@ def main():
                         findings.append(f"{doc}:{n}: {why}: {line.strip()[:90]}")
     # numbers
     tests = sorted(f for f in files if re.match(r"tests/test_[a-z0-9_]+\.rs$", f))
-    spec = open(os.path.join(ROOT, "AIPL_SPEC.md"), encoding="utf-8").read()
+    spec = open(os.path.join(ROOT, "docs", "IMPLEMENTATION.md"), encoding="utf-8").read()
     m = re.search(r"Files today \((\d+) files", spec)
     if m and int(m.group(1)) != len(tests):
-        findings.append(f"AIPL_SPEC.md: says {m.group(1)} test files; there are {len(tests)}")
+        findings.append(f"docs/IMPLEMENTATION.md: says {m.group(1)} test files; there are {len(tests)}")
     for t in tests:
         name = os.path.basename(t)
         if name not in spec:
-            findings.append(f"AIPL_SPEC.md: its list of test files lacks {name}")
+            findings.append(f"docs/IMPLEMENTATION.md: its list of test files lacks {name}")
     std = sorted(os.path.basename(f)[:-5] for f in files if re.match(r"aipl_src/std/[a-z0-9_]+\.aipl$", f))
+    spec = open(os.path.join(ROOT, "AIPL_SPEC.md"), encoding="utf-8").read()
     for mod in std:
         if not re.search(r"\|\s*`%s`\s*\|" % re.escape(mod), spec):
             findings.append(f"AIPL_SPEC.md: the standard library table lacks std/{mod}")

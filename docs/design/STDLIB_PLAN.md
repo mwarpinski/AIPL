@@ -12,7 +12,7 @@ libraries after them are written with both.
 
 ## The gap
 
-The standard library (AIPL_SPEC.md 12.6) covers files, text slices, a
+The standard library (docs/STD_REFERENCE.md) covers files, text slices, a
 string builder, JSON, vectors, hash maps, big integers, dates, timing,
 allocators, and parallel work. A program that does ordinary work still
 writes by hand what other languages import:
@@ -277,7 +277,7 @@ plan: it is a design of its own, and these are what it would be built on.
   saved request, or one piped through stdin, and answer it on stdout.
 - **`html`**: `escape` (text and attribute values) and `unescape`
   (named entities for the common set, and numeric ones).
-- **`json`** exists (AIPL_SPEC.md 12.6); it gains `json.get_path` for
+- **`json`** exists (docs/STD_REFERENCE.md); it gains `json.get_path` for
   `"a.b[2].c"` lookups.
 
 As built (2026-10-18), L6: `url` splits as Python's urlsplit does
@@ -397,7 +397,7 @@ reading back without making a view (buf.bytes makes one each call).
 ## Batches
 
 Each batch is one branch, tested in every backend and both toolchains,
-documented (AIPL_SPEC.md 12.6, the prompt guide, the tour where it
+documented (docs/STD_REFERENCE.md, the prompt guide, the tour where it
 helps), and merged to development before the next starts.
 
 | Batch | Contents | Why here |

@@ -1,0 +1,8 @@
+;; @spec 7.1
+;; @kind reject
+;; @reject 7:12 shadow
+(module shadowing_rejected
+  (fn main [] -> i32
+    (let x:i32 1)
+    (block (let x:i32 2))
+    x))

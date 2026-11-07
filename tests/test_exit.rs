@@ -1,4 +1,4 @@
-//! A program's exit status (AIPL_SPEC.md 6.5): main's i32, 0 for void, and
+//! A program's exit status (AIPL_SPEC.md 6.1): main's i32, 0 for void, and
 //! for a main returning (result i32 str) ok's value, or 1 after err's
 //! message on standard error; sys.exit's anywhere. The same in the VM
 //! (`aipl eval`), under aipl-run, natively, and in the launcher bundle; a

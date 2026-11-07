@@ -116,7 +116,7 @@ impl WasmCompiler {
         let worker_type = ref_type_base + ref_sigs.iter().position(|s| *s == worker_sig).unwrap_or(0) as u32;
         // A module with a zero-argument `main` and no `_start` of its own gets
         // a WASI command entry point: `_start` calls `main`, whose value is the
-        // exit status (AIPL_SPEC.md 6.5): an i32 is proc_exit'ed unless it is
+        // exit status (AIPL_SPEC.md 6.1): an i32 is proc_exit'ed unless it is
         // 0; a (result i32 str)'s ok likewise, and its err's message is
         // written to fd 2 with a newline, then proc_exit(1). It comes after
         // every other function, with its own [] -> [] type.
@@ -521,7 +521,7 @@ impl WasmCompiler {
         wasm_module.section(&data);
 
         // The name section (a custom section, last): every function's name,
-        // so a trap can say where it happened (AIPL_SPEC.md 6.5). The
+        // so a trap can say where it happened (docs/IMPLEMENTATION.md 6). The
         // generated functions have names starting with "aipl." or WASI's own.
         let mut fn_names = wasm_encoder::NameMap::new();
         for (i, f) in module.functions.iter().enumerate() {
@@ -565,7 +565,7 @@ impl WasmCompiler {
 /// A source position in the line table: file name, line, column.
 type Pos = (String, u32, u32);
 
-/// A function body being written, and its line table (AIPL_SPEC.md 6.5,
+/// A function body being written, and its line table (docs/IMPLEMENTATION.md 6,
 /// docs/design/LINES_PLAN.md): before each call or instruction that can
 /// trap, the position of the innermost expression being compiled, unless
 /// the previous entry has it. Compiler-made functions have no positions.
@@ -4227,7 +4227,7 @@ fn emit_contract_check_at(
 }
 
 // ---------------------------------------------------------------------------
-// WASI lowering support (AIPL_SPEC.md, sections 6.2 and 7.9)
+// WASI lowering support (docs/IMPLEMENTATION.md 3 and AIPL_SPEC.md 7.9)
 // ---------------------------------------------------------------------------
 
 const M4: MemArg = MemArg { offset: 0, align: 2, memory_index: 0 };
@@ -4788,7 +4788,7 @@ fn start_entry(module: &Module) -> Option<usize> {
     module.functions.iter().position(|f| f.name == "main" && f.params.is_empty())
 }
 
-/// A main returning (result i32 str) (AIPL_SPEC.md 6.5).
+/// A main returning (result i32 str) (docs/IMPLEMENTATION.md 6).
 fn is_result_main(ret: &Type) -> bool {
     matches!(ret, Type::ResultType(ok, err) if **ok == Type::I32 && **err == Type::Str)
 }

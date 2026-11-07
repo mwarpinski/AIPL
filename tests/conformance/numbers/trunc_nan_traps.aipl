@@ -1,0 +1,6 @@
+;; @spec 5.4
+;; @kind trap
+;; @trap invalid conversion | invalid float
+(module trunc_nan_traps
+  (fn nan [] -> f64 (/ 0.0 0.0))
+  (fn main [] -> i32 (i32.trunc_f64_s (call nan))))

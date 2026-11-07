@@ -1,0 +1,9 @@
+;; @spec 9
+;; @kind reject
+;; @reject 8:16 enum
+(module enum_arithmetic_rejected
+  (enum Kind [a b])
+  (fn main [] -> i32
+    (let k:Kind Kind.a)
+    (let n:i32 (+ k 1))
+    0))

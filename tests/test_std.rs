@@ -15,7 +15,7 @@ use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
-/// The native backend targets Linux x86-64 only (AIPL_SPEC.md 6.6).
+/// The native backend targets Linux x86-64 only (docs/IMPLEMENTATION.md 7).
 const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
 
 /// The VM resolves paths against the process cwd; serialise VM runs that chdir.

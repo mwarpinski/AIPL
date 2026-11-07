@@ -1,0 +1,16 @@
+;; @spec 10
+;; @kind run
+;; @out a15c02b7 7b47f409 ba1d3330
+;; @out true
+(module random_pcg32_known_answers
+  (import random)
+  (import alloc)
+  (fn main [] -> i32
+    (let r:(ptr random.Rng) (call random.seeded (call alloc.default) 42i64))
+    (let x:i64 (i64.extend_u (call random.next_u32 r)))
+    (let y:i64 (i64.extend_u (call random.next_u32 r)))
+    (let z:i64 (i64.extend_u (call random.next_u32 r)))
+    (println "{x:x} {y:x} {z:x}")
+    (let s:(ptr random.Rng) (call random.seeded (call alloc.default) 42i64))
+    (println "{(eq (i64.extend_u (call random.next_u32 s)) x)}")
+    0))

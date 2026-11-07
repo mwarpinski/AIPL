@@ -1,4 +1,4 @@
-//! std/url, std/http, std/html, and json.get_path (AIPL_SPEC.md 12.6):
+//! std/url, std/http, std/html, and json.get_path (docs/STD_REFERENCE.md):
 //! tests/aipl/url/vectors.aipl takes generated URLs apart as Python's
 //! urlsplit does, resolves references as RFC 3986 does (its own examples,
 //! and generated ones by its algorithm), and reads and builds query

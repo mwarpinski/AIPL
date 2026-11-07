@@ -1,0 +1,25 @@
+;; @spec 10
+;; @kind run
+;; @out 900150983cd24fb0d6963f7d28e17f72
+;; @out a9993e364706816aba3e25717850c26c9cd0d89d
+;; @out ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+;; @out e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+;; @out f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8
+;; @out 3421780262
+(module hash_known_answers
+  (import hash)
+  (import str)
+  (fn main [] -> i32
+    (let a:str (call hash.hex hash.Algorithm.md5 "abc"))
+    (let b:str (call hash.hex hash.Algorithm.sha1 "abc"))
+    (let c:str (call hash.hex hash.Algorithm.sha256 "abc"))
+    (let d:str (call hash.hex hash.Algorithm.sha256 ""))
+    (let e:str (call hash.hmac_hex hash.Algorithm.sha256 "key" "The quick brown fox jumps over the lazy dog"))
+    (println "{a}")
+    (println "{b}")
+    (println "{c}")
+    (println "{d}")
+    (println "{e}")
+    (let t:str.Bytes (call str.from_str "123456789"))
+    (println "{(i64.extend_u (call hash.crc32 t))}")
+    0))

@@ -1,0 +1,6 @@
+;; @spec 6.1
+;; @kind trap
+;; @exit 134
+;; @trap exit
+(module sys_exit_out_of_range
+  (fn main [] -> i32 (sys.exit 200) 0))

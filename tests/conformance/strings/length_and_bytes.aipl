@@ -1,0 +1,13 @@
+;; @spec 4.B
+;; @kind run
+;; @out 5 0 5
+;; @out 104 111
+(module length_and_bytes
+  (fn main [] -> i32
+    (let a:str "hello")
+    (let e:str "")
+    (let u:str "café")
+    (println "{(str.len a)} {(str.len e)} {(str.len u)}")
+    (unsafe
+      (println "{(mem.load8 (str.ptr a))} {(mem.load8 (+ (str.ptr a) 4))}"))
+    0))

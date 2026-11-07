@@ -1,0 +1,10 @@
+;; @spec 6.1
+;; @kind run
+;; @out exiting
+;; @exit 9
+(module sys_exit
+  (fn finish [] -> void (println "exiting") (sys.exit 9))
+  (fn main [] -> i32
+    (call finish)
+    (println "not reached")
+    0))

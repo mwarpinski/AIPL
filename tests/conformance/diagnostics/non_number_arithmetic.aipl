@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @reject 6:17 needs numbers | number
+(module non_number_arithmetic
+  (fn main [] -> i32
+    (let b:bool (+ true false))
+    0))

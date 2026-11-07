@@ -1,0 +1,26 @@
+;; @spec 4.F
+;; @kind run
+;; @out true false
+;; @out 40 -1
+;; @out 10
+;; @out missing
+(module try_opt_and_try_or
+  (import option)
+  (import alloc)
+  (fn pick [xs:(arr i32) i:i32] -> (option.Option i32)
+    (if (and (gte i 0) (lt i (arr.len xs))) (make (option.Option i32) some (arr.get i32 xs i)) (make (option.Option i32) none)))
+  (fn double_at [xs:(arr i32) i:i32] -> (option.Option i32)
+    (let v:i32 (try_opt (call pick xs i)))
+    (make (option.Option i32) some (* v 2)))
+  (fn checked [xs:(arr i32) i:i32] -> (result i32 str)
+    (let v:i32 (try_or (call pick xs i) "missing"))
+    (ok:str v))
+  (fn main [] -> i32
+    (let xs:(arr i32) (call (alloc.array i32) (call alloc.default) 2))
+    (arr.set i32 xs 0 10)
+    (arr.set i32 xs 1 20)
+    (println "{(call (option.is_some i32) (call double_at xs 1))} {(call (option.is_some i32) (call double_at xs 5))}")
+    (println "{(call (option.unwrap_or i32) (call double_at xs 1) -1)} {(call (option.unwrap_or i32) (call double_at xs 5) -1)}")
+    (match_result (call checked xs 0) (ok v (println "{v}")) (err e (println "{e}")))
+    (match_result (call checked xs 9) (ok v (println "{v}")) (err e (println "{e}")))
+    0))

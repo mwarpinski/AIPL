@@ -1,0 +1,26 @@
+;; @spec 10
+;; @kind run
+;; @out 3
+;; @out 3
+;; @out one-two-three
+;; @out a--b--c
+;; @out MIXED CASE
+(module text_functions
+  (import text)
+  (import str)
+  (import vec)
+  (import buf)
+  (import alloc)
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let parts:(ptr (vec.Vec str.Bytes)) (call text.split a (call str.from_str "a,,b") (call str.from_str ",")))
+    (println "{(call (vec.len str.Bytes) parts)}")
+    (let f:(ptr (vec.Vec str.Bytes)) (call text.fields a (call str.from_str "  one   two three ")))
+    (println "{(call (vec.len str.Bytes) f)}")
+    (let j:(ptr buf.Buf) (call text.join a f (call str.from_str "-")))
+    (println "{(call buf.bytes j)}")
+    (let r:(ptr buf.Buf) (call text.replace a (call str.from_str "aXbXc") (call str.from_str "X") (call str.from_str "--")))
+    (println "{(call buf.bytes r)}")
+    (let u:(ptr buf.Buf) (call text.to_upper a (call str.from_str "mixed Case")))
+    (println "{(call buf.bytes u)}")
+    0))

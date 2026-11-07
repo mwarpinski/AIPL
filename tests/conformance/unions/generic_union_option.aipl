@@ -1,0 +1,21 @@
+;; @spec 4.J
+;; @kind run
+;; @out found at 1
+;; @out not found
+(module generic_union_option
+  (import option)
+  (import alloc)
+  (fn find [xs:(arr i32) want:i32] -> (option.Option i32)
+    (for i 0 (arr.len xs)
+      (when (eq (arr.get i32 xs i) want) (return (make (option.Option i32) some i))))
+    (make (option.Option i32) none))
+  (fn show [o:(option.Option i32)] -> void
+    (match o
+      ((option.Option i32) some [v] (println "found at {v}"))
+      ((option.Option i32) none (println "not found"))))
+  (fn main [] -> i32
+    (let xs:(arr i32) (call (alloc.array i32) (call alloc.default) 3))
+    (arr.set i32 xs 1 42)
+    (call show (call find xs 42))
+    (call show (call find xs 99))
+    0))

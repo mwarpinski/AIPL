@@ -1,0 +1,23 @@
+;; @spec 10
+;; @kind run
+;; @out Zm9vYmFy Zm9vYmE= Zm9vYg== []
+;; @out foobar
+;; @out bad at 4
+;; @out 6869
+(module encode_known_answers
+  (import encode)
+  (fn main [] -> i32
+    (let a:str (call encode.base64 "foobar"))
+    (let b:str (call encode.base64 "fooba"))
+    (let c:str (call encode.base64 "foob"))
+    (let d:str (call encode.base64 ""))
+    (println "{a} {b} {c} [{d}]")
+    (match_result (call encode.base64_decode "Zm9vYmFy")
+      (ok s (println "{s}"))
+      (err at (println "bad at {at}")))
+    (match_result (call encode.base64_decode "Zm9v!mFy")
+      (ok s (println "{s}"))
+      (err at (println "bad at {at}")))
+    (let h:str (call encode.hex "hi"))
+    (println "{h}")
+    0))

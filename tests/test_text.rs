@@ -1,4 +1,4 @@
-//! std/text and std/str's searching (AIPL_SPEC.md 12.6): split, split on
+//! std/text and std/str's searching (docs/STD_REFERENCE.md): split, split on
 //! whitespace, lines, replace, find, rfind, count, and trim give what Python
 //! (and, for lines, Rust's str::lines) gives, on 800 generated cases
 //! (tests/aipl/text, from tools/text_vectors.py), in the VM, under aipl-run,

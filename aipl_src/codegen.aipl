@@ -2386,7 +2386,7 @@
 
 
   ;; ===== Compile error signaling =====
-  ;; Compile errors (AIPL_SPEC.md 6.4). The host reads the number from cell 4,
+  ;; Compile errors (docs/IMPLEMENTATION.md 5). The host reads the number from cell 4,
   ;; so the values are fixed.
   (enum CgErr [(memory_cap 90)            ;; mem.grow refused: more than 32768 pages
                (output_full 91)           ;; output or a function body passed 4 * src_len + 64 KiB

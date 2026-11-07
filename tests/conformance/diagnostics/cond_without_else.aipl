@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @syntax
+;; @reject 7:5 else
+(module cond_without_else
+  (fn main [] -> i32
+    (cond ((lt 1 2) 1))))

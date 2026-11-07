@@ -1,0 +1,7 @@
+;; @spec 8.2
+;; @kind run
+;; @out true true false true
+(module int_comparisons_unsigned
+  (fn main [] -> i32
+    (println "{(ltu 1 -1)} {(gtu -2147483648 2147483647)} {(lteu -1i64 0i64)} {(lt -1 0)}")
+    0))

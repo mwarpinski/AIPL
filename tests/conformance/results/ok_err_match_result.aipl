@@ -1,0 +1,13 @@
+;; @spec 4.F
+;; @kind run
+;; @out 7 -100
+(module ok_err_match_result
+  (fn digit [c:i32] -> (result i32 i32)
+    (if (and (gte c 48) (lte c 57)) (ok:i32 (- c 48)) (err:i32 -1)))
+  (fn show [c:i32] -> i32
+    (match_result (call digit c)
+      (ok v v)
+      (err e (* e 100))))
+  (fn main [] -> i32
+    (println "{(call show 55)} {(call show 120)}")
+    0))

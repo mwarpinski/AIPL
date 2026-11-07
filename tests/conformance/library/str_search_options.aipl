@@ -1,0 +1,17 @@
+;; @spec 10
+;; @kind run
+;; @out some{value: 0} some{value: 13} none
+;; @out some{value: 13} 2 true
+;; @out true true true
+(module str_search_options
+  (import str)
+  (fn main [] -> i32
+    (let t:str.Bytes (call str.from_str "hello world, hello"))
+    (let h:str.Bytes (call str.from_str "hello"))
+    (let xyz:str.Bytes (call str.from_str "xyz"))
+    (let wor:str.Bytes (call str.from_str "wor"))
+    (println "{(call str.find t h)} {(call str.rfind t h)} {(call str.find t xyz)}")
+    (println "{(call str.find_from t h 1)} {(call str.count t h)} {(call str.contains t wor)}")
+    (let hello:str "hello")
+    (println "{(call str.starts_with t h)} {(call str.ends_with t h)} {(call str.is h hello)}")
+    0))

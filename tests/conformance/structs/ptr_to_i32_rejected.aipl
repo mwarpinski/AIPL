@@ -1,0 +1,6 @@
+;; @spec 4.E
+;; @kind reject
+;; @reject 5:12 ptr | arr
+(module ptr_to_i32_rejected
+  (fn f [p:(ptr i32)] -> i32 0)
+  (fn main [] -> i32 0))

@@ -1,0 +1,16 @@
+;; @spec 6.1
+;; @kind run
+;; @args alpha beta
+;; @out 3
+;; @out alpha beta none
+(module arguments
+  (import os)
+  (import option)
+  (import str)
+  (fn main [] -> i32
+    (println "{(call os.arg_count)}")
+    (let a:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 1) (call str.from_str "none")))
+    (let b:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 2) (call str.from_str "none")))
+    (let c:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 3) (call str.from_str "none")))
+    (println "{a} {b} {c}")
+    0))

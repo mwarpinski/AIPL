@@ -1,0 +1,8 @@
+;; @spec 7.6
+;; @kind trap
+;; @trap Post-condition failed
+(module ens_failure_traps
+  (fn positive [n:i32] -> i32
+    (ens (gt res 0))
+    n)
+  (fn main [] -> i32 (call positive -5)))

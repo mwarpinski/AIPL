@@ -550,7 +550,7 @@ fn every_example_agrees_between_vm_and_wasmtime() {
         // and stdout; their VM-vs-wasm agreement is checked with a preopened
         // directory and captured output in tests/test_wasi.rs instead. An
         // example whose main prints its answers (fd_write) and gives its exit
-        // status (proc_exit, AIPL_SPEC.md 6.5) has its other functions
+        // status (proc_exit, AIPL_SPEC.md 6.1) has its other functions
         // compared; main itself is left out.
         let mut imports = Vec::new();
         for p in wasmparser::Parser::new(0).parse_all(&wasm) {

@@ -1,0 +1,24 @@
+;; @spec 10
+;; @kind run
+;; @out {"a":[1,2.5,true,null],"b":"x"}
+;; @out 2
+;; @out error at 5
+(module json_round_trip
+  (import json)
+  (import buf)
+  (import alloc)
+  (import str)
+  (import option)
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (match_result (call json.parse a (call str.from_str "{\"a\":[1,2.5,true,null],\"b\":\"x\"}"))
+      (ok v
+        (let b:(ptr buf.Buf) (call buf.make a 64))
+        (call json.write b v)
+        (println "{(call buf.bytes b)}")
+        (println "{(call json.count v)}"))
+      (err e (println "parse error")))
+    (match_result (call json.parse a (call str.from_str "{\"a\":"))
+      (ok v (println "parsed"))
+      (err e (println "error at {(get e json.Error.at)}")))
+    0))

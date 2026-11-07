@@ -1,0 +1,13 @@
+;; @spec 5.4
+;; @kind run
+;; @out 3 -3 1000000000000
+;; @out -5.0 9007199254740992.0
+;; @out 16777216.0
+;; @out 1065353216 4607182418800017408
+(module float_to_int_conversions
+  (fn main [] -> i32
+    (println "{(i32.trunc_f64_s 3.99)} {(i32.trunc_f64_s -3.99)} {(i64.trunc_f64_s 1.0e12)}")
+    (println "{(f64.convert_i32_s -5)} {(f64.convert_i64_s 9007199254740993i64)}")
+    (println "{(f32.convert_i32_s 16777217)}")
+    (println "{(i32.reinterpret_f32 1.0f32)} {(i64.reinterpret_f64 1.0)}")
+    0))

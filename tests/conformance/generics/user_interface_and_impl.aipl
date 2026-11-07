@@ -1,0 +1,14 @@
+;; @spec 4.H
+;; @kind run
+;; @out 25 14
+(module user_interface_and_impl
+  (interface (Area T)
+    (fn area [x:T] -> i32))
+  (struct Sq [side:i32] (value))
+  (struct Rect [w:i32 h:i32] (value))
+  (impl (Area Sq) (fn area [x:Sq] -> i32 (* (get x Sq.side) (get x Sq.side))))
+  (impl (Area Rect) (fn area [x:Rect] -> i32 (* (get x Rect.w) (get x Rect.h))))
+  (fn (describe T) [x:T] -> i32 (where (Area T)) (call (Area.area T) x))
+  (fn main [] -> i32
+    (println "{(call (describe Sq) (make Sq [side:5]))} {(call (describe Rect) (make Rect [w:2 h:7]))}")
+    0))

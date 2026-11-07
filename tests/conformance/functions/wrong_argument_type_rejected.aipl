@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @reject 7:5 Argument 2
+(module wrong_argument_type_rejected
+  (fn add [a:i32 b:i32] -> i32 (+ a b))
+  (fn main [] -> i32
+    (call add 1 true)))

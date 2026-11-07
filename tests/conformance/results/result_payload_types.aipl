@@ -1,0 +1,11 @@
+;; @spec 4.F
+;; @kind run
+;; @out ok 4.0
+;; @out err odd
+(module result_payload_types
+  (fn half [n:i32] -> (result f64 str)
+    (if (eq (% n 2) 0) (ok:str (f64.convert_i32_s (/ n 2))) (err:f64 "odd")))
+  (fn main [] -> i32
+    (match_result (call half 8) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    (match_result (call half 7) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    0))

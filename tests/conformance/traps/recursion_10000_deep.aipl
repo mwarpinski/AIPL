@@ -1,0 +1,9 @@
+;; @spec 7.11
+;; @kind run
+;; @out 10000
+(module recursion_10000_deep
+  (fn depth [n:i32] -> i32
+    (if (eq n 0) 0 (+ 1 (call depth (- n 1)))))
+  (fn main [] -> i32
+    (println "{(call depth 10000)}")
+    0))

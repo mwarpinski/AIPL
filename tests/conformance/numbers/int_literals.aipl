@@ -1,0 +1,9 @@
+;; @spec 2
+;; @kind run
+;; @out 255 10 -16 -65536 -1 -1
+;; @out 42 -7 -1
+(module int_literals
+  (fn main [] -> i32
+    (println "{0xFF} {0b1010} {-0x10} {0xFFFF_0000} {0xFFFFFFFF} {4294967295}")
+    (println "{42i64} {-7i64} {0xFFFFFFFFFFFFFFFFi64}")
+    0))

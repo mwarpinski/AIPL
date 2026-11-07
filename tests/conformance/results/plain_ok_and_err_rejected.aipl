@@ -1,0 +1,8 @@
+;; @spec 4.F
+;; @kind reject
+;; @syntax
+;; @reject 7:31 must name
+(module plain_ok_and_err_rejected
+  (fn f [n:i32] -> (result i32 i32)
+    (if (lt n 0) (err:i32 -1) (ok 1)))
+  (fn main [] -> i32 0))

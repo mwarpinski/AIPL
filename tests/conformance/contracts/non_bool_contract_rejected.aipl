@@ -1,0 +1,8 @@
+;; @spec 7.6
+;; @kind reject
+;; @reject 6:10 must evaluate to bool | bool
+(module non_bool_contract_rejected
+  (fn f [n:i32] -> i32
+    (req n)
+    n)
+  (fn main [] -> i32 (call f 1)))

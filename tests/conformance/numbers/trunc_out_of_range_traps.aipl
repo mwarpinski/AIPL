@@ -1,0 +1,6 @@
+;; @spec 5.4
+;; @kind trap
+;; @trap integer overflow
+(module trunc_out_of_range_traps
+  (fn big [] -> f64 (* 1.0e10 1.0e10))
+  (fn main [] -> i32 (i32.trunc_f64_s (call big))))

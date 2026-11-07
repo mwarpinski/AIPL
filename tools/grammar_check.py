@@ -516,7 +516,17 @@ def main():
         if rel in NOT_PROGRAMS:
             continue
         path = rel if os.path.isabs(rel) else os.path.join(ROOT, rel)
-        check(rec, rel, open(path, encoding="utf-8").read(), findings, verbose)
+        text = open(path, encoding="utf-8").read()
+        if re.search(r"^;;\s*@syntax\s*$", text, re.M):
+            # a conformance case that is refused for its syntax: the grammar must refuse it too
+            try:
+                accepted = rec.recognise(tokenize(text), "program")
+            except ValueError:
+                accepted = False
+            if accepted:
+                findings.append(f"{rel}: is marked @syntax (a syntax error), and the grammar accepts it")
+            continue
+        check(rec, rel, text, findings, verbose)
     if not files:
         for label, code in doc_modules():
             check(rec, label, code, findings, verbose)

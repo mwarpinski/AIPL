@@ -1,0 +1,9 @@
+;; @spec 4.E
+;; @kind reject
+;; @reject 8:5 value
+(module value_struct_put_rejected
+  (struct V [x:i32] (value))
+  (fn main [] -> i32
+    (let v:V (make V [x:1]))
+    (put v V.x 2)
+    0))

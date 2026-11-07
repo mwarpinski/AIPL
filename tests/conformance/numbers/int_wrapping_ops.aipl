@@ -1,0 +1,15 @@
+;; @spec 8
+;; @kind run
+;; @out -2147483648
+;; @out 0
+;; @out -2147483648
+;; @out -9223372036854775808
+;; @out 8589934592
+(module int_wrapping_ops
+  (fn main [] -> i32
+    (println "{(wrap.add 2147483647 1)}")
+    (println "{(wrap.mul 65536 65536)}")
+    (println "{(wrap.sub 0 -2147483648)}")
+    (println "{(wrap.add 9223372036854775807i64 1i64)}")
+    (println "{(* 4294967296i64 2i64)}")
+    0))

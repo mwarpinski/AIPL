@@ -1,0 +1,9 @@
+;; @spec 9
+;; @kind reject
+;; @reject 7:20 arithmetic | pointer
+(module pointer_arithmetic
+  (struct P [x:i32])
+  (fn f [p:(ptr P)] -> i32
+    (let q:(ptr P) (+ p 4))
+    0)
+  (fn main [] -> i32 0))

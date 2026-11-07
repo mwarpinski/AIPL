@@ -40,7 +40,7 @@ pub struct FlatProgram {
     pub name: String,
     pub structs: Vec<Item>,
     pub fns: Vec<Item>,
-    /// Each file's name in compiled code's line table (AIPL_SPEC.md 6.5):
+    /// Each file's name in compiled code's line table (docs/IMPLEMENTATION.md 6):
     /// the entry file by its file name, a module by its import path.
     pub files: HashMap<PathBuf, String>,
 }

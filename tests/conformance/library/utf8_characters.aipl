@@ -1,0 +1,13 @@
+;; @spec 10
+;; @kind run
+;; @out 10 7
+;; @out 233 2
+(module utf8_characters
+  (import utf8)
+  (import str)
+  (fn main [] -> i32
+    (let t:str.Bytes (call str.from_str "héllo €"))
+    (println "{(get t str.Bytes.len)} {(call utf8.count t)}")
+    (let c:utf8.Char (call utf8.decode t 1))
+    (println "{(get c utf8.Char.cp)} {(get c utf8.Char.len)}")
+    0))

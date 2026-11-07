@@ -1,0 +1,8 @@
+;; @spec 7.9
+;; @kind trap
+;; @trap reserved | unreachable
+(module store_to_reserved_block_traps
+  (fn poke [addr:i32] -> void (unsafe (mem.store32 addr 5)))
+  (fn main [] -> i32
+    (call poke 512)
+    0))

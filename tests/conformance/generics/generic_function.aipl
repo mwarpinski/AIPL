@@ -1,0 +1,20 @@
+;; @spec 4.H
+;; @kind run
+;; @out 9 2.5
+(module generic_function
+  (import alloc)
+  (fn (first T) [xs:(arr T)] -> T (arr.get T xs 0))
+  (fn (swap_ends T) [xs:(arr T)] -> void
+    (let last:i32 (- (arr.len xs) 1))
+    (let t:T (arr.get T xs 0))
+    (arr.set T xs 0 (arr.get T xs last))
+    (arr.set T xs last t))
+  (fn main [] -> i32
+    (let a:(arr i32) (arr.new i32 (call alloc.default) 3))
+    (let b:(arr f64) (arr.new f64 (call alloc.default) 2))
+    (arr.set i32 a 0 7) (arr.set i32 a 2 9)
+    (arr.set f64 b 0 1.5) (arr.set f64 b 1 2.5)
+    (call (swap_ends i32) a)
+    (call (swap_ends f64) b)
+    (println "{(call (first i32) a)} {(call (first f64) b)}")
+    0))

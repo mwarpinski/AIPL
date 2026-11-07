@@ -1,0 +1,9 @@
+;; @spec 4.B
+;; @kind run
+;; @out 12
+(module length_prefix_is_four_bytes_le
+  (fn main [] -> i32
+    (let s:str "twelve chars")
+    (unsafe
+      (println "{(mem.load32 (- (str.ptr s) 4))}"))
+    0))

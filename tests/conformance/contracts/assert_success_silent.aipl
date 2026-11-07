@@ -1,0 +1,9 @@
+;; @spec 3
+;; @kind run
+;; @out ok
+(module assert_success_silent
+  (fn main [] -> i32
+    (assert (lt 1 2))
+    (assert (eq 3 3) "three")
+    (println "ok")
+    0))

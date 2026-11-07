@@ -1,0 +1,21 @@
+;; @spec 4.D
+;; @kind run
+;; @out 5 8
+;; @out true 20
+;; @out false 20
+;; @out 1
+;; @out 0
+(module atomics_single_thread
+  (fn main [] -> i32
+    (unsafe
+      (let p:i32 (mem.alloc 8))
+      (mem.store32 p 5)
+      (println "{(atomic.add p 3)} {(mem.load32 p)}")
+      (println "{(atomic.cas p 8 20)} {(mem.load32 p)}")
+      (println "{(atomic.cas p 8 99)} {(mem.load32 p)}")
+      (mem.store32 (+ p 4) 0)
+      (atomic.lock (+ p 4))
+      (println "{(mem.load32 (+ p 4))}")
+      (atomic.unlock (+ p 4))
+      (println "{(mem.load32 (+ p 4))}"))
+    0))

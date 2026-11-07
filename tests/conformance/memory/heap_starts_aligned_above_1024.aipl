@@ -1,0 +1,9 @@
+;; @spec 7.9
+;; @kind run
+;; @out true 0
+(module heap_starts_aligned_above_1024
+  (fn main [] -> i32
+    (unsafe
+      (let a:i32 (mem.alloc 8))
+      (println "{(gte a 1024)} {(remu a 8)}"))
+    0))

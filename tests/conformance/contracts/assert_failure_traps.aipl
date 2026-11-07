@@ -1,0 +1,10 @@
+;; @spec 3
+;; @kind trap
+;; @err i = 7, n = 5
+;; @trap Assertion failed
+(module assert_failure_traps
+  (fn main [] -> i32
+    (let i:i32 7)
+    (let n:i32 5)
+    (assert (lt i n) (format "i = {i}, n = {n}"))
+    0))

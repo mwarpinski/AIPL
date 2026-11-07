@@ -1,0 +1,9 @@
+;; @spec 6.1
+;; @kind run
+;; @out working
+;; @err it failed
+;; @exit 1
+(module exit_status_main_result_err
+  (fn main [] -> (result i32 str)
+    (println "working")
+    (err:i32 "it failed")))

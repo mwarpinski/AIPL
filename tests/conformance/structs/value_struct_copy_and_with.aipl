@@ -1,0 +1,14 @@
+;; @spec 4.E
+;; @kind run
+;; @out 1.0 1.0 10.0 11.0 4.0
+(module value_struct_copy_and_with
+  (struct Vec2 [x:f64 y:f64] (value))
+  (fn add [a:Vec2 b:Vec2] -> Vec2
+    (make Vec2 [x:(+ (get a Vec2.x) (get b Vec2.x)) y:(+ (get a Vec2.y) (get b Vec2.y))]))
+  (fn main [] -> i32
+    (let a:Vec2 (make Vec2 [x:1.0 y:2.0]))
+    (let b:Vec2 a)
+    (let c:Vec2 (with b Vec2.x 10.0))
+    (let d:Vec2 (call add a c))
+    (println "{(get a Vec2.x)} {(get b Vec2.x)} {(get c Vec2.x)} {(get d Vec2.x)} {(get d Vec2.y)}")
+    0))

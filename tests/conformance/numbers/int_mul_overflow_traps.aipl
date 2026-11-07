@@ -1,0 +1,6 @@
+;; @spec 5.4
+;; @kind trap
+;; @trap integer overflow
+(module int_mul_overflow_traps
+  (fn mul [a:i32 b:i32] -> i32 (* a b))
+  (fn main [] -> i32 (call mul 65536 65536)))

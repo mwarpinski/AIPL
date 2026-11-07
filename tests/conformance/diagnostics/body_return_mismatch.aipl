@@ -1,0 +1,7 @@
+;; @spec 9
+;; @kind reject
+;; @reject 5:3 expects return type
+(module body_return_mismatch
+  (fn f [] -> i32
+    true)
+  (fn main [] -> i32 0))
