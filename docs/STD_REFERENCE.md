@@ -2260,7 +2260,7 @@ module par
     large beside work that reads one element (there, one thread is as
     fast). Workers may allocate (alloc.default is a heap with a lock; new
     and arr.new are atomic) and print. The caller waits until every part is
-    done. A program that uses par is a threaded module (AIPL_SPEC.md 6.2):
+    done. A program that uses par is a threaded module (docs/IMPLEMENTATION.md 3):
     it runs in the VM, under aipl-run, and natively.
 
 fn (par.map T U C) [out:(arr U) f:(fn [C (arr T) i32] -> U) ctx:C xs:(arr T) threads:i32] -> void (where (plain T)) (where (plain U)) (where (plain C))
