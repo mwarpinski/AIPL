@@ -2231,6 +2231,10 @@
           (call buf.push_bytes e import)
           (call buf.push_str e ".aipl' found in ")
           (call buf.push_bytes e (call buf.bytes tried))
+          ;; when even io.aipl is not in the standard library's folder, the folder is the problem
+          (let std_first:str.Bytes (call slice (get st State.lib_dirs) 0 (call first_colon (get st State.lib_dirs))))
+          (when (eq (call load (call with_ext (call as_dir std_first) (call str.from_str "io")) (get st State.origins) false) (ptr.null Src))
+                (call buf.push_str e "; the standard library itself was not found, so set $AIPL_STD to its folder (share/aipl/std in an installation, aipl_src/std in a checkout)"))
           (return false))
     (when (call malformed st src) (return false))
     (call (map.set str.Bytes str.Bytes) (get st State.found) key path)

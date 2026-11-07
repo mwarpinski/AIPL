@@ -69,6 +69,9 @@ enum Commands {
         file: String,
         #[arg(short, long, default_value = "out.wasm")]
         output: String,
+        /// Say what was written, on standard error (a successful compile prints nothing otherwise)
+        #[arg(short, long)]
+        verbose: bool,
         /// Build without the optimizer (aipl_src/codegen_opt.aipl, which runs by default):
         /// the Rust code generator's module, byte for byte the self-hosted toolchain's
         #[arg(long = "no-opt")]
@@ -478,16 +481,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 vm.set_max_pages(aipl_core::compiler::memory_pages(m)? as usize);
             }
             vm.load_module(module);
-            say!("[AIPL VM] Executing function '{}' from '{}'...", func, file);
             // an error is followed by its call chain, as compiled code prints it
             let res = match vm.invoke(&func, vec![]) {
                 // the VM's sys.exit ends the run with this error: exit as compiled code does
                 Err(e) if e.starts_with("sys.exit(") && e.ends_with(") requested") => {
                     exit_with(&file, e["sys.exit(".len()..e.len() - ") requested".len()].parse().unwrap_or(1))
                 }
-                r => r.map_err(|e| format!("{e}\n{}", vm.call_chain()).trim_end().to_string())?,
+                // a run-time error is a trap: status 134 and the call chain, as compiled code ends
+                Err(e) => {
+                    eprintln!("{file}: {e}\n{}", vm.call_chain().trim_end());
+                    std::process::exit(134)
+                }
+                Ok(v) => v,
             };
-            say!("[AIPL Result]: {:?}", res);
             // main's value is the exit status (AIPL_SPEC.md 6.1), as compiled
             // programs exit: an i32, or a (result i32 str)'s ok, or 1 after
             // err's message on standard error
@@ -510,7 +516,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Compile { file, output, no_opt, self_flag, exe, sandbox, listen, allow_connect, allow_run, serve, max_memory, target, tests } => {
+        Commands::Compile { file, output, verbose, no_opt, self_flag, exe, sandbox, listen, allow_connect, allow_run, serve, max_memory, target, tests } => {
             // a grant is checked before anything is compiled (aipl.aipl does the same)
             for g in &listen {
                 aipl_core::net::Net::parse_grant(g)?;
@@ -571,7 +577,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         use std::os::unix::fs::PermissionsExt;
                         fs::set_permissions(&output, fs::Permissions::from_mode(0o755))?;
                     }
-                    say!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+                    if verbose {
+                        eprintln!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+                    }
                     return Ok(());
                 }
                 let native = match target.as_deref() {
@@ -605,7 +613,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     })?;
                 }
             }
-            say!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+            if verbose {
+                eprintln!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+            }
         }
         Commands::Serve { file, fresh, listen, requests, args } => {
             if !fresh {

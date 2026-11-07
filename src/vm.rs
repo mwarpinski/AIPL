@@ -416,9 +416,10 @@ impl VM {
 
         if args.len() != f.params.len() {
             return Err(format!(
-                "Function '{}' expects {} arguments, got {}",
+                "Function '{}' expects {} argument{}, got {}",
                 fn_name,
                 f.params.len(),
+                if f.params.len() == 1 { "" } else { "s" },
                 args.len()
             ));
         }

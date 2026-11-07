@@ -134,9 +134,8 @@ its first one, one per line, so fix all that are listed and run it again.
 Exit status 1 on any error.
 
 **`aipl eval FILE`** runs `main` in the interpreter. It is for quick tries:
-it adds two lines of its own to standard output (`[AIPL VM] Executing ...`
-and `[AIPL Result]: ...`), so use `compile` and `aipl-run` when the output
-has to be exact. Standard input reaches the program; arguments follow `--`
+it prints only what the program prints, and exits with `main`'s status.
+Standard input reaches the program; arguments follow `--`
 (`aipl eval prog.aipl -- one two`).
 
 **`aipl eval -e 'EXPRESSIONS'`** evaluates expressions and prints the last

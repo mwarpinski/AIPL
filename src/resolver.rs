@@ -1211,10 +1211,13 @@ fn find_module_file(name: &str, importer_path: &Path, entry_path: &Path) -> Resu
             return c.canonicalize().map_err(|e| format!("Cannot resolve path '{}': {}", c.display(), e));
         }
     }
+    // when even io.aipl is not in the standard library's folder, the folder is the problem
+    let hint = if std.join("io.aipl").exists() { "" } else { "; the standard library itself was not found, so set $AIPL_STD to its folder (share/aipl/std in an installation, aipl_src/std in a checkout)" };
     Err(format!(
-        "Cannot resolve import '{}': no '{}' found in {}",
+        "Cannot resolve import '{}': no '{}' found in {}{}",
         name,
         filename,
-        candidates.iter().map(|c| format!("'{}'", c.display())).collect::<Vec<_>>().join(", ")
+        candidates.iter().map(|c| format!("'{}'", c.display())).collect::<Vec<_>>().join(", "),
+        hint
     ))
 }

@@ -50,7 +50,7 @@
   (import proc)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--allow-connect HOST:PORT]... [--allow-run PROGRAM]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] [--no-opt] FILE.aipl -o OUT")
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--allow-connect HOST:PORT]... [--allow-run PROGRAM]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] [--no-opt] [-v] FILE.aipl -o OUT")
     (call io.eprintln "       aipl verify FILE.aipl")
     (call io.eprintln "       aipl run [--sandbox] [--listen ADDR:PORT]... [--allow-connect HOST:PORT]... [--allow-run PROGRAM]... [--max-memory SIZE] [--no-opt] FILE.aipl|FILE.wasm [ARGS]...")
     (call io.eprintln "       aipl test FILE|DIR [-k TEXT] [--native]")
@@ -175,6 +175,7 @@
     (let listened:bool false)
     ;; the optimizer runs unless --no-opt (docs/design/OPT_PLAN.md)
     (let opt:bool true)
+    (let verbose:bool false)
     ;; --listen grants, one ADDR:PORT a line (native.compile_with)
     (let listen:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     ;; --serve: the address the executable serves on, a fresh copy per connection
@@ -206,6 +207,7 @@
                (else (return (call fail_bytes "--target: this aipl builds native executables only: expected native or arm64, not " (call arg (+ i 1))))))
          (set! i (+ i 1)))
         ((call str.is a "--no-opt") (set! opt false))
+        ((or (call str.is a "-v") (call str.is a "--verbose")) (set! verbose true))
         ((call str.is a "--sandbox") (set! sandbox true))
         ((call str.is a "--max-memory")
          (when (gte (+ i 1) n) (return (call usage)))
@@ -329,13 +331,15 @@
           (let first_arg:i32 (+ in_i 1))
           (when (and (lt first_arg n) (call str.is (call arg first_arg) "--")) (set! first_arg (+ first_arg 1)))
           (return (call run_built out entry first_arg n)))
-    (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
-    (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
-    (call io.write_str 1 "' -> '")
-    (unsafe (fs.write 1 (call str.addr out) (get out str.Bytes.len)))
-    (call io.write_str 1 "' (")
-    (call write_int 1 (get bytes str.Bytes.len))
-    (call io.println " bytes)")
+    ;; a successful compile prints nothing, unless -v asks, on standard error
+    (when verbose
+      (call io.write_str 2 "[AIPL Compiler] Successfully compiled '")
+      (unsafe (fs.write 2 (call str.addr entry) (get entry str.Bytes.len)))
+      (call io.write_str 2 "' -> '")
+      (unsafe (fs.write 2 (call str.addr out) (get out str.Bytes.len)))
+      (call io.write_str 2 "' (")
+      (call write_int 2 (get bytes str.Bytes.len))
+      (call io.write_str 2 " bytes)\n"))
     0)
 
   ;; WASI command entry point: runs main and exits with its status.

@@ -1303,8 +1303,8 @@ fn fits(got: &Type, want: &Type) -> bool {
                         format!(" ({})", param_types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" "))
                     };
                     return Err(format!(
-                        "{}:{}: Function '{}' expects {} arguments{}, got {}",
-                        l, c, shown(func), param_types.len(), takes, args.len()
+                        "{}:{}: Function '{}' expects {} argument{}{}, got {}",
+                        l, c, shown(func), param_types.len(), if param_types.len() == 1 { "" } else { "s" }, takes, args.len()
                     ));
                 }
                 for (i, arg) in args.iter().enumerate() {
@@ -2357,7 +2357,7 @@ fn fits(got: &Type, want: &Type) -> bool {
                     return Err(format!("{}:{}: call_ref signature {} does not match the function's type {}", span.0, span.1, sig, ft));
                 }
                 if args.len() != params.len() {
-                    return Err(format!("{}:{}: call_ref expects {} arguments, got {}", span.0, span.1, params.len(), args.len()));
+                    return Err(format!("{}:{}: call_ref expects {} argument{}, got {}", span.0, span.1, params.len(), if params.len() == 1 { "" } else { "s" }, args.len()));
                 }
                 for (i, (a, p)) in args.iter().zip(params.iter()).enumerate() {
                     let at = self.infer_expr_type(a, env)?;

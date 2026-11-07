@@ -1032,6 +1032,20 @@ A program is a module and the modules it imports (section 11), flattened into on
 
 `sys.exit` ends the program with its status from anywhere. A status must be 0-125: any other value, a negative one included, is an error reported with status 134, since shells reserve 126 and up. The value `main` returns is only the status; a program that reports a number prints it (`(println "{n}")`) and returns 0.
 
+The status a program ends with, in every case:
+
+| How the program ends | Status |
+|---|---|
+| `main` returns an `i32` `n` from 0 to 125 | `n` |
+| `main` returns `(ok:str n)` | `n`, under the same limit |
+| `main` returns `(err:i32 "why")` | 1, after `why` and a newline on standard error |
+| `main` returns `void` | 0 |
+| `sys.exit n` with `n` from 0 to 125 | `n`, from anywhere in the program; no later expression runs |
+| `main` returns, or `sys.exit` is given, a number outside 0 to 125 | 134, after a message on standard error |
+| a trap (section 5.6): overflow, a failed `req`, `ens`, `inv`, `assert`, or `abort`, an invalid access, exhausted memory or stack | 134, after the message and the chain of calls (a host that cannot give 134 gives another non-zero status) |
+
+A tool that runs a program (`aipl run`, `aipl eval`, a compiled executable) ends with the program's status unchanged. A program the tool refuses to run, because it does not read or type-check, ends with a status of its own that the tool defines (the `aipl` command uses 1 for a refused program, and 2 for a command line it does not understand: docs/IMPLEMENTATION.md 2).
+
 The program sees the real standard input, output, and error; its command line, with the program as `argv[0]` (`std/os`); the environment; and a working directory, with relative paths resolved in it (section 4.C). It sees nothing else unless it is granted it (section 6.3).
 
 A trap (section 5.6) ends the program with a non-zero exit status, 134 in a compiled program, after a message on standard error. The message says what happened, then lists the chain of calls, the innermost first, each as the function and where in the source it was: the expression that trapped for the innermost, the call for the others. The text is the host's; its layout is typically
@@ -1147,7 +1161,7 @@ A function body is a sequence of expressions. The **last** expression's type mus
     (if (lt n 0) -1
         (if (eq n 0) 0 1))))
 ```
-`aipl eval` on a driver calling `(call sign -5)` prints `[AIPL Result]: Int(-1)`. Compiles to `if (result i32) ... else ... end` in wasm.
+A driver calling `(call sign -5)` returns -1. Compiles to `if (result i32) ... else ... end` in wasm.
 
 ### 7.3 Invalid: mixed branch types
 
@@ -1611,11 +1625,8 @@ Each example is complete and runs with the command shown. Expected output is wha
 ```
 ```
 $ aipl eval gcd.aipl
-[AIPL VM] Executing function 'main' from 'gcd.aipl'...
 21
-[AIPL Result]: Int(0)
 $ aipl compile gcd.aipl -o gcd.wasm
-[AIPL Compiler] Successfully compiled 'gcd.aipl' -> 'gcd.wasm' (N bytes)
 ```
 The `.wasm` exports `gcd`, `main`, `memory`, and `_start`, which runs `main` and exits with its status (section 6.1). Note the `let t` inside the `while` body: it becomes a wasm local of the function and is re-assigned each iteration, which is the intended semantics.
 
@@ -1657,7 +1668,7 @@ Raw memory, laid out by hand. Every function takes a raw address, which nothing 
     (sys.print "hello, aipl")
     0))
 ```
-`aipl eval hello.aipl` prints `hello, aipl` then `[AIPL Result]: Int(0)`, and exits with status 0. `aipl compile hello.aipl` produces a module importing `wasi_snapshot_preview1::fd_write`; run it with `aipl run hello.wasm`, or any WASI host, and it prints the same line. `(+ "a" "b")` is a checker error: text is built with the formatting forms (section 4.K), `std/buf`, or `str.concat` (which makes a `str` that is never freed).
+`aipl eval hello.aipl` prints `hello, aipl` and exits with status 0. `aipl compile hello.aipl` produces a module importing `wasi_snapshot_preview1::fd_write`; run it with `aipl run hello.wasm`, or any WASI host, and it prints the same line. `(+ "a" "b")` is a checker error: text is built with the formatting forms (section 4.K), `std/buf`, or `str.concat` (which makes a `str` that is never freed).
 
 ### 12.4 Threads and atomics, both backends
 
@@ -1731,7 +1742,6 @@ $ cd examples && ../target/debug/aipl eval word_count.aipl
 lines: 4
 words: 15
 bytes: 81
-[AIPL Result]: Ok(Int(0))
 $ aipl compile --exe examples/word_count.aipl -o word_count
 $ cd examples && ../word_count
 lines: 4
