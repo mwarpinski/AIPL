@@ -73,7 +73,7 @@ over ssh on an Apple Silicon Mac with Docker (3 minutes).
 `aipl-linux-aarch64` is that compiler as a Linux AArch64 executable, the seed there: on an
 AArch64 Linux machine `sh bootstrap/build.sh` has it build the source (stage 1), stage 1
 build it again (stage 2), and stage 2 once more (a fixed point), as on x86-64, with no Rust.
-It is 4.2 MB (the x86-64 seed is 4.8 MB): the AArch64 backend has an optimizer
+It is 5.1 MB (the x86-64 seed is 5.7 MB): the AArch64 backend has an optimizer
 (docs/design/ARM64_OPT_PLAN.md) and the seed is built with it. The process operations
 (procs_arm64.aipl), sockets and `--serve` (sockets_arm64.aipl, fresh_arm64.aipl), and `--sandbox`
 and threads (lower_arm64.aipl, native_arm64.aipl) are built for AArch64, so the `aipl` the script makes does what the x86-64 one does: `compile`,
@@ -101,24 +101,27 @@ program to the same bytes as the Rust command, with the same errors.
 
 ## Where this seed came from
 
-Built 2026-11-01 by the Rust toolchain, from the source of commit 53132e1, with `--allow-run '*'`, so that
+Built 2026-11-07 by the Rust toolchain, from the source of commit 6ddef9d, with `--allow-run '*'`, so that
 the seed is the whole command it can be: `verify`, `run`, `test`, and `watch` as well as `compile` and `doc`
 (docs/design/aipl_standalone.md, S2). It was refreshed for an immediate need (the owner's rule: a seed is
-refreshed for an immediate need, or at a release): the compiler's own source imports std/proc, std/net, and
-std/http, which now use `proc.kill`, `proc.try_wait`, `proc.poll`, and `net.poll`, operations the seed before
-this one (from 6378b3d) cannot read:
+refreshed for an immediate need, or at a release): the compiler's own source now writes `wrap.add`, `wrap.sub`,
+and `wrap.mul` where it wraps on purpose (the hashes, the generators, the bit tricks of the native backends),
+because `+ - *` on integers trap on overflow, and the seed before this one (from 53132e1) cannot read them. The
+seed is bigger than the one before (5.7 MB, from 4.8 MB) because every integer `+ - *` in the compiler is now
+checked:
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe --allow-run '*' aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `5b29f3635ebe45955d9b241a6de4d62997cf6abcaf9219c6ebbe8ca330561202`.
+sha256 `1fac35300c355a66527f3971c00105fc868b197b6e5f56679fd2015a7c0dd417`.
 Building that commit's source with the seed gives the same bytes (stage
-2 is the seed), so for now the seed is its own stage 2. The one before it, from 6378b3d, has sha256
+2 is the seed), so for now the seed is its own stage 2. The one before it, from 53132e1, has sha256
+`5b29f3635ebe45955d9b241a6de4d62997cf6abcaf9219c6ebbe8ca330561202`, and the one before that, from 6378b3d,
 `0babb795464f200d6ee2611de5a321d6e37165fb09415c980412a24d3188fb0e`.
 
-Earlier seeds: the one built 2026-10-29 from 5d08411 (sha256
+Earlier seeds: the one built 2026-11-01 from 53132e1 is above; the one built 2026-10-29 from 5d08411 (sha256
 `9e5f706b62a6e63745187b5fff9bf197d062686d48d6bed6d7f09d95ef6f68a1`), for `std/time.sleep`; the one built 2026-10-29 from 0ca006e (sha256
 `c6bed76f2347d9b89dde3b366d89530b3f25c79cac801ca8f82c95ffdf441d53`), for
 `std/fs`'s `mkdir` and `rmdir`; the one built 2026-10-29 from 49ec350 (sha256
@@ -154,20 +157,22 @@ used `ptr.make`.
 
 ## Where the AArch64 seed came from
 
-Built 2026-11-01 by the Rust toolchain, from the source of commit 53132e1, with
+Built 2026-11-07 by the Rust toolchain, from the source of commit 6ddef9d, with
 `--allow-run '*'`, so that it is the whole command, and with the AArch64 optimizer
-(docs/design/ARM64_OPT_PLAN.md), which makes the compiler 4.2 MB where the one before it (from 207b1d7, before the
-optimizer) was 7.9 MB and compiled itself 5 times slower:
+(docs/design/ARM64_OPT_PLAN.md); it is 5.1 MB (the one before it, from 53132e1, was 4.2 MB; the growth is the
+overflow checks, as on x86-64):
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe --target arm64 --allow-run '*' aipl_src/aipl.aipl -o bootstrap/aipl-linux-aarch64
 ```
 
-AArch64 seed sha256 `eb0d9d32af71416f3f7588f4052a405ac139fb8c8d77755f41f4b7140fb4fd96`.
+AArch64 seed sha256 `0fed8c5bea5d9d29bdfe1ed908df08166c295354a8e815f191b89e1504080ca6`.
 The self-hosted x86-64 command builds the same bytes, and so does the seed itself on AArch64 Linux
 (stage 2 is the seed), which `tools/arm64_bootstrap.sh` checks (`SEED_FROM_SOURCE=1` requires it);
-`tests/test_bootstrap.rs` runs the seed's stages on AArch64 Linux as it does on x86-64. The seed before this one (from 6378b3d) has sha256 `a030be5b6be1c8c9f06e384d2f040c35bddd6d3808124071cb594b33cff05c89`,
+`tests/test_bootstrap.rs` runs the seed's stages on AArch64 Linux as it does on x86-64. The seed before this one (from 53132e1) has sha256
+`eb0d9d32af71416f3f7588f4052a405ac139fb8c8d77755f41f4b7140fb4fd96`, the one before that (from 6378b3d)
+`a030be5b6be1c8c9f06e384d2f040c35bddd6d3808124071cb594b33cff05c89`,
 and the one before that
 was built the same way from 207b1d7 (sha256 `edc5ed45cdf04b35f884ae0992dad906c254c902bf9360b804bf9537c3f5fcbc`),
 and the first from ac88301 (sha256 `8554dc536675403a6ee236d7a882179e32e90786526938af5bd2df1e0863ab76`); that one

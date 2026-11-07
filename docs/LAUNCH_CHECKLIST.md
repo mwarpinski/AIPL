@@ -57,7 +57,7 @@ a deprecation instead of an edit.
 - [x] **The open friction items** *(2026-11-07: row 8 by an `aipl lint` rule, `sys-print-newline`; row 31 by the circular-import message naming the hidden module; row 11 (constant arrays) and row 35 deferred, both additive.)*, each closed or deferred by name (docs/design/AGENT_FRICTION.md): `sys.print` and
   `print` disagreeing on the newline (row 8), constant arrays (row 11), a file in the program's folder hiding a std
   module (rows 31 and 35).
-- [ ] **One seed refresh**, then PROMPT_GUIDE_FOR_AIS.md's pitfall table updated once.
+- [x] **One seed refresh**, then PROMPT_GUIDE_FOR_AIS.md's pitfall table updated once. *(2026-11-07: both seeds rebuilt from 6ddef9d, each its own stage 2; the x86-64 one is 5.7 MB, from 4.8 MB, and the AArch64 one 5.1 MB, from 4.2 MB, because every integer `+ - *` is now checked. The prompt guide's rules 11 and 19 and the pitfall about `-1` searches are updated.)*
 
 ## 2. Specification
 
