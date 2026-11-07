@@ -98,8 +98,8 @@
       (let c:i32 (call str.byte_at b i))
       (call buf.push_byte out
         (cond ((and upper (and (gte c 97) (lte c 122))) (- c 32))
-              ((and (not upper) (and (gte c 65) (lte c 90))) (+ c 32))
-              (else c))))
+          ((and (not upper) (and (gte c 65) (lte c 90))) (+ c 32))
+          (else c))))
     out)
 
   ;; b as an f64, exactly rounded: an optional sign, digits with at most

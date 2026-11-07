@@ -69,16 +69,16 @@
 
   ;; Optimization counters recorded across passes.
   (struct Stats [
-    (read consts_folded:i32)
-    (read calls_inlined:i32)
-    (read locals_eliminated:i32)
-    (read fns_eliminated:i32)
-    (read fns_kept:i32)
-    ;; the inliner's fresh names: this prefix (found in no symbol of the
-    ;; program, optimize_mapped) and a count
-    fresh_prefix:str.Bytes
-    fresh_count:i32
-  ] (pub))
+                 (read consts_folded:i32)
+                 (read calls_inlined:i32)
+                 (read locals_eliminated:i32)
+                 (read fns_eliminated:i32)
+                 (read fns_kept:i32)
+                 ;; the inliner's fresh names: this prefix (found in no symbol of the
+                 ;; program, optimize_mapped) and a count
+                 fresh_prefix:str.Bytes
+                 fresh_count:i32
+                ] (pub))
 
   (fn make_stats [] -> (ptr Stats) (pub)
     (let s:(ptr Stats) (new Stats (call alloc.forever) [consts_folded:0
@@ -115,14 +115,14 @@
   (enum OKind [sym int int64 float float32 bool string colon arrow paren bracket])
 
   (struct ONode [
-    kind:OKind
-    text:str.Bytes
-    ival:i32
-    lval:i64
-    first:(ptr ONode)
-    next:(ptr ONode)
-    pos:i32
-  ])
+                 kind:OKind
+                 text:str.Bytes
+                 ival:i32
+                 lval:i64
+                 first:(ptr ONode)
+                 next:(ptr ONode)
+                 pos:i32
+                ])
 
   (fn new_onode [k:OKind text:str.Bytes ival:i32 lval:i64 pos:i32] -> (ptr ONode)
     (let n:(ptr ONode) (new ONode (call alloc.forever) [kind:k
@@ -433,40 +433,40 @@
 
   (fn is_pure_op_name [h:str.Bytes] -> bool
     (or (call str.is h "^")
-    (or (call str.is h "shl")
-    (or (call str.is h "shr")
-    (or (call str.is h "shru")
-    (or (call str.is h "bitand")
-    (or (call str.is h "bitor")
-    (or (call str.is h "eq")
-    (or (call str.is h "neq")
-    (or (call str.is h "lt")
-    (or (call str.is h "lte")
-    (or (call str.is h "gt")
-    (or (call str.is h "gte")
-    (or (call str.is h "ltu")
-    (or (call str.is h "lteu")
-    (or (call str.is h "gtu")
-    (or (call str.is h "gteu")
-    (or (call str.is h "and")
-    (or (call str.is h "or")
-    (or (call str.is h "not")
-    (or (call str.is h "str.len")
-    (or (call str.is h "str.ptr")
-    (or (call str.is h "i64.extend_s")
-    (or (call str.is h "i64.extend_u")
-    (or (call str.is h "i32.wrap")
-    (or (call str.is h "f64.convert_i64_s")
-    (or (call str.is h "f64.convert_i32_s")
-    (or (call str.is h "f32.convert_i32_s")
-    (or (call str.is h "f32.convert_i64_s")
-    (or (call str.is h "f32.demote")
-    (or (call str.is h "f64.promote")
-    (or (call str.is h "f64.reinterpret_i64")
-    (or (call str.is h "i64.reinterpret_f64")
-    (or (call str.is h "f32.reinterpret_i32")
-    (or (call str.is h "i32.reinterpret_f32")
-        (call str.is h "f64.sqrt"))))))))))))))))))))))))))))))))))))
+        (or (call str.is h "shl")
+            (or (call str.is h "shr")
+                (or (call str.is h "shru")
+                    (or (call str.is h "bitand")
+                        (or (call str.is h "bitor")
+                            (or (call str.is h "eq")
+                                (or (call str.is h "neq")
+                                    (or (call str.is h "lt")
+                                        (or (call str.is h "lte")
+                                            (or (call str.is h "gt")
+                                                (or (call str.is h "gte")
+                                                    (or (call str.is h "ltu")
+                                                        (or (call str.is h "lteu")
+                                                            (or (call str.is h "gtu")
+                                                                (or (call str.is h "gteu")
+                                                                    (or (call str.is h "and")
+                                                                        (or (call str.is h "or")
+                                                                            (or (call str.is h "not")
+                                                                                (or (call str.is h "str.len")
+                                                                                    (or (call str.is h "str.ptr")
+                                                                                        (or (call str.is h "i64.extend_s")
+                                                                                            (or (call str.is h "i64.extend_u")
+                                                                                                (or (call str.is h "i32.wrap")
+                                                                                                    (or (call str.is h "f64.convert_i64_s")
+                                                                                                        (or (call str.is h "f64.convert_i32_s")
+                                                                                                            (or (call str.is h "f32.convert_i32_s")
+                                                                                                                (or (call str.is h "f32.convert_i64_s")
+                                                                                                                    (or (call str.is h "f32.demote")
+                                                                                                                        (or (call str.is h "f64.promote")
+                                                                                                                            (or (call str.is h "f64.reinterpret_i64")
+                                                                                                                                (or (call str.is h "i64.reinterpret_f64")
+                                                                                                                                    (or (call str.is h "f32.reinterpret_i32")
+                                                                                                                                        (or (call str.is h "i32.reinterpret_f32")
+                                                                                                                                            (call str.is h "f64.sqrt"))))))))))))))))))))))))))))))))))))
 
   ;; Whether `n` is guaranteed free of side effects and runtime traps.
   (fn is_pure [n:(ptr ONode)] -> bool
@@ -671,8 +671,8 @@
     ;; If only (else body...) remains in cond, unwrap it directly
     (let only_clause:(ptr ONode) (get first_out ONode.next))
     (when (and (not keep) (and (neq only_clause (ptr.null ONode))
-             (and (eq (get only_clause ONode.next) (ptr.null ONode))
-                  (call is_form only_clause "else"))))
+                               (and (eq (get only_clause ONode.next) (ptr.null ONode))
+                                    (call is_form only_clause "else"))))
         (return (call wrap_stmt_list (get (get only_clause ONode.first) ONode.next) pos)))
     (let res:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
     (put res ONode.first first_out)
@@ -1181,9 +1181,9 @@
                    (when (lt sum 32)
                          (call bump_folded stats)
                          (return (call make_op2 (if (call str.is ht "shl") "shl" (if (call str.is ht "shr") "shr" "shru"))
-                                                (call onode_nth a 1)
-                                                (call make_int sum pos)
-                                                pos)))))
+                                       (call onode_nth a 1)
+                                       (call make_int sum pos)
+                                       pos)))))
        n)
       ((call str.is ht "bitand")
        (when (and b_int (eq bv -1)) (call bump_folded stats) (return a))
@@ -1212,15 +1212,15 @@
   ;; ===== Pass 2: Multi-Round Hygienic Function Inliner =====
 
   (struct InlineDef [
-    name:str.Bytes
-    params:(ptr (vec.Vec str.Bytes))
-    param_types:(ptr (vec.Vec (ptr ONode)))
-    param_uses:(ptr (vec.Vec i32))
-    body_first:(ptr ONode)
-    stmt_count:i32
-    is_void:bool
-    is_unsafe:bool
-  ])
+                     name:str.Bytes
+                     params:(ptr (vec.Vec str.Bytes))
+                     param_types:(ptr (vec.Vec (ptr ONode)))
+                     param_uses:(ptr (vec.Vec i32))
+                     body_first:(ptr ONode)
+                     stmt_count:i32
+                     is_void:bool
+                     is_unsafe:bool
+                    ])
 
   ;; Standard return / local types that are never value structs or value unions.
   (fn is_standard_type [tn:(ptr ONode)] -> bool
@@ -1228,12 +1228,12 @@
     (when (eq (get tn ONode.kind) OKind.sym)
           (let t:str.Bytes (get tn ONode.text))
           (return (or (call str.is t "i32")
-                  (or (call str.is t "i64")
-                  (or (call str.is t "f64")
-                  (or (call str.is t "f32")
-                  (or (call str.is t "bool")
-                  (or (call str.is t "str")
-                      (call str.is t "void")))))))))
+                      (or (call str.is t "i64")
+                          (or (call str.is t "f64")
+                              (or (call str.is t "f32")
+                                  (or (call str.is t "bool")
+                                      (or (call str.is t "str")
+                                          (call str.is t "void")))))))))
     (when (eq (get tn ONode.kind) OKind.paren)
         (return (or (call is_form tn "ptr") (call is_form tn "arr"))))
     false)
@@ -1248,14 +1248,14 @@
           (when (and (neq h (ptr.null ONode)) (eq (get h ONode.kind) OKind.sym))
                 (let ht:str.Bytes (get h ONode.text))
                 (when (or (call str.is ht "let")
-                    (or (call str.is ht "set!")
-                    (or (call str.is ht "return")
-                    (or (call str.is ht "counted_loop")
-                    (or (call str.is ht "while")
-                    (or (call str.is ht "match")
-                    (or (call str.is ht "match_result")
-                    (or (call str.is ht "ok")
-                        (call str.is ht "err")))))))))
+                          (or (call str.is ht "set!")
+                              (or (call str.is ht "return")
+                                  (or (call str.is ht "counted_loop")
+                                      (or (call str.is ht "while")
+                                          (or (call str.is ht "match")
+                                              (or (call str.is ht "match_result")
+                                                  (or (call str.is ht "ok")
+                                                      (call str.is ht "err")))))))))
                     (return true))
                 (when (or (call str.is ht "call") (call str.is ht "ref"))
                       (let target:(ptr ONode) (call onode_nth n 1))

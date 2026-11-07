@@ -212,7 +212,6 @@
           (arr.set T (get v (Vec T) items) i (arr.get T src i))))
     (call (alloc.free_array T) (get v (Vec T) allocator) scratch))
 
-
   ;; Ascending.
   (fn sort_i32 [v:(ptr (Vec i32))] -> void (pub)
     (call (sort_by i32) v (ref cmp_i32)))

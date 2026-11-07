@@ -11,7 +11,7 @@
     (for i 0 (get s str.Bytes.len)
       (let c:i32 (call str.byte_at s i))
       (cond ((eq c 92) (call buf.push_str o "\\\\")) ((eq c 10) (call buf.push_str o "\\n")) ((eq c 13) (call buf.push_str o "\\r"))
-            (else (call buf.push_byte o c)))))
+        (else (call buf.push_byte o c)))))
 
   (fn read_case [t:str delim:i32] -> void
     (let a:alloc.Allocator (call alloc.default))

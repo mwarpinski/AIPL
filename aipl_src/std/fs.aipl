@@ -75,7 +75,7 @@
 
   (fn dot_or_dotdot [name:i32 n:i32] -> bool (unsafe)
     (and (gte n 1) (and (lte n 2)
-         (and (eq (mem.load8 name) 46) (or (eq n 1) (eq (mem.load8 (+ name 1)) 46))))))
+                        (and (eq (mem.load8 name) 46) (or (eq n 1) (eq (mem.load8 (+ name 1)) 46))))))
 
   ;; n bytes at addr, copied into memory from a.
   (fn copy [a:alloc.Allocator addr:i32 n:i32] -> str.Bytes (unsafe)
@@ -156,7 +156,7 @@
   ;; rename for paths held as bytes.
   (fn rename_path [from:str.Bytes to:str.Bytes] -> (result i32 io.Error) (pub)
     (unsafe (call rename_at (call str.addr from) (get from str.Bytes.len)
-                            (call str.addr to) (get to str.Bytes.len))))
+                  (call str.addr to) (get to str.Bytes.len))))
 
   ;; The operation, on paths in memory.
   (fn rename_at [oa:i32 ol:i32 na:i32 nl:i32] -> (result i32 io.Error) (unsafe)
@@ -225,18 +225,18 @@
     ;; the standard library's own directory: sorted, this file among it
     (match (call list a "aipl_src/std")
       ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
-        (let sorted:bool true)
-        (let found:bool false)
-        (for i 0 (call (vec.len str.Bytes) names)
-          (let n:str.Bytes (call (vec.at str.Bytes) names i))
-          (when (call str.bytes_eq n (call str.from_str "fs.aipl")) (set! found true))
-          (when (and (gt i 0) (gt (call by_bytes (call (vec.at str.Bytes) names (- i 1)) n) 0)) (set! sorted false)))
-        (when (and sorted found) (set! p (+ p 1))))
+       (let sorted:bool true)
+       (let found:bool false)
+       (for i 0 (call (vec.len str.Bytes) names)
+         (let n:str.Bytes (call (vec.at str.Bytes) names i))
+         (when (call str.bytes_eq n (call str.from_str "fs.aipl")) (set! found true))
+         (when (and (gt i 0) (gt (call by_bytes (call (vec.at str.Bytes) names (- i 1)) n) 0)) (set! sorted false)))
+       (when (and sorted found) (set! p (+ p 1))))
       ((option.Option (ptr (vec.Vec str.Bytes))) none (block)))
     (when (call (option.is_none (ptr (vec.Vec str.Bytes))) (call list a "no/such/directory")) (set! p (+ p 1)))
     (match (call info "aipl_src/std/fs.aipl")
       ((option.Option Info) some [f]
-        (when (and (eq (get f Info.kind) Kind.file) (and (gt (get f Info.size) 0i64) (gt (get f Info.modified) 0i64))) (set! p (+ p 1))))
+       (when (and (eq (get f Info.kind) Kind.file) (and (gt (get f Info.size) 0i64) (gt (get f Info.modified) 0i64))) (set! p (+ p 1))))
       ((option.Option Info) none (block)))
     (match (call info "aipl_src/std")
       ((option.Option Info) some [d] (when (eq (get d Info.kind) Kind.directory) (set! p (+ p 1))))

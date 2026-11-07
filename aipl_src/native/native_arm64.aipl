@@ -864,18 +864,18 @@
     (let chain_cell:i32 (call lower_arm64.data_zeros l 8))
     (let positions_cell:i32 (call lower_arm64.data_zeros l 16))
     (let texts:(ptr backtrace_arm64.Texts)
-         (new backtrace_arm64.Texts (call alloc.forever)
-              [reasons:table sp_cell:sp_cell chain:chain_cell positions:positions_cell
-               pages:(get l lower_arm64.L.mem_pages)
-               sep:(call lower_arm64.data_text l ": ") nl:nl at:(call lower_arm64.data_text l "  at ")
-               dots:(call lower_arm64.data_text l "  ... ") more:(call lower_arm64.data_text l " more\n")
-               open:(call lower_arm64.data_text l " (") colon:(call lower_arm64.data_text l ":")
-               close:(call lower_arm64.data_text l ")")
-               oob:(call lower_arm64.data_text l "Pointer out of bounds: Region { start: ") oob_len:39
-               al4:(call lower_arm64.data_text l "Pointer not aligned to 4: Region { start: ") al4_len:42
-               al8:(call lower_arm64.data_text l "Pointer not aligned to 8: Region { start: ") al8_len:42
-               mid:(call lower_arm64.data_text l ", len: ") mid_len:7
-               tail:(call lower_arm64.data_text l " }\n") tail_len:3]))
+      (new backtrace_arm64.Texts (call alloc.forever)
+           [reasons:table sp_cell:sp_cell chain:chain_cell positions:positions_cell
+            pages:(get l lower_arm64.L.mem_pages)
+            sep:(call lower_arm64.data_text l ": ") nl:nl at:(call lower_arm64.data_text l "  at ")
+            dots:(call lower_arm64.data_text l "  ... ") more:(call lower_arm64.data_text l " more\n")
+            open:(call lower_arm64.data_text l " (") colon:(call lower_arm64.data_text l ":")
+            close:(call lower_arm64.data_text l ")")
+            oob:(call lower_arm64.data_text l "Pointer out of bounds: Region { start: ") oob_len:39
+            al4:(call lower_arm64.data_text l "Pointer not aligned to 4: Region { start: ") al4_len:42
+            al8:(call lower_arm64.data_text l "Pointer not aligned to 8: Region { start: ") al8_len:42
+            mid:(call lower_arm64.data_text l ", len: ") mid_len:7
+            tail:(call lower_arm64.data_text l " }\n") tail_len:3]))
     ;; the register calling convention (lower_arm64.aipl): all but the functions that something other than a direct
     ;; call reaches: the table's, the start function, and the entries the stubs call
     (let pinned:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 16))
@@ -888,7 +888,7 @@
     (call (vec.push i32) pinned (get th Threads.thread_start))
     (call lower_arm64.plan_conv l nfuncs pinned)
     (let routines:(ptr backtrace_arm64.Routines)
-         (call backtrace_arm64.emit_routines c texts (call lower_arm64.trap_unreachable) (call lower_arm64.trap_out_of_bounds) (neq lim (ptr.null wasm_reader.Limits))))
+      (call backtrace_arm64.emit_routines c texts (call lower_arm64.trap_unreachable) (call lower_arm64.trap_out_of_bounds) (neq lim (ptr.null wasm_reader.Limits))))
     (put l lower_arm64.L.trap_routine (get routines backtrace_arm64.Routines.trap))
     (put wa wasi_arm64.W.region (get routines backtrace_arm64.Routines.region))
     (put l lower_arm64.L.unreachable_routine (get routines backtrace_arm64.Routines.unreachable))

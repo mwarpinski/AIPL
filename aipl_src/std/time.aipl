@@ -42,8 +42,8 @@
   (fn ms_until [deadline:i64] -> i32 (pub)
     (let left:i64 (- deadline (sys.monotonic)))
     (cond ((lte left 0i64) 0)
-          ((gt left 2147483647000000i64) 2147483647)
-          (else (i32.wrap (/ (+ left 999999i64) 1000000i64)))))
+      ((gt left 2147483647000000i64) 2147483647)
+      (else (i32.wrap (/ (+ left 999999i64) 1000000i64)))))
 
   ;; Appends a duration: "850 ns", "12.345 us", "3.071 ms", "4.200 s".
   (fn push_duration [b:(ptr buf.Buf) ns:i64] -> void (pub)

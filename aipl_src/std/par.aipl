@@ -43,7 +43,7 @@
   ;; Part k of `parts`: as equal as can be, in order, with a copy of xs
   ;; from the shared heap.
   (fn (job T U C) [out:(arr U) f:(fn [C (arr T) i32] -> U) ctx:C xs:(arr T) k:i32 parts:i32] -> (ptr (Job T U C))
-      (where (plain T)) (where (plain U)) (where (plain C))
+    (where (plain T)) (where (plain U)) (where (plain C))
     (let n:i32 (arr.len out))
     (let base:i32 (/ n parts))
     (let extra:i32 (% n parts))
@@ -63,7 +63,7 @@
   ;; thread of its own, each with its own copy of xs. Returns when all are
   ;; done; the copies are freed.
   (fn (map T U C) [out:(arr U) f:(fn [C (arr T) i32] -> U) ctx:C xs:(arr T) threads:i32] -> void (pub)
-      (where (plain T)) (where (plain U)) (where (plain C))
+    (where (plain T)) (where (plain U)) (where (plain C))
     (let n:i32 (arr.len out))
     (let parts:i32 (cond ((or (lt threads 1) (eq n 0)) 1) ((gt threads n) n) (else threads)))
     (let a:alloc.Allocator (call alloc.default))
@@ -108,7 +108,7 @@
   ;; depend on `threads` (never on timing: the same threads give the same
   ;; answer).
   (fn (reduce T U C) [f:(fn [C (arr T) i32 U] -> U) join:(fn [U U] -> U) ctx:C xs:(arr T) n:i32 init:U threads:i32] -> U (pub)
-      (where (plain T)) (where (plain U)) (where (plain C))
+    (where (plain T)) (where (plain U)) (where (plain C))
     (req (gte n 0))
     (let parts:i32 (cond ((or (lt threads 1) (eq n 0)) 1) ((gt threads n) n) (else threads)))
     (let a:alloc.Allocator (call alloc.default))
@@ -200,7 +200,7 @@
     (when (eq (call (reduce i32 i64 Scale) (ref add_scaled) (ref plus) (make Scale [by:3]) xs 0 7i64 4) 7i64) (set! p (+ p 1)))
     ;; a value struct result
     (let st:Stats (call (reduce i32 Stats Scale) (ref note) (ref merge) (make Scale [by:1]) xs 100 (make Stats [sum:0i64
-                                                                                                           max:-1]) 3))
+                                                                                                                max:-1]) 3))
     (when (and (eq (get st Stats.sum) 4950i64) (eq (get st Stats.max) 99)) (set! p (+ p 1)))
     ;; parts in order: 3 parts of 0..8 are 012, 345, 678
     (when (eq (call (reduce i32 i64 Scale) (ref digit) (ref shift_join) (make Scale [by:1]) xs 9 0i64 3) 12345678i64) (set! p (+ p 1)))

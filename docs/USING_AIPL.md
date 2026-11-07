@@ -15,6 +15,7 @@ aipl-run prog.wasm < input.txt              # run it (standard input and output 
 aipl test prog.aipl                         # run the (test ...) items in it
 aipl doc --find WORD                        # look for a library function before writing one
 aipl lint prog.aipl                         # code that is legal but probably a mistake
+aipl fmt prog.aipl                          # whitespace and indentation, in place (--check names what would change)
 aipl repl                                   # a prompt for people: type an expression, see its value
 ```
 
@@ -190,6 +191,18 @@ capitals), and `sys-print-newline` (`sys.print` ends its line itself, so a
 write `;; lint:allow RULE` (or `lint:allow all`) on the line above it or at
 the end of its line. A function that only the host calls by name (a test
 harness's entry point) is not `(pub)`, so it needs the comment too.
+
+**`aipl fmt FILE...`** settles whitespace and nothing else: it rewrites each
+file in place, and `aipl fmt --check FILE...` names the files it would change
+and exits 1, for CI. `aipl fmt -` reads standard input and writes standard
+output, for an editor. The line breaks are yours: no token moves to another
+line. It removes tabs, trailing spaces, extra spaces, spaces inside brackets,
+extra blank lines, and fixes the indentation of a line to the form it is in:
+two columns for a body (`fn`, `let`, `cond`, `for`, `while`, `block`), one
+for a clause or an `else`, and for other forms under the first argument or
+one to four columns in (a line already at one of those stays). Comments and
+strings are never touched, and a second run changes nothing. A file that does
+not read is reported and left alone.
 
 **`aipl repl`** is a prompt for people at a keyboard (an AI uses `aipl eval -e`):
 

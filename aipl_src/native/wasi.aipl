@@ -88,12 +88,12 @@
     (for e 0 64
       (call buf.push_byte b
         (cond ((eq e 0) 0)
-              ((eq e 1) 63)  ((eq e 2) 44)  ((eq e 4) 27)  ((eq e 5) 29)  ((eq e 9) 8)
-              ((eq e 11) 6)  ((eq e 12) 48) ((eq e 13) 2)  ((eq e 14) 21) ((eq e 16) 10)
-              ((eq e 17) 20) ((eq e 18) 63) ((eq e 20) 54) ((eq e 21) 31) ((eq e 22) 28)
-              ((eq e 24) 33) ((eq e 27) 22) ((eq e 28) 51) ((eq e 29) 70) ((eq e 30) 69)
-              ((eq e 32) 64) ((eq e 36) 37) ((eq e 39) 55) ((eq e 40) 32)
-              (else 29))))
+          ((eq e 1) 63) ((eq e 2) 44) ((eq e 4) 27) ((eq e 5) 29) ((eq e 9) 8)
+          ((eq e 11) 6) ((eq e 12) 48) ((eq e 13) 2) ((eq e 14) 21) ((eq e 16) 10)
+          ((eq e 17) 20) ((eq e 18) 63) ((eq e 20) 54) ((eq e 21) 31) ((eq e 22) 28)
+          ((eq e 24) 33) ((eq e 27) 22) ((eq e 28) 51) ((eq e 29) 70) ((eq e 30) 69)
+          ((eq e 32) 64) ((eq e 36) 37) ((eq e 39) 55) ((eq e 40) 32)
+          (else 29))))
     b)
 
   ;; ===== Building blocks =====

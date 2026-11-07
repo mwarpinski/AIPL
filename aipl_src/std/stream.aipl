@@ -149,12 +149,12 @@
   (fn fill [r:(ptr Reader)] -> bool
     (when (get r Reader.at_end) (return false))
     (let got:i32 (match (get r Reader.src)
-      (Source.fd [fd]
-        (block
-          (call make_room r 4096)
-          (unsafe (fs.read fd (+ (call str.addr (get r Reader.win)) (get r Reader.end)) (- (call cap r) (get r Reader.end))))))
-      (Source.memory 0)
-      (Source.custom [f] (call fill_custom r f))))
+                   (Source.fd [fd]
+                              (block
+                                (call make_room r 4096)
+                                (unsafe (fs.read fd (+ (call str.addr (get r Reader.win)) (get r Reader.end)) (- (call cap r) (get r Reader.end))))))
+                   (Source.memory 0)
+                   (Source.custom [f] (call fill_custom r f))))
     (cond
       ((lt got 0) (put r Reader.failed true) (put r Reader.at_end true) false)
       ((eq got 0) (put r Reader.at_end true) false)
@@ -361,18 +361,18 @@
     (let n:i32 (call buf.len out))
     (let base:i32 (get out buf.Buf.data))
     (let ok:bool (match (get w Writer.sink)
-      (Sink.fd [fd]
-        (block
-          (let done:i32 0)
-          (while (lt done n)
-            (let k:i32 (unsafe (fs.write fd (+ base done) (- n done))))
-            (when (lte k 0) (break))
-            (set! done (+ done k)))
-          (eq done n)))
-      (Sink.buffer true)
-      (Sink.custom [d]
-        (block
-          (if (eq n 0) true (call_ref (fn [i32 str.Bytes] -> bool (no_leak)) (get d Drain.write_fn) (get d Drain.cell) (call buf.bytes out)))))))
+                   (Sink.fd [fd]
+                            (block
+                              (let done:i32 0)
+                              (while (lt done n)
+                                (let k:i32 (unsafe (fs.write fd (+ base done) (- n done))))
+                                (when (lte k 0) (break))
+                                (set! done (+ done k)))
+                              (eq done n)))
+                   (Sink.buffer true)
+                   (Sink.custom [d]
+                                (block
+                                  (if (eq n 0) true (call_ref (fn [i32 str.Bytes] -> bool (no_leak)) (get d Drain.write_fn) (get d Drain.cell) (call buf.bytes out)))))))
     (match (get w Writer.sink)
       (Sink.buffer (block))
       (else (call buf.clear out)))

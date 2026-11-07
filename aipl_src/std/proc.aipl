@@ -292,8 +292,8 @@
   (fn read_within [ch:Child into:(ptr buf.Buf) max:i32 ms:i32] -> i32 (pub)
     (let r:i32 (call poll_pipe (get ch Child.output) 1 ms))
     (cond ((eq r 0) -2)
-          ((lt r 0) r)
-          (else (call read ch into max))))
+      ((lt r 0) r)
+      (else (call read ch into max))))
 
   ;; run, but the whole of it (the program's input sent, its output read, its end) within `ns` nanoseconds:
   ;; the program is killed (SIGKILL) and the result is Error.timed_out if it is not over by then; `out` holds
@@ -319,8 +319,8 @@
     (while reading
       (let n:i32 (call read_within ch out 8192 (call time.ms_until deadline)))
       (cond ((eq n -2) (set! late true) (set! reading false))
-            ((lte n 0) (set! reading false))
-            (else (block))))
+        ((lte n 0) (set! reading false))
+        (else (block))))
     ;; its end: what is left of the time
     (let status:i32 -1)
     (when (not late)

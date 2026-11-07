@@ -301,7 +301,7 @@
     ;; Unix time round-trips, before and after 1970
     (let d:Date (call from_unix 1792143667i64))
     (when (and (eq (get d Date.year) 2026) (and (eq (get d Date.month) 10) (and (eq (get d Date.day) 16)
-             (and (eq (get d Date.hour) 9) (and (eq (get d Date.minute) 41) (eq (get d Date.second) 7))))))
+                                                                                (and (eq (get d Date.hour) 9) (and (eq (get d Date.minute) 41) (eq (get d Date.second) 7))))))
         (set! p (+ p 1)))
     (let ok:bool true)
     (for k -700 2901
@@ -312,15 +312,15 @@
     ;; nanoseconds before 1970 floor to the earlier second
     (let e:Date (call from_unix_ns -1i64))
     (when (and (eq (get e Date.year) 1969) (and (eq (get e Date.second) 59) (and (eq (get e Date.nano) 999999999)
-             (eq (call to_unix_ns e) -1i64))))
+                                                                                 (eq (call to_unix_ns e) -1i64))))
         (set! p (+ p 1)))
     ;; calendar facts: leap years, weekdays, day of the year
     (when (and (call is_leap 2000) (and (not (call is_leap 1900)) (and (call is_leap 2024)
-             (and (eq (call weekday (call make 1970 1 1 0 0 0 0)) 4)
-                  (and (eq (call weekday (call make 2026 10 18 0 0 0 0)) 7)
-                       (and (eq (call weekday (call make 1600 3 1 0 0 0 0)) 3)
-                            (and (eq (call day_of_year (call make 2024 12 31 0 0 0 0)) 366)
-                                 (eq (call days_in_month 2023 2) 28))))))))
+                                                                       (and (eq (call weekday (call make 1970 1 1 0 0 0 0)) 4)
+                                                                            (and (eq (call weekday (call make 2026 10 18 0 0 0 0)) 7)
+                                                                                 (and (eq (call weekday (call make 1600 3 1 0 0 0 0)) 3)
+                                                                                      (and (eq (call day_of_year (call make 2024 12 31 0 0 0 0)) 366)
+                                                                                           (eq (call days_in_month 2023 2) 28))))))))
         (set! p (+ p 1)))
     ;; writing
     (when (and (call writes (call from_unix 0i64) "1970-01-01T00:00:00Z")

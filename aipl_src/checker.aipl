@@ -915,16 +915,16 @@
           (if (call is_defer (arr.get ast.Expr body k))
               (call check_defer c (arr.get ast.Expr body k) env)
               (block (set! last (call infer c (arr.get ast.Expr body k) env)) (set! last_stmt k)
-                     (when (or (lt (+ k 1) (arr.len body)) (and (call is_void (get f ast.FnDef.ret)) (not (call str.is fname "__eval"))))
-                           (call unused c (arr.get ast.Expr body k) last))))))
+                (when (or (lt (+ k 1) (arr.len body)) (and (call is_void (get f ast.FnDef.ret)) (not (call str.is fname "__eval"))))
+                      (call unused c (arr.get ast.Expr body k) last))))))
     (put c C.ret (make ast.MaybeType.none))
     (when (get c C.failed) (return))
     (when (and (neq (get c C.eval_type) (ptr.null buf.Buf)) (call str.is fname "__eval"))
           (call fmtdebug.source_type (get c C.eval_type) last))
     (let ends_in_return:bool
-         (if (lt last_stmt 0)
-             false
-             (match (arr.get ast.Expr body last_stmt) (ast.Expr.return_ [_] true) (else false))))
+      (if (lt last_stmt 0)
+          false
+          (match (arr.get ast.Expr body last_stmt) (ast.Expr.return_ [_] true) (else false))))
     (when (and (not (call is_void (get f ast.FnDef.ret))) (and (not (call fits last (get f ast.FnDef.ret))) (not ends_in_return)))
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Function '") (call by b (call names.shown fname)) (call s b "' expects return type ") (call ty b (get f ast.FnDef.ret))
@@ -976,9 +976,9 @@
   (fn unused [c:(ptr C) e:ast.Expr t:ast.Type] -> void
     (when (get c C.failed) (return))
     (let is_opt:bool
-         (match t
-           (ast.Type.union_ [u] (call str.is (call str.slice u 0 (if (lt (get u str.Bytes.len) 14) (get u str.Bytes.len) 14)) "option.Option<"))
-           (else false)))
+      (match t
+        (ast.Type.union_ [u] (call str.is (call str.slice u 0 (if (lt (get u str.Bytes.len) 14) (get u str.Bytes.len) 14)) "option.Option<"))
+        (else false)))
     (when (not (or is_opt (eq (call tag t) 9))) (return))
     (let b:(ptr buf.Buf) (call msg c (call ast.at e)))
     (call s b "this value, ") (call ty b t) (call s b ", is dropped, so ")
@@ -1180,12 +1180,12 @@
              (call fail c b)
              (return (call void_t)))
        (let ok:bool
-            (match kind
-              (ast.AddrKind.ptr (eq (call tag t) 7))
-              (ast.AddrKind.arr (eq (call tag t) 10))
-              (ast.AddrKind.enum_ (eq (call tag t) 12))
-              (ast.AddrKind.ptr_gen (eq (call tag t) 7))
-              (ast.AddrKind.arr_gen (eq (call tag t) 10))))
+         (match kind
+           (ast.AddrKind.ptr (eq (call tag t) 7))
+           (ast.AddrKind.arr (eq (call tag t) 10))
+           (ast.AddrKind.enum_ (eq (call tag t) 12))
+           (ast.AddrKind.ptr_gen (eq (call tag t) 7))
+           (ast.AddrKind.arr_gen (eq (call tag t) 10))))
        (if ok
            (call i32_t)
            (block
@@ -1308,9 +1308,9 @@
   (fn infer_return [c:(ptr C) env:(ptr Env) at:i32 rv:ast.MaybeExpr] -> ast.Type
     (when (get c C.in_defer) (call fail_str c at "a defer cannot return: it runs as the function returns") (return (call void_t)))
     (let expected:ast.Type
-         (match (get c C.ret)
-           (ast.MaybeType.some [t] t)
-           (ast.MaybeType.none (call fail_str c at "return is not allowed in a contract") (call void_t))))
+      (match (get c C.ret)
+        (ast.MaybeType.some [t] t)
+        (ast.MaybeType.none (call fail_str c at "return is not allowed in a contract") (call void_t))))
     (when (get c C.failed) (return (call void_t)))
     (let got:ast.Type (match rv (ast.MaybeExpr.some [v] (call infer c v env)) (ast.MaybeExpr.none (call void_t))))
     (when (get c C.failed) (return (call void_t)))
@@ -1870,13 +1870,13 @@
   ;; checker.rs is_unchecked_op
   (fn is_unchecked_op [o:ast.Op] -> bool
     (or (or (or (eq o ast.Op.mem_load8) (eq o ast.Op.mem_load32)) (or (eq o ast.Op.mem_load64) (eq o ast.Op.mem_store8)))
-    (or (or (or (eq o ast.Op.mem_load8_s) (eq o ast.Op.mem_load16_u)) (or (eq o ast.Op.mem_load16_s) (eq o ast.Op.mem_store16)))
-    (or (or (or (eq o ast.Op.mem_store32) (eq o ast.Op.mem_store64)) (or (eq o ast.Op.atomic_add) (eq o ast.Op.atomic_cas)))
-    (or (or (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)) (or (eq o ast.Op.thread_spawn) (eq o ast.Op.thread_join)))
-    (or (or (or (eq o ast.Op.fs_open) (eq o ast.Op.fs_read)) (or (eq o ast.Op.fs_write) (eq o ast.Op.fs_delete)))
-    (or (or (or (eq o ast.Op.args_sizes) (eq o ast.Op.args_get)) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get)))
-        (or (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat))))
-            (or (call is_net_op o) (or (call is_proc_op o) (or (eq o ast.Op.fs_chmod) (or (eq o ast.Op.fs_rename) (or (eq o ast.Op.fs_rmdir) (or (eq o ast.Op.fs_mkdir) (eq o ast.Op.sys_poll)))))))))))))))
+        (or (or (or (eq o ast.Op.mem_load8_s) (eq o ast.Op.mem_load16_u)) (or (eq o ast.Op.mem_load16_s) (eq o ast.Op.mem_store16)))
+            (or (or (or (eq o ast.Op.mem_store32) (eq o ast.Op.mem_store64)) (or (eq o ast.Op.atomic_add) (eq o ast.Op.atomic_cas)))
+                (or (or (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)) (or (eq o ast.Op.thread_spawn) (eq o ast.Op.thread_join)))
+                    (or (or (or (eq o ast.Op.fs_open) (eq o ast.Op.fs_read)) (or (eq o ast.Op.fs_write) (eq o ast.Op.fs_delete)))
+                        (or (or (or (eq o ast.Op.args_sizes) (eq o ast.Op.args_get)) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get)))
+                            (or (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat))))
+                                (or (call is_net_op o) (or (call is_proc_op o) (or (eq o ast.Op.fs_chmod) (or (eq o ast.Op.fs_rename) (or (eq o ast.Op.fs_rmdir) (or (eq o ast.Op.fs_mkdir) (eq o ast.Op.sys_poll)))))))))))))))
 
   ;; The aipl_net_v1 operations (docs/design/NET_PLAN.md section 3).
   (fn is_net_op [o:ast.Op] -> bool
@@ -2160,8 +2160,8 @@
     (when (and (neq (arr.len args) (if (eq o ast.Op.try_or) 2 1)) (not (and (eq o ast.Op.try_) (eq (arr.len args) 2))))
           (call fail_str c at
             (cond ((eq o ast.Op.try_) "try takes one result, and may take a function that converts its error: (try (call f x)) or (try (call f x) (ref convert))")
-                  ((eq o ast.Op.try_opt) "try_opt takes one option: (try_opt (call (map.find K V) m k))")
-                  (else "try_or takes an option and the error to return without a value: (try_or o err)")))
+              ((eq o ast.Op.try_opt) "try_opt takes one option: (try_opt (call (map.find K V) m k))")
+              (else "try_or takes an option and the error to return without a value: (try_or o err)")))
           (return (call void_t)))
     (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
     (when (get c C.failed) (return (call void_t)))
@@ -2370,10 +2370,10 @@
   (fn note_fmt [c:(ptr C) v:ast.Expr t:ast.Type k:i32] -> void
     (when (neq (get c C.fmts) (ptr.null (vec.Vec (ptr Fmt))))
           (let f:(ptr Fmt) (new Fmt (call alloc.forever) [at:(call ast.at v) k:k ty:t members:(match t
-              (ast.Type.enum_ [en]
-               (let d:(ptr ast.EnumDef) (call (map.get_or str.Bytes (ptr ast.EnumDef)) (get c C.enums) en (ptr.null ast.EnumDef)))
-               (if (eq d (ptr.null ast.EnumDef)) (arr.null (ptr ast.Member)) (get d ast.EnumDef.members)))
-              (else (arr.null (ptr ast.Member)))) text:(ptr.null buf.Buf)]))
+                                                                                                (ast.Type.enum_ [en]
+                                                                                                                (let d:(ptr ast.EnumDef) (call (map.get_or str.Bytes (ptr ast.EnumDef)) (get c C.enums) en (ptr.null ast.EnumDef)))
+                                                                                                                (if (eq d (ptr.null ast.EnumDef)) (arr.null (ptr ast.Member)) (get d ast.EnumDef.members)))
+                                                                                                (else (arr.null (ptr ast.Member)))) text:(ptr.null buf.Buf)]))
           (call (vec.push (ptr Fmt)) (get c C.fmts) f)))
 
   (fn check_piece [c:(ptr C) env:(ptr Env) at:i32 v:ast.Expr fe:ast.Expr k:i32] -> void
@@ -2406,10 +2406,10 @@
     (when (gt (str.len why) 0) (let b:(ptr buf.Buf) (call msg c at)) (call s b why) (call ty b t) (call fail c b) (return))
     (when (neq (get c C.fmts) (ptr.null (vec.Vec (ptr Fmt))))
           (let f:(ptr Fmt) (new Fmt (call alloc.forever) [at:(call ast.at v) k:k ty:t members:(match t
-              (ast.Type.enum_ [en]
-               (let d:(ptr ast.EnumDef) (call (map.get_or str.Bytes (ptr ast.EnumDef)) (get c C.enums) en (ptr.null ast.EnumDef)))
-               (if (eq d (ptr.null ast.EnumDef)) (arr.null (ptr ast.Member)) (get d ast.EnumDef.members)))
-              (else (arr.null (ptr ast.Member)))) text:(ptr.null buf.Buf)]))
+                                                                                                (ast.Type.enum_ [en]
+                                                                                                                (let d:(ptr ast.EnumDef) (call (map.get_or str.Bytes (ptr ast.EnumDef)) (get c C.enums) en (ptr.null ast.EnumDef)))
+                                                                                                                (if (eq d (ptr.null ast.EnumDef)) (arr.null (ptr ast.Member)) (get d ast.EnumDef.members)))
+                                                                                                (else (arr.null (ptr ast.Member)))) text:(ptr.null buf.Buf)]))
           (call (vec.push (ptr Fmt)) (get c C.fmts) f)))
 
   ;; A message's fixed text, after the op's Debug name when `pre`.
@@ -2584,15 +2584,15 @@
           (call s b (call op_debug o)) (call s b " on ") (call by b cpp)
           (if (or (eq o ast.Op.eq) (eq o ast.Op.neq))
               (block (call s b ": a type parameter has no equality of its own; add (where (cmp.Eq ") (call by b cpp)
-                     (call s b ")) and call (cmp.Eq.same ") (call by b cpp) (call s b ")"))
+                (call s b ")) and call (cmp.Eq.same ") (call by b cpp) (call s b ")"))
               (block (call s b ": a type parameter has no order of its own; add (where (cmp.Ord ") (call by b cpp)
-                     (call s b ")) and call (cmp.Ord.compare ") (call by b cpp) (call s b ")")))
+                (call s b ")) and call (cmp.Ord.compare ") (call by b cpp) (call s b ")")))
           (call fail c b)
           (return (call void_t)))
     (when (not (call meets t1 t2)) (call pair_msg_hint c at "Type mismatch in comparison: " t1 " vs " t2
-                                                                       (if (or (and (call is_ptr_or_arr t1) (call is_i32_type t2)) (and (call is_i32_type t1) (call is_ptr_or_arr t2)))
-                                                                           "; to test for null, compare with (ptr.null S) or (arr.null T)"
-                                                                           "")) (return (call void_t)))
+                                         (if (or (and (call is_ptr_or_arr t1) (call is_i32_type t2)) (and (call is_i32_type t1) (call is_ptr_or_arr t2)))
+                                             "; to test for null, compare with (ptr.null S) or (arr.null T)"
+                                             "")) (return (call void_t)))
     (set! t1 (call meet t1 t2))
     (let k:i32 (call tag t1))
     (let equality:bool (or (eq o ast.Op.eq) (eq o ast.Op.neq)))

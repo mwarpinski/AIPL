@@ -24,9 +24,9 @@
   (fn show_info [path:str] -> void
     (match (call fs.info path)
       ((option.Option fs.Info) some [i]
-        (if (eq (get i fs.Info.kind) fs.Kind.file)
-            (println "{path}: file {(get i fs.Info.size)}")
-            (println "{path}: {(call kind (get i fs.Info.kind))}")))
+       (if (eq (get i fs.Info.kind) fs.Kind.file)
+           (println "{path}: file {(get i fs.Info.size)}")
+           (println "{path}: {(call kind (get i fs.Info.kind))}")))
       ((option.Option fs.Info) none (println "{path}: missing"))))
 
   (fn main [] -> i32
@@ -39,8 +39,8 @@
       (err e (println "read failed")))
     (match (call fs.list (call alloc.default) "d")
       ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
-        (for i 0 (call (vec.len str.Bytes) names)
-          (println "entry {(call (vec.at str.Bytes) names i)}")))
+       (for i 0 (call (vec.len str.Bytes) names)
+         (println "entry {(call (vec.at str.Bytes) names i)}")))
       ((option.Option (ptr (vec.Vec str.Bytes))) none (println "list failed")))
     (call show_info "d/a.txt")
     (call show_info "d/b.txt")

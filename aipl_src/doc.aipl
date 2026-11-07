@@ -116,7 +116,7 @@
 
   (fn is_kind [k:str.Bytes] -> bool
     (or (call str.is k "fn") (or (call str.is k "struct") (or (call str.is k "union")
-      (or (call str.is k "enum") (or (call str.is k "const") (call str.is k "interface")))))))
+                                                              (or (call str.is k "enum") (or (call str.is k "const") (call str.is k "interface")))))))
 
   (fn is_type_kind [k:str.Bytes] -> bool
     (or (call str.is k "struct") (or (call str.is k "union") (or (call str.is k "enum") (call str.is k "interface")))))
@@ -278,7 +278,6 @@
             (set! i e))
            (else (call buf.push_byte out c) (set! last c) (set! i (+ i 1)))))))
     (block))
-
 
   ;; Where b (a view of m's source) starts in it.
   (fn offset [m:(ptr Mod) b:str.Bytes] -> i32

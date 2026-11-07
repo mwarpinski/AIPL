@@ -768,21 +768,21 @@
           (let kw:Kw (call group_head_keyword cg node))
           (cond
             ((eq kw Kw.let) (let name_node:(ptr compiler.Node) (call nth_child node 1))
-                (let type_node:(ptr compiler.Node) (call nth_child node 3))
-                (let type_id:Ty (call type_node_id cg type_node))
-                (call add_local_if_new cg (call node_a name_node) (call node_b name_node) type_id (call type_node_struct cg type_node))
-                (call note_type_node cg name_node type_node)
-                0)
+             (let type_node:(ptr compiler.Node) (call nth_child node 3))
+             (let type_id:Ty (call type_node_id cg type_node))
+             (call add_local_if_new cg (call node_a name_node) (call node_b name_node) type_id (call type_node_struct cg type_node))
+             (call note_type_node cg name_node type_node)
+             0)
             ((eq kw Kw.loop) (let var_node:(ptr compiler.Node) (call nth_child node 1))
-                    (call add_local_if_new cg (call node_a var_node) (call node_b var_node) Ty.i32 (ptr.null StructInfo))
-                    (call add_hidden_if_new cg (call node_a var_node) (call node_b var_node) Ty.loop_end)
-                    (call add_hidden_if_new cg (call node_a var_node) (call node_b var_node) Ty.loop_step))
+             (call add_local_if_new cg (call node_a var_node) (call node_b var_node) Ty.i32 (ptr.null StructInfo))
+             (call add_hidden_if_new cg (call node_a var_node) (call node_b var_node) Ty.loop_end)
+             (call add_hidden_if_new cg (call node_a var_node) (call node_b var_node) Ty.loop_step))
             ((eq kw Kw.match_result) (let ok_group:(ptr compiler.Node) (call nth_child node 2))
-                        (let err_group:(ptr compiler.Node) (call nth_child node 3))
-                        (let ok_var:(ptr compiler.Node) (call nth_child ok_group 1))
-                        (let err_var:(ptr compiler.Node) (call nth_child err_group 1))
-                        (call add_local_if_new cg (call node_a ok_var) (call node_b ok_var) Ty.i32 (ptr.null StructInfo))
-                        (call add_local_if_new cg (call node_a err_var) (call node_b err_var) Ty.i32 (ptr.null StructInfo)))
+             (let err_group:(ptr compiler.Node) (call nth_child node 3))
+             (let ok_var:(ptr compiler.Node) (call nth_child ok_group 1))
+             (let err_var:(ptr compiler.Node) (call nth_child err_group 1))
+             (call add_local_if_new cg (call node_a ok_var) (call node_b ok_var) Ty.i32 (ptr.null StructInfo))
+             (call add_local_if_new cg (call node_a err_var) (call node_b err_var) Ty.i32 (ptr.null StructInfo)))
             ;; every union arm's binders, typed as the variant's fields (wasm.rs collect_lets)
             ((eq kw Kw.match)
              (let arm:(ptr compiler.Node) (call nth_child node 2))
@@ -1106,9 +1106,9 @@
   ;; `if`).
   (fn traps_or_calls [code:i32] -> bool
     (or (eq code 0) (or (eq code 4) (or (eq code 16) (or (eq code 17)
-      (or (and (gte code 40) (lte code 62)) (or (and (gte code 109) (lte code 112))
-      (or (and (gte code 127) (lte code 130)) (or (and (gte code 168) (lte code 177))
-      (or (eq code 252) (eq code 254)))))))))))
+                                                         (or (and (gte code 40) (lte code 62)) (or (and (gte code 109) (lte code 112))
+                                                                                                   (or (and (gte code 127) (lte code 130)) (or (and (gte code 168) (lte code 177))
+                                                                                                                                               (or (eq code 252) (eq code 254)))))))))))
 
   ;; An opcode; first, in a body, the position of the expression it belongs
   ;; to if a frame can point at it and the last entry has another.
@@ -1285,9 +1285,6 @@
        (let mag:i64 (if (gte fe 1i64) (+ (shl fe 23i64) (- q 8388608i64)) q))
        (i32.wrap (bitor sign (if (gte mag 2139095040i64) 2139095040i64 mag))))))
 
-
-
-
   ;; After the heap cursor is bumped: grow memory to cover it if needed, with
   ;; no locals and no net stack effect (wasm.rs emit_grow_to_cursor).
 ;; A 0xFE-prefixed atomic instruction with align 2, offset 0.
@@ -1297,18 +1294,12 @@
     (call put_byte o 2)
     (call put_byte o 0))
 
-
-
-
   ;; With a condition on the stack: if it holds, unreachable.
   (fn emit_trap_if [o:(ptr Out)] -> void
     (call put_op o OP_IF)
     (call put_byte o BLOCK_EMPTY)
     (call put_op o OP_UNREACHABLE)
     (call put_op o OP_END))
-
-
-
 
   ;; Rounds the i32 on the stack up to a multiple of 8 (wasm.rs emit_round8):
   ;; every allocation size is, so every block is 8-aligned.
@@ -1317,8 +1308,6 @@
     (call put_op o OP_I32_ADD)
     (call emit_i32_const o -8)
     (call put_op o OP_I32_AND))
-
-
 
   ;; The directory fd for the path in locals (ptr, len), as wasm.rs
   ;; emit_path_dir: "/..." resolves in fd 4 (the host's "/") with the slash
@@ -1343,9 +1332,6 @@
     (call emit_i32_const o 3)
     (call put_op o OP_END))
 
-
-
-
     ;; i32.atomic.rmw.add with align 2, offset 0: [addr] [n] -> [old]. Every
   ;; allocation claims its block with one of these on the cursor at address 0.
   (fn emit_rmw_add [o:(ptr Out)] -> void
@@ -1353,9 +1339,6 @@
     (call put_byte o ATOMIC_RMW_ADD)
     (call put_byte o 2)
     (call put_byte o 0))
-
-
-
 
   (fn emit_grow_to_cursor [o:(ptr Out)] -> void
     (call emit_i32_const o 0)
@@ -1376,8 +1359,6 @@
     (call put_byte o 0)
     (call put_op o OP_DROP)
     (call put_op o OP_END))
-
-
 
   ;; emit_grow_to_cursor for mem.alloc, which calls $aipl_oom (index oom)
   ;; when memory cannot grow to hold the block (wasm.rs emit_grow_or_stop).
@@ -1415,29 +1396,17 @@
     (call emit_i32_const o 16)
     (call put_op o OP_I32_SHL))
 
-
-
-
   (fn emit_i32_const [o:(ptr Out) val:i32] -> void
     (call put_op o OP_I32_CONST)
     (call put_s32 o val))
-
-
-
 
   (fn emit_local_get [o:(ptr Out) idx:i32] -> void
     (call put_op o OP_LOCAL_GET)
     (call put_u32 o idx))
 
-
-
-
   (fn emit_local_set [o:(ptr Out) idx:i32] -> void
     (call put_op o OP_LOCAL_SET)
     (call put_u32 o idx))
-
-
-
 
   (fn emit_local_tee [o:(ptr Out) idx:i32] -> void
     (call put_op o OP_LOCAL_TEE)
@@ -1447,16 +1416,10 @@
     (call put_op o OP_CALL)
     (call put_u32 o idx))
 
-
-
-
   (fn emit_memop [o:(ptr Out) opcode:i32 align:i32] -> void
     (call put_op o opcode)
     (call put_byte o align)
     (call put_byte o 0))
-
-
-
 
   (fn emit_store_guard [cg:(ptr Cg) o:(ptr Out) scratch_idx:i32] -> void
     (call put_op o OP_LOCAL_TEE)
@@ -1547,91 +1510,89 @@
     (call put_op o OP_END)
     (call emit_local_get o i))
 
-
-
   ;; Opcode for a binary arithmetic/comparison op on operands of type t, as
   ;; arith_instruction / compare_instruction in wasm.rs; -1 if unsupported.
   (fn binop_opcode [op_id_in:Kw t:Ty] -> i32
     (let op_id:Kw (call plain_of op_id_in))
     (cond
       ((eq t Ty.i32) (cond
-                    ((eq op_id Kw.add) 106)
-                    ((eq op_id Kw.sub) 107)
-                    ((eq op_id Kw.mul) 108)
-                    ((eq op_id Kw.div) 109)
-                    ((eq op_id Kw.xor) 115)
-                    ((eq op_id Kw.shl) 116)
-                    ((eq op_id Kw.shr) 117)
-                    ((eq op_id Kw.bitand) 113)
-                    ((eq op_id Kw.bitor) 114)
-                    ((eq op_id Kw.eq) 70)
-                    ((eq op_id Kw.neq) 71)
-                    ((eq op_id Kw.lt) 72)
-                    ((eq op_id Kw.lte) 76)
-                    ((eq op_id Kw.gt) 74)
-                    ((eq op_id Kw.gte) 78)
-                    ((eq op_id Kw.rem) 111)
-                    ((eq op_id Kw.divu) 110)
-                    ((eq op_id Kw.remu) 112)
-                    ((eq op_id Kw.shru) 118)
-                    ((eq op_id Kw.rotl) 119)
-                    ((eq op_id Kw.rotr) 120)
-                    ((eq op_id Kw.ltu) 73)
-                    ((eq op_id Kw.lteu) 77)
-                    ((eq op_id Kw.gtu) 75)
-                    ((eq op_id Kw.gteu) 79)
-                    (else -1)))
+                       ((eq op_id Kw.add) 106)
+                       ((eq op_id Kw.sub) 107)
+                       ((eq op_id Kw.mul) 108)
+                       ((eq op_id Kw.div) 109)
+                       ((eq op_id Kw.xor) 115)
+                       ((eq op_id Kw.shl) 116)
+                       ((eq op_id Kw.shr) 117)
+                       ((eq op_id Kw.bitand) 113)
+                       ((eq op_id Kw.bitor) 114)
+                       ((eq op_id Kw.eq) 70)
+                       ((eq op_id Kw.neq) 71)
+                       ((eq op_id Kw.lt) 72)
+                       ((eq op_id Kw.lte) 76)
+                       ((eq op_id Kw.gt) 74)
+                       ((eq op_id Kw.gte) 78)
+                       ((eq op_id Kw.rem) 111)
+                       ((eq op_id Kw.divu) 110)
+                       ((eq op_id Kw.remu) 112)
+                       ((eq op_id Kw.shru) 118)
+                       ((eq op_id Kw.rotl) 119)
+                       ((eq op_id Kw.rotr) 120)
+                       ((eq op_id Kw.ltu) 73)
+                       ((eq op_id Kw.lteu) 77)
+                       ((eq op_id Kw.gtu) 75)
+                       ((eq op_id Kw.gteu) 79)
+                       (else -1)))
       ((eq t Ty.i64) (cond
-                    ((eq op_id Kw.add) 124)
-                    ((eq op_id Kw.sub) 125)
-                    ((eq op_id Kw.mul) 126)
-                    ((eq op_id Kw.div) 127)
-                    ((eq op_id Kw.xor) 133)
-                    ((eq op_id Kw.shl) 134)
-                    ((eq op_id Kw.shr) 135)
-                    ((eq op_id Kw.bitand) 131)
-                    ((eq op_id Kw.bitor) 132)
-                    ((eq op_id Kw.eq) 81)
-                    ((eq op_id Kw.neq) 82)
-                    ((eq op_id Kw.lt) 83)
-                    ((eq op_id Kw.lte) 87)
-                    ((eq op_id Kw.gt) 85)
-                    ((eq op_id Kw.gte) 89)
-                    ((eq op_id Kw.rem) 129)
-                    ((eq op_id Kw.divu) 128)
-                    ((eq op_id Kw.remu) 130)
-                    ((eq op_id Kw.shru) 136)
-                    ((eq op_id Kw.rotl) 137)
-                    ((eq op_id Kw.rotr) 138)
-                    ((eq op_id Kw.ltu) 84)
-                    ((eq op_id Kw.lteu) 88)
-                    ((eq op_id Kw.gtu) 86)
-                    ((eq op_id Kw.gteu) 90)
-                    (else -1)))
+                       ((eq op_id Kw.add) 124)
+                       ((eq op_id Kw.sub) 125)
+                       ((eq op_id Kw.mul) 126)
+                       ((eq op_id Kw.div) 127)
+                       ((eq op_id Kw.xor) 133)
+                       ((eq op_id Kw.shl) 134)
+                       ((eq op_id Kw.shr) 135)
+                       ((eq op_id Kw.bitand) 131)
+                       ((eq op_id Kw.bitor) 132)
+                       ((eq op_id Kw.eq) 81)
+                       ((eq op_id Kw.neq) 82)
+                       ((eq op_id Kw.lt) 83)
+                       ((eq op_id Kw.lte) 87)
+                       ((eq op_id Kw.gt) 85)
+                       ((eq op_id Kw.gte) 89)
+                       ((eq op_id Kw.rem) 129)
+                       ((eq op_id Kw.divu) 128)
+                       ((eq op_id Kw.remu) 130)
+                       ((eq op_id Kw.shru) 136)
+                       ((eq op_id Kw.rotl) 137)
+                       ((eq op_id Kw.rotr) 138)
+                       ((eq op_id Kw.ltu) 84)
+                       ((eq op_id Kw.lteu) 88)
+                       ((eq op_id Kw.gtu) 86)
+                       ((eq op_id Kw.gteu) 90)
+                       (else -1)))
       ((eq t Ty.f32) (cond
-                    ((eq op_id Kw.add) 146)
-                    ((eq op_id Kw.sub) 147)
-                    ((eq op_id Kw.mul) 148)
-                    ((eq op_id Kw.div) 149)
-                    ((eq op_id Kw.eq) 91)
-                    ((eq op_id Kw.neq) 92)
-                    ((eq op_id Kw.lt) 93)
-                    ((eq op_id Kw.lte) 95)
-                    ((eq op_id Kw.gt) 94)
-                    ((eq op_id Kw.gte) 96)
-                    (else -1)))
+                       ((eq op_id Kw.add) 146)
+                       ((eq op_id Kw.sub) 147)
+                       ((eq op_id Kw.mul) 148)
+                       ((eq op_id Kw.div) 149)
+                       ((eq op_id Kw.eq) 91)
+                       ((eq op_id Kw.neq) 92)
+                       ((eq op_id Kw.lt) 93)
+                       ((eq op_id Kw.lte) 95)
+                       ((eq op_id Kw.gt) 94)
+                       ((eq op_id Kw.gte) 96)
+                       (else -1)))
       ((eq t Ty.f64) (cond
-                    ((eq op_id Kw.add) 160)
-                    ((eq op_id Kw.sub) 161)
-                    ((eq op_id Kw.mul) 162)
-                    ((eq op_id Kw.div) 163)
-                    ((eq op_id Kw.eq) 97)
-                    ((eq op_id Kw.neq) 98)
-                    ((eq op_id Kw.lt) 99)
-                    ((eq op_id Kw.lte) 101)
-                    ((eq op_id Kw.gt) 100)
-                    ((eq op_id Kw.gte) 102)
-                    (else -1)))
+                       ((eq op_id Kw.add) 160)
+                       ((eq op_id Kw.sub) 161)
+                       ((eq op_id Kw.mul) 162)
+                       ((eq op_id Kw.div) 163)
+                       ((eq op_id Kw.eq) 97)
+                       ((eq op_id Kw.neq) 98)
+                       ((eq op_id Kw.lt) 99)
+                       ((eq op_id Kw.lte) 101)
+                       ((eq op_id Kw.gt) 100)
+                       ((eq op_id Kw.gte) 102)
+                       (else -1)))
       ((or (eq t Ty.bool) (or (eq t Ty.str) (eq t Ty.fn))) (if (eq op_id Kw.eq) 70 (if (eq op_id Kw.neq) 71 -1)))
       ;; pointers and arrays: address and generation (a cast of 0 is null)
       ((or (eq t Ty.ptr) (eq t Ty.arr)) (if (eq op_id Kw.eq) 81 (if (eq op_id Kw.neq) 82 -1)))
@@ -1649,23 +1610,17 @@
            (block (call set_compile_error CgErr.no_instruction_for_type) (block))
            (call put_op o opc)))))
 
-
-
-
   (fn emit_memop_offset [o:(ptr Out) opcode:i32 align:i32 offset:i32] -> void
     (call put_op o opcode)
     (call put_byte o align)
     (call put_u32 o offset))
 
-
-
-
   ;; ===== Voidness classification =====
   (fn is_void_op [k:Kw] -> bool
     (or (eq k Kw.atomic_lock) (or (eq k Kw.atomic_unlock)
-    (or (eq k Kw.return) (or (eq k Kw.break) (or (eq k Kw.continue)
-    (or (eq k Kw.mem_store8) (or (eq k Kw.mem_store32) (or (eq k Kw.mem_store64) (or (eq k Kw.mem_store16)
-    (or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.put) (eq k Kw.arr_set))))))))))))))
+                                  (or (eq k Kw.return) (or (eq k Kw.break) (or (eq k Kw.continue)
+                                                                               (or (eq k Kw.mem_store8) (or (eq k Kw.mem_store32) (or (eq k Kw.mem_store64) (or (eq k Kw.mem_store16)
+                                                                                                                                                                (or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.put) (eq k Kw.arr_set))))))))))))))
 
   (fn last_child [group:(ptr compiler.Node)] -> (ptr compiler.Node)
     (let cur:(ptr compiler.Node) (call first_child group))
@@ -2382,9 +2337,6 @@
     (call emit_i32_const o 0)
     (call put_op o OP_I32_NE))
 
-
-
-
   ;; ===== Compile error signaling =====
   ;; Compile errors (docs/IMPLEMENTATION.md 5). The host reads the number from cell 4,
   ;; so the values are fixed.
@@ -2458,7 +2410,7 @@
 
   (fn bytes_equal [a:i32 b:i32 n:i32] -> bool
     (unsafe (for i 0 n
-      (when (neq (mem.load8 (+ a i)) (mem.load8 (+ b i))) (return false)))
+              (when (neq (mem.load8 (+ a i)) (mem.load8 (+ b i))) (return false)))
     true))
 
   (fn add_str_entry [cg:(ptr Cg) pos:i32 len:i32 addr:i32] -> void
@@ -2520,11 +2472,11 @@
   ;; The newline sys.print writes after each argument, interned once.
   (fn intern_newline [cg:(ptr Cg)] -> i32
     (unsafe (when (eq (get cg Cg.newline) 0)
-          (let nl:i32 (mem.alloc 8))
-          (mem.store8 nl 10)
-          (let addr:i32 (call append_to_blob cg nl 1))
-          (call add_str_entry cg -1 1 addr)
-          (put cg Cg.newline addr))
+                  (let nl:i32 (mem.alloc 8))
+                  (mem.store8 nl 10)
+                  (let addr:i32 (call append_to_blob cg nl 1))
+                  (call add_str_entry cg -1 1 addr)
+                  (put cg Cg.newline addr))
     (get cg Cg.newline)))
 
   ;; A wasm name: its length (LEB128), then its bytes. Returns the byte count.
@@ -2532,9 +2484,6 @@
     (unsafe (call put_u32 o (str.len s))
     (for i 0 (str.len s)
       (call put_byte o (mem.load8 (+ (str.ptr s) i))))))
-
-
-
 
   ;; The import name of WASI function w (the order of wasm.rs Wasi).
   ;; The import name of a WASI function.
@@ -2821,8 +2770,8 @@
     (when (eq main (ptr.null compiler.Node)) (return 0))
     (let ret:(ptr compiler.Node) (call nth_child main 4))
     (cond ((call node_is cg ret "i32") 1)
-          ((eq (call group_head_keyword cg ret) Kw.ty_result) 2)
-          (else 0)))
+      ((eq (call group_head_keyword cg ret) Kw.ty_result) 2)
+      (else 0)))
 
   (fn walk_module_prepass [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
     ;; Pass 1: WASI detection
@@ -2880,7 +2829,7 @@
   (fn needs_io_scratch [k:Kw] -> bool
     (cond
       ((or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.fs_open) (or (eq k Kw.fs_read)
-          (or (eq k Kw.fs_write) (or (eq k Kw.fs_close) (eq k Kw.fs_delete))))))) true)
+                                                                                (or (eq k Kw.fs_write) (or (eq k Kw.fs_close) (eq k Kw.fs_delete))))))) true)
       ((or (eq k Kw.fs_rename) (or (eq k Kw.fs_rmdir) (or (eq k Kw.fs_mkdir) (eq k Kw.sys_poll)))) true)
       ((or (eq k Kw.fs_opendir) (or (eq k Kw.fs_readdir) (eq k Kw.fs_stat))) true)
       ((or (eq k Kw.args_sizes) (or (eq k Kw.args_get) (or (eq k Kw.env_sizes) (or (eq k Kw.env_get) (eq k Kw.thread_spawn))))) true)
@@ -3583,9 +3532,6 @@
            (call emit_get_slots o (call slot_of cg idx) (call local_width (call local_at cg idx)))))
       (else (call compile_group cg node o))))
 
-
-
-
   (fn compile_group [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void
     (let kw:Kw (call group_head_keyword cg node))
     (cond
@@ -3604,9 +3550,6 @@
       ((eq kw Kw.cond) (call compile_valued cg node o))
       ((neq kw Kw.none) (call compile_op cg kw node o))
       (else (call set_compile_error CgErr.unknown_form) (call emit_i32_const o 0))))
-
-
-
 
 ;; An if, cond, match, or match_result: one that yields a value struct
   ;; goes into its group, then pushes it.
@@ -3688,8 +3631,6 @@
     (if (gte dest 0)
         (call compile_body_into cg first dest o)
         (call compile_stmt_seq cg first o)))
-
-
 
   ;; (make U.v args...) (wasm.rs compile_make): claim the variant's cell
   ;; before evaluating the fields, push its address once per store plus once
@@ -3870,9 +3811,6 @@
                 (call put_op o OP_I32_ADD)))
         (call emit_i32_const o cell)))
 
-
-
-
   ;; With a WASI errno on the stack: minus it if it is non-zero, else the i32
   ;; at out_cell (or 0 without one); held in the index scratch local
   ;; (wasm.rs emit_errno_to_result).
@@ -3890,8 +3828,6 @@
           (call emit_memop o OP_I32_LOAD 2))
         (call emit_i32_const o 0))
     (call put_op o OP_END))
-
-
 
 ;; With a condition on the stack: if it holds, trap with "integer overflow"
   ;; (i32.trunc_f32_s of 3e9, which wasm defines to trap with that reason; wasm.rs trap_if).
@@ -4075,7 +4011,7 @@
             (call emit_rt cg o 80)
             (call emit_call o (call get_wasi_index cg Wasi.fd_write))
             (call put_op o OP_DROP) ;; drop
-            
+
             (set! arg (call node_next arg)))
           (set! done true))
     (when (eq op_id Kw.sys_exit)
@@ -4650,13 +4586,7 @@
           (call compile_expr cg (call nth_child node 2) o)
           (call emit_typed_binop o op_id t) (set! done true)))
 
-
-
-
   (fn compile_let [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void (call compile_assign cg (call nth_child node 1) (call nth_child node 4) o))
-
-
-
 
   (fn compile_set [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void (call compile_assign cg (call nth_child node 1) (call nth_child node 2) o))
 
@@ -4665,9 +4595,6 @@
     (call compile_expr cg val_node o)
     (let n:i32 (call value_width cg val_node))
     (call emit_set_slots o (call node_slot cg name_node) (if (lt n 1) 1 n)))
-
-
-
 
   (fn compile_call [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void
     (unsafe (let fname_node:(ptr compiler.Node) (call nth_child node 1))
@@ -4684,28 +4611,13 @@
           (block))
         (call emit_call o (+ (get cg Cg.nimports) fidx)))))
 
-
-
-
   (fn compile_stmt [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void (call compile_expr cg node o) (when (not (call is_void_node cg node)) (call emit_drops o (call value_width cg node))))
-
-
-
 
   (fn compile_stmt_seq [cg:(ptr Cg) first:(ptr compiler.Node) o:(ptr Out)] -> void (let node:(ptr compiler.Node) first) (while (neq node (ptr.null compiler.Node)) (let nxt:(ptr compiler.Node) (call node_next node)) (if (eq nxt (ptr.null compiler.Node)) (call compile_expr cg node o) (call compile_stmt cg node o)) (set! node nxt)))
 
-
-
-
   (fn compile_all_stmts [cg:(ptr Cg) first:(ptr compiler.Node) o:(ptr Out)] -> void (let node:(ptr compiler.Node) first) (while (neq node (ptr.null compiler.Node)) (let nxt:(ptr compiler.Node) (call node_next node)) (call compile_stmt cg node o) (set! node nxt)))
 
-
-
-
   (fn compile_block [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void (call compile_stmt_seq cg (call node_next (call first_child node)) o))
-
-
-
 
   ;; (when c body...): what compile_if emits for (if c (block body... (block)) (block)),
   ;; the tree src/parser.rs reads it into: the condition, an if of no value, the body
@@ -4746,8 +4658,6 @@
     (call seal_node cg else_node (neq block_ty 64) o)
     (call label_pop cg)
     (call put_op o OP_END))
-
-
 
   ;; block { loop { cond; eqz; br_if 1; body; br 0 } }: break = br to the block,
   ;; continue = br to the loop header (wasm.rs Expr::While).
@@ -4973,8 +4883,6 @@
     (call put_op o OP_END)
     (call put_op o OP_END))
 
-
-
   ;; var = start; block { loop { var > end -> br_if 1; block { body }; var += step; br 0 } }:
   ;; break = br to the outer block, continue = br to the end of the body block,
   ;; which falls into the step (wasm.rs Expr::Loop).
@@ -5018,8 +4926,6 @@
     (call put_op o OP_END)
     (call put_op o OP_END))
 
-
-
   (fn is_else_clause [cg:(ptr Cg) clause:(ptr compiler.Node)] -> bool
     (eq (call group_head_keyword cg clause) Kw.else))
 
@@ -5052,9 +4958,6 @@
     (call label_pop cg)
     (call put_op o OP_END)
     (call at_pop o))
-
-
-
 
   ;; The body's expressions in order, contracts skipped; every value but a
   ;; non-void function's last is dropped.
@@ -5304,15 +5207,12 @@
     (call emit_i32_const o b)
     (call put_op o OP_END))
 
-
-
-
   ;; ===== Module assembly =====
 
   ;; Appends the bytes src has written.
   (fn copy_out [dst:(ptr Out) src:(ptr Out)] -> void
     (unsafe (for i 0 (get src Out.pos)
-      (call put_byte dst (mem.load8 (+ (get src Out.base) i))))))
+              (call put_byte dst (mem.load8 (+ (get src Out.base) i))))))
 
   ;; A size-prefixed copy of what sub has written (a function body).
   (fn emit_sized [o:(ptr Out) sub:(ptr Out)] -> void
@@ -5683,8 +5583,8 @@
           (let main_fn:(ptr FnInfo) (call func_entry_ptr cg main_idx))
           (let kind:i32 (call start_kind cg root))
           (cond ((eq kind 2) (call put_u32 fc 1) (call put_u32 fc 2) (call put_byte fc 127))
-                ((eq kind 1) (call put_u32 fc 1) (call put_u32 fc 1) (call put_byte fc 127))
-                (else (call put_byte fc 0)))
+            ((eq kind 1) (call put_u32 fc 1) (call put_u32 fc 1) (call put_byte fc 127))
+            (else (call put_byte fc 0)))
           (call emit_call fc (+ imports main_idx))
           (when (eq kind 2)
             ;; [tag, slot]: tag 0 is ok, its slot the status; else the slot
@@ -5827,17 +5727,12 @@
     (call put_op o OP_END)
     (call put_op o OP_END))
 
-
-
   ;; memory.init data_index, memory 0
   (fn emit_memory_init [o:(ptr Out) data_index:i32] -> void
     (call put_op o OP_PREFIX_MISC)
     (call put_byte o MISC_MEMORY_INIT)
     (call put_u32 o data_index)
     (call put_byte o 0))
-
-
-
 
   ;; wasi_thread_start(tid, rec) body (no locals): allocate this thread's
   ;; 24-byte runtime scratch block, run rec.fn(rec.arg) through the table,
@@ -5867,8 +5762,6 @@
     (call emit_atomic o ATOMIC_NOTIFY) ;; memory.atomic.notify
     (call put_op o OP_DROP)
     (call put_op o OP_END))
-
-
 
     ;; ===== Harnesses =====
   (fn test_signatures_and_locals [] -> i32
@@ -5918,7 +5811,6 @@
     (when (gt (call test_compile_compute) 0) (set! passed (+ passed 1)))
     (when (gt (call test_compile_store) 0) (set! passed (+ passed 1)))
     passed)
-
 
 ;; ===== Bounds-failure helpers (wasm.rs oob_functions) =====
   ;; A compiled check's message goes in the reserved runtime block at 128,

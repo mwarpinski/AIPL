@@ -336,7 +336,7 @@
 
   ;; Ends the row with "\r\n" (Python's line terminator); a row of one empty
   ;; field is written "" so it reads back as one.
-  (fn end_row [cw:(ptr Writer) ] -> void (pub)
+  (fn end_row [cw:(ptr Writer)] -> void (pub)
     (let w:(ptr stream.Writer) (get cw Writer.out))
     (when (and (eq (get cw Writer.fields) 1) (not (get cw Writer.wrote))) (call stream.write_str w "\"\""))
     (call stream.write_str w "\r\n")

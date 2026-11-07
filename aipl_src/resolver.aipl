@@ -189,7 +189,7 @@
           (let alias:str.Bytes (call slice t 0 dot))
           (if (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) alias)
               (return (call concat (call (map.get_or str.Bytes str.Bytes) (get m Mod.aliases) alias (call str.bytes 0 -1))
-                                   (call slice t dot (- len dot))))
+                            (call slice t dot (- len dot))))
               (return t)))
     (let own:(ptr (map.Map str.Bytes i32)) (if (eq role 1) (get m Mod.fns) (get m Mod.structs)))
     ;; a struct-name position may also hold an enum (a template's type argument)
@@ -206,7 +206,7 @@
     (let dot:i32 (call (option.unwrap_or i32) (call str.find_byte t 46) -1))
     (when (and (gte dot 0) (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) (call slice t 0 dot)))
         (return (call concat (call (map.get_or str.Bytes str.Bytes) (get m Mod.aliases) (call slice t 0 dot) (call str.bytes 0 -1))
-                             (call slice t dot (- len dot)))))
+                      (call slice t dot (- len dot)))))
     (when (not (get m Mod.imported)) (return t))
     (let last:i32 (call last_index t 46))
     (if (or (call (map.has str.Bytes i32) (get m Mod.decls) t)
@@ -232,7 +232,7 @@
        (cond
          ((or (call eq_lit h "fn") (or (call eq_lit h "call") (call eq_lit h "ref"))) 1)
          ((or (call eq_lit h "struct") (or (call eq_lit h "sizeof")
-            (or (call eq_lit h "ptr") (or (call eq_lit h "ptr.null") (or (call eq_lit h "ptr.cast") (call eq_lit h "ptr.make")))))) 2)
+                                           (or (call eq_lit h "ptr") (or (call eq_lit h "ptr.null") (or (call eq_lit h "ptr.cast") (call eq_lit h "ptr.make")))))) 2)
          (else 0)))
       ((eq i 2) (if (or (call eq_lit h "get") (or (call eq_lit h "put") (call eq_lit h "with"))) 3 0))
       (else 0)))
@@ -270,11 +270,11 @@
   ;; canonical name (resolver.rs template_ref). len -1 if h is not a template.
   (fn template_ref [m:(ptr Mod) h:str.Bytes] -> str.Bytes
     (unsafe (when (call (map.has str.Bytes i32) (get m Mod.templates) h)
-        (return (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) h) h)))
+                  (return (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) h) h)))
     (let dot:i32 (call (option.unwrap_or i32) (call str.find_byte h 46) -1))
     (when (and (gte dot 0) (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) (call slice h 0 dot)))
           (let c:str.Bytes (call concat (call (map.get_or str.Bytes str.Bytes) (get m Mod.aliases) (call slice h 0 dot) (call str.bytes 0 -1))
-                                              (call slice h dot (- (get h str.Bytes.len) dot))))
+                                 (call slice h dot (- (get h str.Bytes.len) dot))))
           (when (call (map.has str.Bytes i32) (get m Mod.known) c) (return c)))
     (when (call (map.has str.Bytes i32) (get m Mod.known) h) (return h))
     ;; an interface's function, (Hash.hash K): the interface's name, qualified
@@ -891,28 +891,28 @@
         ;; an item's (pub) is taken out (emit_module checked where it is)
         ((and top (call is_pub_clause m c)) (block))
         (else
-      (when (not (or prev_colon colon)) (call buf.push_byte out 32))
-      (cond
-        ;; a struct's field list (a bracket; anything else there is left for the parser to name)
-        ((and top (and (eq i 2) (and (call eq_lit gh "struct") (eq (get c compiler.Node.kind) compiler.Kind.bracket)))) (call emit_fields m c out))
-        ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call emit_arm m c out))
-        ((and decl_list (and (eq i 2) (eq (get c compiler.Node.kind) compiler.Kind.bracket))) (call emit_decl_members m c out))
-        ((and members (and (gte i 2) (call eq_lit (call head (get m Mod.src) c) "fn"))) (call emit_member m c (call eq_lit gh "impl") out))
-        ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0))
-         ;; a template, or an interface's function (Hash.hash T)
-         (call check_item m (if (call (map.has str.Bytes i32) (get m Mod.known) tmpl) tmpl (call before_last_dot tmpl)) c)
-         (call note m c out) (call buf.push_bytes out tmpl))
-        ;; the head of a (...) form is a keyword or an op (mem.alloc), never renamed
-        ((and (eq i 0) (and (not square) (call is_symbol c))) (call note m c out) (call buf.push_bytes out (call text (get m Mod.src) c)))
-        ((gte (get tmpl str.Bytes.len) 0)
-         (call emit m c 2 out)
-         ;; a struct type argument lets the template make one (with new); a
-         ;; value struct's does not (a value-kind argument)
-         (when (call is_symbol c) (call check_type_arg m (call rename m (call text (get m Mod.src) c) 2) c)))
-        (else
-         (let role:i32 (call child_role m g i))
-         (call emit m c role out)
-         (if (call is_symbol c)
+         (when (not (or prev_colon colon)) (call buf.push_byte out 32))
+         (cond
+           ;; a struct's field list (a bracket; anything else there is left for the parser to name)
+           ((and top (and (eq i 2) (and (call eq_lit gh "struct") (eq (get c compiler.Node.kind) compiler.Kind.bracket)))) (call emit_fields m c out))
+           ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call emit_arm m c out))
+           ((and decl_list (and (eq i 2) (eq (get c compiler.Node.kind) compiler.Kind.bracket))) (call emit_decl_members m c out))
+           ((and members (and (gte i 2) (call eq_lit (call head (get m Mod.src) c) "fn"))) (call emit_member m c (call eq_lit gh "impl") out))
+           ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0))
+            ;; a template, or an interface's function (Hash.hash T)
+            (call check_item m (if (call (map.has str.Bytes i32) (get m Mod.known) tmpl) tmpl (call before_last_dot tmpl)) c)
+            (call note m c out) (call buf.push_bytes out tmpl))
+           ;; the head of a (...) form is a keyword or an op (mem.alloc), never renamed
+           ((and (eq i 0) (and (not square) (call is_symbol c))) (call note m c out) (call buf.push_bytes out (call text (get m Mod.src) c)))
+           ((gte (get tmpl str.Bytes.len) 0)
+            (call emit m c 2 out)
+            ;; a struct type argument lets the template make one (with new); a
+            ;; value struct's does not (a value-kind argument)
+            (when (call is_symbol c) (call check_type_arg m (call rename m (call text (get m Mod.src) c) 2) c)))
+           (else
+            (let role:i32 (call child_role m g i))
+            (call emit m c role out)
+            (if (call is_symbol c)
              (block
                (let sym:str.Bytes (call rename m (call text (get m Mod.src) c) role))
                (cond
@@ -938,7 +938,7 @@
                    (let gh2:str.Bytes (call head (get m Mod.src) c))
                    (let gt:str.Bytes (call template_ref m gh2))
                    (set! generic_struct (if (gte (get gt str.Bytes.len) 0) gt gh2))))))
-      (set! prev_colon colon)))
+         (set! prev_colon colon)))
       (set! i (+ i 1))
       (set! c (get c compiler.Node.next)))
     (when square (put m Mod.square (- (get m Mod.square) 1)))
@@ -1077,7 +1077,7 @@
     (let fm:str.Bytes (call foreign m name n))
     (when (lt (get fm str.Bytes.len) 0) (return))
     (let fields:(ptr (map.Map str.Bytes i32))
-         (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get (get m Mod.vis) Vis.fields) name (ptr.null (map.Map str.Bytes i32))))
+      (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get (get m Mod.vis) Vis.fields) name (ptr.null (map.Map str.Bytes i32))))
     (when (eq fields (ptr.null (map.Map str.Bytes i32))) (return))
     (let closed:bool false)
     (for i 0 (call (map.capacity str.Bytes i32) fields)
@@ -1098,7 +1098,7 @@
     (let fm:str.Bytes (call foreign m s n))
     (when (lt (get fm str.Bytes.len) 0) (return))
     (let fields:(ptr (map.Map str.Bytes i32))
-         (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get (get m Mod.vis) Vis.fields) s (ptr.null (map.Map str.Bytes i32))))
+      (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get (get m Mod.vis) Vis.fields) s (ptr.null (map.Map str.Bytes i32))))
     (let level:i32 (if (eq fields (ptr.null (map.Map str.Bytes i32))) 0 (call (map.get_or str.Bytes i32) fields f 0)))
     (when (or (eq level 0) (and put (eq level 1)))
           (let b:(ptr buf.Buf) (call vis_msg "field '"))
@@ -1248,7 +1248,7 @@
                (call (vec.push (ptr compiler.Node)) types (call nth it 4)))
               ((call eq_lit h "struct")
                (let levels:(ptr (map.Map str.Bytes i32))
-                    (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) own_levels name (ptr.null (map.Map str.Bytes i32))))
+                 (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) own_levels name (ptr.null (map.Map str.Bytes i32))))
                (call readable_field_types m (call nth it 2) levels types))
               ((call eq_lit h "union")
                (let vlist:(ptr compiler.Node) (call nth it 2))
@@ -2096,7 +2096,7 @@
   ;; Whether a token of kind k is a literal.
   (fn is_literal_kind [k:compiler.Kind] -> bool
     (or (eq k compiler.Kind.int) (or (eq k compiler.Kind.int64) (or (eq k compiler.Kind.float)
-        (or (eq k compiler.Kind.float32) (or (eq k compiler.Kind.string) (eq k compiler.Kind.bool)))))))
+                                                                    (or (eq k compiler.Kind.float32) (or (eq k compiler.Kind.string) (eq k compiler.Kind.bool)))))))
 
   ;; Whether node n holds a (new ...), (arr.new ...), or (arr.of ...) outside
   ;; a [...] list.
@@ -2187,11 +2187,11 @@
 
   (fn resolve_module [st:(ptr State) dir:str.Bytes import:str.Bytes importer:str.Bytes] -> bool
     (unsafe (when (not (call valid_import_path import))
-          (let pe:(ptr buf.Buf) (call importer_error st importer))
-          (call buf.push_byte pe 39)
-          (call buf.push_bytes pe import)
-          (call buf.push_str pe "' is not an import path: use names separated by '/', e.g. (import native/wasm_reader)")
-          (return false))
+                  (let pe:(ptr buf.Buf) (call importer_error st importer))
+                  (call buf.push_byte pe 39)
+                  (call buf.push_bytes pe import)
+                  (call buf.push_str pe "' is not an import path: use names separated by '/', e.g. (import native/wasm_reader)")
+                  (return false))
     (let name:str.Bytes (call module_name import))
     ;; an import from the same directory resolves to the same file: search once
     (let key:str.Bytes (call concat dir (call concat (call str.from_str "|") import)))

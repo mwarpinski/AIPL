@@ -743,7 +743,6 @@
       (call buf.push_i64 out (get ins Instr.c))
       (call buf.push_byte out 10)))
 
-
   (fn summary [w:(ptr Wasm)] -> str.Bytes
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 4096))
     (when (not (get w Wasm.ok)) (call buf.push_str out "error: ") (call buf.push_bytes out (get w Wasm.error)) (return (call buf.bytes out)))

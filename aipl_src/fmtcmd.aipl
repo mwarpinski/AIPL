@@ -1,0 +1,373 @@
+;; aipl fmt: whitespace and nothing else.
+;;
+;;   aipl fmt [--check] FILE.aipl...   rewrite each file in place (with --check, name the files that would change
+;;                                     and exit 1)
+;;   aipl fmt -                        standard input to standard output
+;;
+;; The line breaks are the author's. What the formatter settles is what has no meaning: tabs and CRs, trailing
+;; spaces, runs of spaces between tokens, a space after an open bracket or before a close one, runs of blank lines,
+;; the blank lines at either end of the file, the newline at its end, and the indentation of a line.
+;;
+;; A line continues the form it is inside, and the form says where:
+;;   fn, module, cond, for, while, block, match, let and the other forms with a body    two columns in
+;;   a clause ((test) ...), an (else ...), a name:value field                           one column in
+;;   any other form (when, if, and, or, call, unsafe ...)                               under its first argument, or one to
+;;                                                                                      four columns in (a line already at
+;;                                                                                      one of those stays)
+;; A line that begins with a closing bracket stands under the open one. A comment on a line of its own stands with the
+;; code under it, or at column 0, or with the code above it, and stays where it is if it is at one of those. A
+;; comment after code keeps the gap before it. Strings and comments are never touched.
+;;
+;; No token moves to another line, so a form that is too wide stays so. Formatting never changes what a program
+;; means, and formatting a formatted file changes nothing.
+(module fmtcmd
+  (import alloc)
+  (import buf)
+  (import compiler)
+  (import front)
+  (import checker)
+  (import parser)
+  (import excerpt)
+  (import io)
+  (import option)
+  (import os)
+  (import str)
+  (import vec)
+
+  ;; An open bracket on the stack: its column in the formatted line, what sort of head it has (head_kind), the
+  ;; column of its first argument when that is on the line the form opened on (-1 if not), and how far along
+  ;; reading its head and first argument is (0 nothing yet, 1 the head, 2 the first argument too).
+  (struct Open [(read col:i32) (read kind:i32) (read argcol:i32) (read state:i32)])
+
+  ;; A line of the output so far: kind 0 blank, 1 code (text is complete, own its indentation), 2 a comment on its
+  ;; own (text is the comment without its indentation, own the column it was at).
+  (struct Line [(read kind:i32) (read text:str.Bytes) (read own:i32)])
+
+  (fn kind_list [] -> i32 0)
+  (fn kind_colon [] -> i32 1)
+  (fn kind_else [] -> i32 2)
+  (fn kind_body [] -> i32 3)
+  (fn kind_unsafe [] -> i32 4)
+  (fn kind_other [] -> i32 5)
+
+  ;; The sort of head a form has whose first token is t.
+  (fn head_kind [t:str.Bytes] -> i32
+    (cond
+      ((call str.is t "else") (call kind_else))
+      ((call str.is t "unsafe") (call kind_unsafe))
+      ((call has_colon t) (call kind_colon))
+      ((call is_body_head t) (call kind_body))
+      (else (call kind_other))))
+
+  (fn has_colon [t:str.Bytes] -> bool
+    (for i 0 (get t str.Bytes.len)
+      (when (eq (call str.byte_at t i) 58) (return true)))
+    false)
+
+  ;; Forms whose continuation lines are a body, indented two columns, not arguments.
+  (fn is_body_head [t:str.Bytes] -> bool
+    (or (call str.is t "module")
+        (or (call str.is t "fn")
+            (or (call str.is t "cond")
+                (or (call str.is t "for")
+                    (or (call str.is t "while")
+                        (or (call str.is t "block")
+                            (or (call str.is t "match")
+                                (or (call str.is t "match_result")
+                                    (or (call str.is t "loop")
+                                        (or (call str.is t "test")
+                                            (or (call str.is t "struct")
+                                                (or (call str.is t "enum")
+                                                    (or (call str.is t "union")
+                                                        (or (call str.is t "interface")
+                                                            (or (call str.is t "impl")
+                                                                (or (call str.is t "defer")
+                                                                    (or (call str.is t "counted_loop")
+                                                                        (call str.is t "let")))))))))))))))))))
+
+  ;; The column a line continuing the form o begins at when nothing else is said.
+  (fn primary [o:(ptr Open)] -> i32
+    (let k:i32 (get o Open.kind))
+    (cond
+      ((eq (get o Open.state) 0) (+ (get o Open.col) 1))
+      ((or (eq k (call kind_list)) (or (eq k (call kind_colon)) (eq k (call kind_else)))) (+ (get o Open.col) 1))
+      ((or (eq k (call kind_body)) (eq k (call kind_unsafe))) (+ (get o Open.col) 2))
+      ((gte (get o Open.argcol) 0) (get o Open.argcol))
+      (else (+ (get o Open.col) 2))))
+
+  ;; The column for a line of the form o (inside a form whose own continuation column is up, or -1) that was written at
+  ;; column cur (-1 if its indentation held a tab), which begins with a close bracket or not.
+  (fn column_for [o:(ptr Open) up:i32 cur:i32 closing:bool] -> i32
+    (let col:i32 (get o Open.col))
+    (when closing
+      (return (if (and (gte cur col) (lte cur (+ col 2))) cur col)))
+    (let p:i32 (call primary o))
+    (when (eq (get o Open.state) 0) (return p))
+    (let k:i32 (get o Open.kind))
+    (when (eq k (call kind_else)) (return (if (eq cur (+ col 2)) cur p)))
+    (when (or (eq k (call kind_list)) (or (eq k (call kind_colon)) (eq k (call kind_body)))) (return p))
+    (when (eq cur p) (return cur))
+    (when (and (gte cur (+ col 1)) (lte cur (+ col 4))) (return cur))
+    (when (and (eq k (call kind_unsafe)) (eq cur col)) (return cur))
+    ;; (unsafe at the end of a line: its body is the enclosing form's, where that form puts one
+    (when (and (eq k (call kind_unsafe)) (and (lt (get o Open.argcol) 0) (eq cur up))) (return cur))
+    (when (and (gte (get o Open.argcol) 0) (eq cur (get o Open.argcol))) (return cur))
+    p)
+
+  (fn is_blank_byte [c:i32] -> bool (or (eq c 32) (or (eq c 9) (eq c 13))))
+
+  ;; Whether c ends an atom: whitespace, a bracket, a quote, or the start of a comment.
+  (fn ends_atom [c:i32] -> bool
+    (or (call is_blank_byte c) (or (eq c 40) (or (eq c 41) (or (eq c 91) (or (eq c 93) (or (eq c 34) (eq c 59))))))))
+
+  ;; A token is about to be written at column col inside the form o: its head, or its first argument. A bracket as
+  ;; the head (list) makes a clause; any other token is told by its text.
+  (fn note [o:(ptr Open) col:i32 list:bool head:str.Bytes] -> void
+    (cond
+      ((eq (get o Open.state) 0)
+       (put o Open.kind (if list (call kind_list) (call head_kind head)))
+       (put o Open.state 1))
+      ((eq (get o Open.state) 1)
+       (put o Open.argcol col)
+       (put o Open.state 2))
+      (else (block))))
+
+  (fn top [stack:(ptr (vec.Vec (ptr Open)))] -> (ptr Open)
+    (call (vec.at (ptr Open)) stack (- (call (vec.len (ptr Open)) stack) 1)))
+
+  ;; The continuation column of the form around the innermost open one, or -1 at the top.
+  (fn above_column [stack:(ptr (vec.Vec (ptr Open)))] -> i32
+    (let n:i32 (call (vec.len (ptr Open)) stack))
+    (if (lt n 2) -1 (call primary (call (vec.at (ptr Open)) stack (- n 2)))))
+
+  (fn trim_right [s:str.Bytes] -> str.Bytes
+    (let e:i32 (get s str.Bytes.len))
+    (while (and (gt e 0) (call is_blank_byte (call str.byte_at s (- e 1))))
+      (set! e (- e 1)))
+    (call str.slice s 0 e))
+
+  ;; Writes a space first when there was white space before the token and it follows something that is not an open
+  ;; bracket.
+  (fn space_before [line:(ptr buf.Buf) prev:i32 spaced:bool] -> void
+    (when (and spaced (and (neq prev 0) (neq prev 1)))
+      (call buf.push_byte line 32)))
+
+  ;; One line, s without its newline, in the context of the open brackets on the stack, which it updates. The Line to
+  ;; keep.
+  (fn format_line [stack:(ptr (vec.Vec (ptr Open)))
+                   s:str.Bytes] -> (ptr Line)
+    (let a:alloc.Allocator (call alloc.default))
+    (let n:i32 (get s str.Bytes.len))
+    (let first:i32 0)
+    (while (and (lt first n) (call is_blank_byte (call str.byte_at s first)))
+      (set! first (+ first 1)))
+    (when (eq first n) (return (new Line a [kind:0 text:(call str.from_str "") own:0])))
+    ;; the indentation as written; a tab makes it unreliable, so that it matches nothing
+    (let cur:i32 first)
+    (for t 0 first
+      (when (eq (call str.byte_at s t) 9) (set! cur -1)))
+    (when (eq (call str.byte_at s first) 59)
+      (return (new Line a [kind:2 text:(call trim_right (call str.slice s first (- n first))) own:first])))
+    (let lead:i32 (call str.byte_at s first))
+    (let closing:bool (or (eq lead 41) (eq lead 93)))
+    (let ind:i32 0)
+    (when (gt (call (vec.len (ptr Open)) stack) 0)
+      (set! ind (call column_for (call top stack) (call above_column stack) cur closing)))
+    (let line:(ptr buf.Buf) (call buf.make a 96))
+    (for k 0 ind (call buf.push_byte line 32))
+    ;; what came last: 0 nothing, 1 an open bracket, 2 a close bracket, 3 anything else
+    (let prev:i32 0)
+    (let spaced:bool false)
+    (let i:i32 first)
+    (while (lt i n)
+      (let c:i32 (call str.byte_at s i))
+      (cond
+        ((call is_blank_byte c) (set! spaced true) (set! i (+ i 1)))
+        ((eq c 59)
+         ;; a comment after code keeps the gap before it
+         (let g:i32 0)
+         (let j:i32 i)
+         (while (and (gt j first) (call is_blank_byte (call str.byte_at s (- j 1))))
+           (set! j (- j 1))
+           (set! g (+ g 1)))
+         (for k 0 (if (lt g 1) 1 g) (call buf.push_byte line 32))
+         (call buf.push_bytes line (call trim_right (call str.slice s i (- n i))))
+         (set! i n))
+        ((or (eq c 40) (eq c 91))
+         (call space_before line prev spaced)
+         (set! spaced false)
+         (when (gt (call (vec.len (ptr Open)) stack) 0)
+           (call note (call top stack) (call buf.len line) true (call str.from_str "")))
+         (call (vec.push (ptr Open)) stack (new Open a [col:(call buf.len line) kind:(call kind_list) argcol:-1 state:0]))
+         (call buf.push_byte line c)
+         (set! prev 1)
+         (set! i (+ i 1)))
+        ((or (eq c 41) (eq c 93))
+         (when (gt (call (vec.len (ptr Open)) stack) 0)
+           (let _gone:(ptr Open) (call (vec.pop (ptr Open)) stack)))
+         (set! spaced false)
+         (call buf.push_byte line c)
+         (set! prev 2)
+         (set! i (+ i 1)))
+        ((eq c 34)
+         ;; a string, to its closing quote (or the end of the line)
+         (let j:i32 (+ i 1))
+         (while (and (lt j n) (neq (call str.byte_at s j) 34))
+           (when (eq (call str.byte_at s j) 92) (set! j (+ j 1)))
+           (set! j (+ j 1)))
+         (let stop:i32 (if (lt j n) (+ j 1) n))
+         (call space_before line prev spaced)
+         (set! spaced false)
+         (let text:str.Bytes (call str.slice s i (- stop i)))
+         (when (gt (call (vec.len (ptr Open)) stack) 0)
+           (call note (call top stack) (call buf.len line) false text))
+         (call buf.push_bytes line (if (lt j n) text (call trim_right text)))
+         (set! prev 3)
+         (set! i stop))
+        (else
+         (let j:i32 i)
+         (while (and (lt j n) (not (call ends_atom (call str.byte_at s j))))
+           (set! j (+ j 1)))
+         (call space_before line prev spaced)
+         (set! spaced false)
+         (let text:str.Bytes (call str.slice s i (- j i)))
+         (when (gt (call (vec.len (ptr Open)) stack) 0)
+           (call note (call top stack) (call buf.len line) false text))
+         (call buf.push_bytes line text)
+         (set! prev 3)
+         (set! i j))))
+    (new Line a [kind:1 text:(call buf.bytes line) own:ind]))
+
+  ;; The formatted lines, joined: a comment on its own is placed, the blank lines are collapsed and trimmed, and the
+  ;; text ends in a newline.
+  (fn assemble [lines:(ptr (vec.Vec (ptr Line)))] -> (ptr buf.Buf)
+    (let a:alloc.Allocator (call alloc.default))
+    (let out:(ptr buf.Buf) (call buf.make a 4096))
+    (let blank:bool true)
+    (let above:i32 0)
+    (let n:i32 (call (vec.len (ptr Line)) lines))
+    (for i 0 n
+      (let l:(ptr Line) (call (vec.at (ptr Line)) lines i))
+      (let k:i32 (get l Line.kind))
+      (cond
+        ((eq k 0)
+         (when (not blank)
+           (call buf.push_byte out 10)
+           (set! blank true)))
+        ((eq k 1)
+         (call buf.push_bytes out (get l Line.text))
+         (call buf.push_byte out 10)
+         (set! above (get l Line.own))
+         (set! blank false))
+        (else
+         ;; the indentation of the next line of code
+         (let j:i32 (+ i 1))
+         (while (and (lt j n) (neq (get (call (vec.at (ptr Line)) lines j) Line.kind) 1))
+           (set! j (+ j 1)))
+         (let below:i32 (if (lt j n) (get (call (vec.at (ptr Line)) lines j) Line.own) 0))
+         (let own:i32 (get l Line.own))
+         (let at:i32 (if (or (eq own 0) (or (eq own below) (eq own above))) own below))
+         (for q 0 at (call buf.push_byte out 32))
+         (call buf.push_bytes out (get l Line.text))
+         (call buf.push_byte out 10)
+         (set! blank false))))
+    (when (and (gte (call buf.len out) 2)
+               (and (eq (call buf.byte_at out (- (call buf.len out) 1)) 10) (eq (call buf.byte_at out (- (call buf.len out) 2)) 10)))
+      (call buf.truncate out (- (call buf.len out) 1)))
+    out)
+
+  ;; src formatted.
+  (fn format_text [src:str.Bytes] -> str.Bytes (pub)
+    (let a:alloc.Allocator (call alloc.default))
+    (let stack:(ptr (vec.Vec (ptr Open))) (call (vec.make (ptr Open)) a 32))
+    (let lines:(ptr (vec.Vec (ptr Line))) (call (vec.make (ptr Line)) a 256))
+    (let n:i32 (get src str.Bytes.len))
+    (let at:i32 0)
+    (while (lt at n)
+      (let e:i32 at)
+      (while (and (lt e n) (neq (call str.byte_at src e) 10))
+        (set! e (+ e 1)))
+      (call (vec.push (ptr Line)) lines (call format_line stack (call str.slice src at (- e at))))
+      (set! at (+ e 1)))
+    (call buf.bytes (call assemble lines)))
+
+  ;; Whether text reads: its tokens, and the brackets. False writes why on standard error, as `aipl lint` words it.
+  (fn reads [path:str.Bytes text:str.Bytes] -> bool
+    (let src:i32 (call str.addr text))
+    (let len:i32 (get text str.Bytes.len))
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
+    (let n:i32 (call compiler.tokenize src len toks))
+    (when (and (gt n 0) (eq (get (call compiler.token_at toks (- n 1)) compiler.Token.kind) compiler.Kind.bad))
+      (let r:(ptr parser.Parsed) (call parser.parse_tokens src toks n))
+      (let shown:(ptr buf.Buf) (call front.render src (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))
+      (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
+      (call buf.push_bytes m path)
+      (call buf.push_str m ": ")
+      (call buf.push_bytes m (call buf.bytes shown))
+      (call buf.push_byte m 10)
+      (let _w:i32 (call buf.write (call excerpt.add (call alloc.default) (call buf.bytes m)) 2))
+      (return false))
+    true)
+
+  (fn usage [] -> i32
+    (call io.eprintln "usage: aipl fmt [--check] FILE.aipl...")
+    (call io.eprintln "       aipl fmt -        (standard input to standard output)")
+    2)
+
+  (fn complain [what:str path:str.Bytes] -> void
+    (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_str m "aipl fmt: ")
+    (call buf.push_str m what)
+    (call buf.push_bytes m path)
+    (call buf.push_byte m 10)
+    (let _w:i32 (call buf.write m 2)))
+
+  ;; aipl fmt, with its arguments from argument `first` on; the exit status.
+  (fn command [first:i32] -> i32 (pub)
+    (when (gte first (call os.arg_count)) (return (call usage)))
+    (let check:bool false)
+    (let failed:i32 0)
+    (let changed:i32 0)
+    (let seen:i32 0)
+    (for i first (call os.arg_count)
+      (let x:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str "")))
+      (cond
+        ((or (call str.is x "--help") (call str.is x "-h")) (return (call usage)))
+        ((call str.is x "--check") (set! check true))
+        ((call str.is x "-")
+         (set! seen (+ seen 1))
+         (let text:str.Bytes (match_result (call io.read_stdin)
+                               (ok t t)
+                               (err e (block (call complain "cannot read standard input" (call str.from_str "")) (return 1)))))
+         (when (not (call reads (call str.from_str "standard input") text)) (return 1))
+         (let done:str.Bytes (call format_text text))
+         (if check
+             (when (not (call str.bytes_eq done text)) (set! changed (+ changed 1)))
+             (block (unsafe (let _w:i32 (fs.write 1 (call str.addr done) (get done str.Bytes.len))) (block)))))
+        (else
+         (set! seen (+ seen 1))
+         (let text:str.Bytes (match_result (call io.read_path x)
+                               (ok t t)
+                               (err e (block (call complain "cannot read " x) (set! failed (+ failed 1)) (continue)))))
+         (cond
+           ((not (call reads x text)) (set! failed (+ failed 1)))
+           (else
+            (let done:str.Bytes (call format_text text))
+            (when (not (call str.bytes_eq done text))
+              (set! changed (+ changed 1))
+              (if check
+                  (block
+                    (call io.write_str 1 "aipl fmt: ")
+                    (unsafe (fs.write 1 (call str.addr x) (get x str.Bytes.len)))
+                    (call io.println " needs formatting"))
+                  (when (match_result (call io.write_path x done) (ok n false) (err e true))
+                    (call complain "cannot write " x)
+                    (set! failed (+ failed 1))))))))))
+    (when (eq seen 0) (return (call usage)))
+    (if (or (gt failed 0) (and check (gt changed 0))) 1 0))
+
+  (fn main [] -> i32 (call command 1))
+
+  ;; WASI command entry point: runs main and exits with its status.
+  (fn _start [] -> void
+    (sys.exit (call main))))

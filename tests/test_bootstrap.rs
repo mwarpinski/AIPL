@@ -447,6 +447,40 @@ fn aipl_lint_says_the_same_in_both_commands() {
 #[test]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native seed)")]
+fn aipl_fmt_says_the_same_in_both_commands() {
+    use std::io::Write;
+    let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
+    let dir = scratch("bootstrap_fmt");
+    let aipl = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &aipl);
+    // the project's own source and its examples: formatted already, so --check says nothing
+    let mut files = Vec::new();
+    for d in ["aipl_src", "examples", "benchmarks"] {
+        aipl_files(&root().join(d), &mut files);
+    }
+    let rust = run(Command::new(AIPL).arg("fmt").arg("--check").args(&files));
+    let own = run(Command::new(&aipl).arg("fmt").arg("--check").args(&files));
+    assert_eq!(rust.status.code(), Some(0), "{}", text(&rust.stdout));
+    assert_eq!(own.status.code(), Some(0), "{}", text(&own.stdout));
+    // messy text, formatted by each
+    let messy = "\n(module m\r\n\t(fn f [a:i32] -> i32   (cond\n((gt a 0)\n 1)\n  (else  2)))   ;;  a gap\n\n\n  (fn main [] -> i32 (unsafe\n (let p:i32 (mem.alloc 1))\n 0)))";
+    let through = |command: &Path| {
+        let mut c = Command::new(command);
+        c.args(["fmt", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(messy.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let (a, b) = (through(Path::new(AIPL)), through(&aipl));
+    assert_eq!((a.status.code(), text(&a.stdout)), (b.status.code(), text(&b.stdout)));
+    assert_eq!(a.status.code(), Some(0));
+    assert!(text(&a.stdout).starts_with("(module m\n"), "{}", text(&a.stdout));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
 fn the_aipl_command_matches_the_rust_command() {
     let dir = scratch("bootstrap_command");
     let aipl = dir.join("aipl");

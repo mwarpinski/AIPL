@@ -43,11 +43,11 @@
     x)
 
   ;; ===== Condition codes (b.cond, csel, ccmp) =====
-  (fn cc_eq [] -> i32 (pub) 0)  (fn cc_ne [] -> i32 (pub) 1)
-  (fn cc_hs [] -> i32 (pub) 2)  (fn cc_lo [] -> i32 (pub) 3)
-  (fn cc_mi [] -> i32 (pub) 4)  (fn cc_pl [] -> i32 (pub) 5)
-  (fn cc_vs [] -> i32 (pub) 6)  (fn cc_vc [] -> i32 (pub) 7)
-  (fn cc_hi [] -> i32 (pub) 8)  (fn cc_ls [] -> i32 (pub) 9)
+  (fn cc_eq [] -> i32 (pub) 0) (fn cc_ne [] -> i32 (pub) 1)
+  (fn cc_hs [] -> i32 (pub) 2) (fn cc_lo [] -> i32 (pub) 3)
+  (fn cc_mi [] -> i32 (pub) 4) (fn cc_pl [] -> i32 (pub) 5)
+  (fn cc_vs [] -> i32 (pub) 6) (fn cc_vc [] -> i32 (pub) 7)
+  (fn cc_hi [] -> i32 (pub) 8) (fn cc_ls [] -> i32 (pub) 9)
   (fn cc_ge [] -> i32 (pub) 10) (fn cc_lt [] -> i32 (pub) 11)
   (fn cc_gt [] -> i32 (pub) 12) (fn cc_le [] -> i32 (pub) 13)
   (fn cc_al [] -> i32 (pub) 14)
@@ -513,8 +513,8 @@
   (fn fmov_imm [c:(ptr buf.Buf) ft:i32 fd:i32 imm8:i32] -> void (pub)
     (req (and (gte imm8 0) (lte imm8 255)))
     (call emit c (bitor (shl 7712 16) (bitor 4096
-                  (bitor (shl ft 22)
-                   (bitor (shl imm8 13) (call r fd)))))))
+                                             (bitor (shl ft 22)
+                                                    (bitor (shl imm8 13) (call r fd)))))))
 
   (fn fmov_rr [c:(ptr buf.Buf) ft:i32 fd:i32 fn_:i32] -> void (pub) (call fp1 c ft 0 fd fn_))
   (fn fabs [c:(ptr buf.Buf) ft:i32 fd:i32 fn_:i32] -> void (pub) (call fp1 c ft 1 fd fn_))
@@ -1230,7 +1230,7 @@
       (call stlr c 32 i (% (+ i 7) 31))
       (call ldaxr c 32 i (% (+ i 7) 31))
       (call stlxr c 32 (% (+ i 1) 31) i (% (+ i 7) 31)))
-    (call clrex c )
+    (call clrex c)
     (call check "atomic" c "c8dffce0c89ffce0c85ffce0c801fce088dffce0889ffce0885ffce08801fce0c8dffd01c89ffd01c85ffd01c802fd0188dffd01889ffd01885ffd018802fd01c8dffd22c89ffd22c85ffd22c803fd2288dffd22889ffd22885ffd228803fd22c8dffd43c89ffd43c85ffd43c804fd4388dffd43889ffd43885ffd438804fd43c8dffd64c89ffd64c85ffd64c805fd6488dffd64889ffd64885ffd648805fd64c8dffd85c89ffd85c85ffd85c806fd8588dffd85889ffd85885ffd858806fd85c8dffda6c89ffda6c85ffda6c807fda688dffda6889ffda6885ffda68807fda6c8dffdc7c89ffdc7c85ffdc7c808fdc788dffdc7889ffdc7885ffdc78808fdc7c8dffde8c89ffde8c85ffde8c809fde888dffde8889ffde8885ffde88809fde8c8dffe09c89ffe09c85ffe09c80afe0988dffe09889ffe09885ffe09880afe09c8dffe2ac89ffe2ac85ffe2ac80bfe2a88dffe2a889ffe2a885ffe2a880bfe2ac8dffe4bc89ffe4bc85ffe4bc80cfe4b88dffe4b889ffe4b885ffe4b880cfe4bc8dffe6cc89ffe6cc85ffe6cc80dfe6c88dffe6c889ffe6c885ffe6c880dfe6cc8dffe8dc89ffe8dc85ffe8dc80efe8d88dffe8d889ffe8d885ffe8d880efe8dc8dffeaec89ffeaec85ffeaec80ffeae88dffeae889ffeae885ffeae880ffeaec8dffecfc89ffecfc85ffecfc810fecf88dffecf889ffecf885ffecf8810fecfc8dffef0c89ffef0c85ffef0c811fef088dffef0889ffef0885ffef08811fef0c8dfff11c89fff11c85fff11c812ff1188dfff11889fff11885fff118812ff11c8dfff32c89fff32c85fff32c813ff3288dfff32889fff32885fff328813ff32c8dfff53c89fff53c85fff53c814ff5388dfff53889fff53885fff538814ff53c8dfff74c89fff74c85fff74c815ff7488dfff74889fff74885fff748815ff74c8dfff95c89fff95c85fff95c816ff9588dfff95889fff95885fff958816ff95c8dfffb6c89fffb6c85fffb6c817ffb688dfffb6889fffb6885fffb68817ffb6c8dfffd7c89fffd7c85fffd7c818ffd788dfffd7889fffd7885fffd78818ffd7c8dffc18c89ffc18c85ffc18c819fc1888dffc18889ffc18885ffc188819fc18c8dffc39c89ffc39c85ffc39c81afc3988dffc39889ffc39885ffc39881afc39c8dffc5ac89ffc5ac85ffc5ac81bfc5a88dffc5a889ffc5a885ffc5a881bfc5ac8dffc7bc89ffc7bc85ffc7bc81cfc7b88dffc7b889ffc7b885ffc7b881cfc7bc8dffc9cc89ffc9cc85ffc9cc81dfc9c88dffc9c889ffc9c885ffc9c881dfc9cc8dffcbdc89ffcbdc85ffcbdc81efcbd88dffcbd889ffcbd885ffcbd881efcbdc8dffcdec89ffcdec85ffcdec800fcde88dffcde889ffcde885ffcde8800fcded5033f5f"))
 
   (fn test_branches [] -> i32
@@ -1277,5 +1277,5 @@
 
   (fn run_arm64_tests [] -> i32 (pub)
     (+ (call test_moves) (+ (call test_alu_reg) (+ (call test_muldiv) (+ (call test_alu_imm) (+ (call test_shift_ext) (+ (call test_conditional) (+ (call test_memory) (+ (call test_float) (+ (call test_atomic) (+ (call test_branches) (call test_system))))))))))))
-  ;; ARM64_TESTS_END
+;; ARM64_TESTS_END
 )

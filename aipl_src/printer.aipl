@@ -288,7 +288,7 @@
        (call s b "(call_ref ") (call print_type b sig) (call s b " ") (call print_expr b callee) (call with_body b args))
       (ast.Expr.addr [n_addr] (let val:ast.Expr (get n_addr ast.AddrExpr.val)) (let kind:ast.AddrKind (get n_addr ast.AddrExpr.kind))
        (call s b (match kind (ast.AddrKind.ptr "(ptr.addr ") (ast.AddrKind.arr "(arr.addr ") (ast.AddrKind.enum_ "(enum.ord ")
-                         (ast.AddrKind.ptr_gen "(ptr.gen ") (ast.AddrKind.arr_gen "(arr.gen ")))
+                   (ast.AddrKind.ptr_gen "(ptr.gen ") (ast.AddrKind.arr_gen "(arr.gen ")))
        (call print_expr b val) (call s b ")"))))
 
   (fn print_result [b:(ptr buf.Buf) head:str val:ast.Expr ty:ast.MaybeType] -> void

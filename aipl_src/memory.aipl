@@ -71,11 +71,11 @@
     (let too_big:i32 (call arena_alloc arena 1000))
 
     (if (and (eq p1 before)
-        (and (eq after (+ before 64))
-        (and (eq p2 (+ p1 64))
-        (and (gt a2 a1)
-        (and (eq a3 a1)
-        (and (gte a1 (mem.load32 (+ arena 8)))
-             (eq too_big -1)))))))
+             (and (eq after (+ before 64))
+                  (and (eq p2 (+ p1 64))
+                       (and (gt a2 a1)
+                            (and (eq a3 a1)
+                                 (and (gte a1 (mem.load32 (+ arena 8)))
+                                      (eq too_big -1)))))))
       1  ;; SUCCESS
       0))))

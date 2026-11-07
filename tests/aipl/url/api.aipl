@@ -19,10 +19,10 @@
   (fn at_path [v:json.Value path:str] -> str
     (match (call json.get_path v path)
       ((option.Option json.Value) some [x]
-        (match x
-          (json.Value.number [n] (format "{n}"))
-          (json.Value.text [s] (call str.from_bytes s))
-          (else "(other)")))
+       (match x
+         (json.Value.number [n] (format "{n}"))
+         (json.Value.text [s] (call str.from_bytes s))
+         (else "(other)")))
       ((option.Option json.Value) none [] "(none)")))
 
   (fn main [] -> i32

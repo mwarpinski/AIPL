@@ -396,8 +396,8 @@
     (when (eq t (ptr.null Tmpl)) (return))
     (let th:str.Bytes (call head st (get t Tmpl.node)))
     (let ok:bool (cond (is_fn (not (get t Tmpl.is_struct)))
-                       (is_make (call lit th "union"))
-                       (else (call lit th "struct"))))
+                   (is_make (call lit th "union"))
+                   (else (call lit th "struct"))))
     (when (not ok) (return))
     (let b:(ptr buf.Buf) (call quoted (call msg "") base))
     (call buf.push_str b " is generic: name its types, as in (")
@@ -810,7 +810,7 @@
           (call buf.push_str bb " is a built-in form; choose another name")
           (call fail_at st (get header compiler.Node.pos) bb))
     (let t:(ptr Tmpl) (new Tmpl (call alloc.forever) [node:item is_struct:(and (gte (get h str.Bytes.len) 0)
-                               (or (call lit h "struct") (or (call lit h "const") (or (call lit h "enum") (call lit h "union"))))) params:(call (vec.make str.Bytes) (call alloc.default) 4) wheres:(zero (ptr (vec.Vec (ptr compiler.Node)))) struct_kind:(zero (arr bool)) name:(zero str.Bytes) plain_kind:(zero (arr bool))]))
+                                                                               (or (call lit h "struct") (or (call lit h "const") (or (call lit h "enum") (call lit h "union"))))) params:(call (vec.make str.Bytes) (call alloc.default) 4) wheres:(zero (ptr (vec.Vec (ptr compiler.Node)))) struct_kind:(zero (arr bool)) name:(zero str.Bytes) plain_kind:(zero (arr bool))]))
     (let p:(ptr compiler.Node) (get (call first_child header) compiler.Node.next))
     (while (neq p (ptr.null compiler.Node))
       (let pt:str.Bytes (if (call is_symbol p) (call text st p) (call str.from_str "")))
@@ -1060,9 +1060,9 @@
   ;; the offending node when `report`).
   (fn type_text [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) report:bool] -> str.Bytes
     (unsafe (when (call is_symbol n)
-          (let t:str.Bytes (call text st n))
-          (let k:i32 (call lookup env t))
-          (return (if (gte k 0) (call (vec.at str.Bytes) (get env Env.mangled) k) t)))
+                  (let t:str.Bytes (call text st n))
+                  (let k:i32 (call lookup env t))
+                  (return (if (gte k 0) (call (vec.at str.Bytes) (get env Env.mangled) k) t)))
     (let h:str.Bytes (call head st n))
     (let fn_type:bool (call is_fn_type h n))
     (when (or (lt (get h str.Bytes.len) 0) (and (not fn_type) (lt (call count_children n) 2)))
@@ -1157,13 +1157,13 @@
 
   (fn built_in_type [t:str.Bytes] -> bool
     (or (call lit t "i32") (or (call lit t "i64") (or (call lit t "f32") (or (call lit t "f64")
-      (or (call lit t "bool") (or (call lit t "str") (call lit t "void"))))))))
+                                                                             (or (call lit t "bool") (or (call lit t "str") (call lit t "void"))))))))
 
   ;; The named type a type is about (generics.rs type_owner); len -1 for none.
   (fn type_owner [st:(ptr St) ty:(ptr compiler.Node)] -> str.Bytes
     (unsafe (when (call is_symbol ty)
-          (let t:str.Bytes (call text st ty))
-          (return (if (call built_in_type t) (call str.bytes 0 -1) t)))
+                  (let t:str.Bytes (call text st ty))
+                  (return (if (call built_in_type t) (call str.bytes 0 -1) t)))
     (let h:str.Bytes (call head st ty))
     (cond
       ((or (call lit h "ptr") (call lit h "arr"))

@@ -1571,9 +1571,9 @@
 
   (fn access_width [op:i32] -> i32
     (cond ((or (eq op 44) (or (eq op 45) (eq op 58))) 1)
-          ((or (eq op 46) (or (eq op 47) (eq op 59))) 2)
-          ((or (eq op 40) (or (eq op 42) (or (eq op 54) (eq op 56)))) 4)
-          (else 8)))
+      ((or (eq op 46) (or (eq op 47) (eq op 59))) 2)
+      ((or (eq op 40) (or (eq op 42) (or (eq op 54) (eq op 56)))) 4)
+      (else 8)))
 
   ;; reg = the memory's current size in bytes (from the size cell); uses
   ;; only reg.
@@ -1938,15 +1938,15 @@
 
   (fn compare64_cc [op:i32] -> i32
     (cond ((eq op 81) (call x64.cc_e)) ((eq op 82) (call x64.cc_ne))
-          ((eq op 83) (call x64.cc_l)) ((eq op 84) (call x64.cc_b))
-          ((eq op 85) (call x64.cc_g)) ((eq op 86) (call x64.cc_a))
-          ((eq op 87) (call x64.cc_le)) ((eq op 88) (call x64.cc_be))
-          ((eq op 89) (call x64.cc_ge)) (else (call x64.cc_ae))))
+      ((eq op 83) (call x64.cc_l)) ((eq op 84) (call x64.cc_b))
+      ((eq op 85) (call x64.cc_g)) ((eq op 86) (call x64.cc_a))
+      ((eq op 87) (call x64.cc_le)) ((eq op 88) (call x64.cc_be))
+      ((eq op 89) (call x64.cc_ge)) (else (call x64.cc_ae))))
 
   (fn alu64_of [op:i32] -> i32
     (cond ((eq op 124) (call x64.op_add)) ((eq op 125) (call x64.op_sub))
-          ((eq op 131) (call x64.op_and)) ((eq op 132) (call x64.op_or))
-          (else (call x64.op_xor))))
+      ((eq op 131) (call x64.op_and)) ((eq op 132) (call x64.op_or))
+      (else (call x64.op_xor))))
 
   ;; The i32 instructions (NE6). Returns false for any other opcode.
   ;; Binary operators pop b (rcx) then a (rax) and push the result.
@@ -2317,15 +2317,15 @@
 
   (fn compare_cc [op:i32] -> i32
     (cond ((eq op 70) (call x64.cc_e)) ((eq op 71) (call x64.cc_ne))
-          ((eq op 72) (call x64.cc_l)) ((eq op 73) (call x64.cc_b))
-          ((eq op 74) (call x64.cc_g)) ((eq op 75) (call x64.cc_a))
-          ((eq op 76) (call x64.cc_le)) ((eq op 77) (call x64.cc_be))
-          ((eq op 78) (call x64.cc_ge)) (else (call x64.cc_ae))))
+      ((eq op 72) (call x64.cc_l)) ((eq op 73) (call x64.cc_b))
+      ((eq op 74) (call x64.cc_g)) ((eq op 75) (call x64.cc_a))
+      ((eq op 76) (call x64.cc_le)) ((eq op 77) (call x64.cc_be))
+      ((eq op 78) (call x64.cc_ge)) (else (call x64.cc_ae))))
 
   (fn alu_of [op:i32] -> i32
     (cond ((eq op 106) (call x64.op_add)) ((eq op 107) (call x64.op_sub))
-          ((eq op 113) (call x64.op_and)) ((eq op 114) (call x64.op_or))
-          (else (call x64.op_xor))))
+      ((eq op 113) (call x64.op_and)) ((eq op 114) (call x64.op_or))
+      (else (call x64.op_xor))))
 
   (fn unsupported [l:(ptr L) op:i32] -> void
     (when (get l L.failed) (return))

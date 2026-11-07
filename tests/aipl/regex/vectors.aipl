@@ -11,9 +11,9 @@
   (fn span_text [o:(ptr buf.Buf) s:(option.Option regex.Span)] -> void
     (match s
       ((option.Option regex.Span) some [v]
-        (call buf.push_int o (get v regex.Span.start))
-        (call buf.push_byte o 44)
-        (call buf.push_int o (get v regex.Span.end)))
+       (call buf.push_int o (get v regex.Span.start))
+       (call buf.push_byte o 44)
+       (call buf.push_int o (get v regex.Span.end)))
       ((option.Option regex.Span) none [] (call buf.push_byte o 45))))
 
   (fn find [pat:str text:str] -> void
@@ -25,10 +25,10 @@
           (let o:(ptr buf.Buf) (call buf.make a 64))
           (match (call regex.captures a re t)
             ((option.Option (ptr regex.Captures)) some [c]
-              (for g 0 (+ (call regex.groups re) 1)
-                (when (gt g 0) (call buf.push_byte o 32))
-                (call span_text o (call regex.group c g)))
-              (call regex.free_captures c))
+             (for g 0 (+ (call regex.groups re) 1)
+               (when (gt g 0) (call buf.push_byte o 32))
+               (call span_text o (call regex.group c g)))
+             (call regex.free_captures c))
             ((option.Option (ptr regex.Captures)) none [] (call buf.push_str o "none")))
           (call buf.push_str o " |")
           (let all:(ptr (vec.Vec regex.Span)) (call regex.find_all a re t))

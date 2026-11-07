@@ -69,8 +69,8 @@
        (let h:i32 (unsafe (net.listen (arr.addr b) n (get e ip.Endpoint.port))))
        (call (alloc.free_array u8) a b)
        (cond ((eq h -2) (err:Socket Error.not_granted))
-             ((lt h 0) (err:Socket Error.refused))
-             (else (ok:Error (call plain h)))))))
+         ((lt h 0) (err:Socket Error.refused))
+         (else (ok:Error (call plain h)))))))
 
   ;; A connection to `at` (ADDR:PORT), if the program was granted it (--allow-connect); waits
   ;; for the system's answer.
@@ -85,10 +85,10 @@
   (fn connect_host [a:alloc.Allocator host:str.Bytes port:i32] -> (result Socket Error) (pub) (no_leak)
     (let h:i32 (unsafe (net.connect_host (call str.addr host) (get host str.Bytes.len) port)))
     (cond ((eq h -2) (err:Socket Error.connect_not_granted))
-          ((eq h -3) (call helper_connect a host port false))
-          ((eq h -5) (err:Socket Error.no_such_host))
-          ((lt h 0) (err:Socket Error.refused))
-          (else (ok:Error (call plain h)))))
+      ((eq h -3) (call helper_connect a host port false))
+      ((eq h -5) (err:Socket Error.no_such_host))
+      ((lt h 0) (err:Socket Error.refused))
+      (else (ok:Error (call plain h)))))
 
   ;; A secure connection (TLS) to `host` on `port`: connect_host, then the handshake, in which the server's
   ;; certificate must be trusted (the Mozilla roots, and the file AIPL_CA_FILE names) and carry the name.
@@ -96,15 +96,15 @@
   (fn connect_tls [a:alloc.Allocator host:str.Bytes port:i32] -> (result Socket Error) (pub) (no_leak)
     (let h:i32 (unsafe (net.connect_host (call str.addr host) (get host str.Bytes.len) port)))
     (cond ((eq h -2) (err:Socket Error.connect_not_granted))
-          ((eq h -3) (call helper_connect a host port true))
-          ((eq h -5) (err:Socket Error.no_such_host))
-          ((lt h 0) (err:Socket Error.refused))
-          (else
-           (let r:i32 (unsafe (net.tls_connect h (call str.addr host) (get host str.Bytes.len))))
-           (cond ((eq r 0) (ok:Error (call plain h)))
-                 (else
-                  (let _c:i32 (unsafe (net.close h)))
-                  (err:Socket (if (eq r -3) Error.no_host_support Error.tls_failed)))))))
+      ((eq h -3) (call helper_connect a host port true))
+      ((eq h -5) (err:Socket Error.no_such_host))
+      ((lt h 0) (err:Socket Error.refused))
+      (else
+       (let r:i32 (unsafe (net.tls_connect h (call str.addr host) (get host str.Bytes.len))))
+       (cond ((eq r 0) (ok:Error (call plain h)))
+         (else
+          (let _c:i32 (unsafe (net.close h)))
+          (err:Socket (if (eq r -3) Error.no_host_support Error.tls_failed)))))))
 
   ;; ===== aipl-net: host names and TLS in a native executable =====
   ;; A native executable is static machine code with no resolver and no TLS: its connect_host answers -3. Then
@@ -148,14 +148,14 @@
         (let status:i32 (if (gt n 0) (call str.byte_at (call buf.bytes first) 0) 1))
         (call buf.free first)
         (cond ((eq status 0) (ok:Error (make Socket [h:-1 helper:ch])))
-              (else
-               (call proc.close_input ch)
-               (let _w:i32 (call proc.wait ch))
-               (call proc.close ch)
-               (err:Socket (cond ((eq status 2) Error.connect_not_granted)
-                                 ((eq status 4) Error.tls_failed)
-                                 ((eq status 5) Error.no_such_host)
-                                 (else Error.refused))))))
+          (else
+           (call proc.close_input ch)
+           (let _w:i32 (call proc.wait ch))
+           (call proc.close ch)
+           (err:Socket (cond ((eq status 2) Error.connect_not_granted)
+                         ((eq status 4) Error.tls_failed)
+                         ((eq status 5) Error.no_such_host)
+                         (else Error.refused))))))
       (err e (err:Socket Error.no_helper))))
 
   ;; A connection to the endpoint e.
@@ -167,8 +167,8 @@
     (let h:i32 (unsafe (net.connect (arr.addr b) n (get e ip.Endpoint.port))))
     (call (alloc.free_array u8) a b)
     (cond ((eq h -2) (err:Socket Error.connect_not_granted))
-          ((lt h 0) (err:Socket Error.refused))
-          (else (ok:Error (call plain h)))))
+      ((lt h 0) (err:Socket Error.refused))
+      (else (ok:Error (call plain h)))))
 
   ;; The next connection on listening socket l (waiting for one).
   (fn accept [l:Socket] -> (result Socket Error) (pub) (no_leak)
@@ -210,8 +210,8 @@
   (fn poll [s:Socket events:i32 ms:i32] -> i32 (pub) (no_leak)
     (when (call on_helper s)
       (return (cond ((eq events 2) 2)
-                    ((call proc.readable (get s Socket.helper) ms) 1)
-                    (else 0))))
+                ((call proc.readable (get s Socket.helper) ms) 1)
+                (else 0))))
     (unsafe (net.poll (get s Socket.h) events ms)))
 
   ;; Whether s can be read within `ms` milliseconds.
@@ -226,15 +226,15 @@
   (fn accept_within [l:Socket ms:i32] -> (result Socket Error) (pub) (no_leak)
     (let r:i32 (call poll l 1 ms))
     (cond ((eq r 0) (err:Socket Error.timed_out))
-          ((lt r 0) (err:Socket Error.refused))
-          (else (call accept l))))
+      ((lt r 0) (err:Socket Error.refused))
+      (else (call accept l))))
 
   ;; recv, but for at most `ms` milliseconds: -2 if nothing came, else recv's answer (bytes, 0 at the end, -1).
   (fn recv_within [c:Socket into:(ptr buf.Buf) max:i32 ms:i32] -> i32 (pub) (no_leak)
     (let r:i32 (call poll c 1 ms))
     (cond ((eq r 0) -2)
-          ((lt r 0) -1)
-          (else (call recv c into max))))
+      ((lt r 0) -1)
+      (else (call recv c into max))))
 
   ;; Closes a socket (a connection is shut down first).
   (fn close [s:Socket] -> void (pub) (no_leak)

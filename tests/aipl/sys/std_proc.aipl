@@ -14,7 +14,7 @@
     c)
 
   ;; Runs the command with the input, and prints what it wrote and its status or its error.
-  (fn show [label:str c:(ptr proc.Command) input:str]  -> void
+  (fn show [label:str c:(ptr proc.Command) input:str] -> void
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (match_result (call proc.run c (call str.from_str input) out)
       (ok s

@@ -23,11 +23,11 @@
               consts:(ptr (map.Map str.Bytes (ptr compiler.Node)))
               enums:(ptr (map.Map str.Bytes (ptr (map.Map str.Bytes i32))))
               err:(ptr buf.Buf) failed:bool
-             origins:(ptr origins.Origins)
-             ;; constants whose value is a name or an expression (cexpr.aipl)
-             defs:(ptr cexpr.Defs)
-             ;; constants only: enums left as they are (expand_constants)
-             keep_enums:bool])
+              origins:(ptr origins.Origins)
+              ;; constants whose value is a name or an expression (cexpr.aipl)
+              defs:(ptr cexpr.Defs)
+              ;; constants only: enums left as they are (expand_constants)
+              keep_enums:bool])
 
   ;; ===== Trees =====
 
@@ -250,15 +250,15 @@
     (when (call expands_to "(module m (fn f [] -> i32 1))" "(module m (fn f [] -> i32 1))") (set! p (+ p 1)))
     ;; constants of each kind become their literals
     (when (call expands_to "(module m (const NN:i32 -7) (const SS:str \"a b\") (const BB:bool true) (fn f [] -> i32 (if BB (+ NN (str.len SS)) 0)))"
-                         "(module m\n  (fn f [] -> i32 (if true (+ -7 (str.len \"a b\")) 0))\n)")
+                "(module m\n  (fn f [] -> i32 (if true (+ -7 (str.len \"a b\")) 0))\n)")
         (set! p (+ p 1)))
     ;; enum types become i32, members their values (auto and explicit), casts disappear
     (when (call expands_to "(module m (enum C [a (b 10) c]) (struct S [k:C]) (fn f [x:C] -> i32 (if (eq x C.c) (enum.ord C.b) (enum.ord (enum.cast C 3)))))"
-                         "(module m\n  (struct S [k:i32])\n  (fn f [x:i32] -> i32 (if (eq x 11) 10 3))\n)")
+                "(module m\n  (struct S [k:i32])\n  (fn f [x:i32] -> i32 (if (eq x 11) 10 3))\n)")
         (set! p (+ p 1)))
     ;; an enum match arm's head becomes the member's value; a union's stays a name
     (when (call expands_to "(module m (enum C [a b]) (fn f [x:C] -> i32 (match x (C.b 1) (else (match (make U.v) (U.v 2)))))"
-                         "(module m\n  (fn f [x:i32] -> i32 (match x (1 1) (else (match (make U.v) (U.v 2)))))\n)")
+                "(module m\n  (fn f [x:i32] -> i32 (match x (1 1) (else (match (make U.v) (U.v 2)))))\n)")
         (set! p (+ p 1)))
     ;; a member that does not exist is an error
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))

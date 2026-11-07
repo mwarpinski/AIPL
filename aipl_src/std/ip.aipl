@@ -59,10 +59,10 @@
   ;; c's value as a digit of radix 10 or 16, or -1.
   (fn digit [c:i32 radix:i32] -> i32 (no_leak)
     (cond ((and (gte c 48) (lte c 57)) (- c 48))
-          ((neq radix 16) -1)
-          ((and (gte c 97) (lte c 102)) (- c 87))
-          ((and (gte c 65) (lte c 70)) (- c 55))
-          (else -1)))
+      ((neq radix 16) -1)
+      ((and (gte c 97) (lte c 102)) (- c 87))
+      ((and (gte c 65) (lte c 70)) (- c 55))
+      (else -1)))
 
   ;; parser.rs read_number: digits of `radix` from pos, at most max_digits
   ;; (0: any number), the value at most max; with a leading 0 only if
@@ -79,8 +79,8 @@
       (when (and (gt max_digits 0) (gt n max_digits)) (return (call no)))
       (set! i (+ i 1)))
     (cond ((eq n 0) (call no))
-          ((and (not zero_prefix) leading_zero (gt n 1)) (call no))
-          (else (make R [pos:i val:v]))))
+      ((and (not zero_prefix) leading_zero (gt n 1)) (call no))
+      (else (make R [pos:i val:v]))))
 
   ;; parser.rs read_ipv4_addr: the address's 32 bits.
   (fn v4 [t:str.Bytes pos:i32] -> R (no_leak)
@@ -98,13 +98,13 @@
   ;; (hi, lo) shifted left by `bits` (0-128), as 128 bits.
   (fn shl_hi [hi:i64 lo:i64 bits:i32] -> i64 (no_leak)
     (cond ((eq bits 0) hi)
-          ((gte bits 128) 0i64)
-          ((gte bits 64) (shl lo (i64.extend_u (- bits 64))))
-          (else (bitor (shl hi (i64.extend_u bits)) (shru lo (i64.extend_u (- 64 bits)))))))
+      ((gte bits 128) 0i64)
+      ((gte bits 64) (shl lo (i64.extend_u (- bits 64))))
+      (else (bitor (shl hi (i64.extend_u bits)) (shru lo (i64.extend_u (- 64 bits)))))))
   (fn shl_lo [lo:i64 bits:i32] -> i64 (no_leak)
     (cond ((eq bits 0) lo)
-          ((gte bits 64) 0i64)
-          (else (shl lo (i64.extend_u bits)))))
+      ((gte bits 64) 0i64)
+      (else (shl lo (i64.extend_u bits)))))
 
   ;; parser.rs read_groups: up to `limit` groups from pos, the first with no
   ;; ':' before it; an IPv4 address takes the last two when two are left.
@@ -283,7 +283,7 @@
       (set! p (+ p 1)))
     (let e:(option.Option Endpoint) (call parse_endpoint (call str.from_str "[::1]:8080")))
     (when (match e ((option.Option Endpoint) some [x] (and (eq (get x Endpoint.port) 8080) (get (get x Endpoint.addr) Addr.v6)))
-                   ((option.Option Endpoint) none false))
+            ((option.Option Endpoint) none false))
       (set! p (+ p 1)))
     (when (and (call (option.is_none Endpoint) (call parse_endpoint (call str.from_str "1.2.3.4:65536")))
                (call (option.is_none Endpoint) (call parse_endpoint (call str.from_str "::1:80")))

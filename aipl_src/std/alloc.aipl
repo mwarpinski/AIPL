@@ -105,9 +105,9 @@
   ;; is made once, then handed out each time).
   (fn default [] -> Allocator (pub) (no_leak)
     (unsafe (when (eq (mem.load32 52) 0)
-          (let s:(ptr Shared) (call (create Shared) (call forever)))
-          (put s Shared.a (call of_heap (call heap.make)))
-          (let _won:bool (atomic.cas 52 0 (ptr.addr s))))
+                  (let s:(ptr Shared) (call (create Shared) (call forever)))
+                  (put s Shared.a (call of_heap (call heap.make)))
+                  (let _won:bool (atomic.cas 52 0 (ptr.addr s))))
     (get (ptr.cast Shared (mem.load32 52)) Shared.a)))
 
   ;; ===== Raw bytes =====
@@ -132,13 +132,13 @@
   ;; (no_leak): it frees; a custom allocator's free is its maker's word.
   (fn free_raw [a:Allocator p:i32 n:i32] -> void (pub) (unsafe) (no_leak)
     (unsafe (match a
-      (Allocator.heap [h] (call heap.free_raw h p n))
-      (Allocator.arena [_] (block))
-      (Allocator.fast_arena [_] (block))
-      (Allocator.fixed [f] (call fixed_free f p n))
-      (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.cell) p n))
-      ;; never reused
-      (Allocator.forever (block)))))
+              (Allocator.heap [h] (call heap.free_raw h p n))
+              (Allocator.arena [_] (block))
+              (Allocator.fast_arena [_] (block))
+              (Allocator.fixed [f] (call fixed_free f p n))
+              (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.cell) p n))
+              ;; never reused
+              (Allocator.forever (block)))))
 
   ;; n bytes from a custom allocator, zeroed here.
   (fn custom_raw [c:(ptr Custom) n:i32] -> i32

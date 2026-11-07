@@ -307,7 +307,7 @@
           (call emit_elem l (call (vec.at i32) args 0))
           (call gen l at " "))
         (call gen l at (cond ((eq op 0) "(call show.done ") ((eq op 1) "(call show.end_to ") ((eq op 2) "(call show.print ")
-                             ((eq op 3) "(call show.println ") (else "(call show.eprintln "))))
+                         ((eq op 3) "(call show.println ") (else "(call show.eprintln "))))
     (for j 0 (- n first)
       (let a:i32 (call (vec.at i32) args (- (- n 1) j)))
       (if (eq (call kind l a) compiler.Kind.string)
@@ -524,8 +524,8 @@
     ;; how the value is written: 0 by put_fn, 1 an enum's name, 2 by its
     ;; generated printer, 3 not at all (a function reference)
     (let how:i32 (match t
-      (ast.Type.enum_ [_] 1)
-      (else (cond ((call fmtdebug.printable t) 0) ((call fmtdebug.prints t) 2) (else 3)))))
+                   (ast.Type.enum_ [_] 1)
+                   (else (cond ((call fmtdebug.printable t) 0) ((call fmtdebug.prints t) 2) (else 3)))))
     (cond
       ((eq how 0) (call gen l at "(call ") (call buf.push_str out (call put_fn t)) (call buf.push_byte out 32))
       ((eq how 1) (call gen l at "(call show.put_str "))
@@ -561,7 +561,6 @@
     (call buf.push_bytes out var)
     (call buf.push_byte out 41)
     (put l L.dbgs n))
-
 
   ;; The current function's return type: the element after its ->.
   (fn ret_elem [l:(ptr L)] -> i32

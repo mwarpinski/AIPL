@@ -11,7 +11,6 @@
 ;; line here as each new module gets such a test; don't add one just to make
 ;; the suite look bigger.
 
-
 (module test_suite
   (import compiler)
   (import codegen)

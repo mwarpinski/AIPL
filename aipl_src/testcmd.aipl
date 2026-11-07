@@ -44,10 +44,10 @@
   (fn kind_of [path:str.Bytes] -> i32
     (match (call fs.info_path path)
       ((option.Option fs.Info) some [i]
-        (match (get i fs.Info.kind)
-          (fs.Kind.file 1)
-          (fs.Kind.directory 2)
-          (fs.Kind.other 3)))
+       (match (get i fs.Info.kind)
+         (fs.Kind.file 1)
+         (fs.Kind.directory 2)
+         (fs.Kind.other 3)))
       ((option.Option fs.Info) none 0)))
 
   ;; dir and name joined with one slash.
@@ -63,15 +63,15 @@
   (fn collect [dir:str.Bytes out:(ptr (vec.Vec str.Bytes))] -> void
     (match (call fs.list_path (call alloc.default) dir)
       ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
-        (for i 0 (call (vec.len str.Bytes) names)
-          (let name:str.Bytes (call (vec.at str.Bytes) names i))
-          (let full:str.Bytes (call join dir name))
-          (let k:i32 (call kind_of full))
-          (cond
-            ((eq k 2) (call collect full out))
-            ((and (eq k 1) (and (gt (get name str.Bytes.len) 5) (call str.ends_with name (call str.from_str ".aipl"))))
-             (call (vec.push str.Bytes) out full))
-            (else (block)))))
+       (for i 0 (call (vec.len str.Bytes) names)
+         (let name:str.Bytes (call (vec.at str.Bytes) names i))
+         (let full:str.Bytes (call join dir name))
+         (let k:i32 (call kind_of full))
+         (cond
+           ((eq k 2) (call collect full out))
+           ((and (eq k 1) (and (gt (get name str.Bytes.len) 5) (call str.ends_with name (call str.from_str ".aipl"))))
+            (call (vec.push str.Bytes) out full))
+           (else (block)))))
       ((option.Option (ptr (vec.Vec str.Bytes))) none (block))))
 
   ;; $TMPDIR (else /tmp), and a name from the time in nanoseconds.

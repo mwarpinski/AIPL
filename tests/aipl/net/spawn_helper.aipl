@@ -36,6 +36,6 @@
     (let i:i32 1)
     (while (lt (+ i 1) n)
       (call try (call (option.unwrap_or str.Bytes) (call os.arg i) (call str.from_str ""))
-                (call (option.unwrap_or str.Bytes) (call os.arg (+ i 1)) (call str.from_str "")))
+            (call (option.unwrap_or str.Bytes) (call os.arg (+ i 1)) (call str.from_str "")))
       (set! i (+ i 2)))
     0))
