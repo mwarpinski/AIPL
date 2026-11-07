@@ -1,0 +1,16 @@
+;; @spec 10
+;; @kind run
+;; @out 2 [name] [qty]
+;; @out 2 [Smith, J] [3]
+;; @out 2 [say "hi"] [4]
+(module csv_reads_like_python
+  (import csv)
+  (import str)
+  (import alloc)
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let cr:(ptr csv.Reader) (call csv.of_bytes a (call str.from_str "name,qty\n\"Smith, J\",3\n\"say \"\"hi\"\"\",4\n")))
+    (while (call csv.next_row cr)
+      (println "{(call csv.count cr)} [{(call csv.field cr 0)}] [{(call csv.field cr 1)}]"))
+    (call csv.close cr)
+    0))

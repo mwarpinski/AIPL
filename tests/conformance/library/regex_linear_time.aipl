@@ -1,0 +1,29 @@
+;; @spec 10
+;; @kind run
+;; @out true some{value: regex.Span{start: 2, end: 7}}
+;; @out false
+;; @out refused
+;; @out false
+(module regex_linear_time
+  (import regex)
+  (import option)
+  (import str)
+  (import alloc)
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (match_result (call regex.compile a "a(b+)c")
+      (ok re
+        (let t:str.Bytes (call str.from_str "xxabbbcxx"))
+        (println "{(call regex.is_match re t)} {(call regex.find re t)}")
+        (let ac:str.Bytes (call str.from_str "ac"))
+        (println "{(call regex.is_match re ac)}"))
+      (err e (println "bad pattern at {(get e regex.Error.at)}")))
+    (match_result (call regex.compile a "a(")
+      (ok re (println "compiled"))
+      (err e (println "refused")))
+    (match_result (call regex.compile a "(a*)*b")
+      (ok re
+        (let long:str.Bytes (call str.from_str "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"))
+        (println "{(call regex.is_match re long)}"))
+      (err e (println "refused")))
+    0))

@@ -1,0 +1,18 @@
+;; @spec 10
+;; @kind run
+;; @out https example.com 8080 /a/b x=1 frag
+;; @out http://a/b/g
+(module url_parts_and_resolution
+  (import url)
+  (import str)
+  (import alloc)
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (match_result (call url.parse a (call str.from_str "https://user@example.com:8080/a/b?x=1#frag"))
+      (ok u
+        (println "{(get u url.Url.scheme)} {(get u url.Url.host)} {(get u url.Url.port)} {(get u url.Url.path)} {(get u url.Url.query)} {(get u url.Url.fragment)}"))
+      (err e (println "bad url")))
+    (match_result (call url.resolve_str a "http://a/b/c/d;p?q" "../g")
+      (ok s (println "{s}"))
+      (err e (println "bad")))
+    0))

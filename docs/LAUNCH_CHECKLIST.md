@@ -74,7 +74,7 @@ The spec has to define the language without pointing at an implementation. That 
 - [x] **Test the grammar** *(2026-11-07: tools/grammar_check.py reads the EBNF out of the spec and every program in the repository, with its own lexer, in CI; it found the gaps above.)* so it cannot drift again: every program in the repository parses under it.
 - [x] **Fix the opening.** *(2026-11-07.)* It still says native code is Linux x86-64 only and that the first build takes the Rust
   toolchain.
-- [x] **A conformance suite** *(2026-11-07: tests/conformance/, 167 cases over 35 sections, run by tools/conformance.py on any `aipl` and on other implementations by command; it found that the spec still said a bare `(ok v)` was allowed.)* tied to the spec's sections: programs with their expected output, traps, and diagnostics,
+- [x] **A conformance suite** *(2026-11-07: tests/conformance/, 173 cases over 35 sections, run by tools/conformance.py on any `aipl` and on other implementations by command; it found that the spec still said a bare `(ok v)` was allowed.)* tied to the spec's sections: programs with their expected output, traps, and diagnostics,
   independent of either compiler. It is the referee that outlives Rust (the last section).
 
 ## 3. Toolchain and the first hour

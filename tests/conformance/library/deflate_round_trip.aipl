@@ -1,0 +1,20 @@
+;; @spec 10
+;; @kind run
+;; @out true
+;; @out abcabcabcabcabcabcabcabcabcabc
+(module deflate_round_trip
+  (import deflate)
+  (import buf)
+  (import str)
+  (import alloc)
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let input:str.Bytes (call str.from_str "abcabcabcabcabcabcabcabcabcabc"))
+    (let z:(ptr buf.Buf) (call buf.make a 64))
+    (call deflate.gzip_compress_to a z input 6)
+    (println "{(lt (call buf.len z) (get input str.Bytes.len))}")
+    (let out:(ptr buf.Buf) (call buf.make a 64))
+    (match_result (call deflate.gzip_decompress_to a out (call buf.bytes z) 1000000)
+      (ok n (println "{(call buf.bytes out)}"))
+      (err e (println "corrupt")))
+    0))

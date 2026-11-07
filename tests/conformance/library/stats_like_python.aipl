@@ -1,0 +1,14 @@
+;; @spec 10
+;; @kind run
+;; @out 20.0 4.0 4.0 4.0
+;; @out 9.5 7.6
+;; @out 1.0 9.0
+(module stats_like_python
+  (import stats)
+  (import alloc)
+  (fn main [] -> i32
+    (let xs:(arr f64) (arr.of f64 (call alloc.default) 1.0 2.0 4.0 4.0 9.0))
+    (println "{(call stats.sum xs)} {(call stats.fmean xs)} {(call stats.median xs)} {(call stats.mode xs)}")
+    (println "{(call stats.variance xs)} {(call stats.pvariance xs)}")
+    (println "{(call stats.min xs)} {(call stats.max xs)}")
+    0))

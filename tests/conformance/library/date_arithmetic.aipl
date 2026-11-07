@@ -1,0 +1,14 @@
+;; @spec 10
+;; @kind run
+;; @out 2000-2-29 true false
+;; @out 28 29 2
+;; @out 3-1 951868800
+(module date_arithmetic
+  (import date)
+  (fn main [] -> i32
+    (let d:date.Date (call date.from_unix 951782400i64))
+    (println "{(get d date.Date.year)}-{(get d date.Date.month)}-{(get d date.Date.day)} {(call date.is_leap 2000)} {(call date.is_leap 1900)}")
+    (println "{(call date.days_in_month 2023 2)} {(call date.days_in_month 2024 2)} {(call date.weekday d)}")
+    (let e:date.Date (call date.add_days d 1))
+    (println "{(get e date.Date.month)}-{(get e date.Date.day)} {(call date.to_unix e)}")
+    0))
