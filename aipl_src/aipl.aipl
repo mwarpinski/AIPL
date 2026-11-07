@@ -306,6 +306,15 @@
           ;; an executable for this machine, or for the --target named; AArch64 builds take no more
           ;; grants than --allow-run and --listen (sockets are there too: --serve as well)
           (let o:(ptr hostnative.Built) (call hostnative.build bytes sandbox (call buf.bytes listen) (call buf.bytes serve) target))
+          ;; aipl run of a module with no main to start says so as the Rust command's runner does
+          (when (and run_mode (and (not (get o hostnative.Built.ok)) (call str.contains (get o hostnative.Built.error) (call str.from_str "no _start export"))))
+            (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
+            (call buf.push_bytes m entry)
+            (call buf.push_str m ": ")
+            (call buf.push_bytes m entry)
+            (call buf.push_str m " has no _start (compile a module with a zero-argument main)\n")
+            (let _w:i32 (call buf.write m 2))
+            (return 1))
           (when (not (get o hostnative.Built.ok)) (return (call fail_bytes "native backend: " (get o hostnative.Built.error))))
           (set! bytes (get o hostnative.Built.exe)))
     ;; Written beside the output and renamed into place, as the Rust command

@@ -447,6 +447,41 @@ fn aipl_lint_says_the_same_in_both_commands() {
 #[test]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native seed)")]
+fn aipl_run_says_the_same_in_both_commands() {
+    let dir = scratch("bootstrap_run");
+    let aipl = dir.join("aipl");
+    build_aipl(Path::new(AIPL), &aipl);
+    // every example and test program, run with no input: the same status, output, and error text. Left out: the
+    // ones that write the file system (the second run would see the first's files) and the threaded ones (their
+    // output interleaves)
+    let mut files = Vec::new();
+    for d in ["examples", "tests/aipl"] {
+        aipl_files(&root().join(d), &mut files);
+    }
+    files.retain(|f| !f.starts_with("tests/aipl/sys/") && !f.starts_with("tests/aipl/threads/"));
+    assert!(files.len() > 80, "{} files", files.len());
+    // a program that ends in a trap leaves the aipl command's status 134 to the exit that reports a status outside
+    // 0 to 125 (AIPL_SPEC.md 6.1), which says so once more; the Rust command exits without a word
+    let said = "exit with invalid exit status outside of [0..126)\n";
+    let mut compared = 0;
+    for f in &files {
+        let r = run(Command::new(AIPL).args(["run", f]));
+        let a = run(Command::new(&aipl).args(["run", f]));
+        let (re, mut ae) = (String::from_utf8_lossy(&r.stderr).to_string(), String::from_utf8_lossy(&a.stderr).to_string());
+        let own = format!("{}: {said}", aipl.display());
+        if r.status.code() == Some(134) && ae.ends_with(&own) {
+            ae.truncate(ae.len() - own.len());
+        }
+        assert_eq!((a.status.code(), &a.stdout, ae.as_str()), (r.status.code(), &r.stdout, re.as_str()), "{f}: run");
+        compared += 1;
+    }
+    assert!(compared > 80, "only {compared} programs compared");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
+           ignore = "runs Linux x86-64 executables (the native seed)")]
 fn aipl_fmt_says_the_same_in_both_commands() {
     use std::io::Write;
     let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
