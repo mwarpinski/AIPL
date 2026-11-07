@@ -501,7 +501,7 @@ fn wasm_toolchain_reports_each_failing_function_with_its_file() {
 /// A file that is not one well-formed (module NAME ...) form is rejected by
 /// the wasm toolchain with the Rust toolchain's message, word for word, and
 /// never compiled (a fuzzing run found the AIPL resolver accepting such files
-/// and emitting an empty module; docs/LAUNCH_CHECKLIST.md 1).
+/// and emitting an empty module; docs/history/LAUNCH_CHECKLIST_2026-10.md 1).
 #[test]
 fn malformed_files_are_rejected_like_rust() {
     let dir = root().join("target").join(format!("aipl_malformed_{}", std::process::id()));

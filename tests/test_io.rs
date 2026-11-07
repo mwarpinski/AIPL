@@ -46,7 +46,7 @@ fn each_io_error_is_the_same_in_every_backend() {
         "missing: no such file or directory\ndirectory: is a directory\nmissing directory: no such file or directory\n\
          file as directory: no such file or directory\nlocked: {locked}\na file: read\n\
          write into a missing directory: no such file or directory\nwrite a directory: is a directory\nbranch on not_found: true\n\
-         EEXIST: file exists, a kind of its own: true\nENOTEMPTY: directory not empty, a kind of its own: true\n"
+         EEXIST: file exists, a kind of its own: true\nENOTEMPTY: directory not empty, a kind of its own: true\nmade.txt: file exists (errno 20)\n"
     );
     let runs = [
         ("VM", Command::new(AIPL).arg("eval").arg(&src).current_dir(&dir).output().unwrap()),

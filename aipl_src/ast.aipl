@@ -32,7 +32,7 @@
             mem_load8 mem_load32 mem_load64 mem_store8 mem_store32 mem_store64
             mem_load8_s mem_load16_u mem_load16_s mem_store16 mem_alloc mem_grow
             atomic_add atomic_cas atomic_lock atomic_unlock
-            eq neq lt lte checked_add checked_sub checked_mul ltu lteu gtu gteu gt gte and or not
+            eq neq lt lte checked_add checked_sub checked_mul wrap_add wrap_sub wrap_mul ltu lteu gtu gteu gt gte and or not
             sys_print sys_time sys_monotonic sys_random sys_exit
             fs_open fs_read fs_write fs_close fs_delete args_sizes args_get env_sizes env_get
             thread_spawn thread_join i64_extend_s i64_extend_u i32_wrap

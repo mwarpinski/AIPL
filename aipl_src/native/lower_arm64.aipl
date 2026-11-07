@@ -87,7 +87,7 @@
   (fn trap_out_of_bounds [] -> i32 (pub) 10)
   (fn trap_stack_exhausted [] -> i32 (pub) 11)
 
-  (fn results_size [] -> i32 (pub) 64)
+  (fn results_size [] -> i32 (pub) 128)
 
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L) (pub)
     (let imports:(ptr (vec.Vec (ptr wasm_reader.Import))) (call (vec.make (ptr wasm_reader.Import)) (call alloc.default) 8))

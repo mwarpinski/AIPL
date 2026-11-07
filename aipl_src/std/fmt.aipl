@@ -23,7 +23,7 @@
     (if (lt n 0)
         (block
           (mem.store8 out 45)
-          (+ 1 (call uint_to_bytes (- 0 n) (+ out 1))))
+          (+ 1 (call uint_to_bytes (wrap.sub 0 n) (+ out 1))))
         (call uint_to_bytes n out)))
 
   ;; Decimal digits of the i64 n read as unsigned (up to 20).
@@ -46,7 +46,7 @@
     (if (lt n 0i64)
         (block
           (mem.store8 out 45)
-          (+ 1 (call uint64_to_bytes (- 0i64 n) (+ out 1))))
+          (+ 1 (call uint64_to_bytes (wrap.sub 0i64 n) (+ out 1))))
         (call uint64_to_bytes n out)))
 
   ;; ===== f64 with a fixed number of decimals =====

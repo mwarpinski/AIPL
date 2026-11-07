@@ -116,7 +116,7 @@
 
   ;; Adds an argument held as bytes (it must hold no zero byte).
   (fn arg_bytes [c:(ptr Command) s:str.Bytes] -> void (pub)
-    (req (lt (call str.find_byte s 0) 0))
+    (req (lt (call (option.unwrap_or i32) (call str.find_byte s 0) -1) 0))
     (call buf.push_bytes (get c Command.args) s)
     (call buf.push_byte (get c Command.args) 0))
 
@@ -357,7 +357,7 @@
   ;; may be run is for the system to say when it is started.
   (fn find [name:str out:(ptr buf.Buf)] -> bool (pub)
     (let want:str.Bytes (call str.from_str name))
-    (when (gte (call str.find_byte want 47) 0)
+    (when (gte (call (option.unwrap_or i32) (call str.find_byte want 47) -1) 0)
       (when (call is_file want)
         (call buf.push_bytes out want)
         (return true))

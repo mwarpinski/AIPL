@@ -202,6 +202,7 @@ pub fn check(module: &Module) -> Vec<(String, String)> {
         if let Some(((l, c), s, _)) = first {
             let what = match s {
                 Site::Leak(what) if what == THROUGH => format!("uses {what}, which may keep memory (a signature with (no_leak) takes only functions that keep none)"),
+                Site::Leak(what) if what.starts_with("format") => format!("uses {what}, whose memory is never freed; write into a buf made from the allocator you were given: (call buf.make a 64), (format_to b \"...\"), (call buf.bytes b)"),
                 Site::Leak(what) => format!("uses {what}, whose memory is never freed"),
                 Site::Call(g) => format!("calls {g}, which may make memory that is never freed ({})", a.chain(g)),
             };

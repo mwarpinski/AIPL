@@ -73,7 +73,7 @@ fn no_leak_names_each_broken_promise_and_its_chain() {
     let f = "tests/aipl/memory/no_leak_refused.aipl";
     let want = format!(
         "Error: {f}: 10:5: uses_concat is marked (no_leak) but calls str.concat, which may make memory that is never freed (str.concat calls str.room; str.room uses mem.alloc)\n\
-         {f}: 12:5: uses_format is marked (no_leak) but uses format (a str), whose memory is never freed\n\
+         {f}: 12:5: uses_format is marked (no_leak) but uses format (a str), whose memory is never freed; write into a buf made from the allocator you were given: (call buf.make a 64), (format_to b \"...\"), (call buf.bytes b)\n\
          {f}: 14:27: uses_forever is marked (no_leak) but uses alloc.forever, whose memory is never freed\n"
     );
     // without the source lines the command shows under each error (src/excerpt.rs)
@@ -106,7 +106,7 @@ fn a_no_leak_handler_reads_and_writes_through_streams() {
     }
 }
 
-/// `--max-memory` (docs/LAUNCH_CHECKLIST.md section 6): the limit is in the
+/// `--max-memory` (docs/history/LAUNCH_CHECKLIST_2026-10.md section 6): the limit is in the
 /// module, so the VM, aipl-run, native executables, and the launcher bundle
 /// stop at the same place, the mem.alloc memory cannot grow to hold ("Out of
 /// memory: the limit is 4 MiB"), having printed the same; without it the program

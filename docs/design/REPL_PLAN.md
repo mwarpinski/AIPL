@@ -2,9 +2,9 @@
 
 **Status (2026-10-19): planned, not started.** Order agreed with the
 owner: after the standard library (STDLIB_PLAN.md L7) and the stage-0
-seed refresh (docs/LAUNCH_CHECKLIST.md section 6). The **interpreter**
+seed refresh (docs/history/LAUNCH_CHECKLIST_2026-10.md section 6). The **interpreter**
 comes first and matters most: it gives the self-hosted `aipl` `eval`,
-`run`, and `test` with no Rust and no wasmtime (docs/LAUNCH_CHECKLIST.md
+`run`, and `test` with no Rust and no wasmtime (docs/history/LAUNCH_CHECKLIST_2026-10.md
 section 4, "A binary that works wherever it is"). The **REPL** on top is
 low priority and ships marked **experimental**, in its help text and its
 banner: AIPL is written by agents through files, the compiler, and its

@@ -3,7 +3,7 @@
 Does a language designed for AI agents make them write correct programs
 more often? This harness measures it the plain way: the same models write
 the same 26 small programs in AIPL, Python, and Rust, and every program is
-compiled and tested the same way (docs/LAUNCH_CHECKLIST.md section 5,
+compiled and tested the same way (docs/LAUNCH_CHECKLIST.md, "After launch",
 docs/design/CANONICAL_PLAN.md step 7).
 
 ## What is here

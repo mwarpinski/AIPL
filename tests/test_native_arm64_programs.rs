@@ -416,7 +416,7 @@ fn the_benchmarks_print_their_expected_output() {
 fn constant_operands_give_what_the_x86_64_build_gives() {
     let mut text = String::from("(module t\n  (fn ops [x:i32 y:i64 f:f64] -> void\n");
     let i32_ops = [
-        "(+ x 5)", "(- x 5)", "(+ x -7)", "(- x -7)", "(+ x 4095)", "(- x 4096)", "(* x 8)", "(* x 1)", "(* x 6)", "(/ x 8)", "(/ x 7)",
+        "(wrap.add x 5)", "(wrap.sub x 5)", "(wrap.add x -7)", "(wrap.sub x -7)", "(wrap.add x 4095)", "(wrap.sub x 4096)", "(wrap.mul x 8)", "(wrap.mul x 1)", "(wrap.mul x 6)", "(/ x 8)", "(/ x 7)",
         "(% x 8)", "(% x -3)", "(divu x 8)", "(remu x 8)", "(divu x 1)", "(remu x 1)", "(divu x 7)", "(remu x -1)",
         "(bitand x 255)", "(bitor x 65280)", "(^ x 2147483647)", "(bitand x -2)", "(bitor x -1073741821)", "(^ x 85)",
         "(shl x 3)", "(shl x 0)", "(shl x 32)", "(shr x 3)", "(shru x 3)", "(shru x 31)", "(shr x 31)",
@@ -424,7 +424,7 @@ fn constant_operands_give_what_the_x86_64_build_gives() {
         "(if (ltu x 4096) 1 0)", "(if (ltu x -1) 1 0)", "(if (neq x -1) 1 0)", "(if (lte x 2147483647) 1 0)",
     ];
     let i64_ops = [
-        "(+ y 5i64)", "(- y 5i64)", "(+ y -7i64)", "(* y 8i64)", "(* y 1024i64)", "(/ y 8i64)", "(% y 10i64)", "(divu y 16i64)", "(remu y 16i64)",
+        "(wrap.add y 5i64)", "(wrap.sub y 5i64)", "(wrap.add y -7i64)", "(wrap.mul y 8i64)", "(wrap.mul y 1024i64)", "(/ y 8i64)", "(% y 10i64)", "(divu y 16i64)", "(remu y 16i64)",
         "(bitand y 255i64)", "(bitor y 4278190080i64)", "(^ y 9223372036854775807i64)", "(bitand y -2i64)", "(bitor y -4611686018427387901i64)",
         "(shl y 3i64)", "(shr y 40i64)", "(shru y 63i64)", "(if (lt y 5i64) 1 0)", "(if (lt y -5i64) 1 0)", "(if (eq y 0i64) 1 0)",
         "(if (gt y 4095i64) 1 0)", "(if (ltu y -1i64) 1 0)",

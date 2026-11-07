@@ -183,7 +183,7 @@
           (let dot:i32 (call last_index t 46))
           (when (lt dot 0) (return t))
           (return (call concat (call rename m (call slice t 0 dot) 2) (call slice t dot (- len dot)))))
-    (let dot:i32 (call str.find_byte t 46))
+    (let dot:i32 (call (option.unwrap_or i32) (call str.find_byte t 46) -1))
     (when (gte dot 0)
           ;; alias.rest -> canonical.rest; any other qualified name is left alone
           (let alias:str.Bytes (call slice t 0 dot))
@@ -203,7 +203,7 @@
   ;; alias-qualified name (c.MAX, c.Color.red). Anything else is unchanged.
   (fn rename_decl [m:(ptr Mod) t:str.Bytes] -> str.Bytes
     (unsafe (let len:i32 (get t str.Bytes.len))
-    (let dot:i32 (call str.find_byte t 46))
+    (let dot:i32 (call (option.unwrap_or i32) (call str.find_byte t 46) -1))
     (when (and (gte dot 0) (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) (call slice t 0 dot)))
         (return (call concat (call (map.get_or str.Bytes str.Bytes) (get m Mod.aliases) (call slice t 0 dot) (call str.bytes 0 -1))
                              (call slice t dot (- len dot)))))
@@ -271,7 +271,7 @@
   (fn template_ref [m:(ptr Mod) h:str.Bytes] -> str.Bytes
     (unsafe (when (call (map.has str.Bytes i32) (get m Mod.templates) h)
         (return (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) h) h)))
-    (let dot:i32 (call str.find_byte h 46))
+    (let dot:i32 (call (option.unwrap_or i32) (call str.find_byte h 46) -1))
     (when (and (gte dot 0) (call (map.has str.Bytes str.Bytes) (get m Mod.aliases) (call slice h 0 dot)))
           (let c:str.Bytes (call concat (call (map.get_or str.Bytes str.Bytes) (get m Mod.aliases) (call slice h 0 dot) (call str.bytes 0 -1))
                                               (call slice h dot (- (get h str.Bytes.len) dot))))
@@ -996,7 +996,7 @@
   ;; foreign): every module a file names, it imports. alloc.create and
   ;; alloc.array are what new and arr.new are written as.
   (fn foreign [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> str.Bytes
-    (unsafe (let dot:i32 (call str.find_byte name 46))
+    (unsafe (let dot:i32 (call (option.unwrap_or i32) (call str.find_byte name 46) -1))
     (when (lt dot 0) (return (call str.bytes 0 -1)))
     (let first:str.Bytes (call slice name 0 dot))
     (let other:bool (and (not (call str.bytes_eq first (get m Mod.name))) (call (map.has str.Bytes str.Bytes) (get m Mod.paths) first)))
@@ -1063,9 +1063,9 @@
   ;; the first two parts.
   (fn check_decl [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> void
     (when (lt (get (call foreign m name n) str.Bytes.len) 0) (return))
-    (let first:i32 (call str.find_byte name 46))
+    (let first:i32 (call (option.unwrap_or i32) (call str.find_byte name 46) -1))
     (let rest:str.Bytes (call slice name (+ first 1) (- (get name str.Bytes.len) (+ first 1))))
-    (let second:i32 (call str.find_byte rest 46))
+    (let second:i32 (call (option.unwrap_or i32) (call str.find_byte rest 46) -1))
     (call check_item m (if (lt second 0) name (call slice name 0 (+ (+ first 1) second))) n))
 
   ;; Made outside its module: every field must be (pub).
@@ -2242,6 +2242,19 @@
           (call buf.push_str e ": Circular import detected: '")
           (call buf.push_bytes e path)
           (call buf.push_str e "' is imported while already being resolved")
+          ;; a file beside the program that has a standard module's name is taken for it
+          (let first:str.Bytes (call slice (get st State.lib_dirs) 0 (call first_colon (get st State.lib_dirs))))
+          (when (gt (get first str.Bytes.len) 0)
+                (let std_path:str.Bytes (call with_ext (call as_dir first) import))
+                (let std_src:(ptr Src) (call load std_path (get st State.origins) false))
+                (when (and (neq std_src (ptr.null Src)) (not (call str.bytes_eq std_path path)))
+                      (call buf.push_str e "; ")
+                      (call buf.push_bytes e name)
+                      (call buf.push_str e ".aipl here is taken for (import ")
+                      (call buf.push_bytes e name)
+                      (call buf.push_str e ") and hides the standard module ")
+                      (call buf.push_bytes e name)
+                      (call buf.push_str e ": rename it")))
           (return false))
     (call (map.set str.Bytes i32) (get st State.active) name 1)
     (when (not (call resolve_imports st src (call dirname path))) (return false))
@@ -2249,6 +2262,12 @@
     (call (map.remove str.Bytes i32) (get st State.active) name)
     (call (map.set str.Bytes i32) (get st State.done) name 1)
     true))
+
+  ;; The index of the first ':' in b, or its length.
+  (fn first_colon [b:str.Bytes] -> i32
+    (for i 0 (get b str.Bytes.len)
+      (when (eq (call str.byte_at b i) 58) (return i)))
+    (get b str.Bytes.len))
 
   ;; The library directories to search, colon-separated: std_dir, then AIPL_PATH.
   (fn library_dirs [std_dir:str.Bytes] -> str.Bytes

@@ -211,6 +211,9 @@
     r)
 
   (fn is_op [op:str.Bytes] -> bool
+    (or (call is_plain_op op) (or (call str.is op "wrap.add") (or (call str.is op "wrap.sub") (call str.is op "wrap.mul")))))
+
+  (fn is_plain_op [op:str.Bytes] -> bool
     (or (or (or (call str.is op "+") (call str.is op "-")) (or (call str.is op "*") (call str.is op "/")))
         (or (or (or (call str.is op "%") (call str.is op "^")) (or (call str.is op "shl") (call str.is op "shr")))
             (or (or (call str.is op "shru") (call str.is op "bitand")) (or (call str.is op "bitor") (or (call str.is op "and") (or (call str.is op "or") (or (call str.is op "not") (or (call str.is op "rotl") (or (call str.is op "rotr") (or (call str.is op "bitnot") (or (call str.is op "clz") (or (call str.is op "ctz") (call str.is op "popcnt"))))))))))))))
@@ -218,7 +221,7 @@
   ;; op on args (src/consts.rs fold); a failure's text goes to b.
   (fn fold [op:str.Bytes args:(ptr (vec.Vec Val)) b:(ptr buf.Buf)] -> Val
     (when (not (call is_op op))
-          (call buf.push_str b "a constant expression takes + - * / % ^ shl shr shru rotl rotr bitand bitor on numbers, bitnot clz ctz popcnt on integers, and and or not on bools; not (")
+          (call buf.push_str b "a constant expression takes + - * / % ^ shl shr shru rotl rotr bitand bitor on numbers, wrap.add wrap.sub wrap.mul on integers, bitnot clz ctz popcnt on integers, and and or not on bools; not (")
           (call buf.push_bytes b op) (call buf.push_str b " ...)")
           (return (call none)))
     (let want:i32 (if (or (call str.is op "not") (call unary_int op)) 1 2))
@@ -295,12 +298,29 @@
     (call buf.push_bytes b op) (call buf.push_str b " by zero")
     (call none))
 
+  (fn overflows [b:(ptr buf.Buf) op:str.Bytes] -> Val
+    (call buf.push_bytes b op) (call buf.push_str b " overflows")
+    (call none))
+
+  ;; Whether x * y does not fit in an i64.
+  (fn mul64_overflows [x:i64 y:i64] -> bool
+    (when (or (eq x 0i64) (eq y 0i64)) (return false))
+    (when (eq x -1i64) (return (eq y -9223372036854775808i64)))
+    (when (eq y -1i64) (return (eq x -9223372036854775808i64)))
+    (neq (/ (wrap.mul x y) x) y))
+
   (fn fold_i32 [b:(ptr buf.Buf) op:str.Bytes x:i32 y:i32] -> Val
     (let r:i32 0)
     (cond
-      ((call str.is op "+") (set! r (+ x y)))
-      ((call str.is op "-") (set! r (- x y)))
-      ((call str.is op "*") (set! r (* x y)))
+      ((call str.is op "wrap.add") (set! r (wrap.add x y)))
+      ((call str.is op "wrap.sub") (set! r (wrap.sub x y)))
+      ((call str.is op "wrap.mul") (set! r (wrap.mul x y)))
+      ((or (call str.is op "+") (or (call str.is op "-") (call str.is op "*")))
+       (let w:i64 (cond ((call str.is op "+") (+ (i64.extend_s x) (i64.extend_s y)))
+                        ((call str.is op "-") (- (i64.extend_s x) (i64.extend_s y)))
+                        (else (* (i64.extend_s x) (i64.extend_s y)))))
+       (when (or (lt w -2147483648i64) (gt w 2147483647i64)) (return (call overflows b op)))
+       (set! r (i32.wrap w)))
       ((and (or (call str.is op "/") (call str.is op "%")) (eq y 0)) (return (call by_zero b op)))
       ((and (call str.is op "/") (and (eq x -2147483648) (eq y -1))) (call buf.push_str b "/ overflows") (return (call none)))
       ((call str.is op "/") (set! r (/ x y)))
@@ -319,9 +339,17 @@
   (fn fold_i64 [b:(ptr buf.Buf) op:str.Bytes x:i64 y:i64] -> Val
     (let r:i64 0i64)
     (cond
-      ((call str.is op "+") (set! r (+ x y)))
-      ((call str.is op "-") (set! r (- x y)))
-      ((call str.is op "*") (set! r (* x y)))
+      ((call str.is op "wrap.add") (set! r (wrap.add x y)))
+      ((call str.is op "wrap.sub") (set! r (wrap.sub x y)))
+      ((call str.is op "wrap.mul") (set! r (wrap.mul x y)))
+      ((and (call str.is op "+") (or (and (gt y 0i64) (gt x (- 9223372036854775807i64 y))) (and (lt y 0i64) (lt x (- -9223372036854775808i64 y)))))
+       (return (call overflows b op)))
+      ((call str.is op "+") (set! r (wrap.add x y)))
+      ((and (call str.is op "-") (or (and (lt y 0i64) (gt x (+ 9223372036854775807i64 y))) (and (gt y 0i64) (lt x (+ -9223372036854775808i64 y)))))
+       (return (call overflows b op)))
+      ((call str.is op "-") (set! r (wrap.sub x y)))
+      ((and (call str.is op "*") (call mul64_overflows x y)) (return (call overflows b op)))
+      ((call str.is op "*") (set! r (wrap.mul x y)))
       ((and (or (call str.is op "/") (call str.is op "%")) (eq y 0i64)) (return (call by_zero b op)))
       ((and (call str.is op "/") (and (eq x -9223372036854775808i64) (eq y -1i64))) (call buf.push_str b "/ overflows") (return (call none)))
       ((call str.is op "/") (set! r (/ x y)))

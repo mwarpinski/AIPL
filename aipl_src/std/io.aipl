@@ -1,9 +1,9 @@
 ;; std/io: plain text out, and whole-file reads/writes over fs.*. fds 1 and
 ;; 2 are stdout and stderr in both the VM and under WASI. Numbers and values
 ;; are printed with the format forms, (println "total {n}") (AIPL_SPEC.md 4.K). A read or write that
-;; fails gives an io.Error (not_found, denied, is_directory, other, exists,
-;; not_empty), with
-;; io.message for its words.
+;; fails gives an io.Error (a kind: not_found, denied, is_directory, other,
+;; exists, not_empty; the errno; the path), with io.message for the kind's
+;; words and io.describe for all of it.
 (module io
   (import str)
   (import alloc)
@@ -22,35 +22,48 @@
     (call write_str 2 s)
     (call write_str 2 "\n"))
 
-  ;; What went wrong reading or writing a file; io.message says it in words.
-  ;; A program that needs more (which file, what it was doing) says so
-  ;; itself: it has the path.
-  (enum Error [not_found denied is_directory other exists not_empty] (pub))
+  ;; What went wrong, in one word.
+  (enum Kind [not_found denied is_directory other exists not_empty] (pub))
 
-  ;; e in words, for a message: "notes.txt: no such file or directory".
+  ;; What went wrong reading or writing a file: the kind, the system's errno
+  ;; (a WASI errno, as AIPL_SPEC.md 4.C gives it; 0 when there is none), and
+  ;; the path it happened to (empty for standard input). The path is a view of
+  ;; the caller's, which must outlive the error. io.message says the kind in
+  ;; words; io.describe says all of it.
+  (struct Error [(read kind:Kind) (read errno:i32) (read path:str.Bytes)] (value) (pub))
+
+  ;; The kind of e in words: "no such file or directory".
   (fn message [e:Error] -> str (pub) (no_leak)
-    (match e
-      (Error.not_found "no such file or directory")
-      (Error.denied "permission denied")
-      (Error.is_directory "is a directory")
-      (Error.other "the file could not be read or written")
-      (Error.exists "file exists")
-      (Error.not_empty "directory not empty")))
+    (match (get e Error.kind)
+      (Kind.not_found "no such file or directory")
+      (Kind.denied "permission denied")
+      (Kind.is_directory "is a directory")
+      (Kind.other "the file could not be read or written")
+      (Kind.exists "file exists")
+      (Kind.not_empty "directory not empty")))
 
-  ;; The Error for a failed fs.* operation's result: minus a WASI errno
-  ;; (AIPL_SPEC.md 4.C), as every backend gives it. A missing file or
+  ;; All of e, for a message: "notes.txt: no such file or directory".
+  (fn describe [e:Error] -> str (pub)
+    (if (eq (get (get e Error.path) str.Bytes.len) 0)
+        (call message e)
+        (format "{(get e Error.path)}: {(call message e)}")))
+
+  ;; The Error for a failed fs.* operation's result on `path`: minus a WASI
+  ;; errno (AIPL_SPEC.md 4.C), as every backend gives it. A missing file or
   ;; directory on the path (ENOENT 44, ENOTDIR 54) is not_found; no access
   ;; (EACCES 2, EPERM 63, outside what the program may reach ENOTCAPABLE 76)
   ;; denied; EISDIR (31) is_directory; EEXIST (20) exists; ENOTEMPTY (55)
   ;; not_empty; anything else other.
-  (fn error_of [code:i32] -> Error (pub) (no_leak)
-    (cond
-      ((or (eq code -44) (eq code -54)) Error.not_found)
-      ((or (eq code -2) (or (eq code -63) (eq code -76))) Error.denied)
-      ((eq code -31) Error.is_directory)
-      ((eq code -20) Error.exists)
-      ((eq code -55) Error.not_empty)
-      (else Error.other)))
+  (fn error_of [code:i32 path:str.Bytes] -> Error (pub) (no_leak)
+    (let kind:Kind
+      (cond
+        ((or (eq code -44) (eq code -54)) Kind.not_found)
+        ((or (eq code -2) (or (eq code -63) (eq code -76))) Kind.denied)
+        ((eq code -31) Kind.is_directory)
+        ((eq code -20) Kind.exists)
+        ((eq code -55) Kind.not_empty)
+        (else Kind.other)))
+    (make Error [kind:kind errno:(- 0 code) path:path]))
 
   ;; The whole file, in a buffer that is never freed (read_fd), or why not.
   (fn read_file [path:str] -> (result str.Bytes Error) (pub)
@@ -59,9 +72,9 @@
   ;; read_file for a path held as bytes (e.g. one built at run time).
   (fn read_path [path:str.Bytes] -> (result str.Bytes Error) (pub)
     (unsafe (let fd:i32 (fs.open (call str.addr path) (get path str.Bytes.len) 0))
-    (when (lt fd 0) (return (err:str.Bytes (call error_of fd))))
+    (when (lt fd 0) (return (err:str.Bytes (call error_of fd path))))
     ;; a directory opens, and then cannot be read (EBADF, in every backend)
-    (let r:(result str.Bytes Error) (call read_all fd true))
+    (let r:(result str.Bytes Error) (call read_all fd true path))
     (fs.close fd)
     r))
 
@@ -75,10 +88,10 @@
   ;; buffer is never freed: for a program that reads as it goes for a long
   ;; time, use std/stream with an allocator of its own.
   (fn read_fd [fd:i32] -> (result str.Bytes Error) (pub)
-    (call read_all fd false))
+    (call read_all fd false (call str.from_str "")))
 
   ;; read_fd; opened: fd was just opened by path, so EBADF means a directory.
-  (fn read_all [fd:i32 opened:bool] -> (result str.Bytes Error)
+  (fn read_all [fd:i32 opened:bool path:str.Bytes] -> (result str.Bytes Error)
     (let a:alloc.Allocator (call alloc.default))
     (let data:(arr u8) (arr.new u8 a 4096))
     (let len:i32 0)
@@ -92,7 +105,7 @@
       (cond
         ((lt n 0)
          (call (alloc.free_array u8) a data)
-         (return (err:str.Bytes (if (and opened (eq n -8)) Error.is_directory (call error_of n)))))
+         (return (err:str.Bytes (call error_of (if (and opened (eq n -8)) -31 n) path))))
         ((eq n 0) (break))
         (else (set! len (+ len n)))))
     (ok:Error (call str.of_array data 0 len)))
@@ -105,10 +118,10 @@
   ;; write_file for a path held as bytes.
   (fn write_path [path:str.Bytes b:str.Bytes] -> (result i32 Error) (pub)
     (unsafe (let fd:i32 (fs.open (call str.addr path) (get path str.Bytes.len) 1))
-    (when (lt fd 0) (return (err:i32 (call error_of fd))))
+    (when (lt fd 0) (return (err:i32 (call error_of fd path))))
     (let n:i32 (fs.write fd (call str.addr b) (get b str.Bytes.len)))
     (fs.close fd)
-    (if (lt n 0) (err:i32 (call error_of n)) (ok:Error n))))
+    (if (lt n 0) (err:i32 (call error_of n path)) (ok:Error n))))
 
   ;; Pass count; test_suite.aipl expects 2. Uses a scratch file in the cwd.
   (fn run_io_tests [] -> i32 (pub)
@@ -118,6 +131,6 @@
     (let same:bool (match_result (call read_file "_io_test.tmp") (ok back (call str.bytes_eq back data)) (err e false)))
     (fs.delete (str.ptr "_io_test.tmp") (str.len "_io_test.tmp"))
     (when (and (eq wrote 14) same) (set! p (+ p 1)))
-    (let missing:bool (match_result (call read_file "_io_missing.tmp") (ok b false) (err e (eq e Error.not_found))))
+    (let missing:bool (match_result (call read_file "_io_missing.tmp") (ok b false) (err e (eq (get e Error.kind) Kind.not_found))))
     (when missing (set! p (+ p 1)))
     p)))

@@ -39,7 +39,7 @@
   ;; The next 32 random bits (pcg32_random_r), as an i32.
   (fn next_u32 [r:(ptr Rng)] -> i32 (pub)
     (let old:i64 (get r Rng.state))
-    (put r Rng.state (+ (* old 6364136223846793005i64) (bitor (get r Rng.inc) 1i64)))
+    (put r Rng.state (wrap.add (wrap.mul old 6364136223846793005i64) (bitor (get r Rng.inc) 1i64)))
     (let x:i32 (i32.wrap (shru (^ (shru old 18i64) old) 27i64)))
     (let rot:i32 (i32.wrap (shru old 59i64)))
     (bitor (shru x rot) (shl x (bitand (- 0 rot) 31))))
@@ -54,7 +54,7 @@
   ;; threshold rather than taking a biased remainder).
   (fn below [r:(ptr Rng) bound:i32] -> i32 (pub)
     (req (neq bound 0))
-    (let threshold:i32 (remu (- 0 bound) bound))
+    (let threshold:i32 (remu (wrap.sub 0 bound) bound))
     (let x:i32 (call next_u32 r))
     (while (ltu x threshold) (set! x (call next_u32 r)))
     (remu x bound))
@@ -127,7 +127,7 @@
     (let hx:i64 (shru bits 32i64))
     (set! k (+ k (- (shr hx 20i64) 1023i64)))
     (set! hx (bitand hx 1048575i64))
-    (let i:i64 (bitand (+ hx 614244i64) 1048576i64))
+    (let i:i64 (bitand (wrap.add hx 614244i64) 1048576i64))
     ;; normalize x or x/2 into [sqrt(2)/2, sqrt(2)]
     (set! x (f64.reinterpret_i64 (bitor (shl (bitor hx (^ i 1072693248i64)) 32i64) (bitand bits 4294967295i64))))
     (set! k (+ k (shr i 20i64)))

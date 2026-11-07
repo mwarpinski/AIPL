@@ -221,7 +221,7 @@ checks, and is merged on its own.
    today is the bar).
 5. **IC5: documentation.** Spec (a section after 4.H), the prompt guide
    (a rule and a checklist item), the tour, the pitfalls table, and
-   LAUNCH_CHECKLIST.md 6.
+   LAUNCH_CHECKLIST.md 6 (now docs/history/LAUNCH_CHECKLIST_2026-10.md).
 
 Later, each when something needs it: generic implementations with a rule
 against overlap; interfaces with several type parameters; default

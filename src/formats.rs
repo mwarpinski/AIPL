@@ -1008,12 +1008,17 @@ fn lower_try(op: &OpCode, mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower)
     let fail = |e: Expr| Expr::Return { val: Some(Box::new(Expr::Err(Box::new(e), ret_ok.clone(), span))), span };
     let operand = args.remove(0);
     if *op == OpCode::Try {
+        // (try r convert): the error goes through convert on its way out
+        let err = match args.pop() {
+            Some(Expr::Ref { name, .. }) => Expr::Call { func: name, args: vec![Expr::Var(x.clone(), span)], span },
+            _ => Expr::Var(x.clone(), span),
+        };
         return Expr::MatchResult {
             expr: Box::new(operand),
             ok_var: v.clone(),
             ok_body: vec![Expr::Var(v, span)],
             err_var: x.clone(),
-            err_body: vec![fail(Expr::Var(x, span))],
+            err_body: vec![fail(err)],
             span,
         };
     }

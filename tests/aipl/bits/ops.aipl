@@ -38,8 +38,8 @@
       ((call is op "ctz64") (println "{(ctz x)}"))
       ((call is op "popcnt64") (println "{(popcnt x)}"))
       ;; counts of a sum, so that the operand is in a register that something else uses too
-      ((call is op "clz32_sum") (println "{(+ (clz xi) (clz (+ xi ni)))}"))
-      ((call is op "popcnt64_sum") (println "{(+ (popcnt x) (popcnt (+ x n)))}"))
+      ((call is op "clz32_sum") (println "{(+ (clz xi) (clz (wrap.add xi ni)))}"))
+      ((call is op "popcnt64_sum") (println "{(+ (popcnt x) (popcnt (wrap.add x n)))}"))
       ((call is op "rotl32_c0") (println "{(rotl xi 0)}"))
       ((call is op "rotl32_c5") (println "{(rotl xi 5)}"))
       ((call is op "rotl32_c31") (println "{(rotl xi 31)}"))

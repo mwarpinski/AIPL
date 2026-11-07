@@ -4,7 +4,7 @@
   (const KB:i32 1024)
   (const MASK:i32 (- (shl 1 12) 1))
   (const BIG:i64 (* 3000000000i64 4i64))
-  (const WRAP:i32 (+ 2147483647 1))
+  (const WRAP:i32 (wrap.add 2147483647 1))
   (const TWO_PI:f64 (* 2.0 PI))
   (const PI:f64 3.141592653589793)
   (const ON:bool (and true (not false)))

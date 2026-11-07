@@ -1,7 +1,7 @@
 # AIPL Specification
 ## AI Programming Language: Formal Specification
 
-> **WebAssembly semantics are the specification.** Where this document is silent, a program means what its compiled wasm does. `i32` and `i64` are wrapping two's-complement, shifts mask their count, and traps are wasm's traps. The VM and the native backend must match wasmtime exactly, and any divergence is a bug in them: `tests/test_differential.rs` checks the VM, `tests/test_native.rs` the native executables.
+> **WebAssembly semantics are the specification.** Where this document is silent, a program means what its compiled wasm does. `i32` and `i64` are two's-complement; `+ - *` on them trap when the result does not fit, and `wrap.add`, `wrap.sub`, `wrap.mul` wrap; shifts mask their count, and traps are wasm's traps. The VM and the native backend must match wasmtime exactly, and any divergence is a bug in them: `tests/test_differential.rs` checks the VM, `tests/test_native.rs` the native executables.
 
 AIPL (AI Programming Language) is an unambiguous, statically typed S-expression systems language with runtime-checked contracts, designed for AI agents to generate. It compiles to WebAssembly (with WASI for I/O), and on Linux x86-64 to native executables translated from that wasm (section 6.6). It also runs in a reference VM, and has a self-hosted compiler written in AIPL itself (section 6.4), which compiles itself to the same bytes; building it the first time, and writing executables (section 6.5), still take the Rust toolchain.
 
@@ -102,7 +102,7 @@ match_arm      ::= "(" identifier [ "[" identifier* "]" ] expr* ")"   (* Name.me
 op             ::= arithmetic_op | bitwise_op | memory_op | atomic_op | comp_op
                  | conv_op | sys_op | fs_op | net_op | child_op | proc_op | thread_op | str_op ;
 
-arithmetic_op  ::= "+" | "-" | "*" | "/" | "%" | "divu" | "remu" | "checked.add" | "checked.sub" | "checked.mul" ;
+arithmetic_op  ::= "+" | "-" | "*" | "/" | "%" | "divu" | "remu" | "checked.add" | "checked.sub" | "checked.mul" | "wrap.add" | "wrap.sub" | "wrap.mul" ;
 bitwise_op     ::= "^" | "shl" | "shr" | "shru" | "rotl" | "rotr" | "bitand" | "bitor"
                  | "bitnot" | "clz" | "ctz" | "popcnt" ;
 memory_op      ::= "mem.load8" | "mem.load8_s" | "mem.load16_u" | "mem.load16_s" | "mem.load32" | "mem.load64"
@@ -304,6 +304,8 @@ Paths are `(ptr, len)` byte ranges in linear memory (`(str.ptr s)` / `(str.len s
 
 ### D. Atomics and threads
 
+> **Threads are experimental.** `thread.spawn` and `thread.join` work in the VM, in native executables, and under `aipl-run` with wasmtime up to version 46, but a threaded module needs the wasi-threads proposal, which wasmtime removed in version 47 and which the language does not control; threads need `unsafe`, and AIPL does not check data races. They are not part of the language version 1 promise (docs/LANGUAGE_VERSIONING.md): they may change or be replaced without a new language version. `std/par` (parallel maps and reductions without `unsafe`) is built on them and is experimental with them.
+
 | Form | Type | Semantics |
 |---|---|---|
 | `(atomic.add p v)` | `i32` | atomically adds `v` to the word at `p`; returns the previous value. Every atomic address must be 4-aligned (any word in a `mem.alloc` block at a multiple-of-4 offset is); otherwise the VM fails and wasm traps |
@@ -416,7 +418,7 @@ A struct declared with `(value)` after its fields is a **value struct**: a value
 The rules, each checked with the message shown:
 
 - At least one field (`value struct 'E' has no fields`), and fields that are numbers, `bool`, enums, `(ptr S)`, `(arr T)`, function references, or other value structs: not `str`, unions, results, or `void` (`Field 's' of value struct 'S': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not str`).
-- Not containing itself, directly or through other value structs (`value struct 'R' contains itself (through field 'r'): a value has a fixed size; hold it through a pointer`), and at most 8 scalars once the value structs in it are counted (`value struct 'Big' holds 9 scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer`).
+- Not containing itself, directly or through other value structs (`value struct 'R' contains itself (through field 'r'): a value has a fixed size; hold it through a pointer`), and at most 16 scalars once the value structs in it are counted (`value struct 'Big' holds 17 scalars, counting the value structs in it; at most 16: keep a larger record behind a pointer`).
 - No address: `(ptr V)`, `(new V a [...])`, `ptr.null`, and `ptr.cast` are errors (`'V' is a value struct, which has no address: write V, not (ptr V)`), and a field of one cannot be `put` (`a value struct's fields do not change: (with v V.x x) is a copy with one changed`). A field path writes into a value only where it sits in changeable memory: a pointer struct's field or an array element.
 - No `eq`: values do not compare (`eq on value struct 'V': value structs do not compare; implement cmp.Eq for it (section 4.H) and call (cmp.Eq.same V)`).
 
@@ -428,9 +430,9 @@ Every backend runs value structs with the same results. The VM keeps a value as 
 
 ### F. Results
 
-`(ok:E v)` and `(err:T e)` build a value of type `(result T E)`, each naming the side it does not carry, so every result is made with its whole type written (`(ok v) must name its result's err type: write (ok:E v) for a (result T E)`); `match_result` consumes one. A payload may be of any type but `void` (`a result payload must be a value, got void`). A result lives only in locals, parameters, results, and other results (never in a struct field or an array).
+`(ok:E v)` and `(err:T e)` build a value of type `(result T E)`, each naming the side it does not carry, so every result is made with its whole type written (`(ok v) must name its result's err type: write (ok:E v) for a (result T E)`); `match_result` consumes one. A payload may be of any type but `void` (`a result payload must be a value, got void`). A result can be held anywhere a value can: a local, a parameter, a result, another result, a struct field, an array element, a type argument.
 
-**Results by value.** A result is always held by value, laid out like a union held by value (section 4.J): its tag (0 = ok, 1 = err), then the slots its two sides share by kind, the ok side's scalars and the err side's each taking the first slots of their kinds, unused ones zero. A `str` side is one i32-sized slot. `(result i32 i32)` is 2 slots, `(result i32 str)` 2, `(result Vec2 i64)` 4 (the tag, the `i64`, two `f64`s); building one allocates nothing, in every backend. A result that would need more than 8 slots is refused where its type is written or where one is made: `(result Q I) needs 9 slots, more than the 8 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)`. (Until 2026-10, a result with a `str` side or more than 8 slots was a heap cell that was never freed; docs/design/MEMORY_PLAN.md M4.) For a value that may be missing rather than failed, use `(option.Option T)` from `std/option` (section 4.J).
+**Results by value.** A result is always held by value, laid out like a union held by value (section 4.J): its tag (0 = ok, 1 = err), then the slots its two sides share by kind, the ok side's scalars and the err side's each taking the first slots of their kinds, unused ones zero. A `str` side is one i32-sized slot. `(result i32 i32)` is 2 slots, `(result i32 str)` 2, `(result Vec2 i64)` 4 (the tag, the `i64`, two `f64`s); building one allocates nothing, in every backend. A result is a value, so it can be a struct field or an array element like a union (`(struct Slot [r:(result i32 str) n:i32])`, `(arr (result i32 str))`), and a type argument; its size in memory is its slots. A result that would need more than 16 slots is refused where its type is written or where one is made: `(result Q I) needs 17 slots, more than the 16 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)`. (Until 2026-10, a result with a `str` side or more than 8 slots was a heap cell that was never freed; docs/design/MEMORY_PLAN.md M4.) For a value that may be missing rather than failed, use `(option.Option T)` from `std/option` (section 4.J).
 
 **A result or an option is not dropped.** An expression whose value is thrown away (a statement of a function's body that is not its last, an item of a block, a `when`, a loop, a `defer`, or an `unsafe` that is not last, the last of a function that returns `void`) must not give a `(result T E)` or an `(option.Option T)`: a failure or a missing value would go unnoticed. It is a compile error naming the ways out: use the value (`match_result`, `match`, `try`, `try_opt`), or write `(drop e)`, which evaluates `e` of any type but void and drops its value on purpose: `(drop (call fs.remove path))` for a file that may not be there. Both toolchains give the same message at the same place. Values of other types are still dropped silently in statement position (`atomic.add` returns the old value).
 
@@ -453,6 +455,7 @@ Every backend runs value structs with the same results. The VM keeps a value as 
 | Form | Gives | Or returns from the function |
 |---|---|---|
 | `(try r)`, `r:(result T E)` | the ok value, a `T` | `(err:R e)` with r's error: the function returns `(result R E)`, the same `E` |
+| `(try r (ref convert))`, `r:(result T E)`, `convert` a function from `E` to `F` | the ok value, a `T` | `(err:R (call convert e))`: the function returns `(result R F)`, so errors of different types meet in one call (`(try (call io.read_file p) (ref io.describe))` into a `(result T str)`) |
 | `(try_opt o)`, `o:(option.Option T)` | the value, a `T` | `none`: the function returns an `(option.Option U)` |
 | `(try_or o e)`, `o:(option.Option T)` | the value, a `T` | `(err:R e)`: the function returns `(result R E)`, `e` an `E` |
 
@@ -739,7 +742,7 @@ Rules the checker enforces:
 **Unions are values.** Every union is held by value, like a value struct (section 4.E): `make` allocates nothing, and a union is copied where it goes, inline in struct fields and arrays. So two kinds of union are refused, each with the way to write it:
 
 - one that contains itself, directly or through other unions it holds: its size would have no bound. `union 'List' contains itself (List.cons's field 'tail' has type List): a union is a value, so hold that field through a pointer, a (ptr S) to a struct that holds it`, as `List` above does with `(ptr Rest)`;
-- one that needs more than 8 slots. A union is its variant's index (the tag, an `i32`), then slots the variants share by kind: the i32-sized slots (every 4-byte scalar but `f32`: `i32`, `bool`, `str`, enums, function references), then the `f32`, `i64` (with pointers and arrays, each an address and a generation), and `f64` slots, as many of each as the variant needing most has. Each variant's scalars take the first slots of their kind in order: a value struct field its fields' scalars, a union field its own slots. So `Shape` above is 3 slots (the tag and two i32 slots, which `circle` and `rect` share), `(option.Option i64)` 2, and `std/alloc`'s `Allocator`, five variants of one pointer each, 2; a `str.Bytes` is 3. A variant's fields count once however many variants there are, but slots of different kinds never share: one variant of six `i32`s and another of six `f64`s are 14. `union 'W' needs 10 slots, more than the 8 a value holds: move the fields of its widest variant, W.nine (8 slots), into a struct and hold a (ptr S)`.
+- one that needs more than 16 slots. A union is its variant's index (the tag, an `i32`), then slots the variants share by kind: the i32-sized slots (every 4-byte scalar but `f32`: `i32`, `bool`, `str`, enums, function references), then the `f32`, `i64` (with pointers and arrays, each an address and a generation), and `f64` slots, as many of each as the variant needing most has. Each variant's scalars take the first slots of their kind in order: a value struct field its fields' scalars, a union field its own slots. So `Shape` above is 3 slots (the tag and two i32 slots, which `circle` and `rect` share), `(option.Option i64)` 2, and `std/alloc`'s `Allocator`, five variants of one pointer each, 2; a `str.Bytes` is 3. A variant's fields count once however many variants there are, but slots of different kinds never share: one variant of six `i32`s and another of six `f64`s are 14. `union 'W' needs 18 slots, more than the 16 a value holds: move the fields of its widest variant, W.many (16 slots), into a struct and hold a (ptr S)`.
 
 The pointer is an ordinary checked `(ptr S)` from the allocator the program names, so a stale one traps like any other (docs/design/MEMORY_PLAN.md M4; until 2026-10, such unions, and those with a `str` variant, were given a hidden heap cell that was never freed).
 
@@ -983,8 +986,10 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 
 | Ops | Checker | VM | Rust wasm backend | Self-hosted |
 |---|---|---|---|---|
-| `+ - * / % divu remu ^ shl shr shru rotl rotr bitand bitor` on `i32`, and `bitnot clz ctz popcnt` | Yes | Yes, wrapping | Yes | Yes |
-| the same on `i64` | Yes | Yes, wrapping at 64 bits | Yes (`i64.*`) | Yes |
+| `/ % divu remu ^ shl shr shru rotl rotr bitand bitor` on `i32`, and `bitnot clz ctz popcnt` | Yes | Yes | Yes | Yes |
+| `+ - *` on `i32` / `i64` | Yes | Yes, error `Integer overflow in +` on overflow | Yes, trap on overflow (section 8.2) | Yes |
+| `wrap.add wrap.sub wrap.mul` on `i32` / `i64` | Yes | Yes, wrapping | Yes (`i32.add` ...) | Yes |
+| the same bitwise and division ops on `i64` | Yes | Yes, at 64 bits | Yes (`i64.*`) | Yes |
 | `+ - * /`, comparisons on `f32` / `f64` | Yes | Yes | Yes (`f32.*` / `f64.*`); `%`, `divu`, `remu`, shifts, bitwise are Err | Yes (same rejections, compile error 99) |
 | `eq neq lt lte gt gte` on `i32`; `eq neq` on `bool`; `and or not` | Yes | Yes | Yes | Yes |
 | `ltu lteu gtu gteu` on `i32` / `i64` | Yes | Yes | Yes (`i32.lt_u` ... `i64.ge_u`) | Yes |
@@ -1004,7 +1009,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `arr.new`, `arr.get`, `arr.set` | Yes | Yes, bounds-checked | Yes, bounds-checked | Yes |
 | `req`, `ens` contracts | Yes | Yes, checked on every call | Yes, checked on every call (message without the position, section 3) | Yes |
 | `inv` contracts | Yes | Yes, at entry and exit | Yes, at entry and exit | Yes |
-| `ok`, `err`, `match_result` | Yes | Yes | Yes (held by value, up to 8 slots) | Yes |
+| `ok`, `err`, `match_result` | Yes | Yes | Yes (held by value, up to 16 slots) | Yes |
 | `sys.print` | Yes, `str` arguments only | Yes | Yes via WASI `fd_write` | Yes |
 | `sys.exit` | Yes | returns the error `sys.exit(N) requested` | Yes via WASI `proc_exit` | Yes |
 | `sys.time`, `sys.monotonic`, `sys.random` | Yes | Yes | Yes via WASI `clock_time_get` / `random_get` | Yes |
@@ -1016,7 +1021,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `net.connect_host`, `net.tls_connect` | Yes (the system's resolver; rustls) | Yes | Yes via `aipl_net_v1` (aipl-run) | `-3`: std/net then starts `aipl-net`, which resolves, connects, and does TLS for the executable (see below) | Yes via `aipl_net_v1`, which aipl-run provides (a stock WASI host does not) | Yes |
 | `ref`, `call_ref`, `(fn [..] -> r)` types | Yes | Yes | Yes (funcref table, `call_indirect`) | Yes |
 | `const`, `enum`, `enum.cast`, `enum.ord` | Yes | Yes | Yes (literals and `i32`; no code of their own) | Yes (erased by `consts.aipl`) |
-| `union`, `make`, `match` | Yes | Yes | Yes (held by value, up to 8 slots; `match` is an `if` chain ending in `unreachable`) | Yes |
+| `union`, `make`, `match` | Yes | Yes | Yes (held by value, up to 16 slots; `match` is an `if` chain ending in `unreachable`) | Yes |
 | `return`, `break`, `continue`, `cond` | Yes | Yes | Yes (`return`, `br`; `cond` is nested `if`) | Yes |
 | `thread.spawn / thread.join` | Yes | Yes, real `std::thread`; the worker is a `(fn [i32] -> i32)` reference | Yes, as a threaded module (section 4.D): needs a host that provides `wasi.thread-spawn` | Yes |
 | `str` literals, `str.len`, `str.ptr` | Yes | Yes | Yes (interned data segment, pointer identity) | Yes |
@@ -1040,7 +1045,7 @@ Buffers are sized from the input: tokens exactly (`compiler.count_tokens` first,
 | 90 | `mem.grow` refused: the compile needs more than 32768 pages |
 | 91 | output or a function body exceeded `4 * src_len + 64 KiB` |
 | 92, 93 | not given since 2026-10-26: the tables of functions, parameters, and locals grow, as the Rust code generator's vectors do (they were 8192 functions, 16 parameters, 1024 locals) |
-| 94 | more than 8 scalars in a value struct (which the checker refuses first); the tables of structs, unions, variants, fields, and `call_ref` signatures grow since 2026-10-26 |
+| 94 | more than 16 scalars in a value struct (which the checker refuses first); the tables of structs, unions, variants, fields, and `call_ref` signatures grow since 2026-10-26 |
 | 95 | a struct field, array element, or `sizeof` type that cannot be stored in memory (`void`, a result) |
 | 96 | unknown struct or field in `new`/`get`/`put`/`sizeof` |
 | 98 | a type the backend cannot lower (an unknown type name, or `void` where a value is needed) |
@@ -1151,7 +1156,7 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 | binary arithmetic / bitwise | type of the operands, which must be equal | `+ - * /` on numbers (`i32 i64 f32 f64`); `% divu remu ^ shl shr shru rotl rotr bitand bitor` on `i32`/`i64` only |
 | `bitnot` / `clz` / `ctz` / `popcnt` | type of the operand | one argument, `i32` or `i64` |
 | comparisons | `bool`; operands must have equal type | `eq neq` on anything but a union; `lt lte gt gte` on numbers; `ltu lteu gtu gteu` on `i32`/`i64` only |
-| `checked.add` / `checked.sub` / `checked.mul` | type of the operands, which must be equal | `i32` or `i64` only |
+| `checked.add` / `checked.sub` / `checked.mul` / `wrap.add` / `wrap.sub` / `wrap.mul` | type of the operands, which must be equal | `i32` or `i64` only |
 
 A function body is a sequence of expressions. The **last** expression's type must equal the declared return type unless the return type is `void`, in which case the last value is discarded (a result or an option is an error there too, as in any statement: write `(drop e)`, section 4.F).
 
@@ -1339,7 +1344,7 @@ Calls nest as deep as the stack allows. Running out of stack stops the program w
 | Backend | Room | Nested calls of a small function | Failure |
 |---|---|---|---|
 | `aipl-run` (wasm) | wasmtime's 512 KiB wasm stack | about 32,000 | `prog.wasm: wasm trap: call stack exhausted`, the call chain, exit 134 |
-| native executable | 8 MiB per thread, the main thread's included (its own stack, so `ulimit -s` does not matter), below a guard page | about 170,000 (x86-64), about 70,000 (AArch64, whose frames are larger) | the same, with the program's name |
+| native executable | 8 MiB per thread, the main thread's included (its own stack, so `ulimit -s` does not matter), below a guard page | about 130,000 (x86-64), about 70,000 (AArch64, whose frames are larger) | the same, with the program's name |
 | VM | 192 MiB of the thread's stack | about 40,000 | `Call stack exhausted calling 'f': calls are nested too deeply (a recursion that does not end?)` |
 
 A call's room is its frame: a function with many locals or deeply nested expressions gets fewer calls. Code meant to run under `aipl-run` should stay well below 30,000 nested calls; walk long lists and deep structures with `while`. In a native executable, each function's prologue compares the stack pointer, less the frame it is about to push, with a limit 256 KiB above the stack's low end and traps below it, which leaves room for the host routines and the trap's own output.
@@ -1348,13 +1353,16 @@ A call's room is its frame: a function with many locals or deeply nested express
 
 ## 8. Integer Semantics
 
-`i32` is a wrapping two's-complement 32-bit integer in **both** backends; the wasm instruction set defines the behaviour and the VM must match it bit for bit. Internally the VM stores integers in an `i64` but truncates every operand to `i32` before each operation, so no value wider than 32 bits is observable.
+`i32` is a two's-complement 32-bit integer in **both** backends. `+`, `-`, and `*` stop the program when the exact result does not fit (section 8.2); `wrap.add`, `wrap.sub`, and `wrap.mul` give the result modulo 2^32, as wasm's `i32.add` does, for hashes, generators, and checksums that want it. The VM stores integers in an `i64` but truncates every operand to `i32` before each operation, so no value wider than 32 bits is observable.
 
 | Expression | Result | Why |
 |---|---|---|
-| `(+ 2147483647 1)` | `-2147483648` | wraps |
-| `(* 65536 65536)` | `0` | wraps |
-| `(- 0 -2147483648)` | `-2147483648` | wraps |
+| `(+ 2147483647 1)` | runtime error | VM: `Integer overflow in +`; compiled: trap |
+| `(* 65536 65536)` | runtime error | the same |
+| `(- 0 -2147483648)` | runtime error | the same |
+| `(wrap.add 2147483647 1)` | `-2147483648` | wraps |
+| `(wrap.mul 65536 65536)` | `0` | wraps |
+| `(wrap.sub 0 -2147483648)` | `-2147483648` | wraps |
 | `(/ -7 2)` | `-3` | truncates toward zero (`i32.div_s`) |
 | `(% -7 2)` | `-1` | sign follows the dividend (`i32.rem_s`) |
 | `(/ 7 0)` | runtime error | VM: `Division by zero`; wasm: trap |
@@ -1371,13 +1379,14 @@ A call's room is its frame: a function with many locals or deeply nested express
 
 ### 8.1 `i64`
 
-`i64` is a first-class declarable type with the same wrapping two's-complement semantics at 64 bits. There is **no implicit widening**: an `i32` and an `i64` never meet in one operation, and the checker rejects `(+ 1 2i64)` with `Type mismatch in binary op: i32 vs i64`. Conversions are explicit ops that map one-to-one onto wasm instructions.
+`i64` is a first-class declarable type with the same two's-complement semantics at 64 bits (`+ - *` trap on overflow, `wrap.*` wrap). There is **no implicit widening**: an `i32` and an `i64` never meet in one operation, and the checker rejects `(+ 1 2i64)` with `Type mismatch in binary op: i32 vs i64`. Conversions are explicit ops that map one-to-one onto wasm instructions.
 
 | Form | Meaning | wasm |
 |---|---|---|
 | `42i64`, `-7i64`, `4294967296i64` | 64-bit literal; the suffix is part of the token | `i64.const` |
 | `(let x:i64 0i64)`, `[a:i64]`, `-> i64` | declarations | local/param/result `i64` |
-| `+ - * / % divu remu ^ bitand bitor shl shr shru rotl rotr` on two `i64` | 64-bit wrapping; shift and rotate counts masked to 6 bits | `i64.add` ... `i64.rotr` |
+| `+ - *` on two `i64` | 64-bit, trapping on overflow (section 8.2); `wrap.add wrap.sub wrap.mul` wrap | `i64.add` ... with the check |
+| `/ % divu remu ^ bitand bitor shl shr shru rotl rotr` on two `i64` | 64-bit; shift and rotate counts masked to 6 bits | `i64.div_s` ... `i64.rotr` |
 | `(bitnot x)`, `(clz x)`, `(ctz x)`, `(popcnt x)` on `i64` | an `i64` (`clz` and `ctz` of 0 are 64) | `i64.xor` with -1, `i64.clz`, `i64.ctz`, `i64.popcnt` |
 | `eq neq lt lte gt gte` on two `i64` | signed comparison, yields `bool` | `i64.eq` ... `i64.ge_s` |
 | `(i64.extend_s x)` | `i32 -> i64`, sign-extending | `i64.extend_i32_s` |
@@ -1393,7 +1402,8 @@ A call's room is its frame: a function with many locals or deeply nested express
 | Expression | Result |
 |---|---|
 | `(+ 2147483647i64 1i64)` | `2147483648` (no i32 wrap) |
-| `(+ 9223372036854775807i64 1i64)` | `-9223372036854775808` |
+| `(+ 9223372036854775807i64 1i64)` | runtime error / trap |
+| `(wrap.add 9223372036854775807i64 1i64)` | `-9223372036854775808` |
 | `(* 4294967296i64 2147483648i64)` | `-9223372036854775808` |
 | `(divu -1i64 2i64)` | `9223372036854775807` |
 | `(shl 1i64 65i64)` | `2` (count masked: `65 & 63 == 1`) |
@@ -1408,7 +1418,7 @@ Loop bounds, memory addresses, `mem.alloc` sizes, file descriptors, and thread h
 
 The signed comparisons (`lt lte gt gte`) read their operands as two's-complement numbers. `ltu lteu gtu gteu` compare the same bits as unsigned numbers (wasm `i32.lt_u` ... `i64.ge_u`), so `-1` is the largest value: the right test for sizes, hashes, and addresses that may exceed `2^31`.
 
-`+ - *` wrap. `checked.add`, `checked.sub`, and `checked.mul` compute the same result when it fits in the operands' type and stop the program when it does not: the VM fails with `Integer overflow in checked.add` (`.sub`, `.mul`), and compiled code traps with the host's integer-overflow trap. Use them where a wrapped result would be a wrong answer rather than an intended one (money, sizes, counters).
+`+ - *` on `i32` and `i64` stop the program when the exact result does not fit in the operands' type: the VM fails with `Integer overflow in +` (`-`, `*`), and compiled code traps with the host's integer-overflow trap. (On `f32` and `f64` they are IEEE arithmetic and never trap.) A program that wants the wrapped result says so with `wrap.add`, `wrap.sub`, or `wrap.mul`, which take two `i32` or two `i64` and give the low bits of the exact result, as wasm's `i32.add` does. `checked.add`, `checked.sub`, and `checked.mul` are the same as `+ - *` on integers, kept as the older spelling. Constant expressions (`const`) and the optimizer's folds follow the same rule: a constant that overflows is a compile error (`+ overflows`), and the optimizer leaves an overflowing constant expression to trap when it runs.
 
 | Expression | Result |
 |---|---|
@@ -1421,7 +1431,7 @@ The signed comparisons (`lt lte gt gte`) read their operands as two's-complement
 | `(checked.mul 46341 46341)` | runtime error / trap (`46340` squared fits) |
 | `(checked.mul -1i64 -9223372036854775808i64)` | runtime error / trap |
 
-The wasm lowering (`compile_checked` in `src/compiler/wasm.rs`, `codegen.aipl` alike): for `i32`, both operands are widened to `i64`, the exact result is computed there, and it traps unless it lies in `[-2^31, 2^31)`; for `i64`, addition and subtraction test the sign bits (`(a ^ r) & (b ^ r) < 0` for `+`, `(a ^ b) & (a ^ r) < 0` for `-`) and multiplication checks `r / a == b` when `a` is not 0 (and the `-1 * MIN` case through the same division). The trap is an `i32.div_s` of `MIN` by `-1`, so every host reports it as integer overflow. `tests/test_differential.rs` runs every pair of 12 edge values per width through the VM and wasmtime and compares both with Rust's `checked_*`.
+The wasm lowering (`compile_checked` in `src/compiler/wasm.rs`, `codegen.aipl` alike): for `i32`, both operands are widened to `i64`, the exact result is computed there, and it traps unless it lies in `[-2^31, 2^31)`; for `i64`, addition and subtraction test the sign bits (`(a ^ r) & (b ^ r) < 0` for `+`, `(a ^ b) & (a ^ r) < 0` for `-`) and multiplication checks `r / a == b` when `a` is not 0 (and the `-1 * MIN` case through the same division). The trap is an `i32.trunc_f32_s` of `3e9`, which every host reports as integer overflow (a division of `MIN` by `-1` traps the same way, but a function that holds one keeps more on its stack: its recursion is half as deep under wasmtime). `x + c` and `x - c` with a literal `c` are tested by one comparison of `x` instead (`x > MAX - c` for a positive `c`). `tests/test_differential.rs` runs every pair of 12 edge values per width through the VM and wasmtime and compares both with Rust's `checked_*`.
 
 ### 8.3 Type-directed code generation
 
@@ -1793,6 +1803,8 @@ Raw memory, laid out by hand. Every function takes a raw address, which nothing 
 
 ### 12.4 Threads and atomics, both backends
 
+*Experimental (section 4.D): not part of the language version 1 promise.*
+
 The worker is a function reference of type `(fn [i32] -> i32)`; the single `i32` argument is the natural way to hand it a pointer. Threads and atomics are unchecked operations (AIPL does not check for data races), so they need an unsafe context (section 3).
 
 ```lisp
@@ -1847,14 +1859,14 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 
 | Module | Contents |
 |---|---|
-| `str` | `(struct Bytes [data:(arr u8) start:i32 len:i32] (value))`, a byte slice (`len` -1 marks a failed read): a checked view reads `data` from `start`, so a freed array stops the program when read; `bytes [addr len] -> Bytes` (unsafe to call) makes an unchecked view of raw memory (no array: for memory that is never freed, or that the caller vouches for); `of_array [a start len]` a checked one; `addr [b] -> i32` (its first byte's address, for `mem.*`, after checking the array), `checked [b] -> bool`, `absent [] -> Bytes` and `present [b] -> bool` (the `len -1` view where text may be missing); the fields are read-only outside `str`, so no other module can make a view; `from_str [s:str] -> Bytes` (a literal or run-time `str`, viewed in place), `is_at [b i s:str] -> bool` (whether b holds s at index i; allocates nothing), `byte_at`, `is_space [c] -> bool` (space and `\t \n \v \f \r`), `bytes_eq [a b] -> bool`, `find_byte [b c] -> i32` (first index or -1), `count_byte`, `count_lines` (newlines plus an unterminated last line), `count_words` (runs of non-space bytes), `parse_int [b] -> (result i32 i32)` (`(ok n)`, or `(err i)` with the index of the first bad byte; optional leading `-`), `parse_int_or [b default] -> i32` (the number, or `default`), `valid_utf8 [b] -> bool`; searching and trimming, allocating nothing (a slice is a value) (linear time: needles over 64 bytes by the Two-Way algorithm of Crochemore and Perrin, as musl's memmem): `starts_with [b p]`, `ends_with`, `contains`, `find [b p] -> i32` (first index or -1), `find_from [b p from]`, `rfind`, `count` (not overlapping), `trim`, `trim_start`, `trim_end` (ASCII whitespace), `split_once [b sep] -> (option.Option str.Halves)` (`before`, `after`), `eq_ignore_case` (ASCII), `cmp [a b] -> i32` (byte order), `parse_i64 [b] -> (result i64 i32)`, `parse_bool`; making a `str` (a copy, never freed; section 4.B): `same [a:str b:str] -> bool` (the same bytes; `eq` on `str` is an error), `concat [a:str b:str] -> str`, `from_bytes [b] -> str` (`b` must be UTF-8) |
+| `str` | `(struct Bytes [data:(arr u8) start:i32 len:i32] (value))`, a byte slice (`len` -1 marks a failed read): a checked view reads `data` from `start`, so a freed array stops the program when read; `bytes [addr len] -> Bytes` (unsafe to call) makes an unchecked view of raw memory (no array: for memory that is never freed, or that the caller vouches for); `of_array [a start len]` a checked one; `addr [b] -> i32` (its first byte's address, for `mem.*`, after checking the array), `checked [b] -> bool`, `absent [] -> Bytes` and `present [b] -> bool` (the `len -1` view where text may be missing); the fields are read-only outside `str`, so no other module can make a view; `from_str [s:str] -> Bytes` (a literal or run-time `str`, viewed in place), `is_at [b i s:str] -> bool` (whether b holds s at index i; allocates nothing), `byte_at`, `is_space [c] -> bool` (space and `\t \n \v \f \r`), `bytes_eq [a b] -> bool`, `find_byte [b c] -> (option.Option i32)` (first index, or none), `count_byte`, `count_lines` (newlines plus an unterminated last line), `count_words` (runs of non-space bytes), `parse_int [b] -> (result i32 i32)` (`(ok n)`, or `(err i)` with the index of the first bad byte; optional leading `-`), `parse_int_or [b default] -> i32` (the number, or `default`), `valid_utf8 [b] -> bool`; searching and trimming, allocating nothing (a slice is a value) (linear time: needles over 64 bytes by the Two-Way algorithm of Crochemore and Perrin, as musl's memmem): `starts_with [b p]`, `ends_with`, `contains`, `find [b p] -> (option.Option i32)` (first index, or none), `find_from [b p from]` and `rfind` (the same),  `count` (not overlapping), `trim`, `trim_start`, `trim_end` (ASCII whitespace), `split_once [b sep] -> (option.Option str.Halves)` (`before`, `after`), `eq_ignore_case` (ASCII), `cmp [a b] -> i32` (byte order), `parse_i64 [b] -> (result i64 i32)`, `parse_bool`; making a `str` (a copy, never freed; section 4.B): `same [a:str b:str] -> bool` (the same bytes; `eq` on `str` is an error), `concat [a:str b:str] -> str`, `from_bytes [b] -> str` (`b` must be UTF-8) |
 | `fmt` | `uint_to_bytes [n out] -> i32` (n read as unsigned), `int_to_bytes` (leading `-`), `hex_to_bytes` (lowercase, no prefix), and for `i64`: `uint64_to_bytes`, `int64_to_bytes`: each writes ASCII at `out` and returns the count (at most 10, 11, 8, 20, and 21 bytes); `f64_fixed [x digits out]` writes `x` with `digits` decimals exactly as C's `printf("%.*f")` (the exact decimal value of the double, rounded half to even; `inf`, `nan`, a `-` for any negative sign bit; at most 312 + digits bytes) |
-| `io` | `read_stdin [] -> (result str.Bytes io.Error)` (all of stdin), `write_str [fd s]`, `println [s]`, `eprintln [s]` (stderr), `read_file [path:str] -> (result str.Bytes io.Error)` (the whole file, in a buffer that is never freed), `read_fd [fd] -> (result str.Bytes io.Error)` (reads an open descriptor to its end, freeing each buffer it outgrows), `write_file [path:str b:str.Bytes] -> (result i32 io.Error)` (the bytes written), and `read_path` / `write_path`, the same for a path held as `str.Bytes`; `read_stdin` also gives a result (empty input is an empty view, not an error). A failure is an `io.Error`: `(enum Error [not_found denied is_directory other exists not_empty])`, with `message [e] -> str` for its words (`"no such file or directory"`, `"permission denied"`, `"is a directory"`, `"file exists"`, `"directory not empty"`) and `error_of [code] -> io.Error` for an `fs.*` op's failed result (section 4.C). The message leaves the path out: the program has it, `(eprintln "{path}: {(call io.message e)}")` |
-| `vec` | generic growable list `(vec.Vec T)`: `(call (vec.make T) a capacity)` with `a` an `alloc.Allocator` (growing frees the old storage through it), `(call (vec.free T) v)`, `push`, `pop`, `at [v i]`, `set [v i x]`, `len`, `truncate [v n]`, `clear`, `index_of`, `(sort T) [v]` (ascending by `T`'s `cmp.Ord`, stable), `sort_by [v cmp:(fn [T T] -> i32 (no_leak))]` (stable merge sort; `cmp` negative puts the first argument first; any comparison that keeps no memory: section 4.G), `(sort_by_with T C) [v ctx:C cmp:(fn [C T T] -> i32 (no_leak))]` (the same, `cmp` given `ctx` first), each called as `(call (vec.push T) v x)`; plus `sort_i32 [v:(ptr (vec.Vec i32))]` and `cmp_i32` |
+| `io` | `read_stdin [] -> (result str.Bytes io.Error)` (all of stdin), `write_str [fd s]`, `println [s]`, `eprintln [s]` (stderr), `read_file [path:str] -> (result str.Bytes io.Error)` (the whole file, in a buffer that is never freed), `read_fd [fd] -> (result str.Bytes io.Error)` (reads an open descriptor to its end, freeing each buffer it outgrows), `write_file [path:str b:str.Bytes] -> (result i32 io.Error)` (the bytes written), and `read_path` / `write_path`, the same for a path held as `str.Bytes`; `read_stdin` also gives a result (empty input is an empty view, not an error). A failure is an `io.Error`, a value struct `(struct Error [kind:Kind errno:i32 path:str.Bytes] (value))` whose `kind` is `io.Kind` (`(enum Kind [not_found denied is_directory other exists not_empty])`), whose `errno` is the WASI errno and whose `path` is the path it happened to (empty for standard input; a view of the caller's path, which must outlive the error), with `message [e] -> str` for the kind's words (`"no such file or directory"`, `"permission denied"`, `"is a directory"`, `"file exists"`, `"directory not empty"`) `describe [e] -> str` for all of it (`"notes.txt: no such file or directory"`), and `error_of [code path] -> io.Error` for an `fs.*` op's failed result (section 4.C). A program branches on the kind, `(eq (get e io.Error.kind) io.Kind.not_found)`, and a function that returns another error type converts with `(try r (ref io.describe))`. |
+| `vec` | generic growable list `(vec.Vec T)`: `(call (vec.make T) a capacity)` with `a` an `alloc.Allocator` (growing frees the old storage through it), `(call (vec.free T) v)`, `push`, `pop`, `at [v i]`, `set [v i x]`, `len`, `truncate [v n]`, `clear`, `index_of [v x] -> (option.Option i32)`, `(sort T) [v]` (ascending by `T`'s `cmp.Ord`, stable), `sort_by [v cmp:(fn [T T] -> i32 (no_leak))]` (stable merge sort; `cmp` negative puts the first argument first; any comparison that keeps no memory: section 4.G), `(sort_by_with T C) [v ctx:C cmp:(fn [C T T] -> i32 (no_leak))]` (the same, `cmp` given `ctx` first), each called as `(call (vec.push T) v x)`; plus `sort_i32 [v:(ptr (vec.Vec i32))]` and `cmp_i32` |
 | `map` | generic hash map `(map.Map K V)` from keys of any type with a `cmp.Hash` implementation (`i32`, `i64`, `str`, and `str.Bytes` by its contents, from `std/cmp`; a module implements it for its own types): `(call (map.make K V) a capacity)` (an allocator, as for `vec`), `free`, `set [m k v]`, `get_or [m k default]`, `(map.add K) [m k d] -> i32` (for a `(Map K i32)`: adds `d` to k's count, 0 when absent, and returns the new count, in one lookup where `get_or` then `set` take two), `find [m k] -> (option.Option V)` (held by value when `V` fits, so a lookup allocates nothing), `has`, `remove -> bool`, `count`, each called as `(call (map.set K V) m k v)`; iterate with `(for i 0 (call (map.capacity K V) m) (if (call (map.slot_used K V) m i) ... (block)))` reading `slot_key` / `slot_val`. A `str.Bytes` key is kept as the pointer, so its bytes must not change while it is stored |
 | `cmp` | the interfaces `(cmp.Eq T)` (`same`), `(cmp.Ord T)` (`compare`: -1, 0, or 1), and `(cmp.Hash T)` (`hash`, `same`), implemented for `i32`, `i64`, `bool` (Eq), `str` (bytewise), and `str.Bytes` (Hash, by contents); none for floats (section 4.H) |
 | `os` | the command line and environment: `arg_count [] -> i32` (argv[0], the program, included), `arg [i] -> (option.Option str.Bytes)` (`none` past the end), `arg_int [i default] -> i32` (argument `i` as a number, or `default` if it is missing or not one: `(call os.arg_int 1 1000)`), `env [name:str] -> (option.Option str.Bytes)` (`none` if unset; an empty value is `some` of an empty view), each table read once and kept, so they allocate nothing after the first call and are `(no_leak)`; `random_i32 [] -> i32` from the OS generator |
-| `buf` | string builder: `make [a:alloc.Allocator capacity] -> (ptr buf.Buf)`, `free [b]` (a view taken before then stops the program when read: "Use after free"; so does one taken before a push that moved the bytes), `push_byte`, `push_str [b s:str]`, `insert [b at n c]` (n copies of byte c at index at), `push_unsigned [b u:i64 base upper]` (base 2, 8, 10, or 16, read as unsigned), `push_bytes [b str.Bytes]`, `push_int`, `push_i64`, `push_f64 [b x digits]`, `len`, `byte_at [b i]` (checked; no view made), `clear`, `truncate [b n]` (keeps the first n bytes), `bytes [b] -> str.Bytes` (a view of the contents; take it after building), `room [b n] -> i32` and `grew [b n]` (unsafe to call: the address where n more bytes go, for a system call to write, then how many it wrote), `write [b fd] -> i32`, `print [b]` (the contents to standard output), `to_str [b] -> str` (a copy of the contents, which must be UTF-8; later pushes and `free` leave it alone) |
+| `buf` | string builder: `make [a:alloc.Allocator capacity] -> (ptr buf.Buf)`, `free [b]` (a view taken before then stops the program when read: "Use after free"; so does one taken before a push that moved the bytes), `push_byte`, `push_str [b s:str]`, `insert [b at n c]` (n copies of byte c at index at), `push_unsigned [b u:i64 base upper]` (base 2, 8, 10, or 16, read as unsigned), `push_bytes [b str.Bytes]`, `push_int`, `push_i64`, `push_f64 [b x digits]`, `len`, `byte_at [b i]` (checked; no view made), `clear`, `truncate [b n]` (keeps the first n bytes), `bytes [b] -> str.Bytes` (a view of the contents; take it after building), `room [b n] -> i32` and `grew [b n]` (unsafe to call: the address where n more bytes go, for a system call to write, then how many it wrote), `write [b fd] -> i32`, `print [b]` (the contents to standard output), `to_str [b] -> str` (a copy of the contents, which must be UTF-8; later pushes and `free` leave it alone) `concat [a x y] -> str.Bytes` (x then y in memory from `a`, for `(no_leak)` code that cannot use `str.concat`; so too `(let b (call buf.make a 64)) (format_to b "...") (call buf.bytes b)` for `format`). |
 | `arena` | a region allocator (frees everything at once; for single objects see `heap`): `make [chunk_size] -> (ptr arena.Arena)`, `(call (arena.alloc T) a) -> (ptr T)` (zeroed, like `new`, no cast), `raw [a n] -> i32` (n zeroed bytes, 8-aligned), `reset [a]` (frees everything from `a`, marking every object freed, so a pointer used after it fails at once; its chunks are reused), `reserved [a]`; never fails while memory remains (a full chunk moves on to another). A fast arena, `make_fast [chunk_size] -> (ptr arena.Fast)` with `(call (arena.fast_alloc T) f)`, `fast_raw`, and `fast_reset`, keeps no per-block headers and marks nothing at reset: less memory and time, but a pointer used after its reset is caught only once the memory holds a new object (before that it reads the old one) |
 | `heap` | a general-purpose allocator with per-object free (docs/design/HEAP_PLAN.md): `make [] -> (ptr heap.Heap)`, `(call (heap.create T) h) -> (ptr T)` and `(call (heap.destroy T) h p)`, `(call (heap.array T) h n) -> (arr T)` and `(call (heap.free_array T) h a)`, `raw [h n] -> i32` and `free_raw [h p n]` (n zeroed bytes, 8-aligned), `live [h]` (blocks not freed), `live_bytes [h]`, `reserved [h]`. A double free, a free of memory this heap did not allocate, a free with the wrong size or type, and a write after free (found when the block is reused) stop the program with a contract failure naming the check; freed memory reads as `0xDEADBEEF` words, and any pointer to a destroyed object fails with `Use after free` (generation checks) |
 | `alloc` | any allocator as one value (docs/design/HEAP_PLAN.md): the union `alloc.Allocator` of a heap, an arena, a fast arena, or a fixed buffer; `of_heap [h]`, `of_arena [r]`, `of_fast_arena [f]`, `fixed [base len]` (unsafe to call: hands out those bytes; a free takes back only the most recent allocation), `default []` (one shared heap, made on first use); `raw [a n]`, `free_raw [a p n]` (unsafe to call), `(call (alloc.create T) a)`, `(call (alloc.destroy T) a p)`, `(call (alloc.array T) a n)`, `(call (alloc.free_array T) a xs)`. A free does what the allocator does: a heap reuses and checks, an arena ignores it until `reset` ; `(custom C) [state:C alloc_fn free_fn]` for a program's own allocator, unsafe to call (`alloc_fn [state:C n] -> i32`, 8-aligned; `free_fn [state:C p n]`; the state keeps its type, typically a pointer to the allocator's struct) |

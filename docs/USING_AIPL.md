@@ -186,7 +186,8 @@ nothing in the file names it), `unused-import`, `unreachable-code` (after a
 `format_to` or a `buf`), `redundant-bool` (`(eq x true)`, `(not (not x))`,
 `(if c true false)`), `empty-else` (`(if c x (block))` is `(when c x)`), and
 `naming` (functions in snake_case, types capitalised, constants in
-capitals). A name that starts with `_` is never reported. To keep a finding,
+capitals), and `sys-print-newline` (`sys.print` ends its line itself, so a
+`\n` in its string prints two). A name that starts with `_` is never reported. To keep a finding,
 write `;; lint:allow RULE` (or `lint:allow all`) on the line above it or at
 the end of its line. A function that only the host calls by name (a test
 harness's entry point) is not `(pub)`, so it needs the comment too.

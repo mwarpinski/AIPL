@@ -105,7 +105,7 @@ pub const HEAD_NAMES: &[&str] = &[
     "proc.write", "ptr.addr", "ptr.cast", "ptr.gen", "ptr.make", "ptr.null", "put", "ref",
     "remu", "return", "rotl", "rotr", "set!", "shl", "shr", "shru", "sizeof", "str.len", "str.ptr", "sys.exit",
     "sys.monotonic", "sys.poll", "sys.print", "sys.random", "sys.time", "thread.join", "thread.spawn",
-    "try", "try_opt", "try_or", "unsafe", "while", "with", "zero",
+    "try", "try_opt", "try_or", "unsafe", "while", "with", "wrap.add", "wrap.mul", "wrap.sub", "zero",
 ];
 
 /// Edit distance between two names, by bytes (aipl_src/suggest.aipl is the
@@ -593,6 +593,8 @@ impl Parser {
                 enums.push(self.parse_enum_def()?);
             } else if self.is_head_ahead("union") {
                 unions.push(self.parse_union_def()?);
+            } else if self.is_head_ahead("language") {
+                self.parse_language()?;
             } else if self.is_head_ahead("const") {
                 let (l, c) = self.cur_pos();
                 return Err(format!(
@@ -657,6 +659,26 @@ impl Parser {
 
     fn is_head_ahead(&self, head: &str) -> bool {
         matches!(self.tokens.get(self.pos + 1), Some(Token { kind: TokenKind::Symbol(s), .. }) if s == head)
+    }
+
+    /// `(language N)`: the language version the module is written for (docs/LANGUAGE_VERSIONING.md),
+    /// which this toolchain must implement. It declares nothing else.
+    fn parse_language(&mut self) -> Result<(), String> {
+        let tok = self.expect_kind(TokenKind::LParen)?;
+        let (l, c) = (tok.line, tok.col);
+        self.next(); // `language`
+        let n = match self.next() {
+            Some(Token { kind: TokenKind::IntLit(n), .. }) if n >= 1 => n,
+            _ => return Err(format!("{}:{}: a language declaration is (language N), N a whole number from 1, e.g. (language 1)", l, c)),
+        };
+        self.expect_kind(TokenKind::RParen)?;
+        if n > crate::ast::LANGUAGE_VERSION {
+            return Err(format!(
+                "{}:{}: this program is written for language version {}; this aipl implements version {}: use a newer aipl",
+                l, c, n, crate::ast::LANGUAGE_VERSION
+            ));
+        }
+        Ok(())
     }
 
     /// `(enum Name [a b (c 10) ...])`. Member values are i32 literals; the
@@ -1921,6 +1943,9 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 "checked.add" => OpCode::CheckedAdd,
                                 "checked.sub" => OpCode::CheckedSub,
                                 "checked.mul" => OpCode::CheckedMul,
+                                "wrap.add" => OpCode::WrapAdd,
+                                "wrap.sub" => OpCode::WrapSub,
+                                "wrap.mul" => OpCode::WrapMul,
                                 "lteu" => OpCode::LteU,
                                 "gtu" => OpCode::GtU,
                                 "gteu" => OpCode::GteU,

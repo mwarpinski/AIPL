@@ -36,11 +36,12 @@ fn check_files(name: &str, files: &[(&str, &str)]) -> Result<aipl_core::ast::Mod
 
 /// The programs and the checksum each one's `checksum` returns: every form, and
 /// every way through control flow.
-const PROGRAMS: [(&str, i64); 4] = [
+const PROGRAMS: [(&str, i64); 5] = [
     ("tests/aipl/values.aipl", 649),
     ("tests/aipl/values_flow.aipl", 219),
     ("tests/aipl/unions_by_value.aipl", 239),
     ("tests/aipl/results_by_value.aipl", 521),
+    ("tests/aipl/wide_values.aipl", 327),
 ];
 
 #[test]
@@ -82,7 +83,7 @@ fn value_struct_rules_have_messages() {
         ("(union U [(a)]) (struct S [u:U] (value)) (fn main [] -> i32 0)", "Field 'u' of value struct 'S': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not U"),
         ("(struct R [a:i32 r:R] (value)) (fn main [] -> i32 0)", "value struct 'R' contains itself (through field 'r'): a value has a fixed size; hold it through a pointer"),
         ("(struct A [b:B] (value)) (struct B [a:A] (value)) (fn main [] -> i32 0)", "value struct 'A' contains itself (through field 'b'): a value has a fixed size; hold it through a pointer"),
-        ("(struct Big [a:V b:V c:V d:V e:i32] (value)) (fn main [] -> i32 0)", "value struct 'Big' holds 9 scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer"),
+        ("(struct Big [a:V b:V c:V d:V e:V f:V g:V h:V i:i32] (value)) (fn main [] -> i32 0)", "value struct 'Big' holds 17 scalars, counting the value structs in it; at most 16: keep a larger record behind a pointer"),
         ("(fn main [] -> i32 (let p:(ptr V) (ptr.null V)) 0)", "'V' is a value struct, which has no address: write V, not (ptr V)"),
         ("(fn main [] -> i32 (let v:V (new V (call alloc.forever) [x:1 y:2])) 0)", "alloc.create<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address"),
         ("(fn main [] -> i32 (let v:V (make V 1)) 0)", "a value struct's fields are given by name, each once and in order: (make V [x:v y:v])"),
@@ -398,22 +399,22 @@ fn results_by_value_are_decided_as_specified() {
     assert_eq!(st.result_layout(&vec2, &shape).unwrap().slots.len(), 6);
     // a str side: the tag and one shared i32 slot
     assert_eq!(st.result_layout(&I32, &Str).unwrap().slots, [I32, I32]);
-    // four f64s beside four i32s: nine, which the checker refuses
+    // four f64s beside four i32s: nine slots, which a value may hold (up to sixteen)
     let quad4 = aipl_core::ast::StructDef { name: "Quad4".into(), is_value: true, ..m.structs.iter().find(|s| s.name == "Quad").unwrap().clone() };
     let st = aipl_core::checker::Structs::new(&[m.structs.clone(), vec![quad4]].concat(), &m.unions);
     assert_eq!(st.result_slots(&Struct("Quad4".into()), &Struct("Ints".into())), 9);
-    assert_eq!(st.result_layout(&Struct("Quad4".into()), &Struct("Ints".into())), None);
+    assert!(st.result_layout(&Struct("Quad4".into()), &Struct("Ints".into())).is_some());
 }
 
-/// A result is held by value, so one that needs more than eight slots is
+/// A result is held by value, so one that needs more than sixteen slots is
 /// refused (MEMORY_PLAN.md M4), where its type is written and where one is
 /// made, with the same error from both toolchains.
 #[test]
-fn a_result_over_eight_slots_is_refused_by_both_toolchains() {
-    let defs = "  (struct Q [a:f64 b:f64 c:f64 d:f64] (value))\n  (struct I [a:i32 b:i32 c:i32 d:i32] (value))\n";
+fn a_result_over_sixteen_slots_is_refused_by_both_toolchains() {
+    let defs = "  (struct Q [a:f64 b:f64 c:f64 d:f64 e:f64 f:f64 g:f64 h:f64] (value))\n  (struct I [a:i32 b:i32 c:i32 d:i32 e:i32 f:i32 g:i32 h:i32] (value))\n";
     for (name, body, want) in [
-        ("written", "  (fn f [r:(result Q I)] -> i32 0)\n  (fn main [] -> i32 0))\n", "(result Q I) needs 9 slots"),
-        ("made", "  (fn main [] -> i32 (match_result (err:Q (make I [a:1 b:2 c:3 d:4])) (ok q 1) (err e 0))))\n", "4:36: (result Q I) needs 9 slots"),
+        ("written", "  (fn f [r:(result Q I)] -> i32 0)\n  (fn main [] -> i32 0))\n", "(result Q I) needs 17 slots"),
+        ("made", "  (fn main [] -> i32 (match_result (err:Q (make I [a:1 b:2 c:3 d:4 e:5 f:6 g:7 h:8])) (ok q 1) (err e 0))))\n", "4:36: (result Q I) needs 17 slots"),
     ] {
         let dir = scratch(&format!("wide_result_{name}"));
         let file = dir.join("m.aipl");
@@ -422,14 +423,14 @@ fn a_result_over_eight_slots_is_refused_by_both_toolchains() {
         let rust = aipl_core::checker::TypeChecker::new().check_module(&module).map(|_| ()).expect_err(name);
         let aipl = aipl_core::selfhost::compile_with_aipl(&file).map(|_| ()).expect_err(name);
         assert!(rust.contains(want), "{name}: {rust}");
-        assert!(rust.contains("more than the 8 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)"), "{rust}");
+        assert!(rust.contains("more than the 16 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)"), "{rust}");
         assert!(aipl.contains(&rust), "{name}: {aipl} / {rust}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 /// Every union is a value (MEMORY_PLAN.md M4), so one that contains
-/// itself, directly or through another union, or needs more than eight
+/// itself, directly or through another union, or needs more than sixteen
 /// slots is refused, with the same error from both toolchains.
 #[test]
 fn a_union_that_cannot_be_a_value_is_refused_by_both_toolchains() {
@@ -437,7 +438,7 @@ fn a_union_that_cannot_be_a_value_is_refused_by_both_toolchains() {
     for (name, body, want) in [
         ("direct", "  (union List [(nil) (cons head:i32 tail:List)])\n", format!("2:3: {}List.cons's field 'tail' has type List): a union is a value, so hold that field through a pointer, a (ptr S) to a struct that holds it", shown("List"))),
         ("through", "  (union A [(one b:B) (none)])\n  (union B [(two a:A) (none)])\n", format!("2:3: {}A.one's field 'b' has type B)", shown("A"))),
-        ("wide", "  (union W [(small n:i32) (nine a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64)])\n", "2:3: union 'W' needs 10 slots, more than the 8 a value holds: move the fields of its widest variant, W.nine (8 slots), into a struct and hold a (ptr S)".to_string()),
+        ("wide", "  (union W [(small n:i32) (many a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64 i:i64 j:i64 k:i64 l:i64 m:i64 n:i64 o:i64 p:i64)])\n", "2:3: union 'W' needs 18 slots, more than the 16 a value holds: move the fields of its widest variant, W.many (16 slots), into a struct and hold a (ptr S)".to_string()),
     ] {
         let dir = scratch(&format!("refused_union_{name}"));
         let file = dir.join("m.aipl");

@@ -185,7 +185,7 @@
            (block (call s b "Unsupported type for memory layout: ") (call ty b t) true)))
       (else
        (let k:i32 (call tag t))
-       (if (or (eq k 6) (eq k 9))
+       (if (eq k 6)
            (block (call s b "Unsupported type for memory layout: ") (call ty b t) true)
            false))))
 
@@ -394,7 +394,7 @@
 
   ;; src/checker.rs check_value_struct: at least one field; numbers, bools,
   ;; enums, pointers, arrays, function references, or value structs; not
-  ;; containing itself; at most 8 scalars in all.
+  ;; containing itself; at most 16 scalars in all.
   (fn check_value_struct [c:(ptr C) sd:(ptr ast.StructDef)] -> void
     (let at:i32 (get sd ast.StructDef.at))
     (let name:str.Bytes (get sd ast.StructDef.name))
@@ -433,10 +433,10 @@
                     (let m:str.Bytes (call value_field c (get (arr.get (ptr ast.Field) dfs j) ast.Field.ty)))
                     (when (call str.present m) (call (vec.push str.Bytes) names m) (call (vec.push str.Bytes) firsts first))))))
     (let total:i32 (call scalars c (make ast.Type.struct_ name)))
-    (when (gt total 8)
+    (when (gt total 16)
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "value struct '") (call by b (call names.shown name)) (call s b "' holds ") (call buf.push_int b total)
-          (call s b " scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer")
+          (call s b " scalars, counting the value structs in it; at most 16: keep a larger record behind a pointer")
           (call fail c b)))
 
   ;; The value struct a field of type t holds inline, or null.
@@ -526,7 +526,7 @@
        (if (eq uc (arr.null i32)) (call (vec.push i32) out 0) (call push_sum uc out)))
       (ast.Type.result [n_result] (let a:ast.Type (get n_result ast.ResultType.ok)) (let b:ast.Type (get n_result ast.ResultType.err))
        (let rc:(arr i32) (call result_counts c a b))
-       (if (lte (call width rc) 8) (call push_sum rc out) (call (vec.push i32) out 0)))
+       (if (lte (call width rc) 16) (call push_sum rc out) (call (vec.push i32) out 0)))
       (ast.Type.void (block))
       (else (call (vec.push i32) out (call slot_kind t)))))
 
@@ -565,10 +565,10 @@
   ;; needs more than 8 slots is refused; null if it fits.
   (fn result_error [c:(ptr C) a:ast.Type b:ast.Type at:i32] -> (ptr buf.Buf)
     (let n:i32 (call width (call result_counts c a b)))
-    (when (lte n 8) (return (ptr.null buf.Buf)))
+    (when (lte n 16) (return (ptr.null buf.Buf)))
     (let m:(ptr buf.Buf) (call msg c at))
     (call ty m (call ast.result_type (call alloc.default) a b)) (call s m " needs ") (call buf.push_int m n)
-    (call s m " slots, more than the 8 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)")
+    (call s m " slots, more than the 16 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)")
     m)
 
   ;; Which unions are values (checker.rs union_layouts): a union is a value
@@ -651,7 +651,7 @@
       (when (gt (call variant_width c v) (call variant_width c widest)) (set! widest v)))
     (let m:(ptr buf.Buf) (call msg c (get u ast.UnionDef.at)))
     (call s m "union '") (call by m name) (call s m "' needs ") (call buf.push_int m (call width counts))
-    (call s m " slots, more than the 8 a value holds: move the fields of its widest variant, ") (call by m name) (call s m ".")
+    (call s m " slots, more than the 16 a value holds: move the fields of its widest variant, ") (call by m name) (call s m ".")
     (call by m (get widest ast.Variant.name)) (call s m " (") (call buf.push_int m (call variant_width c widest))
     (call s m " slots), into a struct and hold a (ptr S)")
     m)
@@ -669,7 +669,7 @@
     (let counts:(arr i32) (call no_counts))
     (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
     (for k 0 (arr.len vs) (call fold_fields c counts (get (arr.get (ptr ast.Variant) vs k) ast.Variant.fields)))
-    (when (lte (call width counts) 8) (call (map.set str.Bytes (arr i32)) (get c C.by_value) un counts)))
+    (when (lte (call width counts) 16) (call (map.set str.Bytes (arr i32)) (get c C.by_value) un counts)))
 
   ;; src/checker.rs validate_type: null, or the error's message (to which
   ;; callers may add context).
@@ -1093,7 +1093,7 @@
           (call validate_or_fail c st at)
           (when (get c C.failed) (return (call void_t)))
           (let k:i32 (call tag st))
-          (if (or (eq k 6) (or (eq k 8) (eq k 9)))
+          (if (or (eq k 6) (eq k 8))
               (block
                 (let b:(ptr buf.Buf) (call msg c at))
                 (call s b "sizeof needs a struct or a type that can be stored in memory, got ")
@@ -1903,7 +1903,7 @@
     (when (get c C.failed) (return (call void_t)))
     (let n:i32 (arr.len args))
     (cond
-      ((or (eq o ast.Op.checked_add) (or (eq o ast.Op.checked_sub) (eq o ast.Op.checked_mul)))
+      ((or (or (eq o ast.Op.checked_add) (or (eq o ast.Op.checked_sub) (eq o ast.Op.checked_mul))) (or (eq o ast.Op.wrap_add) (or (eq o ast.Op.wrap_sub) (eq o ast.Op.wrap_mul))))
        (when (neq n 2) (call op_msg c at o " requires 2 arguments") (return (call void_t)))
        (let t1:ast.Type (call infer c (arr.get ast.Expr args 0) env))
        (when (get c C.failed) (return (call void_t)))
@@ -2162,9 +2162,9 @@
     (call by b (call names.shown (call buf.bytes tb))))
 
   (fn check_try [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
-    (when (neq (arr.len args) (if (eq o ast.Op.try_or) 2 1))
+    (when (and (neq (arr.len args) (if (eq o ast.Op.try_or) 2 1)) (not (and (eq o ast.Op.try_) (eq (arr.len args) 2))))
           (call fail_str c at
-            (cond ((eq o ast.Op.try_) "try takes one result: (try (call f x))")
+            (cond ((eq o ast.Op.try_) "try takes one result, and may take a function that converts its error: (try (call f x)) or (try (call f x) (ref convert))")
                   ((eq o ast.Op.try_opt) "try_opt takes one option: (try_opt (call (map.find K V) m k))")
                   (else "try_or takes an option and the error to return without a value: (try_or o err)")))
           (return (call void_t)))
@@ -2202,6 +2202,25 @@
                                 (match t (ast.Type.result [n_result] (let e:ast.Type (get n_result ast.ResultType.err)) e) (else (call void_t)))
                                 (call infer c (arr.get ast.Expr args 1) env)))
           (when (get c C.failed) (return (call void_t)))
+          ;; (try r (ref convert)): convert turns r's error into the function's
+          (when (and (eq o ast.Op.try_) (eq (arr.len args) 2))
+                (let conv:ast.Type (call infer c (arr.get ast.Expr args 1) env))
+                (when (get c C.failed) (return (call void_t)))
+                (let to:ast.Type (match conv
+                                   (ast.Type.fn_ [n_fn]
+                                    (if (and (eq (arr.len (get n_fn ast.FnType.params)) 1)
+                                             (and (call teq (arr.get ast.Type (get n_fn ast.FnType.params) 0) err)
+                                                  (match (arr.get ast.Expr args 1) (ast.Expr.ref [_ _] true) (else false))))
+                                        (get n_fn ast.FnType.ret)
+                                        (call void_t)))
+                                   (else (call void_t))))
+                (when (match to (ast.Type.void true) (else false))
+                      (let b:(ptr buf.Buf) (call msg c at))
+                      (call s b "try's second argument turns the error ") (call ty b err)
+                      (call s b " into the function's: write (ref f) for a function from ") (call ty b err)
+                      (call s b " to the function's error, got ") (call shown_ty b conv)
+                      (call fail c b) (return (call void_t)))
+                (set! err to))
           (match ret
             (ast.Type.result [n_result] (let re:ast.Type (get n_result ast.ResultType.err))
              (when (not (call teq re err))

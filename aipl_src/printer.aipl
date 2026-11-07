@@ -316,7 +316,7 @@
       (ast.Op.mem_alloc "mem.alloc") (ast.Op.mem_grow "mem.grow")
       (ast.Op.atomic_add "atomic.add") (ast.Op.atomic_cas "atomic.cas") (ast.Op.atomic_lock "atomic.lock") (ast.Op.atomic_unlock "atomic.unlock")
       (ast.Op.eq "eq") (ast.Op.neq "neq") (ast.Op.lt "lt") (ast.Op.lte "lte")
-      (ast.Op.checked_add "checked.add") (ast.Op.checked_sub "checked.sub") (ast.Op.checked_mul "checked.mul")
+      (ast.Op.checked_add "checked.add") (ast.Op.checked_sub "checked.sub") (ast.Op.checked_mul "checked.mul") (ast.Op.wrap_add "wrap.add") (ast.Op.wrap_sub "wrap.sub") (ast.Op.wrap_mul "wrap.mul")
       (ast.Op.ltu "ltu") (ast.Op.lteu "lteu") (ast.Op.gtu "gtu") (ast.Op.gteu "gteu") (ast.Op.gt "gt") (ast.Op.gte "gte")
       (ast.Op.and "and") (ast.Op.or "or") (ast.Op.not "not")
       (ast.Op.sys_print "sys.print") (ast.Op.sys_time "sys.time") (ast.Op.sys_monotonic "sys.monotonic")

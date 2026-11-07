@@ -12,6 +12,7 @@
 ;; nothing then. What it accepts is what Python's binascii (strict_mode)
 ;; and urllib.parse accept (tests/aipl/encode, checked against Python).
 (module encode
+  (import option)
   (import str)
   (import buf)
   (import alloc)
@@ -182,7 +183,7 @@
       (let c:i32 (call str.byte_at b i))
       (cond
         ((and plus (eq c 32)) (call buf.push_byte o 43))
-        ((or (call unreserved c) (and (lt c 128) (gte (call str.find_byte ks c) 0))) (call buf.push_byte o c))
+        ((or (call unreserved c) (and (lt c 128) (gte (call (option.unwrap_or i32) (call str.find_byte ks c) -1) 0))) (call buf.push_byte o c))
         (else
           (call buf.push_byte o 37)
           (call buf.push_byte o (call hex_digit (shru c 4) true))

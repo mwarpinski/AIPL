@@ -151,7 +151,7 @@ nothing allocated, copied where it goes, never changed in place.
 It prints `shifted: (7, 20); second y: 10`: the third point moved 5 to the
 right, and the second point's `y`. `make` gives every field in order, `with` makes a copy with one
 field changed, and the array holds the points themselves, not pointers to
-them. A value struct holds at most eight numbers; larger records, and
+them. A value struct holds at most sixteen numbers; larger records, and
 anything changed in place, stay behind pointers.
 
 ## 5. Unions and results

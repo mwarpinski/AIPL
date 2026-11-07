@@ -11,10 +11,10 @@
 ;;     * Algebraic identities (+ x 0, - x 0, * x 1, * x 0, / x 1, divu x 1,
 ;;       % x 1, remu x 1, shl/shr/shru by 0, bitand/bitor/^ with 0 and -1,
 ;;       boolean not/and/or identities, comparison with true/false)
-;;     * Constant reassociation: (+ (+ x c1) c2) -> (+ x (c1+c2)),
+;;     * Constant reassociation, when both constants step the same way (the trap is
+;;       the same): (+ (+ x c1) c2) -> (+ x (c1+c2)),
 ;;       (- (- x c1) c2) -> (- x (c1+c2)), nested shifts (shl (shl x c1) c2)
-;;     * Power-of-two strength reduction:
-;;         (* x 2^k) / (* 2^k x) -> (shl x k)
+;;     * Power-of-two strength reduction (not of * : shl would not trap on overflow):
 ;;         (divu x 2^k)          -> (shru x k)
 ;;         (remu x 2^k)          -> (bitand x (2^k - 1))
 ;;     * Known-bits parity analysis (is_known_even): proves expressions such as
@@ -432,9 +432,6 @@
   ;; ===== Purity Analysis (Side-Effect & Trap Safety) =====
 
   (fn is_pure_op_name [h:str.Bytes] -> bool
-    (or (call str.is h "+")
-    (or (call str.is h "-")
-    (or (call str.is h "*")
     (or (call str.is h "^")
     (or (call str.is h "shl")
     (or (call str.is h "shr")
@@ -469,7 +466,7 @@
     (or (call str.is h "i64.reinterpret_f64")
     (or (call str.is h "f32.reinterpret_i32")
     (or (call str.is h "i32.reinterpret_f32")
-        (call str.is h "f64.sqrt")))))))))))))))))))))))))))))))))))))))
+        (call str.is h "f64.sqrt"))))))))))))))))))))))))))))))))))))
 
   ;; Whether `n` is guaranteed free of side effects and runtime traps.
   (fn is_pure [n:(ptr ONode)] -> bool
@@ -963,6 +960,26 @@
            n))
       (else n)))
 
+  ;; Whether an i64 holds an i32.
+  (fn fits_i32 [w:i64] -> bool (and (gte w -2147483648i64) (lte w 2147483647i64)))
+
+  ;; Whether the i64 x + y, x - y, or x * y overflows (the op says which).
+  (fn overflows64 [op:str.Bytes x:i64 y:i64] -> bool
+    (cond
+      ((call str.is op "+") (or (and (gt y 0i64) (gt x (- 9223372036854775807i64 y))) (and (lt y 0i64) (lt x (- -9223372036854775808i64 y)))))
+      ((call str.is op "-") (or (and (lt y 0i64) (gt x (+ 9223372036854775807i64 y))) (and (gt y 0i64) (lt x (+ -9223372036854775808i64 y)))))
+      (else
+       (cond
+         ((or (eq x 0i64) (eq y 0i64)) false)
+         ((eq x -1i64) (eq y -9223372036854775808i64))
+         ((eq y -1i64) (eq x -9223372036854775808i64))
+         (else (neq (/ (wrap.mul x y) x) y))))))
+
+  ;; x + c1 + c2 gives the same traps as x + (c1 + c2) when both steps go the same way and the sum fits.
+  (fn same_way [c1:i32 c2:i32] -> bool
+    (and (or (and (gte c1 0) (gte c2 0)) (and (lte c1 0) (lte c2 0)))
+         (call fits_i32 (+ (i64.extend_s c1) (i64.extend_s c2)))))
+
   (fn fold_binary [n:(ptr ONode) ht:str.Bytes a:(ptr ONode) b:(ptr ONode) pos:i32 stats:(ptr Stats)] -> (ptr ONode)
     (let a_int:bool (call is_int_node a))
     (let b_int:bool (call is_int_node b))
@@ -972,9 +989,19 @@
     ;; Both operands are i32 constants
     (when (and a_int b_int)
           (cond
-            ((call str.is ht "+") (call bump_folded stats) (return (call make_int (+ av bv) pos)))
-            ((call str.is ht "-") (call bump_folded stats) (return (call make_int (- av bv) pos)))
-            ((call str.is ht "*") (call bump_folded stats) (return (call make_int (* av bv) pos)))
+            ;; an overflowing constant is left to trap when it runs
+            ((call str.is ht "+")
+             (if (call fits_i32 (+ (i64.extend_s av) (i64.extend_s bv)))
+                 (block (call bump_folded stats) (return (call make_int (wrap.add av bv) pos)))
+                 (return n)))
+            ((call str.is ht "-")
+             (if (call fits_i32 (- (i64.extend_s av) (i64.extend_s bv)))
+                 (block (call bump_folded stats) (return (call make_int (wrap.sub av bv) pos)))
+                 (return n)))
+            ((call str.is ht "*")
+             (if (call fits_i32 (* (i64.extend_s av) (i64.extend_s bv)))
+                 (block (call bump_folded stats) (return (call make_int (wrap.mul av bv) pos)))
+                 (return n)))
             ((call str.is ht "/")
              (if (and (neq bv 0) (not (and (eq av -2147483648) (eq bv -1))))
                  (block (call bump_folded stats) (return (call make_int (/ av bv) pos)))
@@ -1014,9 +1041,12 @@
           (let al:i64 (get a ONode.lval))
           (let bl:i64 (get b ONode.lval))
           (cond
-            ((call str.is ht "+") (call bump_folded stats) (return (call make_i64 (+ al bl) pos)))
-            ((call str.is ht "-") (call bump_folded stats) (return (call make_i64 (- al bl) pos)))
-            ((call str.is ht "*") (call bump_folded stats) (return (call make_i64 (* al bl) pos)))
+            ((call str.is ht "+")
+             (if (call overflows64 ht al bl) (return n) (block (call bump_folded stats) (return (call make_i64 (wrap.add al bl) pos)))))
+            ((call str.is ht "-")
+             (if (call overflows64 ht al bl) (return n) (block (call bump_folded stats) (return (call make_i64 (wrap.sub al bl) pos)))))
+            ((call str.is ht "*")
+             (if (call overflows64 ht al bl) (return n) (block (call bump_folded stats) (return (call make_i64 (wrap.mul al bl) pos)))))
             ((call str.is ht "bitand") (call bump_folded stats) (return (call make_i64 (bitand al bl) pos)))
             ((call str.is ht "bitor") (call bump_folded stats) (return (call make_i64 (bitor al bl) pos)))
             ((call str.is ht "^") (call bump_folded stats) (return (call make_i64 (^ al bl) pos)))
@@ -1070,7 +1100,7 @@
        (when (and (call is_i64_node b) (eq (get b ONode.lval) 0i64)) (call bump_folded stats) (return a))
        (when (and (call is_i64_node a) (eq (get a ONode.lval) 0i64)) (call bump_folded stats) (return b))
        ;; Reassociate (+ (+ x c1) c2) -> (+ x (c1+c2))
-       (when (and b_int (and (call is_form a "+") (call is_int_node (call onode_nth a 2))))
+       (when (and b_int (and (call is_form a "+") (and (call is_int_node (call onode_nth a 2)) (call same_way (get (call onode_nth a 2) ONode.ival) bv))))
              (let c1:i32 (get (call onode_nth a 2) ONode.ival))
              (let sum:i32 (+ c1 bv))
              (call bump_folded stats)
@@ -1078,7 +1108,7 @@
                          (call onode_nth a 1)
                          (call make_op2 "+" (call onode_nth a 1) (call make_int sum pos) pos))))
        ;; Reassociate (+ (- x c1) c2) -> (+ x (c2-c1))
-       (when (and b_int (and (call is_form a "-") (call is_int_node (call onode_nth a 2))))
+       (when (and b_int (and (call is_form a "-") (and (call is_int_node (call onode_nth a 2)) (and (neq (get (call onode_nth a 2) ONode.ival) -2147483648) (call same_way (- 0 (get (call onode_nth a 2) ONode.ival)) bv)))))
              (let c1:i32 (get (call onode_nth a 2) ONode.ival))
              (let diff:i32 (- bv c1))
              (call bump_folded stats)
@@ -1090,7 +1120,7 @@
        (when (and b_int (eq bv 0)) (call bump_folded stats) (return a))
        (when (and (call is_i64_node b) (eq (get b ONode.lval) 0i64)) (call bump_folded stats) (return a))
        ;; Reassociate (- (- x c1) c2) -> (- x (c1+c2))
-       (when (and b_int (and (call is_form a "-") (call is_int_node (call onode_nth a 2))))
+       (when (and b_int (and (call is_form a "-") (and (call is_int_node (call onode_nth a 2)) (call same_way (get (call onode_nth a 2) ONode.ival) bv))))
              (let c1:i32 (get (call onode_nth a 2) ONode.ival))
              (let sum:i32 (+ c1 bv))
              (call bump_folded stats)
@@ -1098,7 +1128,7 @@
                          (call onode_nth a 1)
                          (call make_op2 "-" (call onode_nth a 1) (call make_int sum pos) pos))))
        ;; Reassociate (- (+ x c1) c2) -> (+ x (c1-c2))
-       (when (and b_int (and (call is_form a "+") (call is_int_node (call onode_nth a 2))))
+       (when (and b_int (and (call is_form a "+") (and (call is_int_node (call onode_nth a 2)) (and (neq bv -2147483648) (call same_way (get (call onode_nth a 2) ONode.ival) (- 0 bv))))))
              (let c1:i32 (get (call onode_nth a 2) ONode.ival))
              (let diff:i32 (- c1 bv))
              (call bump_folded stats)
@@ -1115,13 +1145,7 @@
        (when (and (call is_i64_node a) (eq (get a ONode.lval) 1i64)) (call bump_folded stats) (return b))
        (when (and (call is_i64_node b) (and (eq (get b ONode.lval) 0i64) (call is_pure a))) (call bump_folded stats) (return (call make_i64 0i64 pos)))
        (when (and (call is_i64_node a) (and (eq (get a ONode.lval) 0i64) (call is_pure b))) (call bump_folded stats) (return (call make_i64 0i64 pos)))
-       ;; Strength reduction: (* x 2^k) / (* 2^k x) -> (shl x k)
-       (when b_int
-             (let sh:i32 (call pow2_shift bv))
-             (when (gt sh 0) (call bump_folded stats) (return (call make_op2 "shl" a (call make_int sh pos) pos))))
-       (when a_int
-             (let sh:i32 (call pow2_shift av))
-             (when (gt sh 0) (call bump_folded stats) (return (call make_op2 "shl" b (call make_int sh pos) pos))))
+       ;; (* x 2^k) stays a multiplication: shl would not trap on overflow
        n)
       ((call str.is ht "/")
        (when (and b_int (eq bv 1)) (call bump_folded stats) (return a))
@@ -2048,11 +2072,11 @@
         1
         0))
 
-  ;; Test 2: Strength reduction (* 2^k -> shl, divu 2^k -> shru, remu 2^k -> bitand,
+  ;; Test 2: Strength reduction (divu 2^k -> shru, remu 2^k -> bitand,
   ;; known-even signed / 2 -> shr, and conversion fusion f64.convert_i64_s+i64.extend_s -> f64.convert_i32_s)
   (fn test_strength_and_parity [] -> i32
     (let src:str "(module m (fn step [i:i32 j:i32 u:i32] -> f64 (let idx:i32 (+ (/ (* (+ i j) (+ (+ i j) 1)) 2) (+ (* u 8) (+ (divu u 16) (remu u 32))))) (f64.convert_i64_s (i64.extend_s idx))))")
-    (let want:str "(module m\n  (fn step [i:i32 j:i32 u:i32] -> f64 (let idx:i32 (+ (shr (* (+ i j) (+ (+ i j) 1)) 1) (+ (shl u 3) (+ (shru u 4) (bitand u 31))))) (f64.convert_i32_s idx))\n)")
+    (let want:str "(module m\n  (fn step [i:i32 j:i32 u:i32] -> f64 (let idx:i32 (+ (shr (* (+ i j) (+ (+ i j) 1)) 1) (+ (* u 8) (+ (shru u 4) (bitand u 31))))) (f64.convert_i32_s idx))\n)")
     (if (call opt_eq src want) 1 0))
 
   ;; Test 3: Multi-round hygienic function inlining (leaf expression + void wrapper)

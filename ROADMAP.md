@@ -33,7 +33,7 @@ by how soon a newcomer meets each item. Sizes are rough: **S** days, **M** a wee
    for go-to-definition. The server can be written in AIPL.
 3. **Error messages, a linter, and a REPL.** *M.* Built on the branch `features/lint`, not yet released: an error shows
    the source line with a caret under its column; arguments count from 1 (`Argument 2 of 'add' ...`); an undefined
-   variable suggests a near one (`did you mean total?`); `aipl lint` finds what compiles but is probably wrong (nine rules,
+   variable suggests a near one (`did you mean total?`); `aipl lint` finds what compiles but is probably wrong (ten rules,
    `;; lint:allow RULE` to keep one). `aipl repl` (for people, since an AI has `aipl eval -e`, `verify`, `test` and `watch`) is built in the Rust `aipl`
    (src/repl.rs); the self-hosted `aipl` does not have it yet (it needs a way to tell a terminal from a pipe, and to run an
    expression in the process it is). Still to do: every error in a function instead of the
@@ -101,7 +101,7 @@ Carried from the audit of 2026-10-27; **not re-checked since**, so treat a speci
   as its first argument (AIPL_SPEC.md 4.G).
 - **Generics are explicit**: every use names its type arguments, and every call of an interface's function names the interface
   and the type. Not yet: interfaces with several type parameters, generic implementations, default functions in an interface.
-- **Structs are behind pointers unless declared `(value)`** (at most 8 scalars, copied, never changed). A heap struct cannot be
+- **Structs are behind pointers unless declared `(value)`** (at most 16 scalars, copied, never changed). A heap struct cannot be
   nested inside another by value.
 - **No module-level variables, by design**: state is a struct passed to every function. Constants may be computed from others.
 - **8- and 16-bit types are storage only**; there is no arithmetic at those widths; no checked division or shift.

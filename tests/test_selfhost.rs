@@ -1032,7 +1032,7 @@ fn self_hosted_bytes_match_void_and_scoping() {
 /// Past the self-hosted code generator's old fixed tables (16 parameters,
 /// 255 structs, unions, and variants, 64 fields, 1,024 locals, 31 call_ref
 /// signatures, 8,192 functions): they grow now, and the bytes are the Rust
-/// code generator's (docs/LAUNCH_CHECKLIST.md).
+/// code generator's (docs/history/LAUNCH_CHECKLIST_2026-10.md).
 #[test]
 fn self_hosted_bytes_match_past_the_old_table_sizes() {
     let list = |n: usize, f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<Vec<_>>().join(" ");
@@ -1185,12 +1185,12 @@ fn self_hosted_arrays_and_results_execute() {
 }
 
 /// Inputs the self-hosted backend cannot compile are compile errors, never a
-/// miscompile: non-scalar struct fields / array elements (95), unknown structs
+/// miscompile: non-scalar struct fields / array elements (95: void here), unknown structs
 /// (96), and string literals past the first 1 MiB of memory (768), the
 /// limit the Rust backend has too.
 #[test]
 fn self_hosted_rejects_what_it_cannot_compile() {
-    let src = "(module m (struct S [a:i32 b:(result i32 i32)]) (fn f [] -> i32 (sizeof S)))";
+    let src = "(module m (struct S [a:i32 b:void]) (fn f [] -> i32 (sizeof S)))";
     let err = self_host(src).unwrap_err();
     assert!(err.contains("compile error 95"), "{src}: {err}");
     let err = self_host("(module m (fn f [] -> i32 (sizeof Missing)))").unwrap_err();

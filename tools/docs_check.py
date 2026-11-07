@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Checks the documentation against the repository (docs/LAUNCH_CHECKLIST.md,
-section 8: "the documentation check is rerun").
+section 8: "The documentation check is rerun").
 
     python3 tools/docs_check.py [--all]
 

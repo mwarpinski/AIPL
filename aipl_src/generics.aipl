@@ -10,6 +10,7 @@
 ;; depth-first with a node's children before the node; output is concrete
 ;; structs, struct instances, concrete functions, function instances.
 (module generics
+  (import option)
   (import alloc)
   (import compiler)
   (import str)
@@ -441,13 +442,13 @@
            ((and generic_field (eq i 2))
             (call buf.push_bytes out (call instance st c env))
             (let f:(ptr compiler.Node) (get c compiler.Node.next))
-            (if (and (call is_symbol f) (lt (call str.find_byte (call text st f) 46) 0))
+            (if (and (call is_symbol f) (lt (call (option.unwrap_or i32) (call str.find_byte (call text st f) 46) -1) 0))
                 (block (call buf.push_byte out 46) (call buf.push_bytes out (call text st f)))
                 (call fail_at st (get c compiler.Node.pos) (call msg "a generic struct field is written (get p (Name T...) field)"))))
            ((eq i variant_at)
             (call buf.push_bytes out (call instance st c env))
             (let v:(ptr compiler.Node) (get c compiler.Node.next))
-            (if (and (call is_symbol v) (lt (call str.find_byte (call text st v) 46) 0))
+            (if (and (call is_symbol v) (lt (call (option.unwrap_or i32) (call str.find_byte (call text st v) 46) -1) 0))
                 (block (call buf.push_byte out 46) (call buf.push_bytes out (call text st v)))
                 (call fail_at st (get c compiler.Node.pos)
                   (call msg (if (eq variant_at 0)
@@ -1474,7 +1475,7 @@
                     (else (call arg_symbol st (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer))))))
     (if (call is_app st n false) (call instance st n env) (call str.absent)))
 
-  ;; Whether the argument cannot be stored: void, or a result.
+  ;; Whether the argument cannot be stored: void.
   (fn arg_unstorable [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env)] -> bool
     (when (call is_symbol n)
           (let t:str.Bytes (call text st n))
@@ -1483,7 +1484,7 @@
                     ((lt i 0) (call lit t "void"))
                     ((get env Env.sealed) false)
                     (else (call arg_unstorable st (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer))))))
-    (and (not (call is_app st n false)) (call lit (call head st n) "result")))
+    false)
 
   ;; Why argument k of an instance of t is of the wrong kind, or null.
   (fn kind_error [st:(ptr St) t:(ptr Tmpl) k:i32 an:(ptr compiler.Node) env:(ptr Env) name:str.Bytes] -> (ptr buf.Buf)

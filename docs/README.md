@@ -20,7 +20,9 @@ Everything written about AIPL lives here or at the top of the repository, and th
 | [USING_AIPL.md](USING_AIPL.md) | Build, run, test |
 | [FAQ.md](FAQ.md) | Frequently asked questions, platform support included |
 | [BENCHMARKS.md](BENCHMARKS.md) | Speed measurements and how they are taken |
-| [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) | What is left before showing AIPL publicly, and who has each item |
+| [LIMITS.md](LIMITS.md) | What the language does not do, each limit with the way around it |
+| [LANGUAGE_VERSIONING.md](LANGUAGE_VERSIONING.md) | The language version, `(language N)`, and what a version promises |
+| [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) | What is left before launch, the Rust referee's role, and the way off Rust after it |
 
 ## Design (docs/design/)
 
@@ -64,6 +66,7 @@ Records of what happened, kept as written. What they call "next" or "not yet" wa
 | [HANDOFF.md](history/HANDOFF.md) | Where AIPL stood on 2026-10-27, for an agent picking the work up elsewhere |
 | [APPLE_SILICON_HANDOFF.md](history/APPLE_SILICON_HANDOFF.md) | Instructions for the agent on the Mac (rounds 1 to 4) |
 | [APPLE_SILICON_REPORT.md](history/APPLE_SILICON_REPORT.md) | The Apple Silicon port and its verification |
+| [LAUNCH_CHECKLIST_2026-10.md](history/LAUNCH_CHECKLIST_2026-10.md) | The launch checklist of October 2026: what was done before launch, and why |
 
 ## Notes (docs/notes/)
 

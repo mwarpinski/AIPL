@@ -76,11 +76,15 @@ const PROGRAMS: &[(&str, &str)] = &[
     ),
     ("exit_status_125", "(module m (fn main [] -> i32 (sys.exit 125) 0))"),
     // NE6: the i32 cases of tests/test_differential.rs, exit status = low 6 bits
-    ("add_wraps", "(module m (fn main [] -> i32 (let x:i32 (+ 2147483647 1)) (sys.exit (bitand (shru x 26) 63)) 0))"),
-    ("sub_wraps", "(module m (fn main [] -> i32 (let x:i32 (- -2147483648 1)) (sys.exit (bitand (shru x 26) 63)) 0))"),
+    ("add_wraps", "(module m (fn main [] -> i32 (let x:i32 (wrap.add 2147483647 1)) (sys.exit (bitand (shru x 26) 63)) 0))"),
+    ("sub_wraps", "(module m (fn main [] -> i32 (let x:i32 (wrap.sub -2147483648 1)) (sys.exit (bitand (shru x 26) 63)) 0))"),
     ("shr_is_arithmetic", "(module m (fn main [] -> i32 (sys.exit (bitand (shr -8 1) 63)) 0))"),
     ("shru_is_logical", "(module m (fn main [] -> i32 (sys.exit (shru (shru -8 1) 25)) 0))"),
-    ("mul_wraps_to_zero", "(module m (fn main [] -> i32 (sys.exit (* 65536 65536)) 0))"),
+    ("mul_wraps_to_zero", "(module m (fn main [] -> i32 (sys.exit (wrap.mul 65536 65536)) 0))"),
+    ("trap_add_overflow", "(module m (fn main [] -> i32 (let z:i32 1) (sys.exit (+ 2147483647 z)) 0))"),
+    ("trap_sub_overflow", "(module m (fn main [] -> i32 (let z:i32 1) (sys.exit (- -2147483648 z)) 0))"),
+    ("trap_mul_overflow", "(module m (fn main [] -> i32 (let z:i32 65536) (sys.exit (* z z)) 0))"),
+    ("trap_i64_add_overflow", "(module m (fn main [] -> i32 (let z:i64 1i64) (sys.exit (i32.wrap (+ 9223372036854775807i64 z))) 0))"),
     ("div_truncates", "(module m (fn main [] -> i32 (sys.exit (+ 10 (/ -7 2))) 0))"),
     ("rem_follows_dividend", "(module m (fn main [] -> i32 (sys.exit (+ 10 (% -7 2))) 0))"),
     ("divu_unsigned", "(module m (fn main [] -> i32 (sys.exit (shru (divu -1 2) 25)) 0))"),
@@ -1406,8 +1410,8 @@ fn i64_programs_match_natively() {
     assert_functions_match(
         "i64_cases",
         "(module m
-           (fn mul_wraps [] -> i64 (unsafe) (* 4294967296i64 2147483648i64))
-           (fn add_overflows [] -> i64 (unsafe) (+ 9223372036854775807i64 1i64))
+           (fn mul_wraps [] -> i64 (unsafe) (wrap.mul 4294967296i64 2147483648i64))
+           (fn add_overflows [] -> i64 (unsafe) (wrap.add 9223372036854775807i64 1i64))
            (fn past_32_bits [] -> i64 (unsafe) (+ 2147483647i64 1i64))
            (fn div [] -> i64 (unsafe) (/ -7i64 2i64))
            (fn rem [] -> i64 (unsafe) (% -7i64 2i64))
@@ -2251,7 +2255,7 @@ fn unsupported_instructions_and_imports_are_named() {
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native backend)")]
 fn value_struct_programs_match_natively() {
-    for (name, path) in [("values", "tests/aipl/values.aipl"), ("values_flow", "tests/aipl/values_flow.aipl"), ("unions_by_value", "tests/aipl/unions_by_value.aipl"), ("results_by_value", "tests/aipl/results_by_value.aipl")] {
+    for (name, path) in [("values", "tests/aipl/values.aipl"), ("values_flow", "tests/aipl/values_flow.aipl"), ("unions_by_value", "tests/aipl/unions_by_value.aipl"), ("results_by_value", "tests/aipl/results_by_value.aipl"), ("wide_values", "tests/aipl/wide_values.aipl")] {
         let m = aipl_core::resolver::Resolver::resolve(&root().join(path)).unwrap();
         assert_functions_match(name, &aipl_core::printer::print_module(&m), &[], &[("main", &[])]);
     }

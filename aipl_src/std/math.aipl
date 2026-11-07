@@ -347,7 +347,7 @@
             (return (make LogParts [f:0.0 hfsq:0.0 s:0.0 r:0.0 k:0 done:true v:x]))
             (when (and (eq hx 1072693248) (eq (i32.wrap bits) 0))
               (return (make LogParts [f:0.0 hfsq:0.0 s:0.0 r:0.0 k:0 done:true v:0.0])))))
-    (set! hx (+ hx 614242))
+    (set! hx (wrap.add hx 614242))
     (set! k (+ k (- (shru hx 20) 1023)))
     (set! hx (+ (bitand hx 1048575) 1072079006))
     (set! x (call from_words hx (i32.wrap bits)))
@@ -966,10 +966,10 @@
                         ((eq m 2) (/ (* 3.0 PI) 4.0))
                         (else (/ (call neg (* 3.0 PI)) 4.0))))
           (return (cond ((eq m 0) 0.0) ((eq m 1) (call neg 0.0)) ((eq m 2) PI) (else (call neg PI))))))
-    (when (or (ltu (+ ix 67108864) iy) (eq iy 2146435072))
+    (when (or (ltu (wrap.add ix 67108864) iy) (eq iy 2146435072))
       (return (if (neq (bitand m 1) 0) (/ (call neg PI) 2.0) (/ PI 2.0))))
     (let z:f64
-      (if (and (neq (bitand m 2) 0) (ltu (+ iy 67108864) ix))
+      (if (and (neq (bitand m 2) 0) (ltu (wrap.add iy 67108864) ix))
           0.0
           (call atan (call fabs (/ y x)))))
     (cond

@@ -43,6 +43,9 @@ fn case(op: &OpCode) -> (&'static str, &'static str) {
         CheckedAdd => ("i32", "(checked.add 2 3)"),
         CheckedSub => ("i64", "(checked.sub 2i64 3i64)"),
         CheckedMul => ("i32", "(checked.mul 4 5)"),
+        WrapAdd => ("i32", "(wrap.add 2147483647 2)"),
+        WrapSub => ("i64", "(wrap.sub -9223372036854775807i64 3i64)"),
+        WrapMul => ("i32", "(wrap.mul 65536 65536)"),
         MemLoad8 => ("i32", "(mem.load8 (mem.alloc 8))"),
         MemLoad8S => ("i32", "(mem.load8_s (mem.alloc 8))"),
         MemLoad16U => ("i32", "(mem.load16_u (mem.alloc 8))"),
@@ -154,7 +157,7 @@ fn case(op: &OpCode) -> (&'static str, &'static str) {
 const ALL_OPCODES: &[OpCode] = {
     use OpCode::*;
     &[
-        Add, Sub, Mul, Div, DivU, Mod, RemU, BitXor, Shl, Shr, ShrU, BitAnd, BitOr, Rotl, Rotr, BitNot, Drop, Clz, Ctz, Popcnt, CheckedAdd, CheckedSub, CheckedMul,
+        Add, Sub, Mul, Div, DivU, Mod, RemU, BitXor, Shl, Shr, ShrU, BitAnd, BitOr, Rotl, Rotr, BitNot, Drop, Clz, Ctz, Popcnt, CheckedAdd, CheckedSub, CheckedMul, WrapAdd, WrapSub, WrapMul,
         MemLoad8, MemLoad8S, MemLoad16U, MemLoad16S, MemLoad32, MemLoad64, MemStore8, MemStore16, MemStore32, MemStore64, MemAlloc, MemGrow, AtomicAdd, AtomicCas,
         AtomicLock, AtomicUnlock, Eq, Neq, Lt, Lte, Gt, Gte, LtU, LteU, GtU, GteU, And, Or, Not, SysPrint, SysTime,
         SysMonotonic, SysRandom, SysExit, FsOpen, FsRead, FsWrite, FsClose, FsDelete, FsChmod, FsRename, FsRmdir, FsMkdir, SysPoll, FsOpendir, FsReaddir, FsStat, NetListen, NetAccept, NetRecv, NetSend, NetClose, NetConnect, NetConnectHost, NetTlsConnect, ProcSpawn, ProcStream, ProcRead, ProcWrite, ProcClose, ProcWait, ProcExec, ProcKill, ProcTryWait, NetPoll, ProcPoll, ArgsSizes, ArgsGet, EnvSizes,

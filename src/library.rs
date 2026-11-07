@@ -1,7 +1,7 @@
 //! The AIPL library this binary uses: what aipl_src/ holds, the standard
 //! library (std/) and the self-hosted toolchain's sources (driver.aipl for
 //! the optimizer, native/ for `--exe`, doc.aipl for `aipl doc`), which the
-//! commands read at run time (docs/LAUNCH_CHECKLIST.md, "A binary that
+//! commands read at run time (docs/history/LAUNCH_CHECKLIST_2026-10.md, "A binary that
 //! works wherever it is").
 //!
 //! A binary run from its own checkout's target/ (one being developed)

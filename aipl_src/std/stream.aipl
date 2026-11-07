@@ -94,7 +94,7 @@
   ;; open for a path held as bytes.
   (fn open_path [a:alloc.Allocator path:str.Bytes] -> (result (ptr Reader) io.Error) (pub)
     (let fd:i32 (unsafe (fs.open (call str.addr path) (get path str.Bytes.len) 0)))
-    (when (lt fd 0) (return (err:(ptr Reader) (call io.error_of fd))))
+    (when (lt fd 0) (return (err:(ptr Reader) (call io.error_of fd path))))
     (ok:io.Error (call fd_reader a fd true)))
 
   ;; Reads b's bytes where they are, so b must not change or be freed
@@ -299,7 +299,7 @@
   ;; create for a path held as bytes.
   (fn create_path [a:alloc.Allocator path:str.Bytes] -> (result (ptr Writer) io.Error) (pub)
     (let fd:i32 (unsafe (fs.open (call str.addr path) (get path str.Bytes.len) 1)))
-    (when (lt fd 0) (return (err:(ptr Writer) (call io.error_of fd))))
+    (when (lt fd 0) (return (err:(ptr Writer) (call io.error_of fd path))))
     (ok:io.Error (call make_writer a (make Sink.fd fd) true (call buf.make a 8192))))
 
   ;; Appends to b as it is written to; close_writer leaves b.

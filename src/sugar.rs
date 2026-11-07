@@ -84,7 +84,7 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
     // the [f:v ...] of a named new or make holds expressions
     let named = matches!(sx.head(), Some("new" | "make")) && matches!(sx.items().last(), Some(Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. }));
     if let Some(items) = sx.items_mut() {
-        let last = items.len() - 1;
+        let last = items.len().saturating_sub(1);
         for (k, i) in items.iter_mut().enumerate() {
             if named && k == last {
                 for v in i.items_mut().into_iter().flatten() {

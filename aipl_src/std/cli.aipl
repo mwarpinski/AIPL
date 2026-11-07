@@ -179,7 +179,7 @@
         ((or (call str.same arg "--help") (call str.same arg "-h")) (return (err:(ptr Args) "help")))
         ;; --name, --name=value
         ((eq (call str.byte_at b 1) 45)
-         (let eq_at:i32 (call str.find_byte b 61))
+         (let eq_at:i32 (call (option.unwrap_or i32) (call str.find_byte b 61) -1))
          (let name:str.Bytes (call str.slice b 2 (- (if (lt eq_at 0) len eq_at) 2)))
          (let s:(ptr Spec) (call find_long p name))
          (when (eq s (ptr.null Spec)) (return (err:(ptr Args) (format "unknown option '{arg}'"))))

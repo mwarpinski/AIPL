@@ -377,7 +377,7 @@ one byte, empty). Sizes are reported against zlib's at the same level;
 matching them byte for byte is not a goal.
 
 With `deflate` and `hash.crc32`, writing a PNG is a short program; it is
-one of the showcase programs (docs/LAUNCH_CHECKLIST.md), not a library.
+one of the showcase programs (docs/history/LAUNCH_CHECKLIST_2026-10.md), not a library.
 
 As built (2026-10-18): one module, `deflate`, over whole buffers (a
 stream version can come with `http`, when a body arrives in pieces). The

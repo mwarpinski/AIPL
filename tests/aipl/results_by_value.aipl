@@ -28,8 +28,8 @@
       ((lt n 20) (ok:bool (make Shape.box n 2)))
       (else (err:Shape false))))
 
-  ;; four f64s beside four i32s would be nine slots, which is refused: the
-  ;; f64s behind a pointer, six (the tag, four i32s, an i64)
+  ;; four f64s beside four i32s are nine slots, which a value may hold; here the
+  ;; f64s are behind a pointer, six (the tag, four i32s, an i64)
   (fn wide [ok:bool] -> (result (ptr Quad) Ints)
     (if ok
         (block

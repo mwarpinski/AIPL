@@ -1042,6 +1042,38 @@ impl VM {
         Ok((addr, ty))
     }
 
+    /// A value read from the slots of a union or result held by value: a `str` in it is the address of its
+    /// bytes, which are read now (a payload takes a slot of the i32 kind, whatever the variant).
+    fn read_strs(&self, ty: &Type, v: Value) -> Result<Value, String> {
+        match (ty, v) {
+            (Type::Str, Value::Int(p)) => {
+                let mem = self.shared.lock().unwrap();
+                let p = p as u32 as usize;
+                if p < 4 || p > mem.bytes.len() {
+                    return Err(format!("VM: str field holds invalid string pointer {}", p));
+                }
+                let len = u32::from_le_bytes(mem.bytes[p - 4..p].try_into().unwrap()) as usize;
+                if p.checked_add(len).is_none_or(|end| end > mem.bytes.len()) {
+                    return Err(format!("VM: str at {} with length {} runs past memory", p, len));
+                }
+                Ok(Value::Str(String::from_utf8_lossy(&mem.bytes[p..p + len]).into_owned()))
+            }
+            (Type::Union(n), Value::Union(tag, fields)) => {
+                let Some(variant) = self.structs.unions.get(n).and_then(|u| u.variants.get(tag)) else { return Ok(Value::Union(tag, fields)) };
+                let fields = fields.into_iter().zip(&variant.fields).map(|(x, f)| self.read_strs(&f.ty, x)).collect::<Result<Vec<_>, _>>()?;
+                Ok(Value::Union(tag, fields))
+            }
+            (Type::ResultType(a, _), Value::Ok(x)) => Ok(Value::Ok(Box::new(self.read_strs(a, *x)?))),
+            (Type::ResultType(_, b), Value::Err(x)) => Ok(Value::Err(Box::new(self.read_strs(b, *x)?))),
+            (Type::Struct(n), Value::Record(fields)) if self.structs.get(n).is_some_and(|d| d.is_value) => {
+                let def = &self.structs[n];
+                let fields = fields.into_iter().zip(&def.fields).map(|(x, f)| self.read_strs(&f.ty, x)).collect::<Result<Vec<_>, _>>()?;
+                Ok(Value::Record(fields))
+            }
+            (_, v) => Ok(v),
+        }
+    }
+
     fn load_val_at(&self, addr: usize, ty: &Type) -> Result<Value, String> {
         // a union or result by value: its slots, read and rebuilt
         if let Some(l) = self.structs.sum_of(ty) {
@@ -1049,7 +1081,7 @@ impl VM {
             for (t, off) in l.slots.iter().zip(&l.offsets) {
                 slots.push(self.load_val_at(addr + *off as usize, t)?);
             }
-            return Ok(from_scalars(ty, &slots, &self.structs));
+            return self.read_strs(ty, from_scalars(ty, &slots, &self.structs));
         }
         // a value struct: its fields, each where the layout puts it
         if let Some(def) = self.value_struct(ty) {
@@ -1138,6 +1170,11 @@ impl VM {
         // a union or result by value: every slot (zero where its variant has none)
         if let Some(l) = self.structs.sum_of(ty) {
             for ((t, off), v) in l.slots.iter().zip(&l.offsets).zip(to_scalars(ty, val, &self.structs)?) {
+                // a str payload shares an i32-sized slot: it is stored as its address
+                let v = match v {
+                    Value::Str(text) => Value::Int(self.materialize_str("str store", &text)? as i64),
+                    v => v,
+                };
                 self.store_val_at(addr + *off as usize, t, v)?;
             }
             return Ok(());
@@ -1250,23 +1287,27 @@ impl VM {
                 self.eval_expr(&args[0], scope)?;
                 Ok(Value::Void)
             }
-            OpCode::Add => {
+            OpCode::Add | OpCode::WrapAdd => {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_add(y as i32) as i64)),
-                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_add(y))),
+                    (Value::Int(x), Value::Int(y)) if *op == OpCode::WrapAdd => Ok(Value::Int((x as i32).wrapping_add(y as i32) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) if *op == OpCode::WrapAdd => Ok(Value::Int64(x.wrapping_add(y))),
+                    (Value::Int(x), Value::Int(y)) => (x as i32).checked_add(y as i32).map(|v| Value::Int(v as i64)).ok_or_else(|| "Integer overflow in +".to_string()),
+                    (Value::Int64(x), Value::Int64(y)) => x.checked_add(y).map(Value::Int64).ok_or_else(|| "Integer overflow in +".to_string()),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
                     (Value::Float32(x), Value::Float32(y)) => Ok(Value::Float32(x + y)),
                     _ => Err("Invalid types for +".to_string()),
                 }
             }
-            OpCode::Sub => {
+            OpCode::Sub | OpCode::WrapSub => {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_sub(y as i32) as i64)),
-                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_sub(y))),
+                    (Value::Int(x), Value::Int(y)) if *op == OpCode::WrapSub => Ok(Value::Int((x as i32).wrapping_sub(y as i32) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) if *op == OpCode::WrapSub => Ok(Value::Int64(x.wrapping_sub(y))),
+                    (Value::Int(x), Value::Int(y)) => (x as i32).checked_sub(y as i32).map(|v| Value::Int(v as i64)).ok_or_else(|| "Integer overflow in -".to_string()),
+                    (Value::Int64(x), Value::Int64(y)) => x.checked_sub(y).map(Value::Int64).ok_or_else(|| "Integer overflow in -".to_string()),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
                     (Value::Float32(x), Value::Float32(y)) => Ok(Value::Float32(x - y)),
                     _ => Err("Invalid types for -".to_string()),
@@ -1660,12 +1701,14 @@ impl VM {
                 mem.bytes[ptr..ptr + 4].copy_from_slice(&0i32.to_le_bytes());
                 Ok(Value::Void)
             }
-            OpCode::Mul => {
+            OpCode::Mul | OpCode::WrapMul => {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_mul(y as i32) as i64)),
-                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_mul(y))),
+                    (Value::Int(x), Value::Int(y)) if *op == OpCode::WrapMul => Ok(Value::Int((x as i32).wrapping_mul(y as i32) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) if *op == OpCode::WrapMul => Ok(Value::Int64(x.wrapping_mul(y))),
+                    (Value::Int(x), Value::Int(y)) => (x as i32).checked_mul(y as i32).map(|v| Value::Int(v as i64)).ok_or_else(|| "Integer overflow in *".to_string()),
+                    (Value::Int64(x), Value::Int64(y)) => x.checked_mul(y).map(Value::Int64).ok_or_else(|| "Integer overflow in *".to_string()),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
                     (Value::Float32(x), Value::Float32(y)) => Ok(Value::Float32(x * y)),
                     _ => Err("Invalid types for *".to_string()),

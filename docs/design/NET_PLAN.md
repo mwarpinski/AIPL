@@ -31,7 +31,7 @@ Also outstanding (small, found while building steps 3-4):
 - `aipl eval` panics printing its own status lines when standard output
   is a full disk (the program's exit status is still right).
 - "Out of memory" said as such when a program reaches `--max-memory`
-  (docs/LAUNCH_CHECKLIST.md; today it is the out-of-bounds trap).
+  (docs/history/LAUNCH_CHECKLIST_2026-10.md section 6; today it is the out-of-bounds trap).
 
 ## 1. Why a long-running server is safe now
 

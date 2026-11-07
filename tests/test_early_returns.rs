@@ -67,7 +67,7 @@ fn every_error_has_one_message_in_both_toolchains() {
         ("(fn f [] -> (result i32 i32) (let v:i32 (try_opt (call r))) (ok:i32 v))", "try_opt takes an (option.Option T), got (result i32 str)"),
         ("(fn f [] -> (result i32 i32) (let v:i32 (try_opt (call o))) (ok:i32 v))", "try_opt returns none from the function, which returns (result i32 i32), not an (option.Option T)"),
         ("(fn f [] -> (result i32 i32) (let v:i32 (try_or (call o))) (ok:i32 v))", "try_or takes an option and the error to return without a value: (try_or o err)"),
-        ("(fn f [] -> (result i32 i32) (let v:i32 (try)) (ok:i32 v))", "try takes one result: (try (call f x))"),
+        ("(fn f [] -> (result i32 i32) (let v:i32 (try)) (ok:i32 v))", "try takes one result, and may take a function that converts its error: (try (call f x)) or (try (call f x) (ref convert))"),
         ("(fn f [] -> (result i32 i32) (req (gt (try (call r)) 0)) (ok:i32 1))", "try returns from the function, and a contract cannot"),
         ("(fn f [] -> i32 (block (defer (call r))) 1)", "defer is a statement of a function's body (it runs when the function returns), not part of an expression or a block"),
         ("(fn f [] -> i32 (defer (return 1)) 1)", "a defer cannot return: it runs as the function returns"),

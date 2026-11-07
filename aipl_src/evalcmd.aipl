@@ -165,7 +165,7 @@
     (let h:str.Bytes (call buf.bytes head))
     (put place Place.line (+ (call count_newlines h) 1))
     (put place Place.lines (+ (call count_newlines exprs) 1))
-    (put place Place.col (- (get h str.Bytes.len) (+ (call str.rfind h (call str.from_str "\n")) 1)))
+    (put place Place.col (- (get h str.Bytes.len) (+ (call (option.unwrap_or i32) (call str.rfind h (call str.from_str "\n")) -1) 1)))
     (let all:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (+ (get src str.Bytes.len) (get exprs str.Bytes.len)) 256)))
     (call buf.push_bytes all h)
     (call buf.push_bytes all exprs)
@@ -192,7 +192,7 @@
     (let rest:str.Bytes text)
     (let more:bool true)
     (while more
-      (let at:i32 (call str.find rest prefix))
+      (let at:i32 (call (option.unwrap_or i32) (call str.find rest prefix) -1))
       (if (lt at 0)
           (set! more false)
           (block
@@ -236,7 +236,7 @@
     (while (and (gt (get text str.Bytes.len) 0) (eq (call str.byte_at text (- (get text str.Bytes.len) 1)) 10))
       (set! text (call str.slice text 0 (- (get text str.Bytes.len) 1))))
     (let full:str.Bytes (get place Place.path))
-    (let slash:i32 (call str.rfind full (call str.from_str "/")))
+    (let slash:i32 (call (option.unwrap_or i32) (call str.rfind full (call str.from_str "/")) -1))
     (let short:str.Bytes (if (lt slash 0) full (call str.slice full (+ slash 1) (- (get full str.Bytes.len) (+ slash 1)))))
     (let p1:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (call buf.push_bytes p1 full)
@@ -456,7 +456,7 @@
     (let rest:str.Bytes b)
     (let more:bool true)
     (while more
-      (let at:i32 (call str.find rest from))
+      (let at:i32 (call (option.unwrap_or i32) (call str.find rest from) -1))
       (if (lt at 0)
           (set! more false)
           (block

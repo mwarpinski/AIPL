@@ -163,7 +163,7 @@
         (when (get u Url.has_password) (call buf.push_byte o 58) (call buf.push_bytes o (get u Url.password)))
         (call buf.push_byte o 64))
       (let host:str.Bytes (get u Url.host))
-      (let v6:bool (gte (call str.find_byte host 58) 0))
+      (let v6:bool (gte (call (option.unwrap_or i32) (call str.find_byte host 58) -1) 0))
       (when v6 (call buf.push_byte o 91))
       (call buf.push_bytes o host)
       (when v6 (call buf.push_byte o 93))

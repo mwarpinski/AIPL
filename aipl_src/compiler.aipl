@@ -253,13 +253,13 @@
           ;; accumulated downwards, so that the smallest i64 fits
           (for i start len
             (set! v (- (* v 10i64) (i64.extend_s (- (mem.load8 (+ src_ptr (+ pos i))) CH_ZERO)))))
-          (if neg v (- 0i64 v)))
+          (if neg v (wrap.sub 0i64 v)))
         (block
           (for i (+ start 2) len
             (let c:i32 (mem.load8 (+ src_ptr (+ pos i))))
             (when (neq c 95)
-              (set! v (+ (* v (i64.extend_s radix)) (i64.extend_s (call digit_value c))))))
-          (if neg (- 0i64 v) v)))))
+              (set! v (wrap.add (wrap.mul v (i64.extend_s radix)) (i64.extend_s (call digit_value c))))))
+          (if neg (wrap.sub 0i64 v) v)))))
 
   ;; Rust's i64 parse: an optional '+' or '-', then at least one digit, the
   ;; value within i64; or a 0x or 0b literal (is_radix_literal).

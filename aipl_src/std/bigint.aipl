@@ -47,7 +47,7 @@
     (for i 0 (get a Int.len) (arr.set i64 (get a Int.limbs) i 0i64))
     (let w:i64 (i64.extend_s v))
     (put a Int.neg (lt w 0i64))
-    (when (lt w 0i64) (set! w (- 0i64 w)))
+    (when (lt w 0i64) (set! w (wrap.sub 0i64 w)))
     (arr.set i64 (get a Int.limbs) 0 w)
     (put a Int.len 1)
     (call trim a))
@@ -107,7 +107,8 @@
     (when (neq sa sb) (return (if (lt sa sb) -1 1)))
     (* sa (call compare_magnitude a b)))
 
-  ;; |a| = |a| + |b| * m (0 <= m < 2^31); a's sign is untouched.
+  ;; |a| = |a| + |b| * m (0 <= m < 2^31); a's sign is untouched. The limb arithmetic below is
+  ;; shown not to overflow in its comments, so it uses wrap.* and skips the check.
   (fn magnitude_add_mul [a:(ptr Int) b:(ptr Int) m:i64] -> void
     (let n:i32 (if (gt (get a Int.len) (get b Int.len)) (get a Int.len) (get b Int.len)))
     (call reserve a (+ n 1))
@@ -117,11 +118,11 @@
     (let lb:i32 (get b Int.len))
     (for i 0 lb
       ;; b's limb * m < 2^63 - 2^33, plus a's limb and carry (each < 2^32)
-      (let t:i64 (+ (+ (* (arr.get i64 y i) m) (arr.get i64 x i)) carry))
+      (let t:i64 (wrap.add (wrap.add (wrap.mul (arr.get i64 y i) m) (arr.get i64 x i)) carry))
       (arr.set i64 x i (bitand t 4294967295i64))
       (set! carry (shru t 32i64)))
     (for i lb n
-      (let t:i64 (+ (arr.get i64 x i) carry))
+      (let t:i64 (wrap.add (arr.get i64 x i) carry))
       (arr.set i64 x i (bitand t 4294967295i64))
       (set! carry (shru t 32i64)))
     (arr.set i64 x n carry)
@@ -141,19 +142,19 @@
     (let lb:i32 (get b Int.len))
     (for i 0 lb
       ;; a's limb - b's limb * m - borrow > -2^63: no overflow; shr floors
-      (let t:i64 (- (- (arr.get i64 x i) (* (arr.get i64 y i) m)) borrow))
+      (let t:i64 (wrap.sub (wrap.sub (arr.get i64 x i) (wrap.mul (arr.get i64 y i) m)) borrow))
       (arr.set i64 x i (bitand t 4294967295i64))
-      (set! borrow (- 0i64 (shr t 32i64))))
+      (set! borrow (wrap.sub 0i64 (shr t 32i64))))
     (for i lb n
-      (let t:i64 (- (arr.get i64 x i) borrow))
+      (let t:i64 (wrap.sub (arr.get i64 x i) borrow))
       (arr.set i64 x i (bitand t 4294967295i64))
-      (set! borrow (- 0i64 (shr t 32i64))))
+      (set! borrow (wrap.sub 0i64 (shr t 32i64))))
     (put a Int.len n)
     (when (eq borrow 0i64) (return false))
     ;; two's complement over n limbs: complement each, then add one
     (let carry:i64 1i64)
     (for i 0 n
-      (let t:i64 (+ (bitand (^ (arr.get i64 x i) -1i64) 4294967295i64) carry))
+      (let t:i64 (wrap.add (bitand (^ (arr.get i64 x i) -1i64) 4294967295i64) carry))
       (arr.set i64 x i (bitand t 4294967295i64))
       (set! carry (shru t 32i64)))
     true)
@@ -163,7 +164,7 @@
     (req (gt m -2147483648))
     (let mm:i64 (i64.extend_s m))
     (let term_neg:bool (if (lt m 0) (not (get b Int.neg)) (get b Int.neg)))
-    (when (lt mm 0i64) (set! mm (- 0i64 mm)))
+    (when (lt mm 0i64) (set! mm (wrap.sub 0i64 mm)))
     (when (call is_zero a) (put a Int.neg term_neg))
     (if (eq (get a Int.neg) term_neg)
         (call magnitude_add_mul a b mm)
@@ -186,10 +187,10 @@
     (call reserve a (+ (get a Int.len) 1))
     (let x:(arr i64) (get a Int.limbs))
     (let mm:i64 (i64.extend_s m))
-    (when (lt m 0) (set! mm (- 0i64 mm)) (put a Int.neg (not (get a Int.neg))))
+    (when (lt m 0) (set! mm (wrap.sub 0i64 mm)) (put a Int.neg (not (get a Int.neg))))
     (let carry:i64 0i64)
     (for i 0 (get a Int.len)
-      (let t:i64 (+ (* (arr.get i64 x i) mm) carry))
+      (let t:i64 (wrap.add (wrap.mul (arr.get i64 x i) mm) carry))
       (arr.set i64 x i (bitand t 4294967295i64))
       (set! carry (shru t 32i64)))
     (arr.set i64 x (get a Int.len) carry)

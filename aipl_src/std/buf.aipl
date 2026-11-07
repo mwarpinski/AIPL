@@ -159,6 +159,14 @@
   (fn bytes [b:(ptr Buf)] -> str.Bytes (pub)
     (call str.of_array (get b Buf.store) 0 (get b Buf.len)))
 
+  ;; x then y, in memory from a (an arena, say, which frees it with the rest): a
+  ;; checked view, for (no_leak) code that cannot use str.concat.
+  (fn concat [a:alloc.Allocator x:str.Bytes y:str.Bytes] -> str.Bytes (pub)
+    (let b:(ptr Buf) (call make a (+ (get x str.Bytes.len) (get y str.Bytes.len))))
+    (call push_bytes b x)
+    (call push_bytes b y)
+    (call bytes b))
+
   ;; The contents as a new str: a copy, so later pushes and free leave it
   ;; alone. Never freed (str.from_bytes); the contents must be UTF-8.
   (fn to_str [b:(ptr Buf)] -> str (pub) (call str.from_bytes (call bytes b)))

@@ -448,7 +448,7 @@
     (let n:i32 (get d str.Bytes.len))
     (let s:i32 0)
     (when (call str.starts_with d (call str.from_str "std/"))
-          (let c:i32 (call str.find d (call str.from_str ": ")))
+          (let c:i32 (call (option.unwrap_or i32) (call str.find d (call str.from_str ": ")) -1))
           (when (gte c 0) (set! s (+ c 2))))
     (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 80))
     (let i:i32 s)

@@ -9,6 +9,7 @@
 ;; excerpt when FILE can be read, LINE is in it, COL is on the line or just past its end, and the line is at most
 ;; 200 bytes. Tabs show as spaces so that the caret stays under its column.
 (module excerpt
+  (import option)
   (import alloc)
   (import buf)
   (import io)
@@ -68,10 +69,10 @@
     ;; the start of line `line`: after the (line - 1)th newline
     (let start:i32 0)
     (for cur 1 line
-      (let k:i32 (call str.find_byte (call str.slice text start (- size start)) 10))
+      (let k:i32 (call (option.unwrap_or i32) (call str.find_byte (call str.slice text start (- size start)) 10) -1))
       (when (lt k 0) (return))
       (set! start (+ start (+ k 1))))
-    (let k:i32 (call str.find_byte (call str.slice text start (- size start)) 10))
+    (let k:i32 (call (option.unwrap_or i32) (call str.find_byte (call str.slice text start (- size start)) 10) -1))
     (let stop:i32 (if (lt k 0) size (+ start k)))
     (let n:i32 (- stop start))
     (when (and (gt n 0) (eq (call str.byte_at text (- stop 1)) 13)) (set! n (- n 1)))
@@ -104,7 +105,7 @@
     (let pos:i32 0)
     (let more:bool true)
     (while more
-      (let k:i32 (call str.find_byte (call str.slice msg pos (- size pos)) 10))
+      (let k:i32 (call (option.unwrap_or i32) (call str.find_byte (call str.slice msg pos (- size pos)) 10) -1))
       (let stop:i32 (if (lt k 0) size (+ pos k)))
       (let l:str.Bytes (call str.slice msg pos (- stop pos)))
       (call buf.push_bytes out l)

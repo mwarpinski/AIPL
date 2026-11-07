@@ -22,7 +22,7 @@
   ;; one to one) so stale data is unlikely to equal it by accident. Never 0
   ;; (objects from new), -1 (ptr.cast), or DEAD.
   (fn fresh [] -> i32 (pub)
-    (unsafe (let g:i32 (* (+ (atomic.add COUNTER 1) 1) -1640531535))
+    (unsafe (let g:i32 (wrap.mul (wrap.add (atomic.add COUNTER 1) 1) -1640531535))
     (if (or (eq g 0) (or (eq g -1) (eq g DEAD))) 1 g)))
 
   ;; A zeroed T that is never freed, from the bump cursor (mem.alloc):

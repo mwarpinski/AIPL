@@ -637,7 +637,7 @@
   ;; the thread's FS block, after its stack limit (a value struct is at most
   ;; 8 scalars).
   (fn results_off [l:(ptr L)] -> i32 (pub) (+ (get l L.stack_limit_off) 8))
-  (fn results_size [] -> i32 (pub) 64)
+  (fn results_size [] -> i32 (pub) 128)
 
   ;; After a call: its n results become the top of the value stack, one in
   ;; rax, several each in a value register, loaded from the results area.
@@ -646,7 +646,7 @@
     (cond
       ((eq n 1) (call push_rax l))
       ((gt n 1)
-       (when (gt n 8) (call fail l "native: more than 8 results"))
+       (when (gt n 16) (call fail l "native: more than 16 results"))
        (for i 0 n
          (let r:i32 (call scratch l 0))
          (call x64.alu_rr c 32 (call x64.op_xor) (call r11) (call r11))
@@ -815,7 +815,7 @@
     (let t:(ptr wasm_reader.FuncType) (call func_type l w index))
     (let np:i32 (call nparams t))
     (let nres:i32 (call nresults t))
-    (when (gt nres 8) (call fail l "native: more than 8 results"))
+    (when (gt nres 16) (call fail l "native: more than 16 results"))
     (put l L.np np)
     (put l L.regcall (call regcall_params np))
     (let declared:i32 0)
@@ -2225,7 +2225,7 @@
        (if (lt k 31)
            (call x64.alu_ri c sz (call x64.op_and) dst (- (shl 1 k) 1))
            (block
-             (call x64.mov_ri64 c r11 (- (shl 1i64 (i64.extend_s k)) 1i64))
+             (call x64.mov_ri64 c r11 (wrap.sub (shl 1i64 (i64.extend_s k)) 1i64))
              (call x64.alu_rr c sz (call x64.op_and) dst r11))))
       (else
        ;; r11 = 2^k - 1 if a < 0, else 0
@@ -2242,7 +2242,7 @@
              (if (lt k 31)
                  (call x64.alu_ri c sz (call x64.op_and) r11 (- 0 (shl 1 k)))
                  (block
-                   (call x64.mov_ri64 c (call r10) (- 0i64 (shl 1i64 (i64.extend_s k))))
+                   (call x64.mov_ri64 c (call r10) (wrap.sub 0i64 (shl 1i64 (i64.extend_s k))))
                    (call x64.alu_rr c sz (call x64.op_and) r11 (call r10))))
              (call x64.alu_rr c sz (call x64.op_sub) dst r11)))))
     (call push_reg l dst))

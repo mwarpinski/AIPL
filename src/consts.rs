@@ -175,8 +175,8 @@ fn eval_expr(e: &Sx, base: &str, defs: &HashMap<String, Def>, memo: &mut HashMap
 /// take their count modulo the width, and `/` and `%` by zero (or `/` of
 /// the smallest value by -1) are errors.
 fn fold(op: &str, args: &[Val]) -> Result<Val, String> {
-    let ops = "+ - * / % ^ shl shr shru rotl rotr bitand bitor on numbers, bitnot clz ctz popcnt on integers, and and or not on bools";
-    if !matches!(op, "+" | "-" | "*" | "/" | "%" | "^" | "shl" | "shr" | "shru" | "rotl" | "rotr" | "bitand" | "bitor" | "bitnot" | "clz" | "ctz" | "popcnt" | "and" | "or" | "not") {
+    let ops = "+ - * / % ^ shl shr shru rotl rotr bitand bitor on numbers, wrap.add wrap.sub wrap.mul on integers, bitnot clz ctz popcnt on integers, and and or not on bools";
+    if !matches!(op, "+" | "-" | "*" | "wrap.add" | "wrap.sub" | "wrap.mul" | "/" | "%" | "^" | "shl" | "shr" | "shru" | "rotl" | "rotr" | "bitand" | "bitor" | "bitnot" | "clz" | "ctz" | "popcnt" | "and" | "or" | "not") {
         return Err(format!("a constant expression takes {}; not ({} ...)", ops, op));
     }
     let unary_int = matches!(op, "bitnot" | "clz" | "ctz" | "popcnt");
@@ -215,9 +215,21 @@ fn fold(op: &str, args: &[Val]) -> Result<Val, String> {
     let zero = || Err(format!("{} by zero", op));
     Ok(match (a, b) {
         (Val::I32(x), Val::I32(y)) => Val::I32(match op {
-            "+" => x.wrapping_add(y),
-            "-" => x.wrapping_sub(y),
-            "*" => x.wrapping_mul(y),
+            "+" => match x.checked_add(y) {
+                Some(v) => v,
+                None => return Err("+ overflows".to_string()),
+            },
+            "-" => match x.checked_sub(y) {
+                Some(v) => v,
+                None => return Err("- overflows".to_string()),
+            },
+            "*" => match x.checked_mul(y) {
+                Some(v) => v,
+                None => return Err("* overflows".to_string()),
+            },
+            "wrap.add" => x.wrapping_add(y),
+            "wrap.sub" => x.wrapping_sub(y),
+            "wrap.mul" => x.wrapping_mul(y),
             "/" | "%" if y == 0 => return zero(),
             "/" if x == i32::MIN && y == -1 => return Err("/ overflows".to_string()),
             "/" => x / y,
@@ -233,9 +245,21 @@ fn fold(op: &str, args: &[Val]) -> Result<Val, String> {
             _ => return bad(),
         }),
         (Val::I64(x), Val::I64(y)) => Val::I64(match op {
-            "+" => x.wrapping_add(y),
-            "-" => x.wrapping_sub(y),
-            "*" => x.wrapping_mul(y),
+            "+" => match x.checked_add(y) {
+                Some(v) => v,
+                None => return Err("+ overflows".to_string()),
+            },
+            "-" => match x.checked_sub(y) {
+                Some(v) => v,
+                None => return Err("- overflows".to_string()),
+            },
+            "*" => match x.checked_mul(y) {
+                Some(v) => v,
+                None => return Err("* overflows".to_string()),
+            },
+            "wrap.add" => x.wrapping_add(y),
+            "wrap.sub" => x.wrapping_sub(y),
+            "wrap.mul" => x.wrapping_mul(y),
             "/" | "%" if y == 0 => return zero(),
             "/" if x == i64::MIN && y == -1 => return Err("/ overflows".to_string()),
             "/" => x / y,

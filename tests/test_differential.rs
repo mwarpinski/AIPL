@@ -184,8 +184,51 @@ fn assert_both_fail(ret: &str, e: &str) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn i32_add_wraps() {
-    assert_i32("(+ 2147483647 1)", -2147483648);
+fn i32_add_traps_and_wrap_add_wraps() {
+    assert_both_fail("i32", "(+ 2147483647 1)");
+    assert_i32("(wrap.add 2147483647 1)", -2147483648);
+    assert_i32("(+ 2147483646 1)", 2147483647);
+}
+
+/// `x + c` and `x - c` with a literal c are checked by one comparison of x: it must trap exactly where
+/// the exact result leaves the type, at the edges of both ends, in the VM and in compiled code.
+#[test]
+fn a_literal_operand_traps_exactly_at_the_edge() {
+    let xs = [i32::MIN, i32::MIN + 1, -2, -1, 0, 1, 2, i32::MAX - 1, i32::MAX];
+    let cs = [0, 1, 2, -1, -2, i32::MAX, i32::MIN, i32::MIN + 1, 1000];
+    for c in cs {
+        type Checked = fn(i32, i32) -> Option<i32>;
+        let ops: [(&str, Checked); 2] = [("+", i32::checked_add), ("-", i32::checked_sub)];
+        for (form, f) in ops {
+            for e in [format!("({form} x {c})"), format!("({form} {c} x)")] {
+                let src = format!("(module m (fn f [x:i32] -> i32 {e}))");
+                let (module, wasm) = compile_checked(&src);
+                for x in xs {
+                    let want = if e.starts_with(&format!("({form} x")) { f(x, c) } else { f(c, x) };
+                    let got = differential(&module, &wasm, "f", &[x]);
+                    match want {
+                        Some(v) => assert_eq!(got, Ok(Value::Int(v as i64)), "{e} with x = {x}"),
+                        None => assert!(got.is_err(), "{e} with x = {x} should trap, gave {got:?}"),
+                    }
+                }
+            }
+        }
+    }
+    // the same for i64
+    let xs: [i64; 5] = [i64::MIN, i64::MIN + 1, 0, i64::MAX - 1, i64::MAX];
+    let cs: [i64; 7] = [0, 1, -1, i64::MAX, i64::MIN, i64::MIN + 1, 5_000_000_000];
+    for c in cs {
+        for x in xs {
+            for (form, want) in [("+", x.checked_add(c)), ("-", x.checked_sub(c))] {
+                let e = format!("(block (let x:i64 {x}i64) ({form} x {c}i64))");
+                let got = expr("i64", &e);
+                match want {
+                    Some(v) => assert_eq!(got, Ok(Value::Int64(v)), "{e}"),
+                    None => assert!(got.is_err(), "{e} should trap, gave {got:?}"),
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -199,8 +242,9 @@ fn i32_shru_is_logical() {
 }
 
 #[test]
-fn i32_mul_wraps_to_zero() {
-    assert_i32("(* 65536 65536)", 0);
+fn i32_mul_traps_and_wrap_mul_wraps_to_zero() {
+    assert_both_fail("i32", "(* 65536 65536)");
+    assert_i32("(wrap.mul 65536 65536)", 0);
 }
 
 #[test]
@@ -230,8 +274,9 @@ fn i32_shift_count_is_masked_to_5_bits() {
 }
 
 #[test]
-fn i32_sub_wraps() {
-    assert_i32("(- -2147483648 1)", 2147483647);
+fn i32_sub_traps_and_wrap_sub_wraps() {
+    assert_both_fail("i32", "(- -2147483648 1)");
+    assert_i32("(wrap.sub -2147483648 1)", 2147483647);
 }
 
 #[test]
@@ -348,8 +393,9 @@ fn recursion_and_calls_agree() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn i64_add_wraps_at_64() {
-    assert_i64("(+ 9223372036854775807i64 1i64)", i64::MIN);
+fn i64_add_traps_and_wrap_add_wraps_at_64() {
+    assert_both_fail("i64", "(+ 9223372036854775807i64 1i64)");
+    assert_i64("(wrap.add 9223372036854775807i64 1i64)", i64::MIN);
 }
 
 #[test]

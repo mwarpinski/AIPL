@@ -47,7 +47,7 @@ fn values_print_with_their_types_in_every_backend() {
         (None, "(lt 1 2)", "true : bool\n"),
         (None, "(call str.concat \"ab\" \"cd\")", "abcd : str\n"),
         // a standard module named in the expression is imported for it
-        (None, "(call str.find (call str.from_str \"a,b\") (call str.from_str \",\"))", "1 : i32\n"),
+        (None, "(call str.find (call str.from_str \"a,b\") (call str.from_str \",\"))", "some{value: 1} : (option.Option i32)\n"),
         (None, "(call (vec.len i32) (call (vec.make i32) (call alloc.default) 4))", "0 : i32\n"),
         // void: the program's own output, no value
         (None, "(println \"n = {(+ 1 2)}\")", "n = 3\n"),

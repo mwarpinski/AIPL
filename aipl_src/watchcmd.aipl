@@ -58,7 +58,7 @@
   ;; is looked up in the PATH).
   (fn self_path [] -> str.Bytes
     (let me:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 0) (call str.from_str "aipl")))
-    (when (gte (call str.find_byte me 47) 0) (return me))
+    (when (gte (call (option.unwrap_or i32) (call str.find_byte me 47) -1) 0) (return me))
     (let found:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (if (call proc.find (call str.from_bytes me) found) (call buf.bytes found) me))
 

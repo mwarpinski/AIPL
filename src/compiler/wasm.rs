@@ -247,6 +247,24 @@ impl WasmCompiler {
                 current_idx += width(&t, &structs);
             }
 
+            // i64 + - * check their overflow in two more i64 locals, after the groups (an i32 one
+            // uses the scratch i64 above): only a function with one declares them
+            let mut ck_i64 = false;
+            for e in body_refs.iter().chain(contract_refs.iter()) {
+                walk_expr(e, &mut |x| {
+                    if let Expr::Op { op: OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul, args, .. } = x {
+                        if tyf(&args[0]) == Type::I64 {
+                            ck_i64 = true;
+                        }
+                    }
+                });
+            }
+            if ck_i64 {
+                local_map.insert(CHECKED_LOCALS[0].to_string(), current_idx);
+                local_map.insert(CHECKED_LOCALS[1].to_string(), current_idx + 1);
+                wasm_locals.push((2, ValType::I64));
+            }
+
             let mut func = Body::new(wasm_locals);
             func.quiet = f.name.starts_with("show.debug.");
             let ctx = Ctx {
@@ -531,6 +549,12 @@ impl WasmCompiler {
                 data: std::borrow::Cow::Owned(encode_lines(&lines)),
             });
         }
+
+        // the language version this compiler implements (docs/LANGUAGE_VERSIONING.md)
+        wasm_module.section(&wasm_encoder::CustomSection {
+            name: "aipl.language".into(),
+            data: std::borrow::Cow::Owned(crate::ast::LANGUAGE_VERSION.to_string().into_bytes()),
+        });
 
         Ok(wasm_module.finish())
     }
@@ -1309,7 +1333,10 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::Popcnt
             | OpCode::CheckedAdd
             | OpCode::CheckedSub
-            | OpCode::CheckedMul => args.first().map_or(Type::I32, |a| expr_type(a, ctx)),
+            | OpCode::CheckedMul
+            | OpCode::WrapAdd
+            | OpCode::WrapSub
+            | OpCode::WrapMul => args.first().map_or(Type::I32, |a| expr_type(a, ctx)),
             OpCode::Eq
             | OpCode::Neq
             | OpCode::Lt
@@ -1409,9 +1436,9 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
 fn arith_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, String> {
     use Instruction::*;
     let ins = match (op, ty) {
-        (OpCode::Add, Type::I32) => I32Add,
-        (OpCode::Sub, Type::I32) => I32Sub,
-        (OpCode::Mul, Type::I32) => I32Mul,
+        (OpCode::Add | OpCode::WrapAdd, Type::I32) => I32Add,
+        (OpCode::Sub | OpCode::WrapSub, Type::I32) => I32Sub,
+        (OpCode::Mul | OpCode::WrapMul, Type::I32) => I32Mul,
         (OpCode::Div, Type::I32) => I32DivS,
         (OpCode::Mod, Type::I32) => I32RemS,
         (OpCode::DivU, Type::I32) => I32DivU,
@@ -1425,9 +1452,9 @@ fn arith_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, Str
         (OpCode::Rotl, Type::I32) => I32Rotl,
         (OpCode::Rotr, Type::I32) => I32Rotr,
 
-        (OpCode::Add, Type::I64) => I64Add,
-        (OpCode::Sub, Type::I64) => I64Sub,
-        (OpCode::Mul, Type::I64) => I64Mul,
+        (OpCode::Add | OpCode::WrapAdd, Type::I64) => I64Add,
+        (OpCode::Sub | OpCode::WrapSub, Type::I64) => I64Sub,
+        (OpCode::Mul | OpCode::WrapMul, Type::I64) => I64Mul,
         (OpCode::Div, Type::I64) => I64DivS,
         (OpCode::Mod, Type::I64) => I64RemS,
         (OpCode::DivU, Type::I64) => I64DivU,
@@ -1517,7 +1544,7 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
 
 /// The hidden i64 locals of a function that uses checked arithmetic: the
 /// operands and the result (codegen.aipl markers Ty.ck_a, ck_b, ck_r).
-const CHECKED_LOCALS: [&str; 3] = ["#ck_a", "#ck_b", "#ck_r"];
+const CHECKED_LOCALS: [&str; 2] = ["#ck_a", "#ck_b"];
 
 /// checked.add/sub/mul: the operation, then a trap if it overflowed.
 /// i32: computed exactly in i64 and trapped unless it fits in i32. i64 add
@@ -1527,18 +1554,70 @@ const CHECKED_LOCALS: [&str; 3] = ["#ck_a", "#ck_b", "#ck_r"];
 /// checked operation nested in an operand cannot clobber them.
 fn compile_checked(op: &OpCode, args: &[Expr], ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     use Instruction::*;
-    let local = |n: &str| *ctx.locals.get(n).expect("checked arithmetic locals");
-    let (a, b, r) = (local(CHECKED_LOCALS[0]), local(CHECKED_LOCALS[1]), local(CHECKED_LOCALS[2]));
-    // The trap is i32.div_s(MIN, -1), which wasm defines to trap with
-    // "integer overflow", so every host reports the real reason.
+    // the result is held in the scratch i64 (no other use of it is open across this one); an i64
+    // operation keeps its operands in two locals the function declared for it
+    let local = |n: &str| ctx.locals.get(n).copied().unwrap_or(0);
+    let r = ctx.fat_scratch;
+    // The trap is i32.trunc_f32_s of 3e9, which wasm defines to trap with
+    // "integer overflow", so every host reports the real reason. (A division of MIN by -1
+    // traps the same way, but makes a function that holds it keep more on its stack.)
     let trap_if = |func: &mut Body| {
         func.instruction(&If(wasm_encoder::BlockType::Empty));
-        func.instruction(&I32Const(i32::MIN));
-        func.instruction(&I32Const(-1));
-        func.instruction(&I32DivS);
+        func.instruction(&F32Const(3.0e9));
+        func.instruction(&I32TruncF32S);
         func.instruction(&Drop);
         func.instruction(&End);
     };
+    // x + c and x - c, c a literal: one comparison of x with the last value that does not overflow
+    // (c + x the same), instead of the exact result in a wider type
+    let ty = expr_type(&args[0], ctx);
+    if matches!(ty, Type::I32 | Type::I64) && *op != OpCode::CheckedMul {
+        // (the self-hosted code generator sees enum.cast and enum.ord erased to what they hold,
+        // so a literal in them is one here too)
+        fn peel(e: &Expr) -> &Expr {
+            match e {
+                Expr::Addr { val, kind: AddrKind::Enum, .. } => peel(val),
+                Expr::Cast { ty: Type::Enum(_), addr, gen: None, .. } => peel(addr),
+                other => other,
+            }
+        }
+        let lit = |e: &Expr| match peel(e) {
+            Expr::Lit(Literal::Int(v), _) if ty == Type::I32 => Some(*v as i32 as i64),
+            Expr::Lit(Literal::Int64(v), _) if ty == Type::I64 => Some(*v),
+            _ => None,
+        };
+        let min = if ty == Type::I32 { i32::MIN as i64 } else { i64::MIN };
+        let found = match (op, lit(&args[0]), lit(&args[1])) {
+            (OpCode::CheckedAdd, _, Some(c)) => Some((&args[0], c)),
+            (OpCode::CheckedAdd, Some(c), _) => Some((&args[1], c)),
+            (OpCode::CheckedSub, _, Some(c)) if c != min => Some((&args[0], -c)),
+            _ => None,
+        };
+        if let Some((x, c)) = found {
+            compile_expr(x, ctx, func)?;
+            if c == 0 {
+                return Ok(());
+            }
+            if ty == Type::I32 {
+                func.instruction(&LocalTee(ctx.addr_scratch));
+                func.instruction(&I32Const(if c > 0 { (i32::MAX as i64 - c) as i32 } else { (i32::MIN as i64 - c) as i32 }));
+                func.instruction(if c > 0 { &I32GtS } else { &I32LtS });
+                trap_if(func);
+                func.instruction(&LocalGet(ctx.addr_scratch));
+                func.instruction(&I32Const(c as i32));
+                func.instruction(&I32Add);
+            } else {
+                func.instruction(&LocalTee(ctx.fat_scratch));
+                func.instruction(&I64Const(if c > 0 { i64::MAX - c } else { i64::MIN - c }));
+                func.instruction(if c > 0 { &I64GtS } else { &I64LtS });
+                trap_if(func);
+                func.instruction(&LocalGet(ctx.fat_scratch));
+                func.instruction(&I64Const(c));
+                func.instruction(&I64Add);
+            }
+            return Ok(());
+        }
+    }
     if expr_type(&args[0], ctx) == Type::I32 {
         compile_expr(&args[0], ctx, func)?;
         func.instruction(&I64ExtendI32S);
@@ -1559,6 +1638,7 @@ fn compile_checked(op: &OpCode, args: &[Expr], ctx: &Ctx, func: &mut Body) -> Re
         func.instruction(&I32WrapI64);
         return Ok(());
     }
+    let (a, b) = (local(CHECKED_LOCALS[0]), local(CHECKED_LOCALS[1]));
     compile_expr(&args[0], ctx, func)?;
     compile_expr(&args[1], ctx, func)?;
     func.instruction(&LocalSet(b));
@@ -1675,12 +1755,6 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
             Expr::With { value, new_val, .. } => {
                 collect_lets(std::slice::from_ref(value), lets, unions);
                 collect_lets(std::slice::from_ref(new_val), lets, unions);
-            }
-            Expr::Op { op: OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul, args, .. } => {
-                for n in CHECKED_LOCALS {
-                    lets.push((n.to_string(), Type::I64));
-                }
-                collect_lets(args, lets, unions)
             }
             Expr::Call { args, .. } | Expr::Op { args, .. } => collect_lets(args, lets, unions),
             Expr::CallRef { func, args, .. } => {
@@ -1842,6 +1916,15 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::Call(ctx.checks.end));
                 func.instruction(&Instruction::Unreachable);
             }
+            OpCode::Add | OpCode::Sub | OpCode::Mul if matches!(expr_type(&args[0], ctx), Type::I32 | Type::I64) => {
+                // integer + - * trap on overflow (wrap.add, wrap.sub, wrap.mul wrap around)
+                let checked = match op {
+                    OpCode::Add => OpCode::CheckedAdd,
+                    OpCode::Sub => OpCode::CheckedSub,
+                    _ => OpCode::CheckedMul,
+                };
+                compile_checked(&checked, args, ctx, func)?
+            }
             OpCode::Add
             | OpCode::Sub
             | OpCode::Mul
@@ -1856,7 +1939,10 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             | OpCode::BitAnd
             | OpCode::BitOr
             | OpCode::Rotl
-            | OpCode::Rotr => {
+            | OpCode::Rotr
+            | OpCode::WrapAdd
+            | OpCode::WrapSub
+            | OpCode::WrapMul => {
                 // The checker guarantees both operands share one type, so the
                 // first operand decides the instruction width (i32/i64/f32/f64).
                 let ty = expr_type(&args[0], ctx);

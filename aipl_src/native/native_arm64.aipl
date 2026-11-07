@@ -8,6 +8,7 @@
 ;; Data: the memory size cell, the results area, the globals (8 bytes each),
 ;; the trap table, then the data segments' bytes (copied into memory at start-up).
 (module native_arm64
+  (import option)
   (import alloc)
   (import str)
   (import buf)
@@ -720,7 +721,7 @@
   (fn serve_options [spec:str.Bytes] -> (ptr ServeOpts)
     (let opts:(ptr ServeOpts) (new ServeOpts (call alloc.forever) [address:spec requests:-1 temporary:false]))
     (let n:i32 (get spec str.Bytes.len))
-    (let sp:i32 (call str.find_byte spec 32))
+    (let sp:i32 (call (option.unwrap_or i32) (call str.find_byte spec 32) -1))
     (when (lt sp 0) (return opts))
     (put opts ServeOpts.address (call str.slice spec 0 sp))
     (let start:i32 (+ sp 1))

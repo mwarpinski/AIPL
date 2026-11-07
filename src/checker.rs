@@ -49,7 +49,7 @@ pub struct SumLayout {
 }
 
 /// The most scalars a value (a value struct, a union by value) may hold.
-pub const MAX_SCALARS: usize = 8;
+pub const MAX_SCALARS: usize = 16;
 
 impl Structs {
     /// The program's structs and unions; decides which unions are values.
@@ -353,9 +353,6 @@ const ERR_NEEDS_TYPE: &str = "(err e) must name its result's ok type: write (err
 /// element, sizeof): never a result, which lives only in locals, parameters,
 /// results, and other results (held by value or not, AIPL_SPEC.md 4.F).
 fn memory_layout(ty: &Type, structs: &Structs) -> Result<(usize, usize), String> {
-    if matches!(ty, Type::ResultType(..)) {
-        return Err(format!("Unsupported type for memory layout: {}", ty));
-    }
     type_size_and_align(ty, structs)
 }
 
@@ -520,13 +517,14 @@ impl TypeChecker {
     /// against the function's return type (where their early return goes).
     fn check_try(&self, op: &OpCode, args: &[Expr], env: &mut HashMap<String, Type>, l: u32, c: u32) -> Result<Type, String> {
         let want = if *op == OpCode::TryOr { 2 } else { 1 };
-        if args.len() != want {
+        // (try r convert): convert turns r's error into the function's
+        if args.len() != want && !(*op == OpCode::Try && args.len() == 2) {
             return Err(format!(
                 "{}:{}: {}",
                 l,
                 c,
                 match op {
-                    OpCode::Try => "try takes one result: (try (call f x))",
+                    OpCode::Try => "try takes one result, and may take a function that converts its error: (try (call f x)) or (try (call f x) (ref convert))",
                     OpCode::TryOpt => "try_opt takes one option: (try_opt (call (map.find K V) m k))",
                     _ => "try_or takes an option and the error to return without a value: (try_or o err)",
                 }
@@ -557,7 +555,16 @@ impl TypeChecker {
                 }
             }
             _ => {
-                let err = if *op == OpCode::Try {
+                let err = if *op == OpCode::Try && args.len() == 2 {
+                    let Type::ResultType(_, e) = &t else { unreachable!() };
+                    let conv = self.infer_expr_type(&args[1], env)?;
+                    match &conv {
+                        Type::Fn(params, to, _) if params.len() == 1 && params[0] == **e && matches!(args[1], Expr::Ref { .. }) => (**to).clone(),
+                        _ => {
+                            return Err(format!("{}:{}: try's second argument turns the error {} into the function's: write (ref f) for a function from {} to the function's error, got {}", l, c, e, e, shown(&conv.to_string())));
+                        }
+                    }
+                } else if *op == OpCode::Try {
                     let Type::ResultType(_, e) = &t else { unreachable!() };
                     (**e).clone()
                 } else {
@@ -772,7 +779,7 @@ impl TypeChecker {
 
     /// A value struct's rules (AIPL_SPEC.md 4.E): at least one field; fields
     /// that are numbers, bools, enums, pointers, arrays, function references,
-    /// or value structs; not containing itself; at most 8 scalars in all.
+    /// or value structs; not containing itself; at most MAX_SCALARS scalars in all.
     fn check_value_struct(&self, s: &StructDef) -> Result<(), String> {
         let (l, c) = s.span;
         let name = shown(&s.name);
@@ -806,10 +813,10 @@ impl TypeChecker {
             }
         }
         let n = self.scalars(&Type::Struct(s.name.clone()));
-        if n > 8 {
+        if n > MAX_SCALARS {
             return Err(format!(
-                "{}:{}: value struct '{}' holds {} scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer",
-                l, c, name, n
+                "{}:{}: value struct '{}' holds {} scalars, counting the value structs in it; at most {}: keep a larger record behind a pointer",
+                l, c, name, n, MAX_SCALARS
             ));
         }
         Ok(())
@@ -1444,7 +1451,7 @@ fn fits(got: &Type, want: &Type) -> bool {
                     "{}:{}: defer is a statement of a function's body (it runs when the function returns), not part of an expression or a block",
                     l, c
                 )),
-                OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul => {
+                OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul | OpCode::WrapAdd | OpCode::WrapSub | OpCode::WrapMul => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: {} requires 2 arguments", l, c, op));
                     }

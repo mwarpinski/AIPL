@@ -106,6 +106,15 @@ fn a_comparison_with_true_and_an_empty_else() {
 }
 
 #[test]
+fn sys_print_already_ends_the_line() {
+    finds(
+        "sysprint",
+        "(module sysprint\n  (fn main [] -> i32\n    (sys.print \"one\\n\")\n    (sys.print \"two\")\n    0))\n",
+        &[(3, 16, "sys-print-newline", "sys.print ends the line itself, so this prints two newlines; drop the \\n (the form print does not end the line)", "    (sys.print \"one\\n\")")],
+    );
+}
+
+#[test]
 fn names_follow_the_conventions() {
     finds(
         "names",

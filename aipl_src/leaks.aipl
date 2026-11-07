@@ -214,7 +214,10 @@
                 (call buf.push_bytes b (get hit Site.what))
                 (if (call str.bytes_eq (get hit Site.what) (call str.from_str THROUGH))
                     (call buf.push_str b ", which may keep memory (a signature with (no_leak) takes only functions that keep none)")
-                    (call buf.push_str b ", whose memory is never freed"))))
+                    (block
+                      (call buf.push_str b ", whose memory is never freed")
+                      (when (call str.starts_with (get hit Site.what) (call str.from_str "format"))
+                            (call buf.push_str b "; write into a buf made from the allocator you were given: (call buf.make a 64), (format_to b \"...\"), (call buf.bytes b)"))))))
           (let fd:(ptr Found) (new Found a [at:(get hit Site.at) text:b]))
           (call (vec.push (ptr Found)) out fd))))
     out))

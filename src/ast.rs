@@ -84,6 +84,10 @@ pub enum Literal {
     Str(String),
 }
 
+/// The language version this toolchain implements (docs/LANGUAGE_VERSIONING.md): `(language N)` in a
+/// module asks for it, and every compiled module records it in its `aipl.language` custom section.
+pub const LANGUAGE_VERSION: i64 = 1;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpCode {
     Add,
@@ -141,6 +145,11 @@ pub enum OpCode {
     CheckedAdd,
     CheckedSub,
     CheckedMul,
+    /// `(wrap.add a b)`, `(wrap.sub a b)`, `(wrap.mul a b)`: i32/i64 arithmetic that wraps around on
+    /// overflow, for hashes and generators; `+ - *` trap on integer overflow.
+    WrapAdd,
+    WrapSub,
+    WrapMul,
     /// `(ltu a b)`, `(lteu a b)`, `(gtu a b)`, `(gteu a b)`: i32/i64 compared as
     /// unsigned (wasm `i32.lt_u` ...).
     LtU,

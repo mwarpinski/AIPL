@@ -40,12 +40,12 @@ fn i64_literal_and_declared_type() {
 fn i64_arithmetic_wraps_at_64_not_32() {
     // 2^32 * 2^31 = 2^63 wraps to i64::MIN; in i32 the operands don't even exist.
     let v = run_both(
-        "(module m (fn f [] -> i64 (* 4294967296i64 2147483648i64)))",
+        "(module m (fn f [] -> i64 (wrap.mul 4294967296i64 2147483648i64)))",
         "f",
     );
     assert_eq!(v, Value::Int64(i64::MIN));
 
-    let v = run_both("(module m (fn f [] -> i64 (+ 9223372036854775807i64 1i64)))", "f");
+    let v = run_both("(module m (fn f [] -> i64 (wrap.add 9223372036854775807i64 1i64)))", "f");
     assert_eq!(v, Value::Int64(i64::MIN));
 
     // Values that would wrap in i32 stay exact in i64.

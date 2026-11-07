@@ -465,10 +465,14 @@ fn resolve_import(st: &mut State, name: &str, importer_path: &Path) -> Result<()
         return Ok(());
     }
     if st.in_progress.contains(&file_path) {
+        // a file beside the program that has a standard module's name is taken for it
+        let std_file = crate::library::std_dir().join(format!("{}.aipl", module_name(name)));
+        let hides = std_file.exists() && std_file.canonicalize().ok() != file_path.canonicalize().ok();
         return Err(format!(
-            "{}: Circular import detected: '{}' is imported while already being resolved",
+            "{}: Circular import detected: '{}' is imported while already being resolved{}",
             file_path.display(),
-            file_path.display()
+            file_path.display(),
+            if hides { format!("; {0}.aipl here is taken for (import {0}) and hides the standard module {0}: rename it", module_name(name)) } else { String::new() }
         ));
     }
     st.in_progress.insert(file_path.clone());

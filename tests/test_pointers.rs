@@ -95,7 +95,7 @@ fn malformed_pointer_and_array_types_are_rejected() {
     assert!(err.contains("(arr T) takes no length"), "{err}");
     let err = check_err("(module m (fn f [p:(ptr Missing)] -> i32 0))");
     assert!(err.contains("Unknown struct 'Missing' in (ptr Missing)"), "{err}");
-    let err = check_err("(module m (struct S [r:(result i32 i32)]) (fn f [] -> i32 0))");
+    let err = check_err("(module m (struct S [r:void]) (fn f [] -> i32 0))");
     assert!(err.contains("Unsupported type for memory layout") || err.contains("field 'r'"), "{err}");
 }
 

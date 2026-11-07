@@ -181,7 +181,7 @@ aipl lint rows.aipl                             # unused names, dead code, a lea
 aipl repl                                       # type expressions and definitions; each shows its value and type
 aipl test rows.aipl                             # run a file's (test ...) items, each alone
 aipl watch scratch.aipl                         # run it again on every save
-aipl eval -e '(call str.find (call str.from_str "a,b") (call str.from_str ","))'   # prints 1 : i32
+aipl eval -e '(call str.find (call str.from_str "a,b") (call str.from_str ","))'   # prints some{value: 1} : (option.Option i32)
 aipl compile examples/word_count.aipl -o wc.wasm
 aipl run examples/word_count.aipl README.md       # compile and run it (or: aipl run wc.wasm README.md)
 aipl compile --exe examples/word_count.aipl -o wc
@@ -251,8 +251,8 @@ ways to start, where the compiler finds the library, and why.
   and `defer` for cleanup on every return; function references; generics
   checked once with interfaces and `where` clauses; constants computed at
   compile time; contracts (`req`, `ens`, `inv`) checked in every backend;
-  modules and imports; threads and atomics, and `std/par` for parallel maps
-  and reductions without `unsafe`.
+  modules and imports; experimental threads and atomics, and `std/par` for
+  parallel maps and reductions without `unsafe`.
 - **Three ways to run a program,** which must agree: an interpreter for
   quick runs, WebAssembly with WASI (files, stdio, the command line, the
   environment, clocks, threads), and native Linux executables, x86-64 and

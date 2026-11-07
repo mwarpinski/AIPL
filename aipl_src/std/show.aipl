@@ -151,7 +151,7 @@
       ((call plus s) (call buf.push_byte b 43))
       (else (block)))
     ;; the magnitude, read as unsigned (so the lowest i64 has one)
-    (let u:i64 (if (lt v 0i64) (- 0i64 v) v))
+    (let u:i64 (if (lt v 0i64) (wrap.sub 0i64 v) v))
     (let bs:i32 (call base s))
     (call buf.push_unsigned b u (cond ((eq bs 0) 10) ((eq bs 3) 2) (else 16)) (eq bs 2))
     (call pad b from s true)

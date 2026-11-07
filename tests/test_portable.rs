@@ -1,4 +1,4 @@
-//! A binary that works wherever it is (docs/LAUNCH_CHECKLIST.md): a copy of
+//! A binary that works wherever it is (docs/history/LAUNCH_CHECKLIST_2026-10.md): a copy of
 //! the Rust `aipl` outside its checkout's target/ runs every kind of command
 //! from the library built into it (src/library.rs), written once to its
 //! cache; `AIPL_STD` replaces the standard library for programs, not for

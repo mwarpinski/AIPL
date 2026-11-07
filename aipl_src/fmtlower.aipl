@@ -597,7 +597,16 @@
           (let k:i32 (call begin_return l at))
           (call buf.push_str (get l L.out) "(err:")
           (call raw l (call pos l r) rend)
-          (call gen l at " _try_err_") (call buf.push_bytes (get l L.out) num)
+          ;; (try r (ref convert)): the error goes through convert on its way out
+          (if (call is_close l ve)
+              (block
+                (call gen l at " _try_err_") (call buf.push_bytes (get l L.out) num))
+              (block
+                (call gen l at " (call ")
+                (let cn:(ptr compiler.Token) (call tok l (+ ve 2)))
+                (call raw l (get cn compiler.Token.a) (+ (get cn compiler.Token.a) (get cn compiler.Token.b)))
+                (call gen l at " _try_err_") (call buf.push_bytes (get l L.out) num)
+                (call buf.push_byte (get l L.out) 41)))
           (call buf.push_byte (get l L.out) 41)
           (call end_return l at k)
           (call buf.push_str (get l L.out) "))"))

@@ -521,7 +521,7 @@ fn rewrite(
                 }
             } else if is_struct {
                 format!("{}: {} is a value type, and {} is a struct, used only through a pointer: write (ptr {})", shown(&name), p, a, a)
-            } else if arg.symbol() == Some("void") || arg.head() == Some("result") {
+            } else if arg.symbol() == Some("void") {
                 format!("{}: {} is a value type, and {} cannot be stored", shown(&name), p, a)
             } else if t.plain_kind[k] && !is_plain(arg, known, &made.defs, &mut HashSet::new()) {
                 match sealed_param(arg) {

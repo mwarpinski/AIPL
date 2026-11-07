@@ -6,7 +6,7 @@ owner decided and what was built. Written by Claude (Opus 5.5) as step 2 of
 the release order (docs/history/HANDOFF.md):
 the changes that would break existing programs, settled before anything is
 measured or published, so the seed is refreshed once and the evidence for
-the launch post (LAUNCH_CHECKLIST.md section 5) is gathered on the final
+the launch post (docs/history/LAUNCH_CHECKLIST_2026-10.md section 5) is gathered on the final
 language.
 
 Each item says what changes (with code), why (with evidence), what it

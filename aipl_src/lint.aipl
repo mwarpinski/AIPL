@@ -138,7 +138,7 @@
 
   (fn note_count [st:(ptr St) name:str.Bytes] -> void
     (let _c:i32 (call (map.add str.Bytes) (get st St.counts) name 1))
-    (let dot:i32 (call str.find_byte name 46))
+    (let dot:i32 (call (option.unwrap_or i32) (call str.find_byte name 46) -1))
     (when (gt dot 0)
       (call (map.set str.Bytes bool) (get st St.prefixes) (call str.slice name 0 dot) true)))
 
@@ -229,6 +229,13 @@
            (call report st at "redundant-bool" (call str.from_str "an `if` that gives true or false is the condition itself (or `not`)")))
          (when (and (call head_is st e "block") (eq (call count_of e) 1))
            (call report st (get e compiler.Node.pos) "empty-else" (call str.from_str "the else is empty; write (when condition ...)")))))
+      ((call str.is h "sys.print")
+       ;; sys.print ends its line itself (AIPL_SPEC.md 4); the form print does not
+       (let c:(ptr compiler.Node) (call child n 1))
+       (while (not (call is_null c))
+         (when (and (call is_kind c compiler.Kind.string) (call str.ends_with (call text_of st c) (call str.from_str "\\n")))
+           (call report st (get c compiler.Node.pos) "sys-print-newline" (call str.from_str "sys.print ends the line itself, so this prints two newlines; drop the \\n (the form print does not end the line)")))
+         (set! c (get c compiler.Node.next))))
       (else (block)))
     (when (call is_body st n)
       (let c:(ptr compiler.Node) (get n compiler.Node.first))
@@ -326,7 +333,7 @@
   (fn lint_import [st:(ptr St) item:(ptr compiler.Node)] -> void
     (let path:str.Bytes (call text_of st (call child item 1)))
     (let used:str.Bytes path)
-    (let slash:i32 (call str.rfind path (call str.from_str "/")))
+    (let slash:i32 (call (option.unwrap_or i32) (call str.rfind path (call str.from_str "/")) -1))
     (when (gte slash 0) (set! used (call str.slice path (+ slash 1) (- (- (get path str.Bytes.len) slash) 1))))
     (when (and (eq (call count_of item) 4) (call str.is (call text_of st (call child item 2)) "as"))
       (set! used (call text_of st (call child item 3))))
@@ -393,7 +400,7 @@
 
   ;; True when `line` asks to leave `rule` alone.
   (fn allows [line:str.Bytes rule:str.Bytes] -> bool
-    (let i:i32 (call str.find line (call str.from_str "lint:allow")))
+    (let i:i32 (call (option.unwrap_or i32) (call str.find line (call str.from_str "lint:allow")) -1))
     (when (lt i 0) (return false))
     ;; the words after lint:allow (ten bytes)
     (let rest:str.Bytes (call str.slice line (+ i 10) (- (- (get line str.Bytes.len) i) 10)))

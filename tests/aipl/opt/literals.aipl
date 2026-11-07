@@ -18,6 +18,6 @@
     (println "g {(i64.extend_s -2147483648)}")
     (println "h {(call id32 -2147483648)}")
     (println "i {(i32.wrap 9000000000i64)}")
-    (println "j {(* 65536 65536)}")
+    (println "j {(wrap.mul 65536 65536)}")
     (println "k {(f64.convert_i32_s 2147483647):.1}")
     0))

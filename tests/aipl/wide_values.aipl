@@ -1,0 +1,51 @@
+;; Values of up to sixteen scalars, and results held in memory (a struct field or an
+;; array element), in one program whose checksum tests/test_values.rs runs in every backend.
+(module wide_values
+  (import alloc)
+
+  ;; sixteen scalars, of every width: the most a value holds
+  (struct Hex [a:i64 b:i64 c:i64 d:i64 e:f64 f:f64 g:f64 h:f64 i:i32 j:i32 k:i32 l:i32 m:bool n:i32 o:i32 p:i32] (value))
+  (struct Half [a:i64 b:f64 c:f64 d:i32 e:i32 f:i32] (value))
+  (struct Pair [left:Half right:Half n:i32] (value))
+  (struct Slot [r:(result i32 str) n:i32])
+
+  (fn hex [n:i32] -> Hex
+    (make Hex [a:(i64.extend_s n) b:2i64 c:3i64 d:4i64 e:0.5 f:1.5 g:2.5 h:3.5 i:n j:(+ n 1) k:3 l:4 m:(gt n 5) n:6 o:7 p:8]))
+
+  (fn half [n:i32] -> Half (make Half [a:(i64.extend_s n) b:1.5 c:2.5 d:n e:(* n 2) f:7]))
+
+  (fn weigh [h:Hex] -> i64
+    (+ (+ (+ (get h Hex.a) (get h Hex.d)) (i64.extend_s (+ (get h Hex.i) (get h Hex.p))))
+       (i64.extend_s (if (get h Hex.m) 100 0))))
+
+  (fn pass [h:Hex k:i32] -> Hex
+    (if (lte k 0) h (call pass (with h Hex.i (+ (get h Hex.i) 1)) (- k 1))))
+
+  (fn find [n:i32] -> (result i32 str)
+    (if (gt n 0) (ok:str (* n 2)) (err:i32 "none")))
+
+  (fn checksum [] -> i32
+    (let total:i32 0)
+    ;; a wide value: made, passed, returned, changed by copy
+    (let h:Hex (call hex 9))
+    (set! total (+ total (i32.wrap (call weigh (call pass h 3)))))
+    ;; one nested in another
+    (let p:Pair (make Pair [left:(call half 2) right:(call half 3) n:5]))
+    (set! total (+ total (+ (get p Pair.n) (+ (get (get p Pair.left) Half.e) (get (get p Pair.right) Half.d)))))
+    ;; in an array
+    (let hs:(arr Hex) (arr.new Hex (call alloc.default) 3))
+    (arr.set Hex hs 1 (call hex 7))
+    (arr.set Hex hs 2 (call pass (arr.get Hex hs 1) 2))
+    (set! total (+ total (i32.wrap (call weigh (arr.get Hex hs 2)))))
+    ;; a result in a struct field, replaced
+    (let s:(ptr Slot) (new Slot (call alloc.default) [r:(call find 4) n:1]))
+    (match_result (get s Slot.r) (ok v (set! total (+ total v))) (err e (set! total (- total 1000))))
+    (put s Slot.r (call find 0))
+    (match_result (get s Slot.r) (ok v (set! total (- total 1000))) (err e (set! total (+ total (str.len e)))))
+    ;; a result in an array element
+    (let rs:(arr (result i32 str)) (arr.new (result i32 str) (call alloc.default) 4))
+    (arr.set (result i32 str) rs 3 (call find 21))
+    (match_result (arr.get (result i32 str) rs 3) (ok v (set! total (+ total v))) (err e (set! total (- total 1000))))
+    total)
+
+  (fn main [] -> i32 (call checksum)))

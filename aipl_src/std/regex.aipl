@@ -860,7 +860,7 @@
     (while (not done)
       (when (not matched)
         (when (and skip (eq (get cur Threads.count) 0))
-          (let q:i32 (call str.find_from text prefix p))
+          (let q:i32 (call (option.unwrap_or i32) (call str.find_from text prefix p) -1))
           (if (lt q 0)
               (set! done true)
               (when (gt q p) (set! p q) (call clear cur))))

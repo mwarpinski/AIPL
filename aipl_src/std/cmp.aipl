@@ -33,16 +33,16 @@
   ;; murmur3's finalizer: spreads nearby numbers across a table
   (fn mix [k:i32] -> i32
     (let h:i32 (^ k (shru k 16)))
-    (set! h (* h -2048144789))
+    (set! h (wrap.mul h -2048144789))
     (set! h (^ h (shru h 13)))
-    (set! h (* h -1028477387))
+    (set! h (wrap.mul h -1028477387))
     (^ h (shru h 16)))
 
   ;; FNV-1a over n bytes at addr
   (fn fnv [addr:i32 n:i32] -> i32 (unsafe)
     (let h:i32 -2128831035)
     (for i 0 n
-      (set! h (* (^ h (mem.load8 (+ addr i))) 16777619)))
+      (set! h (wrap.mul (^ h (mem.load8 (+ addr i))) 16777619)))
     h)
 
   ;; bytewise order of n1 bytes at a1 and n2 at a2; a prefix comes first

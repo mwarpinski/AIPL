@@ -94,7 +94,10 @@ fields other modules may only read, so safe code cannot forge one.
 The limits:
 
 - **Data races.** AIPL does not check them, so threads and atomics need
-  `unsafe`. `std/par` runs work in parallel without `unsafe`: its workers
+  `unsafe`. Threads are experimental: they depend on the wasi-threads
+  proposal, which wasmtime removed in version 47, and they are outside the
+  promise that a language version keeps working
+  ([LANGUAGE_VERSIONING.md](LANGUAGE_VERSIONING.md)). `std/par` runs work in parallel without `unsafe`: its workers
   share only plain values (no pointers or arrays inside) and their own
   copies of the input, so there is nothing to race on, and
   `examples/spectralnorm_par.aipl` runs 3.9 times as fast on 8 threads.
@@ -144,12 +147,12 @@ a value like a number: copied where it goes, held inline in arrays and in
 other structs, allocating nothing, and never changed (`(with v Vec3.x 1.0)`
 is a copy with one field changed). Since nothing converts one kind into the
 other, the classic bug of changing a copy while meaning the original cannot
-happen. A value struct holds at most eight numbers; larger records belong
+happen. A value struct holds at most sixteen numbers; larger records belong
 behind pointers. Writing the n-body benchmark with a `Body` value struct
 made it 1.9 times faster under wasmtime (AIPL_SPEC.md 4.E,
 [docs/design/VALUES_PLAN.md](design/VALUES_PLAN.md)). Unions, which cannot
 be changed either, are held by value without being declared so whenever
-they fit (they do not contain themselves and need at most eight numbers),
+they fit (they do not contain themselves and need at most sixteen numbers),
 so returning an `(option.Option i32)` allocates nothing.
 
 ### Why are addresses `i32`? Is there a `usize`?
