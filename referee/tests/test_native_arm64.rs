@@ -10,6 +10,7 @@ use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::path::Path;
 
+#[path = "../../tests/arm64/mod.rs"]
 mod arm64;
 use wasmtime::{Engine, Linker, Module as WasmModule, Store};
 use wasmtime_wasi::p1::WasiP1Ctx;

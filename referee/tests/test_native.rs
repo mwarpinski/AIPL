@@ -424,7 +424,7 @@ fn control_flow_programs_match_natively() {
     );
     assert_functions_match(
         "math_core",
-        include_str!("../examples/math_core.aipl"),
+        include_str!("../../examples/math_core.aipl"),
         &[],
         &[
             ("main", &[]),
@@ -468,7 +468,7 @@ fn allocating_programs_match_natively() {
     );
     assert_functions_match(
         "quicksort",
-        include_str!("../examples/quicksort.aipl"),
+        include_str!("../../examples/quicksort.aipl"),
         &[],
         &[
             ("median3", &[1, 5, 3]), ("median3", &[9, 2, 4]),
@@ -477,7 +477,7 @@ fn allocating_programs_match_natively() {
     );
     assert_functions_match(
         "accounts",
-        include_str!("../examples/accounts.aipl"),
+        include_str!("../../examples/accounts.aipl"),
         &[],
         &[("frozen_is_atomic", &[]), ("simulate", &[10000, 2500, 3]), ("simulate", &[10000, 2500, 5]), ("simulate", &[100, 7, 20]), ("simulate", &[10, 5, 3])],
     );
@@ -617,7 +617,7 @@ fn wasi_programs_match_natively() {
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64")),
            ignore = "runs Linux x86-64 executables (the native backend)")]
 fn file_programs_match_natively() {
-    let input = include_bytes!("../examples/input.txt").to_vec();
+    let input = include_bytes!("../../examples/input.txt").to_vec();
     let file = |name: &str, bytes: &[u8]| (name.to_string(), bytes.to_vec());
     let with_input = |args: &[&str], sandbox: bool| Io {
         args: args.iter().map(|a| a.to_string()).collect(),
@@ -627,7 +627,7 @@ fn file_programs_match_natively() {
     };
     // the run directory both builds use (see assert_wasm_native_matches_with)
     let run_dir = |name: &str| scratch_path(name).join("run").display().to_string();
-    let word_count = include_str!("../examples/word_count.aipl");
+    let word_count = include_str!("../../examples/word_count.aipl");
     let probe = |body: &str| format!("(module m (import io) (import str) (fn main [] -> i32 (unsafe) {body} 0))");
     let open_report = |path: &str, write: bool| {
         format!(
@@ -652,7 +652,7 @@ fn file_programs_match_natively() {
         ("word_count_named_file", word_count.into(), with_input(&["input.txt"], false)),
         ("word_count_missing_file", word_count.into(), with_input(&["nope.txt"], false)),
         ("word_count_big_file", word_count.into(), Io { files: vec![file("input.txt", &big)], ..Io::default() }),
-        ("word_freq", include_str!("../examples/word_freq.aipl").into(), with_input(&[], false)),
+        ("word_freq", include_str!("../../examples/word_freq.aipl").into(), with_input(&[], false)),
         ("word_count_sandboxed", word_count.into(), with_input(&["input.txt"], true)),
         (
             "write_then_read",
@@ -760,7 +760,7 @@ fn file_programs_match_natively() {
         assert_wasm_native_matches_with(name, &to_wasm(src), io);
     }
     // aipl_src/file_io.aipl's self-test (a real file round trip)
-    assert_functions_match("file_io", include_str!("../aipl_src/file_io.aipl"), &[], &[("run_file_io_tests", &[])]);
+    assert_functions_match("file_io", include_str!("../../aipl_src/file_io.aipl"), &[], &[("run_file_io_tests", &[])]);
     // agreeing is not enough: every escape must actually be refused
     let (_, src, io) = cases.iter().find(|(n, _, _)| *n == "escapes_are_refused").unwrap();
     // (the last path, /etc/hostname, is absolute: allowed unless sandboxed)
@@ -810,7 +810,7 @@ fn thread_programs_match_natively() {
     }
     // std/thread: spawn_with hands each worker a typed context
     for round in 0..5 {
-        assert_functions_give(&format!("std_thread_{round}"), include_str!("../aipl_src/std/thread.aipl"), &[], &[("run_thread_tests", &[])], Some(&[2]));
+        assert_functions_give(&format!("std_thread_{round}"), include_str!("../../aipl_src/std/thread.aipl"), &[], &[("run_thread_tests", &[])], Some(&[2]));
     }
     // threads really run at once: each side waits for the other to start, so
     // this finishes only if both run concurrently (else the time limit fails it)
@@ -1037,7 +1037,7 @@ fn function_reference_programs_match_natively() {
         &[("main", &[])],
     );
     // std/vec: sort_by with a comparator reference, among its self-tests
-    assert_functions_match("std_vec", include_str!("../aipl_src/std/vec.aipl"), &[], &[("run_vec_tests", &[])]);
+    assert_functions_match("std_vec", include_str!("../../aipl_src/std/vec.aipl"), &[], &[("run_vec_tests", &[])]);
     assert_functions_match(
         "refs_more",
         "(module m
@@ -1202,7 +1202,7 @@ fn float_programs_match_natively() {
     }
     assert_functions_match(
         "matrix_mult",
-        include_str!("../examples/matrix_mult.aipl"),
+        include_str!("../../examples/matrix_mult.aipl"),
         &[],
         &[("main", &[]), ("trace_of_product", &[1]), ("trace_of_product", &[4]), ("trace_of_product", &[9])],
     );

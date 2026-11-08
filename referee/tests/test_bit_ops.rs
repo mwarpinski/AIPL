@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
+#[path = "../../tests/arm64/mod.rs"]
 mod arm64;
 
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");

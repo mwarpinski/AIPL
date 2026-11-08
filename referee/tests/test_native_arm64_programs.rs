@@ -9,6 +9,7 @@ use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
 use aipl_core::resolver::Resolver;
 
+#[path = "../../tests/arm64/mod.rs"]
 mod arm64;
 
 /// The AArch64 executable for the program `src` (a whole module's text).
