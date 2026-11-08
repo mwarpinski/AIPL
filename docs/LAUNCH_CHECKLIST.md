@@ -112,23 +112,32 @@ Today every leg of .github/workflows/release.yml runs `cargo build --release --l
 self-hosted `aipl` and `aipl-net` (Rust: host names and TLS); macOS and Windows ship the Rust `aipl` and `aipl-run`
 (wasmtime), and there `compile --exe` bundles a 15 to 20 MB launcher.
 
-- [ ] **Decide the launch platforms.** Recommendation: Linux x86-64 and AArch64 are first-class, built from the seed
-  with no Rust compiler; macOS and Windows launch as a preview, since they ship the Rust `aipl` until the Mach-O and PE
-  backends exist. Without that split, "no Rust in the release" cannot hold on the first day.
-- [ ] **The Linux release builds only from the seed** (`sh bootstrap/build.sh`): no Rust `aipl`, no comparison of two
-  compilers. It requires that the tagged commit passed the referee's CI (section 5).
-- [ ] **Decide `aipl-net` for launch.** It is the last Rust in the Linux release: keep it as a documented helper for 1.0,
-  and replace it on the Rust removal track.
-- [ ] **One version source.** The version is bumped by hand in Cargo.toml and aipl_src/aipl.aipl (ROADMAP.md item 19).
-  Make aipl_src/aipl.aipl the source, derive or check the rest, and generate the release notes.
-- [ ] **Sign the release**: at the least the checksums (minisign or Sigstore). Notarise the macOS build and code-sign
-  the Windows one if they ship (ROADMAP.md item 17).
-- [ ] **Install-test every leg on a real machine.** Nobody has installed Linux AArch64 (ROADMAP.md item 9); state the
-  oldest glibc supported and whether musl is. For the macOS preview, run `sh tools/mac_check.sh` on the Mac, and a
-  native executable under Rosetta 2, which has not been run there since the `openat` fallback (record, "Where we
-  stand", item 6).
-- [ ] **Seeds out of git history.** bootstrap/aipl-linux-x86_64 and bootstrap/aipl-linux-aarch64 (8.6 MB together) add
-  to the history at every refresh. Move them to release files or Git LFS, and keep their hashes in bootstrap/README.md.
+- [x] **Launch platforms** (decided 2026-11-07): Linux x86-64 and AArch64 are first-class, built from the seed with
+  no Rust compiler; macOS and Windows are a preview that ships the Rust `aipl` until the Mach-O and PE backends exist
+  (the release notes and docs/RELEASING.md say so).
+- [x] **The Linux release builds from the seed** (`bootstrap/build.sh`, stage 3 equal to stage 2, then `aipl
+  --version` must say the tag's version); no Rust `aipl`, no second compiler. The release's gate job refuses a tag
+  that is not on `main` or whose commit has no passing CI run. Rehearse with "Run workflow" (builds, install-tests and
+  signs, publishes nothing) or `sh tools/release_dry_run.sh`.
+- [x] **`aipl-net` stays for launch** as a documented helper, the one Rust program in the Linux tarball, built by its
+  own step; replacing it is on the Rust removal track.
+- [x] **One version source**: aipl_src/aipl.aipl. `python3 tools/release_check.py set X.Y.Z` writes it, Cargo.toml and
+  Cargo.lock; CI and the release gate fail when they differ; the notes are generated (tools/release_notes.py).
+- [x] **Signed release**: Sigstore keyless over `SHA256SUMS` (`SHA256SUMS.bundle`), verified in the workflow as a user
+  would. Open, because macOS and Windows are a preview: notarising the macOS build and code-signing the Windows one.
+- [x] **Install-tested** (2026-11-07), with these open: the GitHub Actions workflow itself has not run yet, so its
+  first run is the manual "Run workflow" rehearsal; and the Windows tarball was not installed this round.
+  - Linux x86-64: `tools/release_dry_run.sh` on arcadia: seed build, tarball, `install.sh` into an empty home, run,
+    `compile --exe`, `fmt`, `lint`. The `aipl` is a static executable, and ran in Debian 11, Ubuntu 22.04 and Alpine 3.20
+    containers (x86-64, under Rosetta 2, which is also the native-executable-under-Rosetta check). `aipl-net` needs glibc
+    2.34 or newer as measured on arcadia (the release states 2.35, Ubuntu 22.04's, and the build checks it): it runs on
+    Ubuntu 22.04, not on Debian 11 or Alpine, so there host names and https do not work.
+  - Linux AArch64: the same script in a `linux/arm64` Debian container on the Mac mini (Apple Silicon): passes. That is
+    an AArch64 Linux userland, not a bare-metal AArch64 Linux machine.
+  - macOS preview: `sh tools/mac_check.sh` on the Mac mini (macOS 27.2, arm64): 34 of 36, the two failures being a stale
+    check (`str.find` answers an option now; fixed) and the document check, which needs a git clone.
+- [x] **Seeds stay in git** (decided 2026-11-07; the pack is 5 MB). Each seed's hash is recorded in
+  bootstrap/README.md, and CI fails when a seed changes without it (`python3 tools/release_check.py seeds`).
 
 ## 5. Rust as the referee during alpha and beta
 
