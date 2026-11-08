@@ -1,0 +1,19 @@
+#!/bin/sh
+# The seed rule (DEVELOPING.md): the compiler's source may use only what the checked-in seed knows. Before a push, the
+# seed must be able to build aipl_src/aipl.aipl. About 5 seconds. Install with: sh tools/install_hooks.sh
+root="$(git rev-parse --show-toplevel)" || exit 0
+case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64) seed="$root/bootstrap/aipl-linux-x86_64"; target="" ;;
+    Linux/aarch64 | Linux/arm64) seed="$root/bootstrap/aipl-linux-aarch64"; target="--target arm64" ;;
+    *) exit 0 ;; # the seeds are Linux executables: elsewhere CI checks it
+esac
+[ -x "$seed" ] || exit 0
+out="$(mktemp -d)" || exit 0
+trap 'rm -rf "$out"' EXIT
+# shellcheck disable=SC2086
+if ! AIPL_STD="$root/aipl_src/std/" "$seed" compile --exe $target --allow-run '*' "$root/aipl_src/aipl.aipl" -o "$out/aipl" >"$out/log" 2>&1; then
+    cat "$out/log" >&2
+    echo "pre-push: the seed cannot build aipl_src/aipl.aipl, so the source uses something the seed does not know." >&2
+    echo "          Keep to the seed's forms, or refresh the seed (bootstrap/README.md). Push anyway with --no-verify." >&2
+    exit 1
+fi

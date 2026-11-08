@@ -144,20 +144,25 @@ self-hosted `aipl` and `aipl-net` (Rust: host names and TLS); macOS and Windows 
 The referee answers one question in development CI: does the self-hosted toolchain do what the spec says? Users never
 build it, and the release never runs it.
 
-- [ ] **Move the Rust crate out of the root**, into a `referee/` folder or a workspace member, so the repository reads
-  as the AIPL toolchain; the README's build from source leads with the seed.
-- [ ] **Split CI** into a referee job (`cargo test`, the Rust-against-self-hosted fuzzer, byte parity) and a main job
-  that runs the self-hosted commands. The release job only checks that the tagged commit's referee job passed.
-- [ ] **The self-hosted commands are CI's main path.** CI runs `aipl test aipl_src/test_suite.aipl` through the Rust VM
-  today (docs/design/aipl_standalone.md, S2's leftover).
-- [ ] **Decide what the referee checks.** In order of value: (a) the same programs accepted and refused, (b) the same
-  diagnostics, (c) the same behaviour at run time, (d) the same bytes. Keep (d) only where it earns its cost, such as the
-  bootstrap's fixed point (stage 2 equals stage 3), and let the self-hosted optimizer make other bytes.
-- [ ] **The twin-change rule in DEVELOPING.md.** Either a change lands in AIPL first and Rust follows, or the Rust front
-  end is frozen and checked through the conformance suite (section 2). AGENT_FRICTION.md rows 46, 62, and 66 are what
-  a missed twin costs.
-- [ ] **The seed rule, automated.** The compiler's source may not use what the seed does not know (AGENT_FRICTION.md
-  rows 14, 32, 52, and 57). A pre-push hook running `sh bootstrap/build.sh` catches it in 3 seconds.
+- [x] **The Rust crate is out of the root** (2026-11-07): `referee/` is a member of a root Cargo workspace
+  (`Cargo.toml` names it and holds the release profile). `src/`, `build.rs` and the Rust tests moved there; `target/`,
+  `Cargo.lock`, `tools/` and the language's own test data (`tests/aipl`, `tests/conformance`, `tests/arm64`) stayed, so
+  `cargo build --release` and every `target/release/aipl` path still work. The README's build from source leads with the
+  seed (`sh bootstrap/build.sh`).
+- [x] **CI is split** into `selfhosted` (the compiler built from the seed, then on it: the AIPL suite, conformance,
+  lint, `fmt --check`, the documentation, grammar, reference and release checks) and `referee` (clippy, `cargo test`, the
+  fuzzers, the optimizer check, conformance on the Rust `aipl`), in `.github/workflows/ci.yml` and `tools/ci.sh`. The
+  release gate requires the tagged commit's whole CI run to have passed.
+- [x] **The self-hosted commands are CI's main path**: `aipl test`, conformance, lint and fmt run on the compiler built
+  from the seed; the Rust VM runs the AIPL suite again only as the referee.
+- [x] **What the referee checks** (decided 2026-11-07): the same programs accepted and refused, the same diagnostics, the
+  same behaviour; bytes only for the bootstrap's fixed point. Open: the byte comparisons that exist
+  (`referee/tests/test_selfhost.rs`, `aipl compile --self`, those in `referee/tests/test_bootstrap.rs`) all pass today and
+  are kept as a tripwire until the self-hosted compiler is meant to emit other bytes; DEVELOPING.md says the same change
+  then turns each into a behavioural check. Converting them now would trade working coverage for freedom nobody uses yet.
+- [x] **The twin rule** is in DEVELOPING.md: AIPL first, the Rust twin follows, the spec and conformance suite decide.
+- [x] **The seed rule, automated**: `sh tools/install_hooks.sh` installs a pre-push hook (`tools/hooks/pre-push`) in which
+  the seed builds `aipl_src/aipl.aipl` (about 5 seconds); CI runs the whole `bootstrap/build.sh`.
 
 ## 6. Repository hygiene
 

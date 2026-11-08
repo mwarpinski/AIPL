@@ -245,8 +245,8 @@ executable), `verify`, `doc`, `run`, `test`, `watch`, `eval`, and `serve
 --fresh` without Rust at run time (a `.wasm` file is run natively on Linux
 x86-64; elsewhere, and in the interpreter for `--vm`, the Rust command is
 still needed). It compiles every program to the same bytes as the Rust
-one, which stays as the referee: `cargo test` checks the seed's build byte for
-byte against it (on AArch64 too, in CI). [bootstrap/README.md](bootstrap/README.md) has the other
+one, which stays as the referee, in development only (`referee/`): `cargo test` checks the seed's build byte for
+byte against it while the two are identical (on AArch64 too, in CI), and the behaviour always (DEVELOPING.md). [bootstrap/README.md](bootstrap/README.md) has the other
 ways to start, where the compiler finds the library, and why.
 
 ## What works today

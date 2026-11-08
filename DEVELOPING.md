@@ -111,12 +111,22 @@ cargo build --release && python3 tools/run_fuzz.py --cases 5000 --seed 7
 - **Branches.** Work happens on `features/<name>`, merged with `--no-ff`
   into `development`; `development` merges into `main` at milestones. Only
   `main` and `development` are long-lived.
-- **Both compilers, byte for byte.** Every change to code generation goes
-  into `referee/src/compiler/wasm.rs` and `aipl_src/codegen.aipl` and must produce
-  identical bytes (`aipl compile --self`, `referee/tests/test_selfhost.rs`); every
-  change to the front end goes into the Rust and the AIPL versions with the
-  same messages, word for word (`referee/tests/test_checker_aipl.rs`,
-  `referee/tests/test_resolver_aipl.rs`).
+- **AIPL first, Rust follows (the twin rule).** The self-hosted toolchain (`aipl_src/`) is the product; the Rust crate
+  in `referee/` is the referee, in development only. A change to the language or to a diagnostic lands in
+  `AIPL_SPEC.md` and `aipl_src/` first, with a case in `tests/conformance/` that says what must happen; then the Rust
+  twin is brought along so `referee/` passes the conformance suite and its tests. Where the two disagree, the
+  specification and the conformance suite decide, not Rust. What the referee holds, in order: the same programs
+  accepted and refused, the same diagnostics (word for word: `referee/tests/test_checker_aipl.rs`,
+  `referee/tests/test_resolver_aipl.rs`), the same behaviour at run time (`referee/tests/test_differential.rs`).
+  Bytes are the weakest of the four. The codegen comparison (`referee/tests/test_selfhost.rs`, `aipl compile --self`,
+  the byte comparisons in `referee/tests/test_bootstrap.rs`) stays while the two compilers are identical, as a tripwire,
+  and the bootstrap's fixed point (stage 2 equals stage 3) stays for good. When the self-hosted compiler is meant to
+  emit other bytes (an optimizer, say), the same change turns that comparison into a behavioural one. A twin missed
+  costs days (`docs/design/AGENT_FRICTION.md` rows 46, 62, 66): a change to what one walk visits is made in its twin
+  the same day, and the fuzzers (`tools/fuzz.py`) are what find the misses.
+- **The seed rule.** The compiler's source may use only what the checked-in seed knows (`docs/design/AGENT_FRICTION.md`
+  rows 14, 32, 52, 57). `sh tools/install_hooks.sh` installs a pre-push hook that has the seed build `aipl_src/aipl.aipl`
+  (about 5 seconds); CI's `selfhosted` job runs the whole `sh bootstrap/build.sh`.
 - **The VM follows wasm.** When the VM and compiled code disagree, the VM
   is fixed (`referee/tests/test_differential.rs`).
 - **Tests assert values.** A test that only checks "returned a number" or
