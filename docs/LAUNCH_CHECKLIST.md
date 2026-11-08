@@ -219,7 +219,6 @@ Last before the final checks, against the language section 1 leaves.
   clean with no Rust. The referee's CI (`cargo test` and both fuzzers, an hour each) passes on the same commit.
 - [ ] The documentation check is rerun (`python3 tools/docs_check.py`, also in CI), and the numbers it cannot count are
   measured again on the day (benchmark times, sizes, compile times).
-- [ ] Someone who has never seen the project follows the README cold and reports where they got stuck.
 - [ ] `development` is merged into `main` and tagged, with the owner's approval.
 - [ ] The launch notes say what AIPL is, what is unfinished (the macOS and Windows preview, the thesis not yet
   measured), and how it was built, before anyone has to ask.
@@ -239,6 +238,7 @@ None of these blocks launch; the launch notes say which are coming.
 - **Concurrency beyond threads**: channels, and a safe way to share data (ROADMAP.md item 12).
 - **The compiler's own debts**: codegen_opt.aipl's pattern matcher (the record, section 6), the self-hosted compiler's
   double parse, and exact trap positions inside format placeholders.
+- **README COLD Test Run**: Someone who has never seen the project follows the README cold and reports where they got stuck.
 - **Later ideas** (ROADMAP.md): a 64-bit target, AI-SQL, secret types.
 
 ## After launch: removing Rust entirely
