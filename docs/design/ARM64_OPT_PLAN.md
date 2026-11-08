@@ -96,7 +96,7 @@ nothing; a `local.set` or `tee` pops straight into the register, after sending a
 memory (`sync_local`), so it keeps the old value. A float operation never writes a register local (it copies
 first). The routines for imports use `x19`-`x25` freely, so `wasi_arm64.prologue` saves them below the entry
 `sp` and every exit restores them (`leave`); `x27` points below that area, so a routine's scratch space cannot
-overwrite it (a first version did, and `tests/test_native_arm64_programs.rs`'s file test caught it). The
+overwrite it (a first version did, and `referee/tests/test_native_arm64_programs.rs`'s file test caught it). The
 `thread-spawn` routine, which returns to translated code, now uses `x0`-`x15` only.
 
 | benchmark | C -O2 | phase 1 | phase 2 | ratio after phase 1 | ratio after phase 2 |
@@ -213,7 +213,7 @@ the machine stack; a loop's step and end are not constants when the code optimiz
 3. **The register calling convention** (and guard-ifs). Expected: 1.2 to 1.5 times on call-heavy programs (binarytrees); measured: only the guards helped.
 4. **Instruction selection** (operands in place, immediates, uxtw addressing, direct branches, constant locals). Measured: 1.2 to 2 times.
 
-A phase is done when every benchmark's output is unchanged, `tests/test_native_arm64*.rs` and
+A phase is done when every benchmark's output is unchanged, `referee/tests/test_native_arm64*.rs` and
 `tools/arm64_bootstrap.sh` pass (the compiler built by the optimized backend compiles itself to the same
 bytes and every repository program to the Rust command's bytes), the corpus of `tests/aipl` runs
 byte-identical to the x86-64 build's, and the table is re-measured.

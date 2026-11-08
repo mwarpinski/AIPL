@@ -4,7 +4,7 @@
 ;; each, the result in rax; every register but rbp, rsp, and r15 (the
 ;; linear memory base) may be clobbered.
 ;;
-;; Behaviour follows src/net.rs, which the VM and aipl-run use:
+;; Behaviour follows referee/src/net.rs, which the VM and aipl-run use:
 ;;   - listen(addr, len, port) -> handle: `len` (4 or 16) address bytes at
 ;;     `addr`; -2 unless the address and port are among the grants fixed
 ;;     when the executable was compiled (`--listen`); -1 for a malformed

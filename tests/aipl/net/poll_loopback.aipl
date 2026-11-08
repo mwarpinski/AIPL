@@ -1,5 +1,5 @@
 ;; std/net's waiting a limited time (poll, readable, writable, accept_within, recv_within), on one thread over
-;; the loopback: tests/test_net.rs runs this with the address (the first argument) granted to listen on and
+;; the loopback: referee/tests/test_net.rs runs this with the address (the first argument) granted to listen on and
 ;; connect to, and every backend prints the same lines.
 (module poll_loopback
   (import alloc)

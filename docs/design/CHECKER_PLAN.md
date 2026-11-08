@@ -4,8 +4,8 @@
 
 The self-hosted toolchain (`aipl_src/driver.aipl`: resolver, generics,
 constants, code generator) compiles any checked program to the Rust
-toolchain's bytes, but it trusts its input: the parser (`src/parser.rs`)
-and the checker (`src/checker.rs`) that reject bad programs exist only in
+toolchain's bytes, but it trusts its input: the parser (`referee/src/parser.rs`)
+and the checker (`referee/src/checker.rs`) that reject bad programs exist only in
 Rust. This plan adds both in AIPL, so `aiplc` rejects what `aipl verify`
 rejects, with the same messages, and the Rust front end can retire
 (the plan's steps 9-10 at the time; docs/history/WORK_LOG.md).
@@ -14,12 +14,12 @@ rejects, with the same messages, and the Rust front end can retire
 
 - **A typed syntax tree, built from unions.** `aipl_src/ast.aipl` declares
   the program as AIPL data: `Type`, `Expr` (one variant per form), `FnDef`,
-  `StructDef`, `EnumDef`, `UnionDef`, `Module`, mirroring `src/ast.rs`.
+  `StructDef`, `EnumDef`, `UnionDef`, `Module`, mirroring `referee/src/ast.rs`.
   `aipl_src/parser.aipl` builds it from `compiler.aipl`'s generic tree and
-  reports what `src/parser.rs` reports. `aipl_src/printer.aipl` prints it
-  back as `src/printer.rs` does. This is the first large program written on
+  reports what `referee/src/parser.rs` reports. `aipl_src/printer.aipl` prints it
+  back as `referee/src/printer.rs` does. This is the first large program written on
   unions and `match`; the code generator can move onto the same tree later.
-- **`aipl_src/checker.aipl` mirrors `src/checker.rs` rule for rule**, with
+- **`aipl_src/checker.aipl` mirrors `referee/src/checker.rs` rule for rule**, with
   the same message text, including the Rust spelling of types in messages
   (`Ptr(Struct("Point"))`). Changing that spelling to AIPL syntax (audit
   D2) is a later change made to both at once.
@@ -28,7 +28,7 @@ rejects, with the same messages, and the Rust front end can retire
   start at; line and column are computed from it when an error is reported.
 - **Input.** The checker runs on the flat program the AIPL resolver and
   generics pass produce, with constants and enum members expanded as
-  `src/consts.rs` does (members become `(enum.cast E n)`, enum types stay),
+  `referee/src/consts.rs` does (members become `(enum.cast E n)`, enum types stay),
   and before `consts.aipl` erases enums for the code generator.
 
 ## The safety net
@@ -47,18 +47,18 @@ output, which both sides can read), so positions agree:
 4. **Mutation checks** on each new test.
 
 Large inputs run in the compiled toolchain under wasmtime (as
-`tests/test_resolver_aipl.rs` does), not in the VM.
+`referee/tests/test_resolver_aipl.rs` does), not in the VM.
 
 ## Steps
 
 | Step | What | Status |
 |---|---|---|
-| CK1 | Positions: tokens and nodes carry their source offset; a `line:col` helper counting characters. The AIPL tokenizer's literal rules brought in line with Rust's where they differ (out-of-range integers, string escapes, unterminated strings), each with an error | Done 2026-10-05. Both tokenizers checked token by token (kind, line:col, value) on every repository file and 17 tricky inputs (`tests/test_checker_aipl.rs`, mutation-checked). Rust fixes found on the way: a form feed or no-break space hung the tokenizer forever (now an error naming the character), and `i32` literals beyond 32 bits wrapped silently (now an error; `-2147483648`..`4294967295` allowed). The AIPL passes now print integers as written, and codegen.aipl reads `+` signs and reports exponents as 973 |
+| CK1 | Positions: tokens and nodes carry their source offset; a `line:col` helper counting characters. The AIPL tokenizer's literal rules brought in line with Rust's where they differ (out-of-range integers, string escapes, unterminated strings), each with an error | Done 2026-10-05. Both tokenizers checked token by token (kind, line:col, value) on every repository file and 17 tricky inputs (`referee/tests/test_checker_aipl.rs`, mutation-checked). Rust fixes found on the way: a form feed or no-break space hung the tokenizer forever (now an error naming the character), and `i32` literals beyond 32 bits wrapped silently (now an error; `-2147483648`..`4294967295` allowed). The AIPL passes now print integers as written, and codegen.aipl reads `+` signs and reports exponents as 973 |
 | CK2 | `ast.aipl` and `parser.aipl` for module items and types (structs, enums, unions, functions, imports-free modules), `printer.aipl`; print parity on items | Done 2026-10-05, with CK3. `ast.aipl` is the tree as unions (`Type`, `Expr`, `Contract`), the first large AIPL program written on them; it needed a wildcard binder `_` (added to the language) |
-| CK3 | Expressions in the parser, every form; print parity on every repository program | Done 2026-10-05. `parser.aipl` ports `src/parser.rs`'s recursive descent over the token array (its errors depend on the exact token), with the first error recorded and the parse ended. Two tests (`tests/test_checker_aipl.rs`, the front end compiled to wasm under wasmtime): every repository program as the Rust printer prints it round-trips through parser.aipl and printer.aipl byte for byte; and the original sources, plus a corpus using every form and operator, print the same through both parsers. Mutation-checked; the second test exists because `cond` and `gteu` never appear in printed repository programs |
-| CK4 | Parse errors: every `src/parser.rs` message; message parity on its cases | Done 2026-10-05. 130 malformed programs (each parser and tokenizer error, positions in multi-byte text, a tokenizer error after a parse error) get the identical message from both, `line:col` included. One known gap, outside the corpus: a float literal named in a message is spelled from its source digits, which matches Rust's `{:?}` except for exponents and more digits than an f64 holds |
-| CK5 | Constants: a typed expansion mode in `consts.aipl` matching `src/consts.rs` (enum members to `(enum.cast E n)`), with its errors | Done 2026-10-05, as `aipl_src/expand.aipl`, working on tokens rather than reprinted text so every token keeps its position (int tokens now carry their text, as other literals do). The AIPL resolver's output for seven programs (the code generator and its imports among them) expands and parses to Rust's program; 23 constant and enum errors match word for word. Mutation-checked |
-| CK6 | Checker, module level: registering structs, enums, unions, functions; `validate_type`; type layout | Done 2026-10-05, with CK7-CK10, as `aipl_src/checker.aipl` (about 1,200 lines): `src/checker.rs` rule for rule, Rust's Debug spelling of types and ops in messages, scopes as a stack of bindings with saved heights |
+| CK3 | Expressions in the parser, every form; print parity on every repository program | Done 2026-10-05. `parser.aipl` ports `referee/src/parser.rs`'s recursive descent over the token array (its errors depend on the exact token), with the first error recorded and the parse ended. Two tests (`referee/tests/test_checker_aipl.rs`, the front end compiled to wasm under wasmtime): every repository program as the Rust printer prints it round-trips through parser.aipl and printer.aipl byte for byte; and the original sources, plus a corpus using every form and operator, print the same through both parsers. Mutation-checked; the second test exists because `cond` and `gteu` never appear in printed repository programs |
+| CK4 | Parse errors: every `referee/src/parser.rs` message; message parity on its cases | Done 2026-10-05. 130 malformed programs (each parser and tokenizer error, positions in multi-byte text, a tokenizer error after a parse error) get the identical message from both, `line:col` included. One known gap, outside the corpus: a float literal named in a message is spelled from its source digits, which matches Rust's `{:?}` except for exponents and more digits than an f64 holds |
+| CK5 | Constants: a typed expansion mode in `consts.aipl` matching `referee/src/consts.rs` (enum members to `(enum.cast E n)`), with its errors | Done 2026-10-05, as `aipl_src/expand.aipl`, working on tokens rather than reprinted text so every token keeps its position (int tokens now carry their text, as other literals do). The AIPL resolver's output for seven programs (the code generator and its imports among them) expands and parses to Rust's program; 23 constant and enum errors match word for word. Mutation-checked |
+| CK6 | Checker, module level: registering structs, enums, unions, functions; `validate_type`; type layout | Done 2026-10-05, with CK7-CK10, as `aipl_src/checker.aipl` (about 1,200 lines): `referee/src/checker.rs` rule for rule, Rust's Debug spelling of types and ops in messages, scopes as a stack of bindings with saved heights |
 | CK7 | Checker, expressions: control flow, calls, scoping, `let`/`set!`, contracts, `return`/`break`/`continue` | Done 2026-10-05 (see CK6) |
 | CK8 | Checker, operators (the full table, with the address rules) | Done 2026-10-05 (see CK6) |
 | CK9 | Checker, data: structs, arrays, pointers, references, results, enums, unions and `match` | Done 2026-10-05 (see CK6) |

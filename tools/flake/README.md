@@ -1,9 +1,9 @@
-# Stress scripts for tests/test_serve.rs's intermittent failures
+# Stress scripts for referee/tests/test_serve.rs's intermittent failures
 
 Written 2026-10-21 while diagnosing the empty first answers (docs/history/HANDOFF.md,
-Open problems). Each starts servers the way tests/test_serve.rs does, under
+Open problems). Each starts servers the way referee/tests/test_serve.rs does, under
 CPU load, and counts answers that come back empty; the servers run with
-`AIPL_NET_DEBUG=1` (src/net.rs and aipl-run --serve-fresh log what the
+`AIPL_NET_DEBUG=1` (referee/src/net.rs and aipl-run --serve-fresh log what the
 host saw, while that temporary logging is on the branch). Build first:
 `cargo build --release`.
 

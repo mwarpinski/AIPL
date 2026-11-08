@@ -19,10 +19,10 @@ typed structs, enums, and constants in small steps.
 
 The output must not change. Every step keeps these green:
 
-- `tests/test_selfhost.rs`: the self-hosted compiler's output equals the Rust
+- `referee/tests/test_selfhost.rs`: the self-hosted compiler's output equals the Rust
   backend's, byte for byte, on over 40 programs, including codegen.aipl
   compiling itself.
-- `tests/test_resolver_aipl.rs`: the compiled AIPL toolchain compiles every
+- `referee/tests/test_resolver_aipl.rs`: the compiled AIPL toolchain compiles every
   repository program, the native backend, and itself to the Rust toolchain's
   bytes (the bootstrap fixpoint).
 - `aipl test aipl_src/test_suite.aipl` (codegen's own self-tests) and the rest

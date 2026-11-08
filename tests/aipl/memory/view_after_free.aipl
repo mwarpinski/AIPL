@@ -1,5 +1,5 @@
 ;; A view of a buffer read after the buffer is freed stops the program
-;; (tests/test_memory.rs): views are checked (docs/design/MEMORY_PLAN.md M1).
+;; (referee/tests/test_memory.rs): views are checked (docs/design/MEMORY_PLAN.md M1).
 (module view_after_free
   (import buf)
   (import str)

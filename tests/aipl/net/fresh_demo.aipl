@@ -1,4 +1,4 @@
-;; A fresh-instance server (NET_PLAN.md mode B, tests/test_serve.rs): one
+;; A fresh-instance server (NET_PLAN.md mode B, referee/tests/test_serve.rs): one
 ;; request from standard input, answered on standard output (serve.once).
 ;; GET / says hello, GET /echo... gives back its target, GET /crash traps
 ;; (an index past the end of an array), GET /big answers 64 MiB, more

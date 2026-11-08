@@ -5,7 +5,7 @@ that read back through the nearest f64 as AIPL reads an f32 literal).
 
     python3 tools/show_vectors.py tests/aipl/show [seed] [scale]
 
-tests/test_formats.rs runs the program in every backend against the answers.
+referee/tests/test_formats.rs runs the program in every backend against the answers.
 """
 import random, struct, sys
 from decimal import Decimal, getcontext

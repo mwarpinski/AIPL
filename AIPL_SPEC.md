@@ -925,7 +925,7 @@ Errors: `a test is (test "name" body...)`; `expect is only for a test's body: (t
 
 `(when c body...)` is the `if` with one branch, and the only one: an `if` whose then or else is an empty `(block)` is an error (`an if has two real branches, and this else is an empty (block): for one branch, write (when c then...)`, and for an empty then `an if has two real branches, and this then is an empty (block): for an else alone, write (when (not c) else...)`). The parsers read `when` themselves, as `(if c (block body... (block)) (block))`: the empty block that ends the body makes every expression of the body a statement, so a value in it is dropped, as in a `while` or `for` body, and the `when` is `void`. The printers write that tree back as `when` (CANONICAL_PLAN.md step 4).
 
-The others are written for the reader and rewritten as the resolver reads a module (src/sugar.rs; aipl_src/resolver.aipl), so nothing after it sees them:
+The others are written for the reader and rewritten as the resolver reads a module (referee/src/sugar.rs; aipl_src/resolver.aipl), so nothing after it sees them:
 
 | Form | Is | |
 |---|---|---|

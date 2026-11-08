@@ -8,7 +8,7 @@ Python's hashlib, hmac, and zlib.
     python3 tools/hash_vectors.py tests/aipl/hash [seed]
 
 Bytes go to the program as hex. Each case prints one line.
-tests/test_hash.rs runs the program in every backend against the answers.
+referee/tests/test_hash.rs runs the program in every backend against the answers.
 """
 import hashlib, hmac, random, sys, zlib
 

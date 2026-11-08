@@ -1,5 +1,5 @@
 ;; Values std/show cannot print on its own, through the printers formatting
-;; generates (tests/test_formats.rs; formats.rs debug_functions): structs
+;; generates (referee/tests/test_formats.rs; formats.rs debug_functions): structs
 ;; behind pointers, value structs, arrays, unions, results, and generic
 ;; instances of them, in every backend and both toolchains.
 (module values

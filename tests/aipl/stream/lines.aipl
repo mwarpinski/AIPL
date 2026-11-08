@@ -1,5 +1,5 @@
 ;; Numbers the lines of standard input through std/stream, then writes a
-;; file and counts its lines with try and defer: tests/test_stream.rs runs
+;; file and counts its lines with try and defer: referee/tests/test_stream.rs runs
 ;; it in the VM, under aipl-run, and natively on the same input.
 (module lines
   (import stream)

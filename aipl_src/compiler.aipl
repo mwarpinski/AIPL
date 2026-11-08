@@ -51,7 +51,7 @@
   ;; int, i64, or float token's a/b are its source offset and length (a
   ;; string's without the quotes; an int's value is int_value), a bool's a is
   ;; 0/1. Mirrors
-  ;; src/parser.rs::Parser::tokenize (same delimiters, same literal rules,
+  ;; referee/src/parser.rs::Parser::tokenize (same delimiters, same literal rules,
   ;; same errors as bad tokens), so the two tokenizers accept identical input.
 
   (const CH_TAB:i32 9)
@@ -209,7 +209,7 @@
       ((and (gte c 65) (lte c 70)) (- c 55))
       (else -1)))
 
-  ;; Rust's radix_literal (src/parser.rs): a 0x or 0b literal, with an optional sign and single `_` between
+  ;; Rust's radix_literal (referee/src/parser.rs): a 0x or 0b literal, with an optional sign and single `_` between
   ;; digits, whose digits fill at most 63 bits (64 when `wide`: an i64 literal).
   (fn is_radix_literal [src_ptr:i32 pos:i32 len:i32 wide:bool] -> bool (unsafe)
     (unsafe (let radix:i32 (call int_radix src_ptr pos len))

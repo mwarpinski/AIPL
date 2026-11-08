@@ -1,4 +1,4 @@
-;; aipl test, in AIPL (src/testrun.rs is the Rust one): runs each
+;; aipl test, in AIPL (referee/src/testrun.rs is the Rust one): runs each
 ;; (test "name" ...) of a file, or of every .aipl file below a directory, in a
 ;; fresh process, so a test cannot see another's state and a trap fails only
 ;; its own test.

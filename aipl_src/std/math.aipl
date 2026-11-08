@@ -225,7 +225,7 @@
   ;; exp, expm1, ln, log10, log2, log1p, pow_f64, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh,
   ;; tanh, hypot, and cbrt are written in AIPL, from FreeBSD's msun (the fdlibm that musl and the Rust
   ;; `libm` crate carry), with only IEEE arithmetic, `f64.sqrt`, and bit operations: every backend, the
-  ;; interpreter included, gives the same bits. tests/test_math_float.rs checks each against the `libm`
+  ;; interpreter included, gives the same bits. referee/tests/test_math_float.rs checks each against the `libm`
   ;; crate bit for bit on generated inputs. glibc, which Python's `math` calls, uses other algorithms
   ;; and differs from fdlibm in the last place for some arguments; both are within 1 ulp of the true
   ;; value (fdlibm's functions are under 1 ulp, tanh a little over, and cbrt, FreeBSD's, is under 0.667

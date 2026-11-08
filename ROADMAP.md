@@ -26,8 +26,8 @@ by how soon a newcomer meets each item. Sizes are rough: **S** days, **M** a wee
 
 1. **`aipl run FILE.aipl` the same everywhere.** *Built, in 0.2.1.* The Rust command now compiles a
    source file and runs it, takes `--no-opt` and `--max-memory`, and takes the program's arguments with or without a `--`,
-   as the self-hosted command does (`aipl_run_takes_a_source_file_as_it_takes_a_module`, tests/test_runner.rs). Left:
-   compare the two commands' `run` on the whole example corpus in tests/test_bootstrap.rs, as `compile` is.
+   as the self-hosted command does (`aipl_run_takes_a_source_file_as_it_takes_a_module`, referee/tests/test_runner.rs). Left:
+   compare the two commands' `run` on the whole example corpus in referee/tests/test_bootstrap.rs, as `compile` is.
 2. **Editor support.** *M, then L.* A TextMate grammar (VS Code, Zed, Sublime), a tree-sitter grammar (Neovim, Helix, Emacs),
    then a language server over what already exists: `aipl verify` for diagnostics, `aipl doc` for hover, and the resolver
    for go-to-definition. The server can be written in AIPL.
@@ -35,7 +35,7 @@ by how soon a newcomer meets each item. Sizes are rough: **S** days, **M** a wee
    the source line with a caret under its column; arguments count from 1 (`Argument 2 of 'add' ...`); an undefined
    variable suggests a near one (`did you mean total?`); `aipl lint` finds what compiles but is probably wrong (ten rules,
    `;; lint:allow RULE` to keep one). `aipl repl` (for people, since an AI has `aipl eval -e`, `verify`, `test` and `watch`) is built in the Rust `aipl`
-   (src/repl.rs); the self-hosted `aipl` does not have it yet (it needs a way to tell a terminal from a pipe, and to run an
+   (referee/src/repl.rs); the self-hosted `aipl` does not have it yet (it needs a way to tell a terminal from a pipe, and to run an
    expression in the process it is). Still to do: every error in a function instead of the
    first (a function with one mistake reports one today). Not decided: whether the standard library and `aipl_src`
    must lint clean in CI (they hold about 80 findings today, most of them real dead code or unused names, and the

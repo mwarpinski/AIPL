@@ -42,7 +42,7 @@
 
   ;; The first executable: prints "hello from native AIPL" and a newline, and
   ;; exits with status 7.
-  ;; lint:allow unused-function (the host invokes it by name: tests/test_native_arm64.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/tests/test_native_arm64.rs)
   (fn hello_exe [] -> (ptr HostBytes)
     (let data:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_str data "hello from native AIPL")

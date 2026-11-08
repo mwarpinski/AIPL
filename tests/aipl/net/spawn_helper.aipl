@@ -1,5 +1,5 @@
 ;; A program that starts aipl-net itself, not through std/net, as one that wanted a host it was not granted would:
-;; for each HOST PORT pair among its arguments it prints the helper's status byte (tests/test_net.rs). The helper,
+;; for each HOST PORT pair among its arguments it prints the helper's status byte (referee/tests/test_net.rs). The helper,
 ;; not this program, decides what is reachable: it reads the grants from this executable.
 (module spawn_helper
   (import alloc)

@@ -1,9 +1,9 @@
 # Generation checks: stopping use after free
 
 Status: done (2026-10-16) in every backend and both toolchains: the VM,
-`src/compiler/wasm.rs`, `aipl_src/codegen.aipl` (byte for byte), the
+`referee/src/compiler/wasm.rs`, `aipl_src/codegen.aipl` (byte for byte), the
 native backend (which needed nothing: it translates the wasm), and the
-standard library (`std/gen`). tests/test_generations.rs checks it in all
+standard library (`std/gen`). referee/tests/test_generations.rs checks it in all
 three backends. Parallel work without `unsafe` (`std/par`, "Data races"
 below) is done too; the pre-checked small functions under "What remains"
 were measured and not built.
@@ -109,7 +109,7 @@ generation word and the first field in one cache line.
 
 ## Stages
 
-1. **Prototype in the Rust toolchain** (VM and `src/compiler/wasm.rs`) on a
+1. **Prototype in the Rust toolchain** (VM and `referee/src/compiler/wasm.rs`) on a
    branch: 8-byte pointers, generation words, the check, `std/heap`
    bumping on free. Run the eight benchmarks. If the cost is out of line
    with the other checks, stop and revisit.
@@ -140,7 +140,7 @@ generation word and the first field in one cache line.
 
 ## Prototype (2026-10-16)
 
-Built in `src/compiler/wasm.rs`, the Rust checker's layouts, and the
+Built in `referee/src/compiler/wasm.rs`, the Rust checker's layouts, and the
 standard library, enough to run every benchmark as wasm and natively (the
 native backend, compiled by the prototype, runs with the checks on too).
 The VM and the AIPL toolchain are unchanged, so their tests fail on the
@@ -294,7 +294,7 @@ array field only `par` could reach); every element read was a call, and
 one thread took 2.4 times the sequential time, so it became a copy.
 `examples/spectralnorm_par.aipl` (each row of a matrix-vector product is
 one element of `out`) takes the sequential benchmark's time on one thread
-and 0.26 of it on eight, natively; `tests/test_par.rs` checks its result
+and 0.26 of it on eight, natively; `referee/tests/test_par.rs` checks its result
 in every backend. Not covered: work that does not fit "one result per
 index" (reductions, shared maps), freezing, and transfer; Rust's
 Send/Sync (it needs a borrow checker), isolates that copy every message,

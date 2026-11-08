@@ -1,4 +1,4 @@
-;; Tests for aipl test (tests/test_testing.rs): passing and failing expects,
+;; Tests for aipl test (referee/tests/test_testing.rs): passing and failing expects,
 ;; comparisons that show both sides, a trap, and tests that cannot see each
 ;; other's state. A test may call the module's private functions.
 (module rows

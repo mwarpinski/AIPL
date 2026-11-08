@@ -1,4 +1,4 @@
-;; A client for tests/test_net.rs: fetches the URL given as its first argument with http.fetch_within, the
+;; A client for referee/tests/test_net.rs: fetches the URL given as its first argument with http.fetch_within, the
 ;; limit in milliseconds the environment variable AIPL_FETCH_MS says, and prints the status that came back or
 ;; why nothing did.
 (module fetch_within_demo

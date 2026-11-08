@@ -74,23 +74,23 @@ correctly.
 
 **Cost.** Small. One repository file leans on it
 (tests/aipl/memory/request_paths.aipl uses `vec.Vec` through `text`).
-The check is in the two resolvers (src/resolver.rs,
+The check is in the two resolvers (referee/src/resolver.rs,
 aipl_src/resolver.aipl), with a message test in each.
 
 **Recommendation: yes, strongly.** Cheap now, impossible after release
 without breaking users.
 
 **Decided (owner, 2026-10-26): yes. Done 2026-10-26** on branch
-features/explicit-imports: both resolvers (`foreign` in src/resolver.rs
+features/explicit-imports: both resolvers (`foreign` in referee/src/resolver.rs
 and aipl_src/resolver.aipl) refuse a module's name the file does not
 import, with one message; the compiler's own writing (`alloc.create`
 and `alloc.array` for `new` and `arr.new`, a test build's `_start`) is
 exempt, and the formatting forms' std/show calls are written after the
 check in both toolchains. One repository file needed its line, and so
 did programs the scan of .aipl files did not see: two written inside
-Rust tests (tests/test_selfhost.rs, tests/test_sugar.rs), tools/run_fuzz.py's
+Rust tests (referee/tests/test_selfhost.rs, referee/tests/test_sugar.rs), tools/run_fuzz.py's
 generated programs (alloc), and tools/make_kit.sh's test program. AIPL_SPEC.md 11
-and 13, the guide's rule 1, tests/test_visibility.rs (three cases, both
+and 13, the guide's rule 1, referee/tests/test_visibility.rs (three cases, both
 resolvers message for message).
 
 ## 2. A missing value is an Option, not a fake piece of text
@@ -176,7 +176,7 @@ will be after this.
 - The callers: about 40, in the compiler, std, examples, a benchmark,
   test programs, and programs inside Rust tests; tests that check
   printed numbers keep them (a failure still prints -1 there).
-- tests/test_io.rs: each kind (a missing file, a directory, a missing
+- referee/tests/test_io.rs: each kind (a missing file, a directory, a missing
   directory on the path, a file used as one, no permission, a write into
   a missing directory and onto a directory, and a branch on the kind) the
   same in the VM, under aipl-run, and natively, both toolchains' bytes
@@ -213,7 +213,7 @@ features/arr-of: both resolvers rewrite it as a block that makes the
 array and sets each value (sugar.rs, resolver.aipl emit_arr_of), the
 temporary named by the form's line and column, so it stays flat however
 many values it holds; a missing allocator, or a literal where it goes, is
-one message in both. tests/test_sugar.rs: alike in every backend, both
+one message in both. referee/tests/test_sugar.rs: alike in every backend, both
 toolchains' bytes, five message cases. Found on the way, open: sugar
 inside a formatting placeholder is rewritten by the self-hosted resolver
 but refused by the Rust one (docs/history/HANDOFF.md, Open problems).
@@ -347,12 +347,12 @@ per function any more. The code generators are unchanged: the generics
 pass, the last before the checkers and code generators in both
 toolchains, renames a name declared again where its first declaration is
 no longer visible to `'K.name` (its K-th declaration), with every use in
-its scope (src/scopes.rs, generics.aipl scope_fn), and a message writes it
+its scope (referee/src/scopes.rs, generics.aipl scope_fn), and a message writes it
 back as `name` (`shown`). A declaration of a name still visible keeps that
 name, so shadowing is reported as before. A name redeclared with the same
 type is renamed too: one more local, which costs nothing measurable, and
 the rule stays syntactic, the same in both toolchains.
-tests/test_scopes.rs runs blocks, arms, loops, and clauses that each
+referee/tests/test_scopes.rs runs blocks, arms, loops, and clauses that each
 declare a name again, with other types and in a template, in every
 backend and both toolchains' bytes.
 
@@ -401,7 +401,7 @@ Found on the way: the format walks (formats.rs `split`, `uses_formats`,
 `holds_dbg`; resolver.aipl `uses_formats`) skipped a struct's named field
 list, so a print inside one was not expanded; now they read it, as
 sugar.rs does. A trap inside a placeholder is reported at the string, as
-every format's position is, so tests/test_generations.rs binds the
+every format's position is, so referee/tests/test_generations.rs binds the
 accesses it reports with `let`.
 
 ## 7. An address-sized integer type
@@ -440,7 +440,7 @@ language change; listed so it is not forgotten.
 writes: `=` and `==` (`equality is (eq a b)`), `!=` (`neq`), `<`, `>`,
 `<=`, `>=` (`lt`, `gt`, `lte`, `gte`), `&&`, `||`, and `!` (`and`, `or`,
 `not`): `Unknown op/keyword: =; '=' is not an operator; equality is (eq a
-b)` (src/parser.rs c_operator, parser.aipl c_operator). test_checker_aipl
+b)` (referee/src/parser.rs c_operator, parser.aipl c_operator). test_checker_aipl
 compares five of them word for word; test_diagnostics checks two.
 
 ---

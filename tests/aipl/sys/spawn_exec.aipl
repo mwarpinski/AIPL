@@ -1,4 +1,4 @@
-;; proc.exec (docs/design/SYS_PLAN.md D3): tests/test_sys.rs runs this with
+;; proc.exec (docs/design/SYS_PLAN.md D3): referee/tests/test_sys.rs runs this with
 ;; `--allow-run /bin/sh --allow-run /no/such/program` and AIPL_PROC_TEST=hello.
 ;; An exec that is refused or fails comes back; one that works never does:
 ;; the program becomes `sh`, which ends the run with its own status.

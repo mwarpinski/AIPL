@@ -13,7 +13,7 @@
 # compile and run, a native executable, a test build, doc, and eval -e.
 #
 # The binaries are the build's own: the Rust command carries its library
-# (the standard library and the toolchain's sources; src/library.rs) and
+# (the standard library and the toolchain's sources; referee/src/library.rs) and
 # writes it to its cache on first use, and the self-hosted command,
 # bin/aipl-native, reads share/aipl/std/ beside its folder
 # (aipl_src/stdpath.aipl).

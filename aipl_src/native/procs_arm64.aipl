@@ -1,7 +1,7 @@
 ;; procs_arm64: AIPL's own process operations, the `aipl_sys_v1` imports spawn, stream,
 ;; read, write, close, wait, and exec (docs/design/SYS_PLAN.md D3), as AArch64 routines over
 ;; Linux system calls (native ARM64 backend, docs/design/ARM64_PLAN.md): procs.aipl's
-;; counterpart for x86-64, and behaving as it does (and as src/sys.rs does, which the VM and
+;; counterpart for x86-64, and behaving as it does (and as referee/src/sys.rs does, which the VM and
 ;; aipl-run use; the header of procs.aipl states each operation's results).
 ;;
 ;; Called as wasi_arm64.aipl's routines are: the arguments on the value stack, a result in x0
@@ -34,7 +34,7 @@
   (fn entry [] -> i32 32)
   (fn grant_size [] -> i32 260)
   ;; the longest program path a grant may name, and the most bytes of path and arguments
-  ;; together (src/sys.rs checks the same)
+  ;; together (referee/src/sys.rs checks the same)
   (fn max_grant [] -> i32 (pub) 256)
   (fn max_args [] -> i32 65536)
 

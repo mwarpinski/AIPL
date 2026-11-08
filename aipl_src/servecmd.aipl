@@ -1,4 +1,4 @@
-;; aipl serve --fresh, in AIPL (src/main.rs Commands::Serve is the Rust one):
+;; aipl serve --fresh, in AIPL (referee/src/main.rs Commands::Serve is the Rust one):
 ;; a fresh instance of a program per connection (docs/design/NET_PLAN.md
 ;; mode B).
 ;;

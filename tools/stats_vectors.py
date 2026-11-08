@@ -6,7 +6,7 @@ matches), so equal text is equal bits.
 
     python3 tools/stats_vectors.py tests/aipl/stats [seed]
 
-tests/test_stats.rs runs the program in every backend against the answers.
+referee/tests/test_stats.rs runs the program in every backend against the answers.
 """
 import math, random, statistics as st, sys
 random.seed(int(sys.argv[2]) if len(sys.argv) > 2 else 1)

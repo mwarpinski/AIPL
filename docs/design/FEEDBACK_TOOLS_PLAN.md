@@ -63,7 +63,7 @@ $ aipl doc path/to/mod.aipl    # any module
 
 As built (2026-10-18): `aipl_src/doc.aipl`, about 660 lines, in only what
 the stage-0 seed compiles (no formatting forms, `try`, or `defer`); the
-Rust CLI's `aipl doc` is `src/tools.rs` compiling and running it (about 50
+Rust CLI's `aipl doc` is `referee/src/tools.rs` compiling and running it (about 50
 ms a call). Generic items show as a caller writes them, `(option.unwrap_or
 T)`, and contracts follow the comment. `--check` found 88 undocumented
 public items in std, now documented (308 in 25 files).
@@ -101,7 +101,7 @@ $ aipl eval --with rows.aipl -e '(let r:(ptr Row) (call make_row 2)) (get r Row.
   yet (WASI cannot start a process, and AIPL has no interpreter of its own,
   section 7), which is the reason this is Rust.
 
-As built (2026-10-18): `src/evalexpr.rs`, about 300 lines. The
+As built (2026-10-18): `referee/src/evalexpr.rs`, about 300 lines. The
 expressions are checked inside a `void` wrapper, which gives their type
 (the checker records each function's body type, `body_type`); the second
 step changes the flat, already-resolved module rather than re-parsing, since
@@ -222,7 +222,7 @@ changes four times a second; on a change it clears the screen and shows
 would hold in a session is in a file you can see, save, and diff. Rust, for
 the reason F2 gives, and small (polling, no file-notification library).
 
-As built (2026-10-18): `src/watch.rs`, about 60 lines; the files it
+As built (2026-10-18): `referee/src/watch.rs`, about 60 lines; the files it
 watches are the resolved program's (the standard modules it uses too),
 found again after each run.
 

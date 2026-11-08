@@ -1,7 +1,7 @@
 ;; lint: aipl lint FILE.aipl... finds code that is legal but probably a mistake, or that goes against how AIPL is
 ;; written. It reads each file as the S-expressions it is (the tokenizer and tree of compiler.aipl), before any
 ;; sugar is lowered, so it sees `when`, `format`, `println`, `(pub)` and constants as the programmer wrote them. It
-;; resolves no imports and runs no checker: it finds what the checker lets through. The Rust command (src/main.rs)
+;; resolves no imports and runs no checker: it finds what the checker lets through. The Rust command (referee/src/main.rs)
 ;; runs this file the way it runs doc.aipl; the self-hosted aipl includes it.
 ;;
 ;;   prog.aipl: 4:5: warning[unused-variable]: variable 'total' is never read

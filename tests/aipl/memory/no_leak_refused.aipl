@@ -1,5 +1,5 @@
 ;; Each (no_leak) function here breaks its promise but fine and
-;; raw_in_unsafe (tests/test_memory.rs): the checker names the site and
+;; raw_in_unsafe (referee/tests/test_memory.rs): the checker names the site and
 ;; the chain down to the allocation, the same in both toolchains.
 (module no_leak_refused
   (import str)

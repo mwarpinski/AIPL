@@ -1,7 +1,7 @@
 ;; AIPL Self-Hosted Code Generator: generic S-expression tree (from
 ;; compiler.tokenize + compiler.parse_ast) -> real WebAssembly bytes.
 ;;
-;; Scope matches src/compiler/wasm.rs byte-for-byte.
+;; Scope matches referee/src/compiler/wasm.rs byte-for-byte.
 
 (module codegen
   (import alloc)
@@ -2266,7 +2266,7 @@
     (call seal_node cg (call last_of first) valued o))
 
   ;; Whether every clause from this one on always leaves (the nested if
-  ;; src/parser.rs makes there diverges).
+  ;; referee/src/parser.rs makes there diverges).
   (fn clauses_diverge [cg:(ptr Cg) from:(ptr compiler.Node)] -> bool
     (let clause:(ptr compiler.Node) from)
     (while (neq clause (ptr.null compiler.Node))
@@ -2283,7 +2283,7 @@
 
   ;; The body (its first expression) whose type is a cond's: the first
   ;; clause's that does not always leave, else the last clause's (the nested
-  ;; ifs src/parser.rs makes of it, typed as wasm.rs types them).
+  ;; ifs referee/src/parser.rs makes of it, typed as wasm.rs types them).
   (fn cond_typed [cg:(ptr Cg) node:(ptr compiler.Node)] -> (ptr compiler.Node)
     (call clause_typed cg (call nth_child node 1)))
 
@@ -2383,7 +2383,7 @@
         0)
     p))
 
-  ;; lint:allow unused-function (the host invokes it by name: tests/test_selfhost.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/tests/test_selfhost.rs)
   (fn alloc_src [len:i32] -> i32
     (mem.alloc len))
 
@@ -3183,7 +3183,7 @@
       ((eq kw Kw.when)
        (call groups_walk cg (call nth_child node 1) false)
        (call groups_body cg (call nth_child node 2) false))
-      ;; the nested ifs src/parser.rs makes of it: one group at most, the outer if's
+      ;; the nested ifs referee/src/parser.rs makes of it: one group at most, the outer if's
       ((eq kw Kw.cond)
        (let v:bool (call is_value_node cg node))
        (when (and v (not into)) (call add_group cg node false (call node_struct cg node)))
@@ -3275,7 +3275,7 @@
       (else (block))))
 
 ;; A read names fields after what it reads from: (get e S.f ...) after e,
-  ;; (arr.get T a i S.f ...) after the element. src/parser.rs makes a get
+  ;; (arr.get T a i S.f ...) after the element. referee/src/parser.rs makes a get
   ;; of each, nested, all at the read's position, as the printer writes
   ;; them; a program as written (driver.aipl) keeps the path. The first
   ;; field named, and the last (whose type the read has): null for an
@@ -4620,7 +4620,7 @@
   (fn compile_block [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void (call compile_stmt_seq cg (call node_next (call first_child node)) o))
 
   ;; (when c body...): what compile_if emits for (if c (block body... (block)) (block)),
-  ;; the tree src/parser.rs reads it into: the condition, an if of no value, the body
+  ;; the tree referee/src/parser.rs reads it into: the condition, an if of no value, the body
   ;; as a block's statements, and an empty else, each branch at the when's
   ;; position (compile_expr's at_push), so the bytes and the line table match.
   (fn compile_when [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void
@@ -4629,7 +4629,7 @@
     (call label_push cg Label.if_else)
     (call at_push o (get node compiler.Node.pos))
     ;; every expression of the body a statement, then the empty block the
-    ;; parsers end the body with (src/parser.rs "when")
+    ;; parsers end the body with (referee/src/parser.rs "when")
     (call compile_all_stmts cg (call nth_child node 2) o)
     (call at_push o (get node compiler.Node.pos))
     (call at_pop o)
@@ -4935,7 +4935,7 @@
     (let head:(ptr compiler.Node) (call first_child clause))
     (when (call is_else_clause cg clause)
         (return (call compile_stmt_seq cg (call node_next head) o)))
-    ;; src/parser.rs rewrites each clause as an if at the clause: its code is
+    ;; referee/src/parser.rs rewrites each clause as an if at the clause: its code is
     ;; at the clause, as there (the line table)
     (call at_push o (get clause compiler.Node.pos))
     (let body_first:(ptr compiler.Node) (call node_next head))
@@ -5787,7 +5787,7 @@
 
   ;; Compiles `text`: the module length if it compiled without error and
   ;; starts with the wasm magic and version, else -1. Byte-for-byte
-  ;; agreement with the Rust backend is checked by tests/test_selfhost.rs.
+  ;; agreement with the Rust backend is checked by referee/tests/test_selfhost.rs.
   (fn compiles [text:str] -> i32
     (unsafe (let len:i32 (call compile_module (str.ptr text) (str.len text)))
     (when (or (lte len 0) (call has_compile_error)) (return -1))

@@ -1,4 +1,4 @@
-;; std/http (tests/test_web.rs): a request and a chunked response read,
+;; std/http (referee/tests/test_web.rs): a request and a chunked response read,
 ;; header lookup ignoring case, every kind of message refused (each the
 ;; way two readers could disagree about), the limits, two messages back to
 ;; back, and a response written and read back.

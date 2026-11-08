@@ -1,4 +1,4 @@
-;; A client for tests/test_net.rs: fetches the URL given as its first argument with
+;; A client for referee/tests/test_net.rs: fetches the URL given as its first argument with
 ;; http.fetch and prints what came back, or why nothing did (an Error's status is 0 for a
 ;; failure of the exchange itself). Needs --allow-connect for the address it fetches from.
 (module fetch_demo

@@ -1,7 +1,7 @@
 ;; sockets_arm64: AIPL's own sockets, the `aipl_net_v1` imports (docs/design/NET_PLAN.md
 ;; section 3), as AArch64 routines over Linux system calls (native ARM64 backend,
 ;; docs/design/ARM64_PLAN.md): sockets.aipl's counterpart for x86-64, and behaving as it
-;; does (and as src/net.rs does, which the VM and aipl-run use; sockets.aipl's header states each
+;; does (and as referee/src/net.rs does, which the VM and aipl-run use; sockets.aipl's header states each
 ;; operation's results). Called as wasi_arm64.aipl's routines are: the arguments on the value
 ;; stack, the result in x0, sp saved in x27 and the return address in x26 (wasi_arm64.prologue);
 ;; a routine keeps its parameters in x19-x25.

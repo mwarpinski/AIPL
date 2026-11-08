@@ -1,11 +1,11 @@
 ;; Constant expressions for the self-hosted toolchain (AIPL_SPEC.md 4.I), as
-;; src/consts.rs folds them: a constant's value is a literal, another
+;; referee/src/consts.rs folds them: a constant's value is a literal, another
 ;; constant (in any order), or (op a b) with + - * / % ^ shl shr shru rotl rotr bitand
 ;; bitor on i32 or i64, + - * / on f64, and and or not on bool, computed as
 ;; compiled code computes it. Both expand.aipl (for the checker, which
 ;; reports the errors) and consts.aipl (for the code generator) use it, on
 ;; the program's text: a value is read from the offset where it starts.
-;; The messages are src/consts.rs's, word for word.
+;; The messages are referee/src/consts.rs's, word for word.
 (module cexpr
   (import alloc)
   (import str)
@@ -147,7 +147,7 @@
     j)
 
   ;; The value starting at offset i, in constant base's value (at `at`,
-  ;; where its errors are reported, as src/consts.rs does).
+  ;; where its errors are reported, as referee/src/consts.rs does).
   (fn eval [d:(ptr Defs) i:i32 at:i32 base:str.Bytes] -> Val
     (when (eq (call byte d i) 40) (return (call eval_group d i at base)))
     (call eval_atom d i at base))
@@ -156,7 +156,7 @@
   ;; A placeholder value (an i32 0), for a default.
   (fn zero [] -> Val (pub) (call none))
 
-  ;; An atom, read as the tokenizer reads it (compiler.aipl, src/parser.rs):
+  ;; An atom, read as the tokenizer reads it (compiler.aipl, referee/src/parser.rs):
   ;; an int, an i64 (ends in i64), an f64, a bool, or a constant's name.
   (fn eval_atom [d:(ptr Defs) i:i32 at:i32 base:str.Bytes] -> Val
     (let t:str.Bytes (call str.slice (get d Defs.text) i (- (call atom_end d i) i)))
@@ -168,7 +168,7 @@
       ((eq (call str.byte_at t 0) 34) (call fail d at base "': a constant expression holds numbers, bools, and other constants, not a str") (call none))
       ((unsafe (call compiler.is_int_literal p 0 n))
        (let v:i64 (call digits t))
-       ;; 32 bits, read as signed or unsigned (src/consts.rs): 0xEDB88320 is a bit pattern
+       ;; 32 bits, read as signed or unsigned (referee/src/consts.rs): 0xEDB88320 is a bit pattern
        (if (or (lt v -2147483648i64) (gt v 4294967295i64))
            (block
              (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
@@ -218,7 +218,7 @@
         (or (or (or (call str.is op "%") (call str.is op "^")) (or (call str.is op "shl") (call str.is op "shr")))
             (or (or (call str.is op "shru") (call str.is op "bitand")) (or (call str.is op "bitor") (or (call str.is op "and") (or (call str.is op "or") (or (call str.is op "not") (or (call str.is op "rotl") (or (call str.is op "rotr") (or (call str.is op "bitnot") (or (call str.is op "clz") (or (call str.is op "ctz") (call str.is op "popcnt"))))))))))))))
 
-  ;; op on args (src/consts.rs fold); a failure's text goes to b.
+  ;; op on args (referee/src/consts.rs fold); a failure's text goes to b.
   (fn fold [op:str.Bytes args:(ptr (vec.Vec Val)) b:(ptr buf.Buf)] -> Val
     (when (not (call is_op op))
           (call buf.push_str b "a constant expression takes + - * / % ^ shl shr shru rotl rotr bitand bitor on numbers, wrap.add wrap.sub wrap.mul on integers, bitnot clz ctz popcnt on integers, and and or not on bools; not (")

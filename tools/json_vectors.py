@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Documents, and the layouts Python's json module gives them, for
-tests/test_showcase.rs (examples/jsonpp.aipl).
+referee/tests/test_showcase.rs (examples/jsonpp.aipl).
 
     json_vectors.py DIR [--cases N] [--seed S]
 

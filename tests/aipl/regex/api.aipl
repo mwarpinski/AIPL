@@ -1,4 +1,4 @@
-;; std/regex's API (tests/test_regex.rs): errors with their offsets, named
+;; std/regex's API (referee/tests/test_regex.rs): errors with their offsets, named
 ;; groups, templates and their errors, split, find_at, byte spans of UTF-8
 ;; text, and a pattern a backtracking matcher takes exponential time on.
 (module api

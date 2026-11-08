@@ -487,9 +487,9 @@ NOT_SOURCE = {"format.assert", "format.dbg", "format.eprintln", "format.expect",
 
 
 def heads_of_parser():
-    """The heads src/parser.rs lists (HEAD_NAMES), while the Rust parser is in the repository: the grammar and it must
+    """The heads referee/src/parser.rs lists (HEAD_NAMES), while the Rust parser is in the repository: the grammar and it must
     name the same forms. Skipped without it."""
-    path = os.path.join(ROOT, "src", "parser.rs")
+    path = os.path.join(ROOT, "referee", "src", "parser.rs")
     if not os.path.exists(path):
         return None
     text = open(path, encoding="utf-8").read()
@@ -537,9 +537,9 @@ def main():
     if heads is not None and not files:
         terminals = g.terminals()
         for h in sorted(heads - terminals - NOT_SOURCE):
-            findings.append(f"src/parser.rs reads the head ({h} ...) and the grammar has no such terminal")
+            findings.append(f"referee/src/parser.rs reads the head ({h} ...) and the grammar has no such terminal")
         for t in sorted(terminals - heads - NOT_HEADS):
-            findings.append(f"the grammar has the terminal \"{t}\", which src/parser.rs does not read as a head")
+            findings.append(f"the grammar has the terminal \"{t}\", which referee/src/parser.rs does not read as a head")
 
     for f in findings[:100]:
         print(f)

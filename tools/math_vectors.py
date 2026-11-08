@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test vectors for std/math (tests/test_math.rs): Python's answers.
+"""Test vectors for std/math (referee/tests/test_math.rs): Python's answers.
 
     math_vectors.py gen DIR [--cases N] [--seed S]   write DIR/cases.txt (lines `OP ARG...`) and
                                                      DIR/expected.txt (one answer per line)

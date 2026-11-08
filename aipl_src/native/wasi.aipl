@@ -82,7 +82,7 @@
   ;; Linux errno (0-63) -> WASI errno; anything unlisted is EIO (29). EXDEV
   ;; (18) comes only from openat2's RESOLVE_BENEATH refusing a path that
   ;; leaves its directory, which wasmtime reports as EPERM (63), so it is
-  ;; 63 here (src/vm.rs wasi_errno alike).
+  ;; 63 here (referee/src/vm.rs wasi_errno alike).
   (fn errno_bytes [] -> (ptr buf.Buf)
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (for e 0 64
@@ -235,7 +235,7 @@
     (call emit_return_errno c 0)
     (call patch_all c errs)
     ;; reading a directory: wasmtime's directory handles cannot be read, so
-    ;; it gives EBADF where Linux gives EISDIR (src/vm.rs FsRead alike)
+    ;; it gives EBADF where Linux gives EISDIR (referee/src/vm.rs FsRead alike)
     (when reading
           (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -21)
           (let not_dir:i32 (call x64.jcc c (call x64.cc_ne)))
@@ -1062,7 +1062,7 @@
   ;; aipl_sys_v1's chmod(dirfd, path, path_len, mode) -> 0, or minus the WASI
   ;; errno (docs/design/SYS_PLAN.md). A mode with a bit outside 0o777 is
   ;; EINVAL (-28) and a descriptor that is not open is EBADF (-8), as in
-  ;; src/sys.rs. The file is opened beneath its directory as path_open opens
+  ;; referee/src/sys.rs. The file is opened beneath its directory as path_open opens
   ;; one (so --sandbox confines it as every open is), read-only and without
   ;; blocking, then given its mode by fchmod and closed: a file the program
   ;; cannot open for reading cannot be given a mode this way.
@@ -1072,7 +1072,7 @@
     (call arg c 32 4 1 (call r13))
     (call arg c 32 4 2 (call r14))
     ;; a path outside the program's memory is EFAULT (-21), a value and not a
-    ;; trap, as in src/sys.rs and aipl-run
+    ;; trap, as in referee/src/sys.rs and aipl-run
     (call x64.mov_rr c 64 (call r11) (call r13))
     (call x64.alu_rr c 64 (call x64.op_add) (call r11) (call r14))
     (call lower.load_mem_size l (call r10))

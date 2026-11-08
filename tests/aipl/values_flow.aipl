@@ -2,7 +2,7 @@
 ;; yielded (cond, match, match_result, if, with), returned (with ens, by
 ;; return), read from where it is computed, stored through a path, and
 ;; passed through a function reference, in one program whose main returns a
-;; checksum. tests/test_values.rs runs it in every backend.
+;; checksum. referee/tests/test_values.rs runs it in every backend.
 (module values_flow
   (import alloc)
   (struct V2 [x:i32 y:i32] (value))

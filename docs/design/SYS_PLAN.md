@@ -89,7 +89,7 @@ through one pipe (`stdio` 3), or reads one in a thread (AIPL has them).
 
 ## 3. Each backend
 
-- **The VM and aipl-run** (src/vm.rs, src/net.rs's neighbor, src/bin/aipl_run.rs):
+- **The VM and aipl-run** (referee/src/vm.rs, referee/src/net.rs's neighbor, referee/src/bin/aipl_run.rs):
   `std::process::Command` with piped stdio, `CommandExt::exec`, and
   `set_permissions`, behind one table of handles. The path rules for
   `fs.chmod` are those the file operations already apply in each.
@@ -121,7 +121,7 @@ in aipl_src/aipl.aipl come after it.
 
 ## 5. Tests
 
-tests/test_sys.rs, as tests/test_net.rs is built: one program per
+referee/tests/test_sys.rs, as referee/tests/test_net.rs is built: one program per
 operation, the same bytes from the VM, aipl-run, a native executable, and
 the launcher bundle; both toolchains' bytes alike; refusals alike
 everywhere (an ungranted spawn, a handle that is not the program's, a mode
@@ -158,7 +158,7 @@ the VM, aipl-run, and native executables.
   (mode 0) cannot be opened, so then the parent directory is opened and
   `fchmodat` names the file in it, unless a `newfstatat` says it is a
   symbolic link (EACCES). aipl-run and the VM use `chmod(2)` on the path
-  (src/sys.rs), confined by a lexical check and `canonicalize` against the
+  (referee/src/sys.rs), confined by a lexical check and `canonicalize` against the
   working directory: a check, then a use, where the native open is the
   kernel's own, so a program racing another process for the same directory
   is confined less tightly under aipl-run than natively.
@@ -168,10 +168,10 @@ the VM, aipl-run, and native executables.
   imports `std/fs` and the earlier seed could not read the operation.
 - A path with a NUL byte in it ends there natively (as every native path
   operation does) and is an error in the VM and aipl-run.
-- Tests: tests/test_sys.rs (seven runs of one program, in the VM, aipl-run,
+- Tests: referee/tests/test_sys.rs (seven runs of one program, in the VM, aipl-run,
   native, and the bundle, with and without `--sandbox`; native where
   `openat2` is refused; both toolchains' bytes), and the operation in
-  tests/test_opcode_conformance.rs.
+  referee/tests/test_opcode_conformance.rs.
 
 ## 7. Step 2, as built (2026-10-28)
 
@@ -183,7 +183,7 @@ the grant `--allow-run PROGRAM` (`*` for any) on `aipl eval`, `aipl run`,
 one); an executable carries its grants (a native one in its data, a bundle
 in its trailer, as `run:PROGRAM` lines beside the `--listen` addresses).
 
-- **Rust hosts** (src/sys.rs, `Procs`): `std::process::Command` with our own
+- **Rust hosts** (referee/src/sys.rs, `Procs`): `std::process::Command` with our own
   pipes (`std::io::pipe`), a table of processes and one of pipes, each handle
   counting up (pipes from 3, processes from 1024), and blocking calls outside
   the table's lock. The VM, aipl-run, and its threads share one table.
@@ -205,13 +205,13 @@ in its trailer, as `run:PROGRAM` lines beside the `--listen` addresses).
   on one. `--allow-run` is not on `aipl eval -e`, `aipl serve`, or `aipl
   watch` yet. The tables are not locked natively (as sockets' are not): two
   threads starting programs at once may race for a slot.
-- **Tests:** tests/test_sys.rs: one program through `cat` and `sh` (a pipe
+- **Tests:** referee/tests/test_sys.rs: one program through `cat` and `sh` (a pipe
   each way, an exit status, a signal, output and error through one pipe, a
   null stream, arguments with and without a final zero byte, the environment,
   every refusal) and one that `exec`s, identical from the VM, aipl-run, a
   native executable, and the bundle; the grants (none, one, two, `*`) in each;
   both toolchains' bytes; and the seven operations in
-  tests/test_opcode_conformance.rs.
+  referee/tests/test_opcode_conformance.rs.
 
 ## 8. Step 3, as built (2026-10-28)
 
@@ -254,7 +254,7 @@ The owner approved the seed refresh the same day. In order:
   `fs.FILE` 0o644 and `fs.PROGRAM` 0o755). The compiler imports `std/fs`, so
   from this commit the seed has to read `fs.chmod`.
 - **The toolchain's own wasmtime hosts define `aipl_sys_v1.chmod`**
-  (`sys::add_chmod`, in src/selfhost.rs, src/native.rs, src/tools.rs): the Rust
+  (`sys::add_chmod`, in referee/src/selfhost.rs, referee/src/native.rs, referee/src/tools.rs): the Rust
   `aipl` runs the self-hosted compiler (the optimized build) and the native
   backend under wasmtime, and a module that names an import must find it to
   start. Found when the first `aipl compile` after the `std/fs` change stopped at

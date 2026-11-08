@@ -28,7 +28,7 @@ and https, do not work.
 
 1. Merge to `main` and let CI finish there. The release refuses a commit whose CI run did not pass.
 2. Set the version: `python3 tools/release_check.py set X.Y.Z`. The version lives in `aipl_src/aipl.aipl` (what
-   `aipl --version` prints, and the source of truth), `Cargo.toml` and the `aipl` package in `Cargo.lock`. CI runs
+   `aipl --version` prints, and the source of truth), `referee/Cargo.toml` and the `aipl` package in `Cargo.lock`. CI runs
    `python3 tools/release_check.py version` and fails when they differ. Commit, and let CI pass again.
 3. Rehearse if anything about the release machinery changed: Actions, "Release", "Run workflow". On a branch it builds,
    install-tests and signs every platform and publishes nothing. `sh tools/release_dry_run.sh` does the Linux leg on

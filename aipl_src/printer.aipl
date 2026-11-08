@@ -1,9 +1,9 @@
 ;; Prints an ast.aipl module as canonical AIPL source, the way
-;; src/printer.rs does, so the AIPL parser can be checked by round trip:
+;; referee/src/printer.rs does, so the AIPL parser can be checked by round trip:
 ;; for a program the Rust printer printed, parser.aipl then printer.aipl
 ;; give back the same text (docs/design/CHECKER_PLAN.md).
 ;;
-;; Float and string literals print as written in the source (src/printer.rs
+;; Float and string literals print as written in the source (referee/src/printer.rs
 ;; prints the value's shortest spelling and re-escapes strings, which is the
 ;; same text when the source came from it), except that a tab, CR, or NUL
 ;; written raw inside a string prints as its escape.
@@ -142,7 +142,7 @@
       (ast.Type.enum_ [name] (call by b name))
       (ast.Type.union_ [name] (call by b name))))
 
-  ;; src/printer.rs struct_name / elem: a ptr or arr type's inner name.
+  ;; referee/src/printer.rs struct_name / elem: a ptr or arr type's inner name.
   (fn print_inner [b:(ptr buf.Buf) t:ast.Type] -> void
     (match t
       (ast.Type.ptr [n_ptr] (let inner:ast.Type (get n_ptr ast.PtrType.inner)) (call print_type b inner))
@@ -169,7 +169,7 @@
       (call print_expr b (arr.get ast.Expr body j)))
     (call s b ")"))
 
-  ;; A put's or arr.set's field path: ` S.f V.g` (src/printer.rs path_str).
+  ;; A put's or arr.set's field path: ` S.f V.g` (referee/src/printer.rs path_str).
   (fn print_path [b:(ptr buf.Buf) path:(arr (ptr ast.Step))] -> void
     (for k 0 (arr.len path)
       (let st:(ptr ast.Step) (arr.get (ptr ast.Step) path k))
@@ -185,7 +185,7 @@
     (for k 0 (- n 1) (arr.set ast.Expr out k (arr.get ast.Expr body k)))
     out)
 
-  ;; The body of the tree (when c body...) reads into (src/parser.rs): a then
+  ;; The body of the tree (when c body...) reads into (referee/src/parser.rs): a then
   ;; that is a block and an else that is an empty one; else null.
   (fn when_body [t:ast.Expr f:ast.Expr] -> (arr ast.Expr)
     (match f
@@ -301,7 +301,7 @@
     (call print_expr b val)
     (call s b ")"))
 
-  ;; src/printer.rs op_name.
+  ;; referee/src/printer.rs op_name.
   (fn op_name [o:ast.Op] -> str (pub)
     (match o
       (ast.Op.add "+") (ast.Op.sub "-") (ast.Op.mul "*") (ast.Op.div "/") (ast.Op.mod "%")

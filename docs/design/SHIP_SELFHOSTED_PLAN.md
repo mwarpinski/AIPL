@@ -33,7 +33,7 @@ resolver. NET_PLAN.md section 7 named the way: "a Rust process started with `pro
 Pipes do the same work and need nothing new in the code generators (there is no `socketpair` op; `std/proc` has pipes in
 every backend).
 
-- **`aipl-net`** (src/bin/aipl_net.rs, a Rust program in this crate, built on src/net.rs: rustls with the ring provider,
+- **`aipl-net`** (referee/src/bin/aipl_net.rs, a Rust program in this crate, built on referee/src/net.rs: rustls with the ring provider,
   webpki-roots and `AIPL_CA_FILE`, the system resolver): `aipl-net connect HOST PORT [--tls]`. It connects, does the
   handshake when asked, writes ONE status byte (0 ok, 1 refused, 2 not granted, 4 TLS failed, 5 no such host, 6 bad name;
   anything but 0 is the whole output), then relays: its standard input to the host, the host to its standard output, until
@@ -52,11 +52,11 @@ every backend).
   ignores it, and an executable with no name grant is the bytes it was. The helper reads the trailer of its parent's
   executable (`/proc/PPID/exe`) and refuses any host it does not name; a parent with no trailer (a shell, or an
   executable with address grants only) has granted nothing. A program that starts `aipl-net` itself, not through std/net,
-  therefore reaches exactly what it was granted (tests/test_net.rs,
+  therefore reaches exactly what it was granted (referee/tests/test_net.rs,
   `aipl_net_started_by_a_program_reaches_only_the_hosts_that_program_was_granted`).
 - **Permission to start it.** A program starts only what it was granted (`--allow-run`). When a name grant is present, the
   compiler also grants the helper at the paths std/net will find it: `$AIPL_NET`, and each absolute folder of `$PATH` with
-  an `aipl-net` in it (aipl_src/native/nethelper.aipl for the self-hosted command, src/native.rs for the Rust one: the two
+  an `aipl-net` in it (aipl_src/native/nethelper.aipl for the self-hosted command, referee/src/native.rs for the Rust one: the two
   must give the same bytes). With none found the compile fails and says so; a relative `PATH` entry is not granted. An
   executable carried to a machine where the helper is elsewhere gets `Error.no_helper`; `--allow-run` and `AIPL_NET` are the way.
 - **Linux only**, as the helper reads /proc and native executables exist only there. Every program that imports std/net now
@@ -71,12 +71,12 @@ loopback proxy daemon adds a lifecycle to manage; and a check in the runtime alo
 ## Steps
 
 - **L1: find the library when started by name. Built 2026-11-03.** `aipl_src/stdpath.aipl`; the test is
-  `the_aipl_command_started_by_name_finds_its_library_beside_bin` in tests/test_bootstrap.rs (the installed layout, PATH, a
+  `the_aipl_command_started_by_name_finds_its_library_beside_bin` in referee/tests/test_bootstrap.rs (the installed layout, PATH, a
   working directory with no checkout, and the error when the library is missing).
 - **L2: the dropped modes say so. Built 2026-11-03.** Messages in aipl.aipl, testcmd.aipl, evalcmd.aipl say the mode is not
   part of this aipl and no longer send the user to "the Rust aipl"; the test is
-  `the_aipl_command_refuses_the_modes_only_the_rust_command_has` in tests/test_bootstrap.rs.
-- **L3: `aipl-net` and std/net's second path. Built 2026-11-03.** tests/test_net.rs now runs every fetch, the TLS cases, and the
+  `the_aipl_command_refuses_the_modes_only_the_rust_command_has` in referee/tests/test_bootstrap.rs.
+- **L3: `aipl-net` and std/net's second path. Built 2026-11-03.** referee/tests/test_net.rs now runs every fetch, the TLS cases, and the
   refusals in the native backend too (against a local HTTP server and a local TLS server made with rcgen), and adds:
   the helper missing at compile time, the trailer's bytes, a program that starts the helper itself, the helper run by hand.
 - **L4: the tarball. Built 2026-11-03.** `tools/package_release.sh` packs, for Linux, `bin/aipl` (the self-hosted one,
@@ -91,7 +91,7 @@ loopback proxy daemon adds a lifecycle to manage; and a check in the runtime alo
 - **L5: parity in CI. Partly built.** `the_aipl_command_matches_the_rust_command` compares compile output, errors, and
   `aipl doc` for every example, benchmark, and test program, and
   `both_commands_build_the_same_executable_for_a_host_name_grant` the new trailer; CI's `install` job installs the Linux
-  tarball (self-hosted `aipl` and the helper) and runs it by name from outside a checkout. Not yet: running tests/test_net.rs
+  tarball (self-hosted `aipl` and the helper) and runs it by name from outside a checkout. Not yet: running referee/tests/test_net.rs
   with the self-hosted `aipl` as the compiler (it uses the Rust one; both call the same native backend).
 
 ## Decisions for the owner

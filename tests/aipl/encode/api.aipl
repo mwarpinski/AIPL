@@ -1,4 +1,4 @@
-;; std/encode's API (tests/test_encode.rs): the str-to-str functions, the
+;; std/encode's API (referee/tests/test_encode.rs): the str-to-str functions, the
 ;; indices decoding gives as its errors, the URL-safe alphabet, and `+` for
 ;; spaces.
 (module api

@@ -1,5 +1,5 @@
 ;; The AIPL parser in AIPL: compiler.aipl's tokens to ast.aipl's typed tree,
-;; a port of src/parser.rs (Parser::parse_module and everything it calls)
+;; a port of referee/src/parser.rs (Parser::parse_module and everything it calls)
 ;; that accepts the same programs and reports the same first error, word for
 ;; word (docs/design/CHECKER_PLAN.md).
 ;;
@@ -17,7 +17,7 @@
   (import map)
   (import suggest)
 
-  ;; The forms of src/parser.rs parse_expr that are not operators.
+  ;; The forms of referee/src/parser.rs parse_expr that are not operators.
   (enum Form [none let_ set if_ loop for_ when_ while_ call ok err make match_ block match_result get_ put_
               sizeof return_ break_ continue_ cond ref call_ref arr_len ptr_null arr_null ptr_cast
               arr_cast ptr_addr arr_addr enum_ord enum_cast arr_get arr_set mem_free float_mem unsafe_ with_
@@ -44,7 +44,7 @@
     (put p P.pos (+ i 1))
     i)
 
-  ;; src/parser.rs cur_pos: the next token's position, else the last token's.
+  ;; referee/src/parser.rs cur_pos: the next token's position, else the last token's.
   (fn cur_pos [p:(ptr P)] -> i32
     (cond
       ((lt (get p P.pos) (get p P.n)) (get (call tok p (get p P.pos)) compiler.Token.pos))
@@ -91,7 +91,7 @@
     (call buf.push_str b s)
     (call fail p b))
 
-  ;; A string literal as AIPL writes it (src/parser.rs TokenKind's
+  ;; A string literal as AIPL writes it (referee/src/parser.rs TokenKind's
   ;; Display): its escapes as written (only \" \\ \n \t \r \0 exist), a raw
   ;; newline, tab, return, or NUL escaped, other bytes as they are.
   (fn push_string_text [b:(ptr buf.Buf) raw:str.Bytes] -> void
@@ -112,7 +112,7 @@
       (set! k (+ k 1)))
     (call buf.push_byte b 34))
 
-  ;; Token i as AIPL source writes it, in quotes (src/parser.rs TokenKind's
+  ;; Token i as AIPL source writes it, in quotes (referee/src/parser.rs TokenKind's
   ;; Display): '(' 'x' '42' '42i64' '1.5e3' (as written) 'true' '"a"'.
   (fn push_token_text [p:(ptr P) b:(ptr buf.Buf) i:i32] -> void
     (unsafe (let k:compiler.Kind (call kind_at p i))
@@ -161,7 +161,7 @@
       ((eq k compiler.Kind.colon) "':'")
       (else "'->'")))
 
-  ;; src/parser.rs expect_kind: the token's index, or -1 after an error.
+  ;; referee/src/parser.rs expect_kind: the token's index, or -1 after an error.
   (fn expect [p:(ptr P) k:compiler.Kind] -> i32
     (let at:i32 (call cur_pos p))
     (let i:i32 (call next p))
@@ -169,7 +169,7 @@
     (call fail_expected p i (call kind_name k) at)
     -1)
 
-  ;; expect, with what to write after the usual message (src/parser.rs
+  ;; expect, with what to write after the usual message (referee/src/parser.rs
   ;; expect_kind_hint).
   (fn want_hint [p:(ptr P) k:compiler.Kind hint:str] -> void
     (let at:i32 (call cur_pos p))
@@ -201,7 +201,7 @@
     (let _i:i32 (call expect p k))
     (block))
 
-  ;; src/parser.rs expect_symbol (and the inline "Expected X name" matches).
+  ;; referee/src/parser.rs expect_symbol (and the inline "Expected X name" matches).
   (fn expect_symbol [p:(ptr P) what:str eof_at:i32] -> str.Bytes
     (let i:i32 (call next p))
     (when (and (gte i 0) (eq (call kind_at p i) compiler.Kind.symbol)) (return (call text p i)))
@@ -669,7 +669,7 @@
              (call fail_here p "Unexpected token parsing expression: ')'; if needs both branches: (if c then else); for one branch, write (when c then)")
              (return (call placeholder at)))
        (let e:ast.Expr (call parse_expr p))
-       ;; one branch is when (CANONICAL_PLAN.md step 4; src/parser.rs "if")
+       ;; one branch is when (CANONICAL_PLAN.md step 4; referee/src/parser.rs "if")
        (cond
          ((call is_empty_block e) (call fail_str p (call ast.at e) "an if has two real branches, and this else is an empty (block): for one branch, write (when c then...)") (call placeholder at))
          ((call is_empty_block t) (call fail_str p (call ast.at t) "an if has two real branches, and this then is an empty (block): for an else alone, write (when (not c) else...)") (call placeholder at))
@@ -681,7 +681,7 @@
        (let st:ast.Expr (call parse_expr p))
        (call ast.loop_expr (call alloc.default) at var s e st (call parse_body p)))
       ;; (for i start end body...): the resolver rewrites it as counted_loop; read
-      ;; here too, with the same end and step (src/parser.rs "for")
+      ;; here too, with the same end and step (referee/src/parser.rs "for")
       ((eq form Form.for_)
        (let var:str.Bytes (call expect_symbol p "loop var" at))
        (let s:ast.Expr (call parse_expr p))
@@ -697,7 +697,7 @@
              (make ast.Expr.lit_int at 1i64) body))
       ;; (when c body...): the resolver rewrites it as (if c (block body...) (block));
       ;; read here too, into that tree, every part at the when's place
-      ;; (src/parser.rs "when")
+      ;; (referee/src/parser.rs "when")
       ((eq form Form.when_)
        (when (eq (call peek p) compiler.Kind.rparen) (call fail_str p at "when takes a condition and a body: (when c body...)") (return (call placeholder at)))
        (let wc:ast.Expr (call parse_expr p))
@@ -705,7 +705,7 @@
        (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
          (call (vec.push ast.Expr) wv (call parse_expr p)))
        ;; an empty block last: every expression of the body is a statement, its
-       ;; value dropped, and the when has none (src/parser.rs "when")
+       ;; value dropped, and the when has none (referee/src/parser.rs "when")
        (call (vec.push ast.Expr) wv (make ast.Expr.block at (call (to_arr ast.Expr) (call exprs))))
        (call ast.if_expr (call alloc.default) at wc (make ast.Expr.block at (call (to_arr ast.Expr) wv)) (make ast.Expr.block at (call (to_arr ast.Expr) (call exprs)))))
       ((eq form Form.while_)
@@ -848,8 +848,8 @@
       (set! k (+ k 1)))
     v)
 
-  ;; The names, one per line, in no order (tests/test_checker_aipl.rs checks
-  ;; them against src/parser.rs HEAD_NAMES).
+  ;; The names, one per line, in no order (referee/tests/test_checker_aipl.rs checks
+  ;; them against referee/src/parser.rs HEAD_NAMES).
   (fn head_names_text [] -> (ptr buf.Buf) (pub)
     (let names:(ptr (vec.Vec str.Bytes)) (call head_names (call form_table) (call op_table)))
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
@@ -861,7 +861,7 @@
     b)
 
   ;; An operator as C writes it, which AIPL spells as a form: its index in
-  ;; push_head_hint's tables, or -1 (src/parser.rs c_operator).
+  ;; push_head_hint's tables, or -1 (referee/src/parser.rs c_operator).
   (fn c_operator [head:str.Bytes] -> i32
     (cond
       ((or (call str.is head "=") (call str.is head "==")) 0)
@@ -875,7 +875,7 @@
       ((call str.is head "!") 8)
       (else -1)))
 
-  ;; What to write after "Unknown op/keyword: HEAD; " (src/parser.rs).
+  ;; What to write after "Unknown op/keyword: HEAD; " (referee/src/parser.rs).
   (fn push_head_hint [p:(ptr P) b:(ptr buf.Buf) head:str.Bytes] -> void
     (let names:(ptr (vec.Vec str.Bytes)) (call head_names (get p P.forms) (get p P.ops)))
     (let near:i32 (call suggest.nearest names head))
@@ -910,11 +910,11 @@
   (fn suffix [s:str.Bytes from:i32] -> str.Bytes
     (unsafe (call str.bytes (+ (call str.addr s) from) (- (get s str.Bytes.len) from))))
 
-  ;; What follows a field-reference error (src/parser.rs FIELD_HINT).
+  ;; What follows a field-reference error (referee/src/parser.rs FIELD_HINT).
   (fn push_field_hint [b:(ptr buf.Buf)] -> void
     (call buf.push_str b "; the struct and field are one symbol, as in (get p Point.x)"))
 
-  ;; src/parser.rs field_ref: a Struct.field symbol split at its last '.'.
+  ;; referee/src/parser.rs field_ref: a Struct.field symbol split at its last '.'.
   (fn field_ref [p:(ptr P) form:str at:i32] -> (ptr ast.Step)
     (let r:(ptr ast.Step) (new ast.Step (call alloc.forever) [sname:(call str.from_str "")
                                                               fname:(call str.from_str "")]))
@@ -944,7 +944,7 @@
     (put r ast.Step.fname (call suffix field (+ dot 1)))
     r)
 
-  ;; src/parser.rs path_and_value: the rest of a put or arr.set, items up to
+  ;; referee/src/parser.rs path_and_value: the rest of a put or arr.set, items up to
   ;; ')', the last the value, the ones before it field references (into path).
   (fn path_and_value [p:(ptr P) form:str at:i32 path:(ptr (vec.Vec (ptr ast.Step)))] -> ast.Expr
     (let items:(ptr (vec.Vec ast.Expr)) (call exprs))
@@ -985,7 +985,7 @@
           (call fail p b))))
     val)
 
-  ;; (get p S.f ...) / (put p S.f ... v): src/parser.rs get and put.
+  ;; (get p S.f ...) / (put p S.f ... v): referee/src/parser.rs get and put.
   (fn parse_get_put [p:(ptr P) is_put:bool at:i32] -> ast.Expr
     (let ptr:ast.Expr (call parse_expr p))
     (when is_put
@@ -1120,7 +1120,7 @@
   (fn op [m:(ptr (map.Map str.Bytes i32)) s:str o:ast.Op] -> void
     (call (map.set str.Bytes i32) m (call str.from_str s) (enum.ord o)))
 
-  ;; Operator spellings (src/parser.rs parse_expr's op table).
+  ;; Operator spellings (referee/src/parser.rs parse_expr's op table).
   (fn op_table [] -> (ptr (map.Map str.Bytes i32))
     (let m:(ptr (map.Map str.Bytes i32)) (call (map.make str.Bytes i32) (call alloc.default) 128))
     (call op m "+" ast.Op.add) (call op m "-" ast.Op.sub) (call op m "*" ast.Op.mul) (call op m "/" ast.Op.div)
@@ -1200,7 +1200,7 @@
     (for k 0 (- n 2)
       (when (and (eq (call kind_at p k) compiler.Kind.lparen) (and (call is_sym p (+ k 1) "union") (eq (call kind_at p (+ k 2)) compiler.Kind.symbol)))
           (call (map.set str.Bytes i32) (get p P.unions) (call text p (+ k 2)) 1)))
-    ;; and its value structs: `( struct NAME [ ... ] ( value )` (src/parser.rs value_struct_names)
+    ;; and its value structs: `( struct NAME [ ... ] ( value )` (referee/src/parser.rs value_struct_names)
     (put p P.values (call (map.make str.Bytes i32) (call alloc.default) 16))
     (for k 0 (- n 3)
       (when (and (eq (call kind_at p k) compiler.Kind.lparen)
@@ -1243,7 +1243,7 @@
     (put r Parsed.err_at (get p P.err_at))
     r)
 
-  ;; src/parser.rs tokenize's messages for compiler.tokenize's bad token.
+  ;; referee/src/parser.rs tokenize's messages for compiler.tokenize's bad token.
   (fn tokenizer_error [p:(ptr P) i:i32] -> void
     (let t:(ptr compiler.Token) (call tok p i))
     (let b:(ptr buf.Buf) (call msg p (get t compiler.Token.pos)))

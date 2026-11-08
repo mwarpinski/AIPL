@@ -1,4 +1,4 @@
-;; std/cli (tests/test_libs.rs): options parsed from lists, every error,
+;; std/cli (referee/tests/test_libs.rs): options parsed from lists, every error,
 ;; the usage text, and the program's own arguments.
 (module cli_demo
   (import cli)

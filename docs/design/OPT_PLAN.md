@@ -127,25 +127,25 @@ text is codegen.aipl's input (enums already numbers), not AIPL source.
 - Both commands optimize by default, `--no-opt` as before (and `--self`
   implies it). The Rust command checks with its own front end first, so
   every error reads as it did, then runs `driver.compile_file_opt` under
-  wasmtime (src/selfhost.rs). **Parity survives:** both commands run the
+  wasmtime (referee/src/selfhost.rs). **Parity survives:** both commands run the
   same AIPL, so they write the same bytes optimized as unoptimized
-  (tests/test_bootstrap.rs compares them on every repository program), and
+  (referee/tests/test_bootstrap.rs compares them on every repository program), and
   the bootstrap reaches its fixed point with an optimized stage 2 (3.65 MB
   against 3.94 MB).
 - **The cost, solved.** Compiled toolchain modules are cached between runs
   (`$AIPL_CACHE`, else `$XDG_CACHE_HOME/aipl` or `~/.cache/aipl`), keyed by
-  the Rust sources (build.rs `AIPL_SRC_HASH`) and every file below
+  the Rust sources (referee/build.rs `AIPL_SRC_HASH`) and every file below
   aipl_src/; `Module::serialize`, with wasmtime refusing a stale or damaged
   entry, which is then compiled again. An optimized compile: 0.08 s (0.5 s
-  and 1.8 s of CPU the first time after a change). src/native.rs uses the
+  and 1.8 s of CPU the first time after a change). referee/src/native.rs uses the
   same loader, so `--exe` no longer resolves, checks, and compiles the
   backend on every call. tools/opt_diff.py's 500 generated programs went
   from 85 s to 30 s.
 - Tests that compare a compiled build with the VM's addresses or call
   chains, or the Rust code generator's bytes, pass `--no-opt`
-  (tests/test_formats.rs, test_heap.rs, test_memory.rs, test_runner.rs,
+  (referee/tests/test_formats.rs, test_heap.rs, test_memory.rs, test_runner.rs,
   tools/fuzz.py, tools/run_fuzz.py); every other test now runs optimized
-  builds. tests/test_opt.rs: an inlined function's trap at its call under
+  builds. referee/tests/test_opt.rs: an inlined function's trap at its call under
   aipl-run and natively, `--no-opt` keeping the frame, and the cache
   surviving a damaged entry and turned off.
 - The spec (pipeline, 6.1, a new 6.7, section 9) and the guide say what
@@ -160,7 +160,7 @@ What was planned:
 `aipl compile` (wasm and `--exe`) builds through the optimizer; `--no-opt`
 builds as today. `aipl eval` (the VM), `aipl test`, and `aipl verify` are
 unchanged. The Rust command runs the optimizer in wasmtime, as it runs the
-native backend (src/native.rs); the self-hosted command calls it directly.
+native backend (referee/src/native.rs); the self-hosted command calls it directly.
 
 **Compile cost first.** Each optimizer run spends about 1.8 s of CPU (0.2 s
 on 20 cores) in wasmtime compiling the 1.4 MB optimizer module, every

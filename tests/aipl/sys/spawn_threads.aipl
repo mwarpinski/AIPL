@@ -1,5 +1,5 @@
 ;; Threads starting and waiting for processes at the same time (the native process table gives each spawn its
-;; own slot atomically): tests/test_sys.rs runs this with `--allow-run /bin/sh`. Each of 8 threads starts
+;; own slot atomically): referee/tests/test_sys.rs runs this with `--allow-run /bin/sh`. Each of 8 threads starts
 ;; /bin/sh -c "exit K" 25 times, K its own number, waits for each and checks the status it gets is its K; the
 ;; mismatches (and spawns that failed) are summed and printed, which must be 0.
 (module proc_threads

@@ -12,7 +12,7 @@
 ;;   --private                 private items too
 ;;
 ;; Built into the self-hosted aipl (aipl.aipl calls command) and run by the
-;; Rust CLI's aipl doc (src/tools.rs), which sets $AIPL_STD. The standard
+;; Rust CLI's aipl doc (referee/src/tools.rs), which sets $AIPL_STD. The standard
 ;; library is found as stdpath.aipl says. Written with only what the stage-0 seed compiles
 ;; (bootstrap/README.md), since the self-hosted aipl includes it.
 (module doc

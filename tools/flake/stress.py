@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stress one VM server (aipl eval --listen) the way tests/test_serve.rs talks
+"""Stress one VM server (aipl eval --listen) the way referee/tests/test_serve.rs talks
 to it, under CPU load, and count empty answers.
     python3 stress.py SECONDS CLIENT_THREADS HOGS [program.aipl]"""
 import os, signal, socket, subprocess, sys, threading, time

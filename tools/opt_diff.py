@@ -136,7 +136,7 @@ def main():
         del args[i:i + 2]
     os.makedirs(OUT, exist_ok=True)
     # one compile first, so the parallel ones find the optimizer in the module
-    # cache (src/selfhost.rs) rather than each compiling it
+    # cache (referee/src/selfhost.rs) rather than each compiling it
     run([AIPL, 'compile', os.path.join(ROOT, 'examples/math_core.aipl'), '-o', os.path.join(OUT, 'warm.wasm')], ROOT)
     if '--fuzz' in args:
         # tools/run_fuzz.py's generated programs, case by case

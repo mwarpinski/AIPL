@@ -1,5 +1,5 @@
 ;; Unions, make, and match (AIPL_SPEC.md 4.J) across modules, for
-;; tests/test_sum_types.rs and the wasm toolchain's parity tests: names from
+;; referee/tests/test_sum_types.rs and the wasm toolchain's parity tests: names from
 ;; tests/aipl/geometry.aipl are used directly and through an alias, in make,
 ;; in match arms, and as types. main is 1103.
 (module sum_types

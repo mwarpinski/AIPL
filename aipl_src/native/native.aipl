@@ -49,7 +49,7 @@
 
   ;; The result: the executable, or why there is none. addr and len are
   ;; exe's bytes when ok, else error's, as plain numbers for the Rust host
-  ;; (src/native.rs), which reads them at offsets 0, 4, and 8 whatever a
+  ;; (referee/src/native.rs), which reads them at offsets 0, 4, and 8 whatever a
   ;; view looks like.
   (struct Output [(read addr:i32) (read len:i32) (read ok:bool) (read error:str.Bytes) (read exe:str.Bytes)] (pub))
 
@@ -355,12 +355,12 @@
   ;; The longest path an --allow-run grant may hold (procs.max_grant), for aipl.aipl's early check.
   (fn max_run_grant [] -> i32 (pub) (call procs.max_grant))
 
-  ;; Whether `g` is a grant: ADDR:PORT, as std/ip reads it (src/net.rs
+  ;; Whether `g` is a grant: ADDR:PORT, as std/ip reads it (referee/src/net.rs
   ;; parse_grant reads the same).
   (fn valid_grant [g:str.Bytes] -> bool (pub)
     (call (option.is_some ip.Endpoint) (call ip.parse_endpoint g)))
 
-  ;; Whether `g` is an --allow-connect grant: ADDR:PORT, or ADDR:* for any port (src/net.rs parse_connect_grant).
+  ;; Whether `g` is an --allow-connect grant: ADDR:PORT, or ADDR:* for any port (referee/src/net.rs parse_connect_grant).
   (fn valid_connect_grant [g:str.Bytes] -> bool (pub)
     (or (call (option.is_some ip.Endpoint) (call ip.parse_endpoint (call wild_to_zero g)))
         (call ip.is_name_grant g)))
@@ -783,22 +783,22 @@
 
   ;; For hosts (tests, the driver): compile the `len` bytes at `addr`.
   ;; Returns the Output's address.
-  ;; lint:allow unused-function (the host invokes it by name: tests/test_native.rs and src/native.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/tests/test_native.rs and referee/src/native.rs)
   (fn compile_at [addr:i32 len:i32] -> (ptr Output)
     (unsafe (call compile (call str.bytes addr len))))
 
   ;; compile_at with sandbox (only the working directory).
-  ;; lint:allow unused-function (the host invokes it by name: tests/test_native.rs and src/native.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/tests/test_native.rs and referee/src/native.rs)
   (fn compile_sandboxed_at [addr:i32 len:i32] -> (ptr Output)
     (unsafe (call compile_with (call str.bytes addr len) true (call str.from_str "") (call str.from_str ""))))
 
   ;; compile_at with sandbox (non-zero: only the working directory), the
   ;; `glen` bytes at `gaddr`: the --listen grants, one ADDR:PORT a line,
   ;; and the `slen` at `saddr`: the --serve address, or none.
-  ;; lint:allow unused-function (the host invokes it by name: tests/test_native.rs and src/native.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/tests/test_native.rs and referee/src/native.rs)
   (fn compile_full_at [addr:i32 len:i32 sandbox:i32 gaddr:i32 glen:i32 saddr:i32 slen:i32] -> (ptr Output)
     (unsafe (call compile_with (call str.bytes addr len) (neq sandbox 0) (call str.bytes gaddr glen) (call str.bytes saddr slen))))
 
-  ;; lint:allow unused-function (the host invokes it by name: tests/test_native.rs and src/native.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/tests/test_native.rs and referee/src/native.rs)
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 )

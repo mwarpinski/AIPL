@@ -11,7 +11,7 @@ and \\g<name>), and the text between the matches.
     python3 tools/regex_vectors.py tests/aipl/regex [seed]
 
 Spans are byte offsets of the UTF-8 text. Each case prints one line.
-tests/test_regex.rs runs the program in every backend against the answers.
+referee/tests/test_regex.rs runs the program in every backend against the answers.
 """
 import random, re, sys
 

@@ -10,7 +10,7 @@ percent-encoding unquote_to_bytes where every `%` has two hex digits).
 
 Bytes go to the program as hex (a string literal cannot hold any byte), so
 hex_decode is what reads every input; it is checked here too. Each case
-prints one line: the result as hex, or "err". tests/test_encode.rs runs the
+prints one line: the result as hex, or "err". referee/tests/test_encode.rs runs the
 program in every backend against the answers.
 """
 import base64, binascii, random, re, sys

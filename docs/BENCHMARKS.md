@@ -16,7 +16,7 @@ program's gaps are listed below, with what was added for it).
 `tools/bench.py` builds every version, checks they all print the same
 output, and reports the best of three wall-clock runs (`--runs N` for
 more; process start included) with each time relative to C (`--no-unopt`
-leaves out the `--no-opt` builds). `tests/test_benchmarks.rs` runs each
+leaves out the `--no-opt` builds). `referee/tests/test_benchmarks.rs` runs each
 AIPL program, wasm and native, at its small test size against
 `expected.txt` (produced by the C version), so the benchmarks are also
 correctness tests. AIPL programs time their own work with `std/time` and
@@ -298,7 +298,7 @@ the native rewrite). Writing it found a resolver bug,
 fixed in both resolvers: a module calling its own generic function with its
 own struct (`(alloc Pair)` inside std/arena) left the type argument
 unqualified, so the instance's type no longer matched the struct once the
-module was imported (`tests/test_generics.rs`).
+module was imported (`referee/tests/test_generics.rs`).
 
 **knucleotide** (count every 1-, 2-, ... 18-letter substring of a DNA
 sequence read from stdin; frequency tables and occurrence counts). Its input

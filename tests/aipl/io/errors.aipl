@@ -1,5 +1,5 @@
 ;; Each kind of io.Error, from a read or a write that fails, and the words
-;; io.message gives it (LANGUAGE_DECISIONS.md item 2): tests/test_io.rs
+;; io.message gives it (LANGUAGE_DECISIONS.md item 2): referee/tests/test_io.rs
 ;; runs it in a directory holding adir/, afile, and locked.txt (no access),
 ;; and every backend prints the same.
 (module errors

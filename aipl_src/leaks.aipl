@@ -1,6 +1,6 @@
 ;; (no_leak) (docs/design/MEMORY_PLAN.md M3): which functions may make
 ;; memory that is never freed, and the error for each function marked
-;; (no_leak) that does. src/leaks.rs, message for message.
+;; (no_leak) that does. referee/src/leaks.rs, message for message.
 ;;
 ;; A function may leak if its code uses new, arr.new, mem.alloc, or format
 ;; (a str), calls alloc.forever (the allocator whose memory is never
@@ -45,7 +45,7 @@
     (when (eq es (arr.null ast.Expr)) (return))
     (for k 0 (arr.len es) (call walk out (arr.get ast.Expr es k) inside)))
 
-  ;; Every site of e, in source order (src/leaks.rs sites, over
+  ;; Every site of e, in source order (referee/src/leaks.rs sites, over
   ;; walk_expr's order).
   (fn walk [out:(ptr (vec.Vec (ptr Site))) e:ast.Expr inside:bool] -> void
     (match e
@@ -55,7 +55,7 @@
       (ast.Expr.loop [n_loop] (let s:ast.Expr (get n_loop ast.LoopExpr.start)) (let en:ast.Expr (get n_loop ast.LoopExpr.end)) (let st:ast.Expr (get n_loop ast.LoopExpr.step)) (let body:(arr ast.Expr) (get n_loop ast.LoopExpr.body)) (call walk out s inside) (call walk out en inside) (call walk out st inside) (call walk_all out body inside))
       (ast.Expr.while_ [n_while] (let c:ast.Expr (get n_while ast.WhileExpr.cond)) (let body:(arr ast.Expr) (get n_while ast.WhileExpr.body)) (call walk out c inside) (call walk_all out body inside))
       (ast.Expr.call [at func args]
-       ;; a failed assert ends the program: what builds its message is no leak (src/leaks.rs sites)
+       ;; a failed assert ends the program: what builds its message is no leak (referee/src/leaks.rs sites)
        (when (or (call str.bytes_eq func (call str.from_str "assertion.failed")) (call str.bytes_eq func (call str.from_str "assertion.failed_cmp")))
              (return))
        (if (call str.bytes_eq func (call str.from_str "alloc.forever"))
@@ -132,7 +132,7 @@
     (match t (ast.Type.fn_ [n] (get n ast.FnType.no_leak)) (else false)))
 
   ;; Which functions may make memory that is never freed, and why
-  ;; (src/leaks.rs Analysis): what checker.aipl needs to type (ref f)
+  ;; (referee/src/leaks.rs Analysis): what checker.aipl needs to type (ref f)
   ;; (decision 9), and check to give its errors.
   (struct Analysis [fns:(arr (ptr ast.FnDef)) all:(arr (ptr (vec.Vec (ptr Site)))) why:(ptr (map.Map str.Bytes (ptr Why)))] (pub))
 
@@ -143,7 +143,7 @@
     (let all:(arr (ptr (vec.Vec (ptr Site)))) (arr.new (ptr (vec.Vec (ptr Site))) a n))
     (for k 0 n (arr.set (ptr (vec.Vec (ptr Site))) all k (call sites_of (arr.get (ptr ast.FnDef) fns k))))
     ;; which unmarked functions may leak, and why, to a fixed point (as
-    ;; src/leaks.rs: each round sees what earlier ones, and the round so
+    ;; referee/src/leaks.rs: each round sees what earlier ones, and the round so
     ;; far, found)
     (let why:(ptr (map.Map str.Bytes (ptr Why))) (call (map.make str.Bytes (ptr Why)) a 64))
     (let more:bool true)

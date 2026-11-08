@@ -1,4 +1,4 @@
-;; std/hash's API (tests/test_hash.rs): the str-to-hex functions, the
+;; std/hash's API (referee/tests/test_hash.rs): the str-to-hex functions, the
 ;; checksums' published check values, a stream hashed as it is read, and
 ;; the sizes.
 (module api

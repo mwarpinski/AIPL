@@ -18,7 +18,7 @@ urllib.parse:
 
     python3 tools/url_vectors.py tests/aipl/url [seed]
 
-Each case prints one line. tests/test_url.rs runs the program in every
+Each case prints one line. referee/tests/test_url.rs runs the program in every
 backend against the answers.
 """
 import random, re, sys

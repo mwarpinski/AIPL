@@ -2,7 +2,7 @@
 ;; program starts `aipl-net` with proc.spawn, which needs a grant for the path it starts, and a grant is fixed when
 ;; the executable is compiled. So the compiler, when it is given a name grant (`--allow-connect example.com:443`),
 ;; also grants the helper at the paths std/net will find it: $AIPL_NET if that is set, and each folder of $PATH
-;; that holds a file aipl-net (std/net looks there with proc.find, and takes the first). src/native.rs does the
+;; that holds a file aipl-net (std/net looks there with proc.find, and takes the first). referee/src/native.rs does the
 ;; same for the Rust command.
 (module nethelper
   (import alloc)

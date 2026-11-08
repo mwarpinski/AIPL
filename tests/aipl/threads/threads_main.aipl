@@ -1,4 +1,4 @@
-;; Threads from a native executable (test_native_arm64_programs.rs; the same workers as tests/test_threads.rs
+;; Threads from a native executable (test_native_arm64_programs.rs; the same workers as referee/tests/test_threads.rs
 ;; runs under a wasi-threads host): four threads sharing an atomic counter, join returning each worker's
 ;; result, a lock protecting a plain read-modify-write (futex wait and wake under contention), concurrent
 ;; allocation (every block keeps what its thread wrote), and two threads printing at once.

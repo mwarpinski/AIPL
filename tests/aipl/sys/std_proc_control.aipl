@@ -1,5 +1,5 @@
 ;; std/proc's way of ending a program that does not end (kill, terminate, try_wait, wait_timeout, stop):
-;; tests/test_sys.rs runs this with `--allow-run /bin/sh`, in every backend; every line it prints is the same in
+;; referee/tests/test_sys.rs runs this with `--allow-run /bin/sh`, in every backend; every line it prints is the same in
 ;; each. The times are only bounds (a slow machine passes), never exact.
 (module proc_control
   (import alloc)

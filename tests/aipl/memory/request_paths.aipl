@@ -1,5 +1,5 @@
 ;; std/url, std/json, and std/text on a request's path keep no memory
-;; (MEMORY_PLAN.md M2, tests/test_memory.rs): a (no_leak) handler parses a
+;; (MEMORY_PLAN.md M2, referee/tests/test_memory.rs): a (no_leak) handler parses a
 ;; URL, reads a query value, resolves a reference, reads a JSON body and a
 ;; value at a path in it, splits and rewrites text, and writes it all to
 ;; out, on an arena; run 10,000 times with the arena reset after each, the

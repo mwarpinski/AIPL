@@ -979,7 +979,7 @@
 
   ;; aipl_sys_v1's chmod(dirfd, path, path_len, mode) -> 0, or minus the WASI errno
   ;; (docs/design/SYS_PLAN.md). A mode with a bit outside 0o777 is EINVAL (-28) and a
-  ;; descriptor that is not open is EBADF (-8), as in src/sys.rs. The file is opened
+  ;; descriptor that is not open is EBADF (-8), as in referee/src/sys.rs. The file is opened
   ;; beneath its directory as path_open opens one, read-only and without blocking, then
   ;; given its mode by fchmod and closed. A file the program may not read cannot be opened
   ;; that way, so its parent is opened instead and fchmodat names the file in it, unless it

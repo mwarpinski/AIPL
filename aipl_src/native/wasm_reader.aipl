@@ -1,6 +1,6 @@
 ;; wasm_reader: decodes a WebAssembly module into typed records (native
 ;; backend task NE1, docs/design/NATIVE_BACKEND_PLAN.md). It reads exactly the forms
-;; AIPL's compilers emit (src/compiler/wasm.rs, aipl_src/codegen.aipl); any
+;; AIPL's compilers emit (referee/src/compiler/wasm.rs, aipl_src/codegen.aipl); any
 ;; other encoding is an error naming it and its byte offset, never skipped.
 ;; Function bodies are decoded into locals and instruction records (NE2).
 ;;
@@ -700,7 +700,7 @@
     (put w Wasm.error (call buf.bytes (get r R.msg)))
     w)
 
-  ;; ===== A text summary (compared against wasmparser by tests/test_native_reader.rs) =====
+  ;; ===== A text summary (compared against wasmparser by referee/tests/test_native_reader.rs) =====
 
   (fn type_name [t:i32] -> str
     (cond ((eq t 127) "i32") ((eq t 126) "i64") ((eq t 125) "f32") ((eq t 124) "f64") (else "?")))
@@ -819,7 +819,7 @@
 
   ;; ===== Host interface =====
 
-  ;; lint:allow unused-function (the host invokes it by name: tests/test_native_reader.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/tests/test_native_reader.rs)
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 
   ;; Bytes for a Rust host (the tests), as a pointer to [addr len], the
@@ -831,7 +831,7 @@
     h)
 
   ;; The summary of the module at (addr, len).
-  ;; lint:allow unused-function (the host invokes it by name: tests/test_native_reader.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/tests/test_native_reader.rs)
   (fn summarize [addr:i32 len:i32] -> (ptr HostBytes)
     (call host_bytes (unsafe (call summary (call decode (call str.bytes addr len))))))
 

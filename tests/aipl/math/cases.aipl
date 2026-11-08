@@ -1,6 +1,6 @@
 ;; Reads lines of `OP ARG...` from standard input (tools/math_vectors.py writes
 ;; them), calls std/math's function OP on the arguments, and prints each answer
-;; on a line. tests/test_math.rs compares the answers with Python's.
+;; on a line. referee/tests/test_math.rs compares the answers with Python's.
 (module math_cases
   (import alloc)
   (import io)

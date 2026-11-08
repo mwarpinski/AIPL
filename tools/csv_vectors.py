@@ -5,7 +5,7 @@ dialect); and random rows written as Python's csv.writer writes them.
 
     python3 tools/csv_vectors.py tests/aipl/csv [seed]
 
-tests/test_csv.rs runs the program in every backend against the answers.
+referee/tests/test_csv.rs runs the program in every backend against the answers.
 """
 import csv, io, random, sys
 random.seed(int(sys.argv[2]) if len(sys.argv) > 2 else 1)

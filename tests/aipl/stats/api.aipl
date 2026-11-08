@@ -1,4 +1,4 @@
-;; std/stats beyond Python's module (tests/test_stats.rs): a histogram, a
+;; std/stats beyond Python's module (referee/tests/test_stats.rs): a histogram, a
 ;; z-score, and a fit's r2; and a statistic of too little data failing its
 ;; contract.
 (module api

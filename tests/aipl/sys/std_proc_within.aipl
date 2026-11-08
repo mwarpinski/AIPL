@@ -1,4 +1,4 @@
-;; std/proc's waiting a limited time (readable, read_within, run_within): tests/test_sys.rs runs this with
+;; std/proc's waiting a limited time (readable, read_within, run_within): referee/tests/test_sys.rs runs this with
 ;; `--allow-run /bin/sh --allow-run /bin/cat` in every backend; each line is the same. The times are only
 ;; bounds, never exact.
 (module proc_within

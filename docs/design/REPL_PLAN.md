@@ -21,7 +21,7 @@ Corrections to the plan below, from checking it against the code
    emits, not from a list. `thread.spawn` is refused with a clear error.
 2. **Value printing (4.2, 4.3) is already solved.** Every value prints
    with `{x}` (AIPL_SPEC.md 4.K), and `aipl eval -e` gets an expression's
-   type from the checker (src/evalexpr.rs); the REPL uses the same, not
+   type from the checker (referee/src/evalexpr.rs); the REPL uses the same, not
    a probe over scalar types.
 3. **Session state, stated plainly.** Each input runs the session again
    from the top, hiding the output earlier inputs already gave; file
@@ -43,7 +43,7 @@ This plan defines the design for an interactive REPL and execution engine writte
 ## 1. Motivation and Context
 
 Currently, the AIPL toolchain has two halves:
-1. **The Rust toolchain (`src/`):** Implements `aipl eval` (via `src/vm.rs`, a 2,537-line AST interpreter), `aipl verify`, `aipl test`, `aipl compile`, and `aipl run` (via the 18 MB `aipl-run` Wasmtime launcher bundle).
+1. **The Rust toolchain (`src/`):** Implements `aipl eval` (via `referee/src/vm.rs`, a 2,537-line AST interpreter), `aipl verify`, `aipl test`, `aipl compile`, and `aipl run` (via the 18 MB `aipl-run` Wasmtime launcher bundle).
 2. **The self-hosted native toolchain (`aipl_src/`):** Generates standalone, statically linked Linux x86-64 ELF executables with zero libc dependencies. However, [`aipl_src/aipl.aipl`](../../aipl_src/aipl.aipl) currently only exposes `aipl compile` and `aipl --version`. It cannot evaluate code in-memory, run `.wasm` files directly, or provide an interactive REPL without compiling to disk and executing a native binary.
 
 ### The Problem
@@ -61,7 +61,7 @@ All of this must be implemented in AIPL and compiled into the native x86-64 bina
 
 There are two ways to build an interpreter in AIPL:
 
-### Alternative A: Port `src/vm.rs` to AIPL (AST Interpreter)
+### Alternative A: Port `referee/src/vm.rs` to AIPL (AST Interpreter)
 Port the 2,537 lines of Rust AST interpretation to AIPL (`aipl_src/vm.aipl`).
 - **Drawbacks:**
   - Creates a **tri-implementation maintenance burden** (Rust compiler/VM, self-hosted AIPL compiler, and self-hosted AIPL VM).

@@ -1,5 +1,5 @@
 ;; One thread waits for a program that will not end while another kills it (std/proc.kill takes no lock the
-;; waiting thread holds): tests/test_sys.rs runs this with `--allow-run /bin/sh`, where threads run.
+;; waiting thread holds): referee/tests/test_sys.rs runs this with `--allow-run /bin/sh`, where threads run.
 (module proc_kill_thread
   (import alloc)
   (import proc)

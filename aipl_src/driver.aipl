@@ -7,7 +7,7 @@
 ;; The standard library is found as stdpath.aipl says ($AIPL_STD, else beside
 ;; the executable, else aipl_src/std/ below the working directory). In the VM: aipl eval aipl_src/driver.aipl -- IN OUT.
 ;; A host can also call compile_file directly with paths in memory taken from
-;; host_alloc (tests/test_resolver_aipl.rs does both).
+;; host_alloc (referee/tests/test_resolver_aipl.rs does both).
 (module driver
   (import alloc)
   (import option)
@@ -84,7 +84,7 @@
   (fn compile_text [path:str.Bytes text:str.Bytes dirs:str.Bytes max_pages:i32] -> (ptr Out) (pub)
     (call compile_as (call str.addr path) (get path str.Bytes.len) (call str.addr dirs) (get dirs str.Bytes.len) false max_pages false false text false))
 
-  ;; `--max-memory SIZE` as wasm pages, or -1 (src/compiler/mod.rs
+  ;; `--max-memory SIZE` as wasm pages, or -1 (referee/src/compiler/mod.rs
   ;; memory_pages): bytes, or K, M, or G of them (binary), a whole number of
   ;; 64 KiB pages from 1M to 2G.
   (fn memory_pages [t:str.Bytes] -> i32 (pub)

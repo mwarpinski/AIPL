@@ -1,5 +1,5 @@
 ;; Values of up to sixteen scalars, and results held in memory (a struct field or an
-;; array element), in one program whose checksum tests/test_values.rs runs in every backend.
+;; array element), in one program whose checksum referee/tests/test_values.rs runs in every backend.
 (module wide_values
   (import alloc)
 

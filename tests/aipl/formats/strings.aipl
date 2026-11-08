@@ -1,4 +1,4 @@
-;; Strings written \"...\" inside a placeholder's code (AIPL_SPEC.md 4.K): tests/test_formats.rs runs this in
+;; Strings written \"...\" inside a placeholder's code (AIPL_SPEC.md 4.K): referee/tests/test_formats.rs runs this in
 ;; every backend and both toolchains, which print the same lines.
 (module format_strings
   (import alloc)

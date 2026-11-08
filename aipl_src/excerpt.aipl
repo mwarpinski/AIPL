@@ -1,5 +1,5 @@
-;; excerpt: the source line under an error, as src/excerpt.rs prints it, byte for byte
-;; (tests/test_bootstrap.rs holds the two equal).
+;; excerpt: the source line under an error, as referee/src/excerpt.rs prints it, byte for byte
+;; (referee/tests/test_bootstrap.rs holds the two equal).
 ;;
 ;;   Error: prog.aipl: 1:30: Undefined variable 'y'
 ;;     1 | (module m (fn main [] -> i32 (return y)))

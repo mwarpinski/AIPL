@@ -2,7 +2,7 @@
 
 **Status: approved 2026-10-19, to do it properly even where that is
 more work. Done 2026-10-20:** M1 to M5, F, and decisions 6 to 9, each
-with its tests (tests/test_memory.rs, test_values.rs, test_serve.rs,
+with its tests (referee/tests/test_memory.rs, test_values.rs, test_serve.rs,
 test_resolver_aipl.rs); the step table in section 4 says where. Written when the networking plan (NET_PLAN.md) met AIPL's
 memory model. Decisions (section 5): checked value views; the
 `str`-returning conveniences kept for programs that run and exit, with
@@ -219,7 +219,7 @@ behind read-only structs built by constructors in ast.aipl; `Expr` is 7
 slots, `Type` 4; the compiler's output is unchanged and compiling itself
 takes the same time, 1.18 s against 1.16 s; no seed refresh was needed,
 since the new code uses only structs and pointers); the refusal is on in
-both checkers (done 2026-10-19, tests/test_values.rs), with the spec,
+both checkers (done 2026-10-19, referee/tests/test_values.rs), with the spec,
 the prompt guide's union example, and every test that held a union by
 address rewritten; then the held-by-address code leaves all three code
 generators. A loss to recover: formatting prints a pointer field as its
@@ -240,12 +240,12 @@ NET_PLAN.md's fresh instance per request stays as the simple choice
 |---|---|---|
 | 0 | Correct the spec now: views are not checked, and `buf.free` does not end them (done 2026-10-19) | the docs check |
 | S | Refresh the stage-0 seed, so the compiler's source can use storage types, value views, and the forms added since 2026-10-16 (done 2026-10-19) | test_bootstrap: the new seed is the Rust build of its source, and builds itself to the same bytes |
-| M1 | checked views (done 2026-10-19: the three ways a view outlived its memory each stop the program in every backend, tests/test_memory.rs; every other test and parity check unchanged; the compiler compiling itself natively 1.73 s to 1.78 s; benchmarks the same but knucleotide, 0.80 s to 0.59 s, since views no longer allocate and bytes_eq reads raw after one check) | the program above traps with "Use after free" in all three backends; every existing test and parity check unchanged; benchmark and self-compile times reported |
-| M3 | `(no_leak)` (done 2026-10-19: both checkers, word for word; std's allocators marked after a second seed refresh; tests/test_memory.rs) | one test per kind of immortal allocation, refused with its path; std's request-path functions marked and checked |
+| M1 | checked views (done 2026-10-19: the three ways a view outlived its memory each stop the program in every backend, referee/tests/test_memory.rs; every other test and parity check unchanged; the compiler compiling itself natively 1.73 s to 1.78 s; benchmarks the same but knucleotide, 0.80 s to 0.59 s, since views no longer allocate and bytes_eq reads raw after one check) | the program above traps with "Use after free" in all three backends; every existing test and parity check unchanged; benchmark and self-compile times reported |
+| M3 | `(no_leak)` (done 2026-10-19: both checkers, word for word; std's allocators marked after a second seed refresh; referee/tests/test_memory.rs) | one test per kind of immortal allocation, refused with its path; std's request-path functions marked and checked |
 | F | `alloc.forever` (decision 5): a variant of `alloc.Allocator` whose memory is never reused (a free retires the generation, so stale pointers still trap); then `new` and `arr.new` name their allocator, `(new S a)` and `(arr.new T a n)` (decision 8). Done 2026-10-19 but the last step: `alloc.forever` and `gen.forever` (8298bd3); every `new` and `arr.new` moved to `alloc.create` / `alloc.array` by tools/migrate_new.py (the compiler's output unchanged, compiling itself 1.5% slower); then the short form in both resolvers (sugar.rs, resolver.aipl), std/alloc imported for a module that uses it, the one-operand forms errors with the fix, the old forms gone from the VM and every code generator, and tests, examples, and the tested docs back in the short form (migrate_new.py --short). The seed was refreshed from 7a55d99 and the compiler's own source and std moved to the short form. Left: a format placeholder cannot yet hold a `new` (placeholders are split after the rewrite) | the same bytes from both toolchains; the compiler compiling itself, timed before and after |
-| M4 (a) | results always by value (done 2026-10-19: a `str` side is one slot; over 8 slots refused by both checkers; result cells removed from all three code generators; tests/test_values.rs) | a result with a `str` side allocates nothing in any backend; the 9-slot refusal is the same from both toolchains |
+| M4 (a) | results always by value (done 2026-10-19: a `str` side is one slot; over 8 slots refused by both checkers; result cells removed from all three code generators; referee/tests/test_values.rs) | a result with a `str` side allocates nothing in any backend; the 9-slot refusal is the same from both toolchains |
 | M2, M4 (b) | std and the compiler stop making hidden cells (done 2026-10-20: std/http's path proven through std/serve; url, json, text marked and proven, request_paths.aipl; os.arg/env read once) | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |
-| M5 | servers (done 2026-10-20: std/serve, tests/test_serve.rs; a million requests natively and under aipl-run passed 2026-10-20 (100,000 in CI, a million with AIPL_MILLION=1), 20,000 in the VM, the heap unchanged after the first thousand; a kept view traps in every backend) | a server serves a million requests with memory flat, in all three backends; a handler that keeps a pointer across requests traps on its next use |
+| M5 | servers (done 2026-10-20: std/serve, referee/tests/test_serve.rs; a million requests natively and under aipl-run passed 2026-10-20 (100,000 in CI, a million with AIPL_MILLION=1), 20,000 in the VM, the heap unchanged after the first thousand; a kept view traps in every backend) | a server serves a million requests with memory flat, in all three backends; a handler that keeps a pointer across requests traps on its next use |
 
 M1 is the largest; the rest are each about the size of one stdlib
 batch. The seed refresh (launch checklist section 6) comes first, so the
@@ -338,8 +338,8 @@ compiler's source can be migrated in the current language.
    the reverse. Chosen over requiring the mark (more explicit, but
    busywork for every comparison function) and over accepting any
    function (the promise could be false).
-   **Built 2026-10-19** in both toolchains (src/checker.rs `fits`,
-   src/leaks.rs; aipl_src/checker.aipl, leaks.aipl, generics.aipl):
+   **Built 2026-10-19** in both toolchains (referee/src/checker.rs `fits`,
+   referee/src/leaks.rs; aipl_src/checker.aipl, leaks.aipl, generics.aipl):
    AIPL_SPEC.md 4.G; tests/aipl/memory/no_leak_slots.aipl through the
    wasm toolchain at the Rust toolchain's bytes, and each refusal word
    for word (test_resolver_aipl.rs). The promise counts only for the

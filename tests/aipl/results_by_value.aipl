@@ -1,7 +1,7 @@
 ;; Results held by value (AIPL_SPEC.md 4.F): every result is a value, and
 ;; every way one is made, matched, passed, and returned, in one program
 ;; whose main returns a checksum.
-;; tests/test_values.rs runs it in every backend.
+;; referee/tests/test_values.rs runs it in every backend.
 (module results_by_value
   (import alloc)
   (struct Vec2 [x:f64 y:f64] (value))

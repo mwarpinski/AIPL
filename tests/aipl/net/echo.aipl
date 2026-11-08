@@ -1,4 +1,4 @@
-;; A server for tests/test_net.rs: listens on the ADDR:PORT given as its
+;; A server for referee/tests/test_net.rs: listens on the ADDR:PORT given as its
 ;; first argument and serves four connections, one at a time, each on an
 ;; arena reset after it. A connection's lines come back numbered, `N: line`
 ;; (a line ends at \n or \r\n), then `bye N` once the client stops

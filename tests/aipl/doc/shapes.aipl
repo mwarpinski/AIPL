@@ -1,4 +1,4 @@
-;; shapes: a fixture for aipl doc (tests/test_doc.rs), with every kind of
+;; shapes: a fixture for aipl doc (referee/tests/test_doc.rs), with every kind of
 ;; item it shows.
 ;;
 ;;   (call shapes.area s)

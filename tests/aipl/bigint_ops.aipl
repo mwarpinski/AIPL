@@ -1,4 +1,4 @@
-;; A random walk over std/bigint for tests/test_std.rs: 4000 operations (a third of them multiplications) on
+;; A random walk over std/bigint for referee/tests/test_std.rs: 4000 operations (a third of them multiplications) on
 ;; four registers, chosen by xorshift32, printing each result. The
 ;; transcript must match tools/bigint_vectors.py (Python's own integers)
 ;; byte for byte. Values are kept below 40 limbs by dividing them down, and

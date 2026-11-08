@@ -1,4 +1,4 @@
-;; Reads lines of `NAME BITS...` from standard input (tests/test_math_float.rs writes them), where each
+;; Reads lines of `NAME BITS...` from standard input (referee/tests/test_math_float.rs writes them), where each
 ;; BITS is the decimal value of an f64's 64 bits (as a signed i64), calls std/math's function NAME on the
 ;; numbers, and prints the bits of each answer on a line. The test compares them with the Rust libm
 ;; crate's, which is musl's fdlibm: bit for bit.

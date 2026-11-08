@@ -1,4 +1,4 @@
-;; std/deflate's API (tests/test_deflate.rs): round trips (a run of 70,000
+;; std/deflate's API (referee/tests/test_deflate.rs): round trips (a run of 70,000
 ;; bytes among them, two stored blocks at level 0), what the raw decoder
 ;; leaves after a stream, the output limit, and the errors for a bad
 ;; header and a bad checksum.

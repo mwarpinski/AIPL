@@ -1,6 +1,6 @@
 ;; Import resolution in AIPL (P14). Turns a program spread over several files
 ;; into one flat, import-free source text: the input codegen.compile_module
-;; takes. Mirrors src/resolver.rs, which stays as the reference:
+;; takes. Mirrors referee/src/resolver.rs, which stays as the reference:
 ;;   - (import m) searches the importing file's directory, the entry file's
 ;;     directory, then the standard library directory (AIPL_SPEC.md 11);
 ;;   - imports resolve depth-first, each module once (diamonds), and a module
@@ -32,7 +32,7 @@
   ;; A parsed file: its text, its (module ...) tree, and where its tokens'
   ;; origins are noted (file is its index there; -1 and null when not mapping).
   ;; error: why the file is not one well-formed (module NAME ...) form,
-  ;; "PATH: L:C: message" as src/resolver.rs reports it, or null.
+  ;; "PATH: L:C: message" as referee/src/resolver.rs reports it, or null.
   (struct Src [text:str.Bytes root:(ptr compiler.Node) file:i32 origins:(ptr origins.Origins) error:(ptr buf.Buf) path:str.Bytes])
 
   ;; One module being emitted. prefix is the import name; imported is false
@@ -408,7 +408,7 @@
     (call note_at m (get g compiler.Node.pos) out)
     (call buf.push_byte out 41))
 
-  ;; (when ...) is not rewritten: the parsers read it (src/sugar.rs). 2 (for ...), 3 an and/or of three or more, 4 (new ...),
+  ;; (when ...) is not rewritten: the parsers read it (referee/src/sugar.rs). 2 (for ...), 3 an and/or of three or more, 4 (new ...),
   ;; 5 (arr.new ...), 6 (arr.of ...), else 0 (sugar.rs); their shapes were
   ;; checked when the file was read.
   (fn sugar_kind [m:(ptr Mod) g:(ptr compiler.Node)] -> i32
@@ -1030,7 +1030,7 @@
                 (call push_item_hint m b fm name)))
           (call vis_fail m n b)))
 
-  ;; What follows "is not an item of module M: " (src/resolver.rs check_item):
+  ;; What follows "is not an item of module M: " (referee/src/resolver.rs check_item):
   ;; the module's public name nearest to the one written, or where to look.
   (fn push_item_hint [m:(ptr Mod) b:(ptr buf.Buf) fm:str.Bytes name:str.Bytes] -> void
     (let pub:(ptr (map.Map str.Bytes i32)) (get (get m Mod.vis) Vis.public))
@@ -1418,7 +1418,7 @@
   ;; ===== Modules =====
 
   ;; The first item of a (module name items...) tree.
-;; ===== File structure (src/sexpr.rs read_one, src/resolver.rs read_module) =====
+;; ===== File structure (referee/src/sexpr.rs read_one, referee/src/resolver.rs read_module) =====
 
   ;; "PATH: ", the start of an error about a file.
   (fn path_message [path:str.Bytes] -> (ptr buf.Buf)
@@ -1441,7 +1441,7 @@
   (fn kind_at [toks:i32 i:i32] -> compiler.Kind (get (call compiler.token_at toks i) compiler.Token.kind))
 
   ;; Whether string token i ends inside a placeholder whose { is never
-  ;; closed ({{ and }} are braces; src/sexpr.rs ends_in_placeholder).
+  ;; closed ({{ and }} are braces; referee/src/sexpr.rs ends_in_placeholder).
   (fn string_ends_open [src:i32 toks:i32 i:i32] -> bool
     (unsafe (let t:(ptr compiler.Token) (call compiler.token_at toks i))
     (let s:str.Bytes (call str.bytes (+ src (get t compiler.Token.a)) (get t compiler.Token.b)))
@@ -1466,7 +1466,7 @@
   ;; A bracket error at token i; when a string ends inside a placeholder and
   ;; more code follows it (its closing quote is what unbalanced the
   ;; brackets), that is the error. A string followed by a closing bracket is
-  ;; an ordinary one (src/sexpr.rs read_one).
+  ;; an ordinary one (referee/src/sexpr.rs read_one).
   (fn bracket_error [src:i32 toks:i32 count:i32 i:i32 what:str] -> (ptr buf.Buf)
     (for k 0 count
       (when (and (eq (call kind_at toks k) compiler.Kind.string)
@@ -2306,7 +2306,7 @@
                            orig:(ptr origins.Origins)] -> bool (pub)
     (call flatten_as entry entry_text std_dir flat err orig false))
 
-  ;; The files a program is read from, for aipl watch (src/watch.rs watched):
+  ;; The files a program is read from, for aipl watch (referee/src/watch.rs watched):
   ;; every file the resolver read for the entry file, sorted; the entry alone
   ;; while it does not resolve.
   (fn files_read [entry:str.Bytes std_dir:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub)
@@ -2474,13 +2474,13 @@
 
   ;; ===== Host interface =====
 
-  ;; lint:allow unused-function (the host invokes it by name: src/selfhost.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/src/selfhost.rs)
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 
   ;; Resolves the file at (path_addr, path_len), with the standard library
   ;; directory at (std_addr, std_len). The Out holds the flat source (ok 1)
   ;; or the error (ok 0).
-  ;; lint:allow unused-function (the host invokes it by name: src/selfhost.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/src/selfhost.rs)
   (fn resolve_file [path_addr:i32 path_len:i32 std_addr:i32 std_len:i32] -> (ptr Out)
     (unsafe (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))

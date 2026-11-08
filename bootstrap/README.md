@@ -92,7 +92,7 @@ into each new version (Ken Thompson, "Reflections on Trusting Trust",
 with an independent compiler can (David A. Wheeler's "diverse double
 compiling"), and AIPL has one: the Rust toolchain.
 
-`tests/test_bootstrap.rs` checks it on every `cargo test`: stage 2, which
+`referee/tests/test_bootstrap.rs` checks it on every `cargo test`: stage 2, which
 comes from the seed, is byte for byte the executable the Rust toolchain
 builds from the same source. If the seed carried anything the source does
 not, stage 1 would pass it on and the two would differ. The same test
@@ -170,7 +170,7 @@ cargo build --release
 AArch64 seed sha256 `0fed8c5bea5d9d29bdfe1ed908df08166c295354a8e815f191b89e1504080ca6`.
 The self-hosted x86-64 command builds the same bytes, and so does the seed itself on AArch64 Linux
 (stage 2 is the seed), which `tools/arm64_bootstrap.sh` checks (`SEED_FROM_SOURCE=1` requires it);
-`tests/test_bootstrap.rs` runs the seed's stages on AArch64 Linux as it does on x86-64. The seed before this one (from 53132e1) has sha256
+`referee/tests/test_bootstrap.rs` runs the seed's stages on AArch64 Linux as it does on x86-64. The seed before this one (from 53132e1) has sha256
 `eb0d9d32af71416f3f7588f4052a405ac139fb8c8d77755f41f4b7140fb4fd96`, the one before that (from 6378b3d)
 `a030be5b6be1c8c9f06e384d2f040c35bddd6d3808124071cb594b33cff05c89`,
 and the one before that

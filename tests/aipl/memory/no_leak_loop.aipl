@@ -1,5 +1,5 @@
 ;; A (no_leak) handler run 10,000 times, each on a request arena reset
-;; after it (tests/test_memory.rs): the checker accepts it, and the arena
+;; after it (referee/tests/test_memory.rs): the checker accepts it, and the arena
 ;; holds no more memory after the last request than after the first.
 (module no_leak_loop
   (import arena)

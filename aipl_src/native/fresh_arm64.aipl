@@ -1,6 +1,6 @@
 ;; fresh_arm64: the host of an executable built with `aipl compile --exe --serve ADDR:PORT`
 ;; (docs/design/NET_PLAN.md, mode B, step 4) for AArch64 Linux: a fresh instance of the program per
-;; connection, as aipl-run --serve-fresh gives (src/bin/aipl_run.rs serve_fresh), and fresh.aipl's
+;; connection, as aipl-run --serve-fresh gives (referee/src/bin/aipl_run.rs serve_fresh), and fresh.aipl's
 ;; counterpart for x86-64, which states what it does in full:
 ;;   - the host listens on the address fixed when the executable was compiled, then, for each connection,
 ;;     starts a copy of itself (clone(SIGCHLD): memory is copied as it is written) that has the
@@ -97,7 +97,7 @@
     (let sa_len:i32 (call buf.len sa))
     (let failed_text:str "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 22\r\n\r\nInternal Server Error\n")
     (let failed:i32 (call lower_arm64.data_text l failed_text))
-    ;; why an answer past `cap` was not sent (src/net.rs FRESH_TOO_LONG)
+    ;; why an answer past `cap` was not sent (referee/src/net.rs FRESH_TOO_LONG)
     (let too_long_text:str "the answer is more than 64 MiB, the most a fresh instance may write: sent 500 Internal Server Error\n")
     (let too_long:i32 (call lower_arm64.data_text l too_long_text))
     (call arm64.sub_ri c 64 31 31 (call frame))

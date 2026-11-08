@@ -1,5 +1,5 @@
 ;; A handler that keeps a view of a request past the request, the mistake
-;; std/serve's arena makes safe (tests/test_serve.rs): the first request
+;; std/serve's arena makes safe (referee/tests/test_serve.rs): the first request
 ;; is answered; on the second, reading the first's target, whose memory
 ;; the arena's reset freed, stops the program with "Use after free"
 ;; instead of reading the second request's bytes.

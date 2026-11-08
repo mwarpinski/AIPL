@@ -2,7 +2,7 @@
 ;; The single terminal-facing entrypoint for running this project's tests:
 ;;   aipl test aipl_src/test_suite.aipl
 ;; All the "what counts as pass/fail" and reporting logic lives here, in
-;; AIPL, using sys.print - not in Rust. Rust's role (src/main.rs's `test`
+;; AIPL, using sys.print - not in Rust. Rust's role (referee/src/main.rs's `test`
 ;; subcommand) is just: resolve imports, type-check, invoke run_all, and
 ;; turn the returned failure count into a process exit code.
 ;;

@@ -1,4 +1,4 @@
-;; A std/serve server for tests/test_serve.rs: `serve_demo ADDR:PORT N`
+;; A std/serve server for referee/tests/test_serve.rs: `serve_demo ADDR:PORT N`
 ;; answers N requests on ADDR:PORT, then prints how many it served and the
 ;; bytes its request arena holds. Routes: GET / says hello, GET /echo...
 ;; gives back its target, GET /count how many requests came before (state

@@ -1,4 +1,4 @@
-;; The type checker in AIPL: src/checker.rs rule for rule, over ast.aipl's
+;; The type checker in AIPL: referee/src/checker.rs rule for rule, over ast.aipl's
 ;; tree, with the same first error word for word (docs/design/CHECKER_PLAN.md).
 ;; Types and ops in messages are written as AIPL source writes them
 ;; ((ptr P), +), as the Rust checker's are.
@@ -138,7 +138,7 @@
       (ast.Type.fn_ [_] 11) (ast.Type.enum_ [_] 12) (ast.Type.union_ [_] 13)
       (ast.Type.u8 14) (ast.Type.i8 15) (ast.Type.u16 16) (ast.Type.i16 17)))
 
-  ;; Structural equality (src/ast.rs derives PartialEq).
+  ;; Structural equality (referee/src/ast.rs derives PartialEq).
   (fn teq [a:ast.Type b:ast.Type] -> bool
     (when (neq (call tag a) (call tag b)) (return false))
     (match a
@@ -163,7 +163,7 @@
   (fn is_i32 [t:ast.Type] -> bool (eq (call tag t) 0))
   (fn is_int [t:ast.Type] -> bool (or (eq (call tag t) 0) (eq (call tag t) 1)))
 
-  ;; src/checker.rs type_size_and_align: whether a type has no memory layout
+  ;; referee/src/checker.rs type_size_and_align: whether a type has no memory layout
   ;; (void, a result, a struct by value that is not a value struct), with
   ;; the message in b (the innermost such type, through value structs).
   (fn layout_error [c:(ptr C) b:(ptr buf.Buf) t:ast.Type] -> bool (call layout_error_at c b t 0))
@@ -232,7 +232,7 @@
     (let c0:i32 (call str.byte_at n 0))
     (and (gt (get n str.Bytes.len) 0) (or (and (gte c0 97) (lte c0 122)) (eq c0 95))))
 
-  ;; src/checker.rs check_module: the definitions' first errors (one per
+  ;; referee/src/checker.rs check_module: the definitions' first errors (one per
   ;; item), else each body's, at most 20 in all.
   (fn check_module [c:(ptr C) m:(ptr ast.Module)] -> void
     (call check_all c m)
@@ -440,7 +440,7 @@
       (call s b "Field '") (call by b (get fi ast.Field.name)) (call s b "' in struct '") (call by b (call names.shown (get sd ast.StructDef.name))) (call s b "': ")
       (when (call layout_error c b (get fi ast.Field.ty)) (call fail c b) (return))))
 
-  ;; src/checker.rs check_value_struct: at least one field; numbers, bools,
+  ;; referee/src/checker.rs check_value_struct: at least one field; numbers, bools,
   ;; enums, pointers, arrays, function references, or value structs; not
   ;; containing itself; at most 16 scalars in all.
   (fn check_value_struct [c:(ptr C) sd:(ptr ast.StructDef)] -> void
@@ -457,7 +457,7 @@
             (call s b "': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not ") (call ty b (get fi ast.Field.ty))
             (call fail c b) (return)))
     ;; through its value-struct fields, back to itself? (the same stack
-    ;; order as src/checker.rs, so the same field is named)
+    ;; order as referee/src/checker.rs, so the same field is named)
     (let names:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
     (let firsts:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
     (for i 0 (arr.len fs)
@@ -608,7 +608,7 @@
     (call fold_type c counts b)
     counts)
 
-  ;; src/checker.rs result_fits: a result is held by value, so one that
+  ;; referee/src/checker.rs result_fits: a result is held by value, so one that
   ;; needs more than 8 slots is refused; null if it fits.
   (fn result_error [c:(ptr C) a:ast.Type b:ast.Type at:i32] -> (ptr buf.Buf)
     (let n:i32 (call width (call result_counts c a b)))
@@ -667,7 +667,7 @@
     (for k 0 (arr.len fs) (call push_kinds c (get (arr.get (ptr ast.Field) fs k) ast.Field.ty) ks))
     (call (vec.len i32) ks))
 
-  ;; src/checker.rs union_error: why u cannot be held by value (it contains
+  ;; referee/src/checker.rs union_error: why u cannot be held by value (it contains
   ;; itself, named by the first field that leads back to it, or it needs
   ;; more than 8 slots, named by its widest variant), or null if it can.
   (fn union_error [c:(ptr C) u:(ptr ast.UnionDef)] -> (ptr buf.Buf)
@@ -718,7 +718,7 @@
     (for k 0 (arr.len vs) (call fold_fields c counts (get (arr.get (ptr ast.Variant) vs k) ast.Variant.fields)))
     (when (lte (call width counts) 16) (call (map.set str.Bytes (arr i32)) (get c C.by_value) un counts)))
 
-  ;; src/checker.rs validate_type: null, or the error's message (to which
+  ;; referee/src/checker.rs validate_type: null, or the error's message (to which
   ;; callers may add context).
   (fn validate [c:(ptr C) t:ast.Type at:i32] -> (ptr buf.Buf)
     (match t
@@ -809,14 +809,14 @@
   (fn is_narrow [t:ast.Type] -> bool (gte (call tag t) 14))
 
   ;; The type a read of a field or element of type t has: i32 for a storage
-  ;; type, else t (src/checker.rs value_of).
+  ;; type, else t (referee/src/checker.rs value_of).
   (fn value_of [t:ast.Type] -> ast.Type (if (call is_narrow t) (make ast.Type.i32) t))
 
   ;; validate, failing with its message.
   (fn validate_or_fail [c:(ptr C) t:ast.Type at:i32] -> void
     (call fail_if c (call validate c t at)))
 
-  ;; src/checker.rs fits: a value of type got fits where want is asked for
+  ;; referee/src/checker.rs fits: a value of type got fits where want is asked for
   ;; when it is the same type, or a function reference that promises
   ;; (no_leak) where one that does not is asked for. Only at the top.
   (fn fits [got:ast.Type want:ast.Type] -> bool
@@ -828,7 +828,7 @@
          (else false)))
       (else false)))
 
-  ;; src/checker.rs meet: two branches' (or two compared values') types
+  ;; referee/src/checker.rs meet: two branches' (or two compared values') types
   ;; meet when they are the same, or are function types that differ only in
   ;; the promise (at the type without it, which both fit).
   (fn meets [a:ast.Type b:ast.Type] -> bool
@@ -852,7 +852,7 @@
     (for k 0 (arr.len pa) (when (not (call teq (arr.get ast.Type pa k) (arr.get ast.Type pb k))) (return false)))
     (call teq (get g ast.FnType.ret) (get w ast.FnType.ret)))
 
-  ;; src/checker.rs fit_why: what a mismatch's message adds when a function
+  ;; referee/src/checker.rs fit_why: what a mismatch's message adds when a function
   ;; reference that does not promise (no_leak) is given where one that does
   ;; is asked for: for (ref f), why f may keep memory.
   (fn fit_why [c:(ptr C) b:(ptr buf.Buf) got:ast.Type want:ast.Type e:ast.Expr] -> void
@@ -1380,9 +1380,9 @@
       (set! k (+ k 1)))
     false)
 
-  ;; What follows "Call to unknown function 'f'" (src/checker.rs, Expr::Call):
+  ;; What follows "Call to unknown function 'f'" (referee/src/checker.rs, Expr::Call):
   ;; f is a function reference in scope, or the nearest function's name.
-  ;; "; did you mean x?" for a variable that is not in scope, when one in scope is near it (src/checker.rs's
+  ;; "; did you mean x?" for a variable that is not in scope, when one in scope is near it (referee/src/checker.rs's
   ;; near_variable is the same rule).
   (fn var_hint [b:(ptr buf.Buf) env:(ptr Env) name:str.Bytes] -> void
     (let near:i32 (call suggest.nearest (get env Env.names) name))
@@ -1522,7 +1522,7 @@
           (call fail c b))
     (call void_t))
 
-  ;; Field fname of struct sname's type, failing with src/checker.rs
+  ;; Field fname of struct sname's type, failing with referee/src/checker.rs
   ;; get_field_offset's message if there is none.
   (fn field_type [c:(ptr C) at:i32 sname:str.Bytes fname:str.Bytes] -> ast.MaybeType
     (let fs:(arr (ptr ast.Field)) (get (call struct_def c sname) ast.StructDef.fields))
@@ -1537,7 +1537,7 @@
   ;; Where a put's or arr.set's path ends: the field, and its type.
   (struct Walked [sname:str.Bytes fname:str.Bytes ty:ast.Type])
 
-  ;; src/checker.rs walk_path: from field fname of sname (of type ty), each
+  ;; referee/src/checker.rs walk_path: from field fname of sname (of type ty), each
   ;; step a field of the value struct the step before holds.
   (fn walk_path [c:(ptr C) at:i32 sname:str.Bytes fname:str.Bytes ty:ast.Type path:(arr (ptr ast.Step)) form:str] -> (ptr Walked)
     (let w:(ptr Walked) (new Walked (call alloc.forever) [sname:sname fname:fname ty:ty]))
@@ -2154,7 +2154,7 @@
              (call fail c b))
        (call conversion_to o))))
 
-  ;; A conversion's argument and result types (src/checker.rs conversion).
+  ;; A conversion's argument and result types (referee/src/checker.rs conversion).
   (fn conversion_from [o:ast.Op] -> ast.Type
     (cond
       ((or (eq o ast.Op.f64_convert_i64_s) (or (eq o ast.Op.f64_reinterpret_i64) (eq o ast.Op.f32_convert_i64_s))) (call i64_t))
@@ -2509,7 +2509,7 @@
             (call words b o pre prefix) (call buf.push_int b k) (call s b suffix) (call ty b t)
             (call fail c b) (return))))
 
-  ;; src/checker.rs expect_operands: exactly `count` i32 operands.
+  ;; referee/src/checker.rs expect_operands: exactly `count` i32 operands.
   (fn operands [c:(ptr C) env:(ptr Env) at:i32 name:str form:str args:(arr ast.Expr) count:i32] -> void
     (when (neq (arr.len args) count)
           (let b:(ptr buf.Buf) (call msg c at))
@@ -2682,7 +2682,7 @@
           (call fail c b) (return (call void_t)))
     (call bool_t))
 
-  ;; src/checker.rs check_literal_address: a literal address argument.
+  ;; referee/src/checker.rs check_literal_address: a literal address argument.
   (fn check_literal_address [c:(ptr C) at:i32 o:ast.Op args:(arr ast.Expr)] -> void
     (let is_write:bool (or (or (or (eq o ast.Op.mem_store8) (eq o ast.Op.mem_store16)) (or (eq o ast.Op.mem_store32) (eq o ast.Op.mem_store64)))
                            (or (or (eq o ast.Op.atomic_add) (eq o ast.Op.atomic_cas)) (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)))))

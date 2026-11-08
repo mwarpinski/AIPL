@@ -1,4 +1,4 @@
-;; Reads lines of `NAME X [N]` from standard input (tests/test_bit_ops.rs writes them), X and N decimal i64s
+;; Reads lines of `NAME X [N]` from standard input (referee/tests/test_bit_ops.rs writes them), X and N decimal i64s
 ;; (an i32 operation reads their low 32 bits), applies the bit operation NAME, and prints the answer. The
 ;; test compares each with Rust's rotate_left, rotate_right, !, leading_zeros, trailing_zeros, and count_ones. The `_c` forms have a constant count, which
 ;; the native backends lower differently from a count in a register.

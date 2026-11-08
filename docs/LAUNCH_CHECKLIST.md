@@ -94,7 +94,7 @@ Each of these lands in the self-hosted `aipl` (aipl_src/), since that is what sh
   on success and says what it built with `-v`, to standard error.
 - [x] **Every error, one per item.** Each enum, struct, union and function signature reports its first error, in
   that order; once they hold, each function body does; at most 20, then `and N more errors`. Both checkers give
-  the same lines (tests/test_bootstrap.rs). A syntax, import or constant error still stops at once.
+  the same lines (referee/tests/test_bootstrap.rs). A syntax, import or constant error still stops at once.
 - [x] **"expects 1 argument"**, in both checkers.
 - [x] **A standard library that cannot be found names `$AIPL_STD`.**
 - [x] **One table of exit statuses** (AIPL_SPEC.md 6.1): main's result, `sys.exit`, a trap and an out-of-range status
@@ -104,7 +104,7 @@ Each of these lands in the self-hosted `aipl` (aipl_src/), since that is what sh
 - [x] **Editor support at launch**: the TextMate grammar and a tree-sitter grammar (highlights, indents, folds), both
   checked against every `.aipl` file in this repository (~/projects/aipl-editors; the GitHub remote and the
   Marketplace and Open VSX publishing stay with the owner). The language server can follow.
-- [x] **`aipl run` compared across the two commands** over the whole corpus (tests/test_bootstrap.rs).
+- [x] **`aipl run` compared across the two commands** over the whole corpus (referee/tests/test_bootstrap.rs).
 
 ## 4. Release: one compiler, no referee
 
@@ -121,7 +121,7 @@ self-hosted `aipl` and `aipl-net` (Rust: host names and TLS); macOS and Windows 
   signs, publishes nothing) or `sh tools/release_dry_run.sh`.
 - [x] **`aipl-net` stays for launch** as a documented helper, the one Rust program in the Linux tarball, built by its
   own step; replacing it is on the Rust removal track.
-- [x] **One version source**: aipl_src/aipl.aipl. `python3 tools/release_check.py set X.Y.Z` writes it, Cargo.toml and
+- [x] **One version source**: aipl_src/aipl.aipl. `python3 tools/release_check.py set X.Y.Z` writes it, referee/Cargo.toml and
   Cargo.lock; CI and the release gate fail when they differ; the notes are generated (tools/release_notes.py).
 - [x] **Signed release**: Sigstore keyless over `SHA256SUMS` (`SHA256SUMS.bundle`), verified in the workflow as a user
   would. Open, because macOS and Windows are a preview: notarising the macOS build and code-signing the Windows one.
@@ -162,7 +162,7 @@ build it, and the release never runs it.
 ## 6. Repository hygiene
 
 - [ ] **Tests that stay in their own folder.** An empty no-such-dir/ and a stray out.wasm appear in the repository
-  root; tests/test_opcode_conformance.rs uses `no-such-dir` paths relative to the working directory. Run the file-system
+  root; referee/tests/test_opcode_conformance.rs uses `no-such-dir` paths relative to the working directory. Run the file-system
   tests in a temporary directory.
 - [ ] **One copy of each note.** docs/notes keeps every note as both `.md` and `.txt`, and the pairs differ.
 - [ ] **Delete the merged branches**: all 11 `features/` branches are merged into `development`.
@@ -224,7 +224,7 @@ about 22,000 lines of tests/*.rs.
 | Rust today | What it does | What replaces it |
 |---|---|---|
 | The reference toolchain (src/) | The referee: byte parity, and fuzzing against the self-hosted compiler | The conformance suite (section 2), the backends tested against each other, the bootstrap's fixed point |
-| The VM (src/vm.rs) | `eval -f`, `test --vm`, `--all-backends`, the AIPL suite in CI, one side of the differential tests | A VM in AIPL (aipl_standalone.md S4), or native compared with wasm alone |
+| The VM (referee/src/vm.rs) | `eval -f`, `test --vm`, `--all-backends`, the AIPL suite in CI, one side of the differential tests | A VM in AIPL (aipl_standalone.md S4), or native compared with wasm alone |
 | `aipl-run` (wasmtime) | Running `.wasm` off Linux; the macOS and Windows launcher bundles | Mach-O and PE backends (ROADMAP.md item 6), then a native wasm runner off Linux (S3) |
 | `aipl-net` (rustls and the system's resolver) | Host names and TLS in native executables | A resolver in AIPL; for TLS, a decision: the system's library through a way to call foreign code, or an audited implementation (ROADMAP.md item 13) |
 | The Rust-only modes of the CLI | `compile --target wasm`, `--self`, `eval --wasm` | The same modes in aipl_src/ |
@@ -240,4 +240,4 @@ In order, each step unblocking the next:
   (docs/design/NET_PLAN.md section 7).
 - [ ] Record the last seed built by Rust and its hash; after it, seeds build only from seeds. Keep an older seed for
   diverse double-compiling, which takes over Rust's independent check against a compromised compiler.
-- [ ] Delete Cargo.toml, src/, and the Rust tests.
+- [ ] Delete Cargo.toml, referee/, and the Rust tests.

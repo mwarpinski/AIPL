@@ -1,4 +1,4 @@
-;; (dbg e) in every backend and both toolchains (tests/test_dbg.rs): each
+;; (dbg e) in every backend and both toolchains (referee/tests/test_dbg.rs): each
 ;; prints FILE:LINE:COL: e = value to standard error and gives the value.
 (module main
   (import alloc)

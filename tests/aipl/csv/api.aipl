@@ -1,4 +1,4 @@
-;; std/csv's API (tests/test_csv.rs): a header and columns by name, typed
+;; std/csv's API (referee/tests/test_csv.rs): a header and columns by name, typed
 ;; fields and their errors, a whole text at once, tab-separated values,
 ;; and a file written and read back, with try and defer.
 (module api

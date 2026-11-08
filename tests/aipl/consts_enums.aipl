@@ -1,5 +1,5 @@
 ;; Constants and enums (AIPL_SPEC.md 4.I) across modules, for
-;; tests/test_consts_enums.rs and the self-hosted parity tests. main is 2294.
+;; referee/tests/test_consts_enums.rs and the self-hosted parity tests. main is 2294.
 (module consts_enums
   (import alloc)
   (import palette)

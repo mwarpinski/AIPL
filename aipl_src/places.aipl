@@ -2,7 +2,7 @@
 ;; (docs/design/LINES_PLAN.md): an offset in the text the code generator
 ;; compiles, mapped back through the passes that reprinted it (consts.aipl,
 ;; then generics.aipl, then the resolver) to a file, a line, and a column,
-;; as src/compiler/wasm.rs takes them from the Rust toolchain's tree.
+;; as referee/src/compiler/wasm.rs takes them from the Rust toolchain's tree.
 (module places
   (import alloc)
   (import str)

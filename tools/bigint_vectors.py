@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The expected transcript of tests/aipl/bigint_ops.aipl, computed with
 Python's own integers: the same xorshift32 random walk over four registers.
-tests/test_std.rs compares the AIPL program's output against the FNV-1a
+referee/tests/test_std.rs compares the AIPL program's output against the FNV-1a
 hash printed by --hash (so no large file is checked in).
 
     python3 tools/bigint_vectors.py          # the transcript

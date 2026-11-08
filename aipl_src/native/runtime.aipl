@@ -61,7 +61,7 @@
   (struct ChainTexts [(pub at:i32) (pub dots:i32) (pub more:i32) (pub open:i32) (pub colon:i32) (pub close:i32) (pub positions:i32)] (pub))
 
   ;; The trap routine with the call chain, the lines aipl-run prints
-  ;; (src/bin/aipl_run.rs call_chain): `call` it from the trap's place with
+  ;; (referee/src/bin/aipl_run.rs call_chain): `call` it from the trap's place with
   ;; the reason's address in rsi and length in edx. Prints `<argv[0]>:
   ;; <reason>`, then "  at NAME" for each frame whose function has a name to
   ;; show, innermost first, at most 32, then "  ... N more"; exits with 134.
@@ -288,7 +288,7 @@
                                                                 len:(get b str.Bytes.len)]))
     h)
 
-  ;; lint:allow unused-function (the host invokes it by name: tests/test_native_elf.rs)
+  ;; lint:allow unused-function (the host invokes it by name: referee/tests/test_native_elf.rs)
   (fn hello_exe [] -> (ptr HostBytes)
     (let data:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_str data "hello from native AIPL")

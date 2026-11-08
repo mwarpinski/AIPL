@@ -7,7 +7,7 @@
   python3 tools/release_check.py show                     print the version (aipl_src/aipl.aipl is the source)
 
 The version lives in aipl_src/aipl.aipl (what `aipl --version` prints, and so what the self-hosted Linux release says),
-in Cargo.toml and in the `aipl` package of Cargo.lock (the Rust build, which macOS and Windows ship). The first is the
+in referee/Cargo.toml and in the `aipl` package of Cargo.lock (the Rust build in referee/, which macOS and Windows ship). The first is the
 source; the other two must agree with it. Exit status 0 when all is well, 1 on a finding, 2 on a usage error.
 """
 import hashlib
@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 AIPL_SRC = ROOT / "aipl_src/aipl.aipl"
-CARGO_TOML = ROOT / "Cargo.toml"
+CARGO_TOML = ROOT / "referee" / "Cargo.toml"
 CARGO_LOCK = ROOT / "Cargo.lock"
 
 SELF_HOSTED = re.compile(r'"aipl (\d+\.\d+\.\d+)"')
@@ -31,7 +31,7 @@ def versions():
     m = SELF_HOSTED.findall(AIPL_SRC.read_text())
     found["aipl_src/aipl.aipl"] = m[0] if len(m) == 1 else f"{len(m)} places say it"
     m = TOML.search(CARGO_TOML.read_text())
-    found["Cargo.toml"] = m.group(1) if m else "none"
+    found["referee/Cargo.toml"] = m.group(1) if m else "none"
     m = LOCK.search(CARGO_LOCK.read_text())
     found["Cargo.lock"] = m.group(2) if m else "none"
     return found

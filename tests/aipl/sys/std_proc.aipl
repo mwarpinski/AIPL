@@ -1,4 +1,4 @@
-;; std/proc (docs/design/SYS_PLAN.md step 3): tests/test_sys.rs runs this with
+;; std/proc (docs/design/SYS_PLAN.md step 3): referee/tests/test_sys.rs runs this with
 ;; `--allow-run /bin/sh --allow-run /bin/cat --allow-run /no/such/program`, once
 ;; for each backend. Each case prints a line; what a program writes is passed on.
 (module std_proc_cases

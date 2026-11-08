@@ -1,4 +1,4 @@
-;; The process operations (docs/design/SYS_PLAN.md D3): tests/test_sys.rs runs
+;; The process operations (docs/design/SYS_PLAN.md D3): referee/tests/test_sys.rs runs
 ;; this with `--allow-run /bin/sh --allow-run /bin/cat`, once for each backend;
 ;; every case prints a line, and what a program writes to standard output is
 ;; passed through. A handle's number is never printed (what it is differs).

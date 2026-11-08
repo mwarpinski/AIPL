@@ -1,4 +1,4 @@
-;; The formatting forms' strings, read as src/formats.rs reads them: the
+;; The formatting forms' strings, read as referee/src/formats.rs reads them: the
 ;; pieces of a format string (pieces), and a format after the colon
 ;; (spec). Shared by expand.aipl (which splits the strings for the
 ;; checker), checker.aipl (which checks each format against its value's

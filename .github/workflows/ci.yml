@@ -1,13 +1,10 @@
-# Builds AIPL and runs every test on Linux x86-64 (the native backend's
-# platform): clippy with warnings as errors, the Rust test suite, the
-# AIPL-native suite, 3,000 mutated programs through both toolchains
-# (tools/fuzz.py), and 500 generated programs run in the VM, as wasm, and
-# natively (tools/run_fuzz.py), and the repository's programs and 500
-# generated ones optimized against unoptimized (tools/opt_diff.py); the
-# fuzzers with fixed seeds. See DEVELOPING.md, "How to verify everything".
-# The arm64 job builds and tests on Linux AArch64 (GitHub's ubuntu-24.04-arm
-# runner), where the AArch64 backend's executables run as they are, and has
-# the compiler built for AArch64 compile itself there.
+# Two jobs on Linux x86-64. `selfhosted` is what ships: the compiler built from the checked-in seed with no Rust, and
+# on it the AIPL suite, the conformance suite, lint, fmt, and the documentation checks. `referee` is the Rust crate
+# in referee/, development only: clippy with warnings as errors, the Rust test suite, 3,000 mutated programs through
+# both toolchains (tools/fuzz.py), 500 generated programs run in the VM, as wasm, and natively (tools/run_fuzz.py),
+# the optimizer against itself (tools/opt_diff.py), the fuzzers with fixed seeds. See DEVELOPING.md, "How to verify
+# everything". The arm64 job builds and tests on Linux AArch64 (GitHub's ubuntu-24.04-arm runner), where the AArch64
+# backend's executables run as they are, and has the compiler built for AArch64 compile itself there.
 name: CI
 
 on:
@@ -16,7 +13,40 @@ on:
   pull_request:
 
 jobs:
-  test:
+  # What ships: the self-hosted toolchain, built from the checked-in seed with no Rust. Every check here runs on it
+  # (docs/RELEASING.md; Rust is the referee, below, and development-only).
+  selfhosted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      AIPL: ${{ github.workspace }}/target/bootstrap/aipl
+      AIPL_STD: ${{ github.workspace }}/aipl_src/std/
+    steps:
+      - uses: actions/checkout@v4
+      - name: The seed builds the compiler, and it rebuilds itself unchanged
+        run: sh bootstrap/build.sh
+      - name: AIPL test suite
+        run: $AIPL test aipl_src/test_suite.aipl
+      - name: The conformance suite
+        run: python3 tools/conformance.py --aipl $AIPL --backend run --backend wasm --backend native
+      - name: aipl lint, clean on the standard library and on aipl_src
+        run: $AIPL lint aipl_src/std/*.aipl aipl_src/*.aipl aipl_src/native/*.aipl
+      - name: aipl fmt --check, the repository's programs are formatted
+        run: $AIPL fmt --check $(git ls-files '*.aipl' | xargs grep -L -e @reject -e @syntax)
+      - name: The documentation, against the repository
+        run: python3 tools/docs_check.py
+      - name: The grammar in the specification, against every program in the repository
+        run: python3 tools/grammar_check.py
+      - name: The standard library reference, against aipl doc
+        run: python3 tools/std_reference.py --check
+      - name: Release facts, the version is one number and each seed's hash is the recorded one
+        run: |
+          python3 tools/release_check.py version
+          python3 tools/release_check.py seeds
+
+  # The Rust referee, in development only: does the self-hosted toolchain do what the Rust one does and the
+  # specification says (the same programs accepted and refused, the same diagnostics, the same behaviour)?
+  referee:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -33,7 +63,7 @@ jobs:
         run: cargo test --release --no-fail-fast
       - name: Native executables on a system without openat2
         run: python3 tools/without_openat2.py cargo test --release --test test_native
-      - name: AIPL test suite
+      - name: AIPL test suite, in the Rust VM
         run: ./target/release/aipl test aipl_src/test_suite.aipl
       - name: Mutated programs, Rust toolchain against the self-hosted one
         run: python3 tools/fuzz.py --cases 3000 --seed 1
@@ -45,22 +75,8 @@ jobs:
           python3 tools/opt_diff.py --fuzz 500 --seed 1
       - name: The A/B harness, its references and toolchain paths
         run: python3 tools/harness/harness.py selftest
-      - name: The documentation, against the repository
-        run: python3 tools/docs_check.py
-      - name: The grammar in the specification, against every program in the repository
-        run: python3 tools/grammar_check.py
-      - name: The standard library reference, against aipl doc
-        run: python3 tools/std_reference.py --check
-      - name: Release facts, the version is one number and each seed's hash is the recorded one
-        run: |
-          python3 tools/release_check.py version
-          python3 tools/release_check.py seeds
-      - name: aipl lint, clean on the standard library and on aipl_src
-        run: ./target/release/aipl lint aipl_src/std/*.aipl aipl_src/*.aipl aipl_src/native/*.aipl
-      - name: The conformance suite, on the Rust aipl and on the self-hosted one
-        run: |
-          python3 tools/conformance.py --aipl target/release/aipl --backend run --backend wasm --backend native
-          python3 tools/conformance.py --aipl bootstrap/aipl-linux-x86_64 --backend run --backend wasm --backend native
+      - name: The conformance suite, on the Rust aipl
+        run: python3 tools/conformance.py --aipl target/release/aipl --backend run --backend wasm --backend native
 
   arm64:
     # AArch64 Linux: the Rust test suite (the AArch64 backend's executables run on this

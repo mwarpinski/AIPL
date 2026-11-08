@@ -1,7 +1,7 @@
 ;; Integer math with contracts: each function states what it requires and
 ;; guarantees, and the VM checks both on every call (the wasm build runs the
 ;; same code without the checks). Every function here is compared between the
-;; VM and wasmtime by tests/test_differential.rs.
+;; VM and wasmtime by referee/tests/test_differential.rs.
 (module math_core
   (import buf)
   (import alloc)

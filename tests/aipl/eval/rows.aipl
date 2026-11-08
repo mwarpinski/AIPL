@@ -1,4 +1,4 @@
-;; A module for aipl eval --with (tests/test_eval_expr.rs): its functions,
+;; A module for aipl eval --with (referee/tests/test_eval_expr.rs): its functions,
 ;; private ones included, are in scope; its main is not run.
 (module rows
   (import alloc)

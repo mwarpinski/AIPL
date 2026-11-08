@@ -104,7 +104,7 @@ def check_names(files, docs, show_all):
     built-in operation, like fs.write), and every `name [params]` in the
     spec's standard-library table is in its row's module."""
     mods = exports(files)
-    heads = set(re.findall(r'"([a-z0-9_.]+)"', open(os.path.join(ROOT, "src/parser.rs"), encoding="utf-8").read().split("pub const HEAD_NAMES")[1].split("];")[0]))
+    heads = set(re.findall(r'"([a-z0-9_.]+)"', open(os.path.join(ROOT, "referee/src/parser.rs"), encoding="utf-8").read().split("pub const HEAD_NAMES")[1].split("];")[0]))
     findings = []
     # words that are not module names although a module has the name (a file, a field, an English word)
     for doc in docs:
@@ -243,7 +243,7 @@ def check_flags(docs):
 
 def check_forms():
     """Every surface form of the language is in the spec."""
-    src = open(os.path.join(ROOT, "src/parser.rs"), encoding="utf-8").read()
+    src = open(os.path.join(ROOT, "referee/src/parser.rs"), encoding="utf-8").read()
     heads = re.findall(r'"([a-z0-9_.!]+)"', src.split("pub const HEAD_NAMES")[1].split("];")[0])
     spec = open(os.path.join(ROOT, "AIPL_SPEC.md"), encoding="utf-8").read()
     internal = {"mem.load_f32", "mem.load_f64", "mem.store_f32", "mem.store_f64",  # rejected, and the spec says so
@@ -289,7 +289,7 @@ def main():
                     if why and re.search(rx, line) and not HISTORY_HINT.search(line):
                         findings.append(f"{doc}:{n}: {why}: {line.strip()[:90]}")
     # numbers
-    tests = sorted(f for f in files if re.match(r"tests/test_[a-z0-9_]+\.rs$", f))
+    tests = sorted(f for f in files if re.match(r"referee/tests/test_[a-z0-9_]+\.rs$", f))
     spec = open(os.path.join(ROOT, "docs", "IMPLEMENTATION.md"), encoding="utf-8").read()
     m = re.search(r"Files today \((\d+) files", spec)
     if m and int(m.group(1)) != len(tests):

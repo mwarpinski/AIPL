@@ -1,5 +1,5 @@
 ;; Where the self-hosted commands (aipl.aipl, driver.aipl, doc.aipl) find
-;; the standard library; src/library.rs is the Rust command's. In order:
+;; the standard library; referee/src/library.rs is the Rust command's. In order:
 ;; $AIPL_STD; share/aipl/std/ beside the executable's folder, as a kit or an
 ;; install lays it out (<prefix>/bin/aipl reads <prefix>/share/aipl/std/),
 ;; the executable found by argv[0] when it has a / and by the PATH entry that

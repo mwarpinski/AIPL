@@ -1,4 +1,4 @@
-;; std/os reads the command line and the environment once (tests/test_memory.rs):
+;; std/os reads the command line and the environment once (referee/tests/test_memory.rs):
 ;; a (no_leak) function may call os.arg and os.env, and 10,000 calls leave
 ;; the heap where the first left it. Prints "flat".
 (module os_flat

@@ -1,5 +1,5 @@
 ;; Value structs (AIPL_SPEC.md 4.E): every form, in one program whose main
-;; returns a checksum. tests/test_values.rs runs it in every backend.
+;; returns a checksum. referee/tests/test_values.rs runs it in every backend.
 (module values
   (import vec)
   (import alloc)

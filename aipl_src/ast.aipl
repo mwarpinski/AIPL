@@ -1,5 +1,5 @@
 ;; The typed syntax tree of an AIPL program, as AIPL data: what
-;; parser.aipl builds and checker.aipl checks. Mirrors src/ast.rs, form for
+;; parser.aipl builds and checker.aipl checks. Mirrors referee/src/ast.rs, form for
 ;; form (docs/design/CHECKER_PLAN.md).
 ;;
 ;; Names and literal texts are spans of the source (str.Bytes), never
@@ -10,7 +10,7 @@
   (import str)
   (import alloc)
 
-  ;; A type, as src/ast.rs Type. A struct is named inside a ptr, or on its
+  ;; A type, as referee/src/ast.rs Type. A struct is named inside a ptr, or on its
   ;; own for a value struct; any other bare name is an enum or a union.
   (union Type [(i32) (i64) (f32) (f64) (bool) (str) (void)
                (ptr n:(ptr PtrType))
@@ -23,11 +23,11 @@
                ;; storage types: a struct field's or array element's only, read as an i32
                (u8) (i8) (u16) (i16)] (pub))
 
-  ;; An optional type or expression (src/ast.rs Option<Type>, Option<Box<Expr>>).
+  ;; An optional type or expression (referee/src/ast.rs Option<Type>, Option<Box<Expr>>).
   (union MaybeType [(none) (some t:Type)] (pub))
   (union MaybeExpr [(none) (some e:Expr)] (pub))
 
-  ;; The built-in operators, in src/ast.rs OpCode order.
+  ;; The built-in operators, in referee/src/ast.rs OpCode order.
   (enum Op [add sub mul div mod divu remu bitxor shl shr shru bitand bitor rotl rotr bitnot clz ctz popcnt
             mem_load8 mem_load32 mem_load64 mem_store8 mem_store32 mem_store64
             mem_load8_s mem_load16_u mem_load16_s mem_store16 mem_alloc mem_grow
@@ -49,14 +49,14 @@
   (enum AddrKind [ptr arr enum_ ptr_gen arr_gen] (pub))
 
   ;; One step of a put's or arr.set's field path: field fname of struct
-  ;; sname (src/ast.rs PutField.path, ArrSet.path).
+  ;; sname (referee/src/ast.rs PutField.path, ArrSet.path).
   (struct Step [(pub sname:str.Bytes) (pub fname:str.Bytes)] (pub))
 
-  ;; One arm of a match (src/ast.rs MatchArm). binders is null for an arm
+  ;; One arm of a match (referee/src/ast.rs MatchArm). binders is null for an arm
   ;; written without brackets.
   (struct Arm [(pub member:str.Bytes) (pub binders:(arr str.Bytes)) (pub body:(arr Expr)) (pub at:i32)] (pub))
 
-  ;; An expression, one variant per form of src/ast.rs Expr. A float
+  ;; An expression, one variant per form of referee/src/ast.rs Expr. A float
   ;; literal (f64 or f32) keeps its text; a string literal its text between the quotes,
   ;; escapes unexpanded.
   (union Expr [(lit_int at:i32 v:i64)
@@ -102,15 +102,15 @@
   (union Contract [(requires e:Expr) (ensures e:Expr) (invariant e:Expr)] (pub))
 
   (struct Field [(pub name:str.Bytes) (pub ty:Type)] (pub))
-  ;; value: a value struct, (struct S [...] (value)) (src/ast.rs StructDef.is_value).
+  ;; value: a value struct, (struct S [...] (value)) (referee/src/ast.rs StructDef.is_value).
   (struct StructDef [(pub name:str.Bytes) (pub fields:(arr (ptr Field))) (pub at:i32) (pub value:bool)] (pub))
-  ;; members are names with their values (src/ast.rs EnumDef)
+  ;; members are names with their values (referee/src/ast.rs EnumDef)
   (struct Member [(pub name:str.Bytes) (pub value:i32)] (pub))
   (struct EnumDef [(pub name:str.Bytes) (pub members:(arr (ptr Member))) (pub at:i32)] (pub))
   (struct Variant [(pub name:str.Bytes) (pub fields:(arr (ptr Field)))] (pub))
   (struct UnionDef [(pub name:str.Bytes) (pub variants:(arr (ptr Variant))) (pub at:i32)] (pub))
   (struct Param [(pub name:str.Bytes) (pub ty:Type)] (pub))
-  ;; unsafe_: the (unsafe) clause (src/ast.rs FnDef.is_unsafe); no_leak:
+  ;; unsafe_: the (unsafe) clause (referee/src/ast.rs FnDef.is_unsafe); no_leak:
   ;; the (no_leak) clause (is_no_leak, leaks.aipl).
   (struct FnDef [(pub name:str.Bytes) (pub params:(arr (ptr Param))) (pub ret:Type)
                  (pub contracts:(arr Contract)) (pub body:(arr Expr)) (pub at:i32) (pub unsafe_:bool) (pub no_leak:bool)] (pub))

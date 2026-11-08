@@ -1,4 +1,4 @@
-;; aipl eval -e, in AIPL (src/evalexpr.rs is the Rust one): one or more
+;; aipl eval -e, in AIPL (referee/src/evalexpr.rs is the Rust one): one or more
 ;; expressions, evaluated, and the last one's value printed with its type,
 ;; `49 : i32`.
 ;;
@@ -59,7 +59,7 @@
     (call str.is_at b i word))
 
   ;; The index of the ')' that closes the (module ...) form of `src`, or -1;
-  ;; the module's name goes to `name` (src/evalexpr.rs module_form).
+  ;; the module's name goes to `name` (referee/src/evalexpr.rs module_form).
   (fn module_form [src:str.Bytes name:(ptr buf.Buf)] -> i32
     (let n:i32 (get src str.Bytes.len))
     (let i:i32 0)
@@ -100,7 +100,7 @@
   (fn word_char [c:i32] -> bool (or (and (gte c 97) (lte c 122)) (or (and (gte c 65) (lte c 90)) (or (and (gte c 48) (lte c 57)) (eq c 95)))))
 
   ;; The standard modules `text` names, as `str` in `(call str.find ...)`, in
-  ;; the order named (src/evalexpr.rs named_modules); `std_dir` holds them.
+  ;; the order named (referee/src/evalexpr.rs named_modules); `std_dir` holds them.
   (fn named_modules [text:str.Bytes std_dir:str.Bytes] -> (ptr (vec.Vec str.Bytes))
     (let out:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
     (let n:i32 (get text str.Bytes.len))
@@ -186,7 +186,7 @@
     (call str.parse_int_or (call str.slice s at n) 0))
 
   ;; `text` with each `prefix` followed by L:C on the expressions' lines given
-  ;; as -e:L:C (src/evalexpr.rs relocate, one prefix).
+  ;; as -e:L:C (referee/src/evalexpr.rs relocate, one prefix).
   (fn relocate_prefix [text:str.Bytes prefix:str.Bytes place:(ptr Place)] -> str.Bytes
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get text str.Bytes.len) 16)))
     (let rest:str.Bytes text)
@@ -219,7 +219,7 @@
     (call buf.bytes out))
 
   ;; msg without the generated functions' frames and its trailing newlines,
-  ;; positions on the expressions' lines given as -e:LINE:COL (src/evalexpr.rs
+  ;; positions on the expressions' lines given as -e:LINE:COL (referee/src/evalexpr.rs
   ;; relocate).
   (fn relocate [msg:str.Bytes place:(ptr Place)] -> str.Bytes
     (let kept:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get msg str.Bytes.len) 1)))

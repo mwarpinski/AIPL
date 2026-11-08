@@ -48,9 +48,9 @@ the same however it runs.
   inside a block; `(return v)` stores `v` in the hidden local `res` and
   branches to the block's end, where the `ens` conditions are checked
   before the function returns.
-- **Both compilers.** Every lowering is implemented in `src/compiler/wasm.rs`
+- **Both compilers.** Every lowering is implemented in `referee/src/compiler/wasm.rs`
   and `aipl_src/codegen.aipl` at byte parity, as always.
-- **Agreement with the VM.** `tests/test_differential.rs` stops accepting
+- **Agreement with the VM.** `referee/tests/test_differential.rs` stops accepting
   "VM failed, wasm succeeded" for contracts and bounds: both must fail.
 
 ## Steps

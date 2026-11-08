@@ -1,7 +1,7 @@
 ;; Unions are values (AIPL_SPEC.md 4.J): every way one is made, matched,
 ;; passed, stored, and returned, and how a union that would contain itself
 ;; or need more than 8 slots holds a pointer instead, in one program whose
-;; main returns a checksum. tests/test_values.rs runs it in every backend.
+;; main returns a checksum. referee/tests/test_values.rs runs it in every backend.
 (module unions_by_value
   (import option)
   (import alloc)

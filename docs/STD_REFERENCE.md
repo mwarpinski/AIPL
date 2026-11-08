@@ -226,7 +226,7 @@ module assertion
     A module that uses assert imports this one, as one that uses a formatting form imports std/show; the
     resolver lowers (assert (eq n 3) "why") to a call of failed_cmp with the assert's place and text, both sides
     as show writes them, and the message ("" without one). They are ordinary functions, usable directly. The
-    program ends here, so the memory that builds the message is no leak (src/leaks.rs).
+    program ends here, so the memory that builds the message is no leak (referee/src/leaks.rs).
 
 fn assertion.failed [label:str msg:str] -> void
     Stops the program with "Assertion failed: LABEL", the label being the place and the text of the assert as
@@ -931,7 +931,7 @@ fn encode.percent_decode [s:str] -> (result str i32)
 
 ### std/float
 
-`from_decimal [addr len] -> f64`: decimal text (an optional sign, digits with one `.`, optionally `e`/`E` and a signed exponent) to the nearest `f64`, ties to even, as Rust's `parse::<f64>`; too large is an infinity, too small a zero. The self-hosted compiler converts its float literals with it; `tests/test_std.rs` compares it with Rust on 400,000 literals
+`from_decimal [addr len] -> f64`: decimal text (an optional sign, digits with one `.`, optionally `e`/`E` and a signed exponent) to the nearest `f64`, ties to even, as Rust's `parse::<f64>`; too large is an infinity, too small a zero. The self-hosted compiler converts its float literals with it; `referee/tests/test_std.rs` compares it with Rust on 400,000 literals
 
 <!-- api:float -->
 ```text
@@ -1609,13 +1609,13 @@ fn io.run_io_tests [] -> i32
 
 ### std/ip
 
-IP and socket addresses from text, read as Rust's standard library reads them (tests/test_web.rs compares the two on generated texts), allocating nothing: `parse [t:str.Bytes] -> (option.Option ip.Addr)` (IPv4 as four numbers 0-255 without leading zeros; IPv6 with `::` and an IPv4 tail), `parse_endpoint [t] -> (option.Option ip.Endpoint)` (`a.b.c.d:port`, `[v6]:port`; a zone index such as `%eth0` refused), `len [a] -> i32` (4 or 16), `byte_at [a i] -> i32` (network order); `Endpoint.addr`, `Endpoint.port`, `Addr.v6`
+IP and socket addresses from text, read as Rust's standard library reads them (referee/tests/test_web.rs compares the two on generated texts), allocating nothing: `parse [t:str.Bytes] -> (option.Option ip.Addr)` (IPv4 as four numbers 0-255 without leading zeros; IPv6 with `::` and an IPv4 tail), `parse_endpoint [t] -> (option.Option ip.Endpoint)` (`a.b.c.d:port`, `[v6]:port`; a zone index such as `%eth0` refused), `len [a] -> i32` (4 or 16), `byte_at [a i] -> i32` (network order); `Endpoint.addr`, `Endpoint.port`, `Addr.v6`
 
 <!-- api:ip -->
 ```text
 module ip
     std/ip: IP addresses and socket addresses from text, as Rust's standard
-    library reads them (core::net::parser, step for step; tests/test_web.rs
+    library reads them (core::net::parser, step for step; referee/tests/test_web.rs
     checks the two agree on generated texts), so a grant on the command line
     (`--listen 127.0.0.1:8080`) means the same to every backend.
 
@@ -1648,7 +1648,7 @@ fn ip.byte_at [a:ip.Addr i:i32] -> i32
     Byte i of the address, in network order.
 
 fn ip.is_host_name [t:str.Bytes] -> bool
-    Whether t is a host name as a program may give one (src/net.rs is_host_name): letters, digits, and -, in
+    Whether t is a host name as a program may give one (referee/src/net.rs is_host_name): letters, digits, and -, in
     labels of 1 to 63 characters between dots (a final dot allowed), at most 253 bytes, no label starting or
     ending with -, and a last label that is not all digits.
 
@@ -1674,7 +1674,7 @@ JSON (RFC 8259) to and from a `json.Value`, `(union Value [(null) (boolean b:boo
 
 `get [v key:str] -> (option.Option json.Value)` (an object's member), `at [v i]` (a list's element), `count [v]` (elements or members, 0 for other values); `get_path [v path:str] -> (option.Option Value)` (`"a.b[2].c"`: members after `.`, elements in brackets; `""` is v; path must pass `valid_path [path] -> bool`, and a key cannot hold `.` or `[`); `field [a key value] -> (ptr json.Field)` makes a member for building an object (`(read key)`, `(read value)`).
 
-`write [b:(ptr buf.Buf) v]` writes the text JavaScript's `JSON.stringify` writes: no spaces, keys in their order, numbers as the shortest digits that read back as the same `f64` (`0.1`, `1e+21`, `5e-324`); writing an infinity or NaN fails its contract. `tests/test_std.rs` compares the numbers with Rust's shortest digits on 20,000 doubles
+`write [b:(ptr buf.Buf) v]` writes the text JavaScript's `JSON.stringify` writes: no spaces, keys in their order, numbers as the shortest digits that read back as the same `f64` (`0.1`, `1e+21`, `5e-324`); writing an infinity or NaN fails its contract. `referee/tests/test_std.rs` compares the numbers with Rust's shortest digits on 20,000 doubles
 
 <!-- api:json -->
 ```text
@@ -1830,7 +1830,7 @@ For `f64`, `floor`, `ceil`, `trunc`, and `round` (halves away from zero, as C's 
 
 Also `exp`, `expm1`, `ln`, `log10`, `log2`, `log1p`, `pow_f64 [x y]` (a real exponent), `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2 [y x]`, `sinh`, `cosh`, `tanh`, `hypot`, `cbrt`, and `scalbn`: ports of fdlibm (FreeBSD's msun, as musl and Rust's `libm` crate carry it) written in AIPL with IEEE arithmetic, `f64.sqrt`, and bit operations, so every backend gives the same bits, and the same as `libm`'s on every generated input (a NaN is any NaN); within 1 ulp of glibc (2 for `tanh`); as in C a result that does not exist is NaN or an infinity, not a stop.
 
-Checked against Python on generated cases in every backend (`tools/math_vectors.py`), and the transcendentals against `libm` bit for bit (`tests/test_math_float.rs`)
+Checked against Python on generated cases in every backend (`tools/math_vectors.py`), and the transcendentals against `libm` bit for bit (`referee/tests/test_math_float.rs`)
 
 <!-- api:math -->
 ```text
@@ -2727,7 +2727,7 @@ fn regex.replace_all [re:(ptr regex.Regex) text:str.Bytes template:str] -> (resu
 
 A long-running HTTP/1.1 server over `net` and `http` (docs/design/NET_PLAN.md, mode A): `run [l:net.Socket handler options] -> serve.Stats` with a handler `(fn [alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak))` given the request's arena, the request, and the buffer its whole response goes in (`http.start_response`, `add_header`, `end_head`); `(run_with C) [l ctx handler options]` for state kept between requests, the handler taking `ctx` first.
 
-One connection at a time, one request each; each request on an arena reset after it (memory stays flat: tests/test_serve.rs serves 100,000 requests natively and under aipl-run, a million with AIPL_MILLION=1, with the heap where it was after the first thousand); a request std/http refuses answered with the error's status and reason; a view kept past its request stops the program with "Use after free" on its next use. `options` (http's default limits, 64 KiB arena chunks, no end), `requests [o n]` (return after n answers), `limits [o lim]`; `Stats.served`, `Stats.arena_bytes`.
+One connection at a time, one request each; each request on an arena reset after it (memory stays flat: referee/tests/test_serve.rs serves 100,000 requests natively and under aipl-run, a million with AIPL_MILLION=1, with the heap where it was after the first thousand); a request std/http refuses answered with the error's status and reason; a view kept past its request stops the program with "Use after free" on its next use. `options` (http's default limits, 64 KiB arena chunks, no end), `requests [o n]` (return after n answers), `limits [o lim]`; `Stats.served`, `Stats.arena_bytes`.
 
 A trap in a handler ends the server. Mode B, a fresh instance per request: `once [handler options] -> i32` reads one request from standard input and writes its answer to standard output (a refusal too), 0, or 1 if the input ended before a request began; `(once_with C) [ctx handler options]`. Run under `aipl serve --fresh` or as an executable built with `aipl compile --exe --serve ADDR:PORT`, where a trap answers 500 and the next request is served; an answer that cannot all be written gives 1; and a saved request is tried with `aipl eval prog.aipl < request.txt` in any backend
 

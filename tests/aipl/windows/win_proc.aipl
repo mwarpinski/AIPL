@@ -1,4 +1,4 @@
-;; std/proc on Windows (tests/test_windows.rs runs this with `--allow-run '*'`): each case prints a line.
+;; std/proc on Windows (referee/tests/test_windows.rs runs this with `--allow-run '*'`): each case prints a line.
 (module windows_proc_cases
   (import alloc)
   (import buf)

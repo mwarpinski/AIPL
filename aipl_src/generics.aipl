@@ -1,4 +1,4 @@
-;; Generic expansion (AIPL_SPEC.md 4.H), the AIPL twin of src/generics.rs.
+;; Generic expansion (AIPL_SPEC.md 4.H), the AIPL twin of referee/src/generics.rs.
 ;; Takes the flat program resolver.aipl produced (templates still in it) and
 ;; writes it with every template application replaced by a concrete instance:
 ;;   (struct (Name T...) [fields])  /  (fn (name T...) ...)   are templates;
@@ -333,7 +333,7 @@
     (call print_group st n env (call str.bytes 0 -1) out)))
 
   ;; (call (vec.psh i32) ...): a callee written as a generic's application
-  ;; that names no generic function (src/generics.rs rewrite), with the
+  ;; that names no generic function (referee/src/generics.rs rewrite), with the
   ;; nearest generic function's name.
   (fn check_not_generic [st:(ptr St) n:(ptr compiler.Node)] -> void
     (let h:str.Bytes (call head st n))
@@ -371,7 +371,7 @@
     (let t:(ptr Tmpl) (call (map.get_or str.Bytes (ptr Tmpl)) (get st St.templates) (call head st n) (ptr.null Tmpl)))
     (and (neq t (ptr.null Tmpl)) (call lit (call head st (get t Tmpl.node)) "union")))
 
-  ;; A generic written without its type arguments (src/generics.rs
+  ;; A generic written without its type arguments (referee/src/generics.rs
   ;; bare_generic): (call vec.push v x), (get b Box.value), (make
   ;; option.Option.some 5).
   (fn check_bare_generic [st:(ptr St) g:(ptr compiler.Node) h:str.Bytes] -> void
@@ -461,7 +461,7 @@
     (when (gte (get g compiler.Node.a) 0) (call origins.note (get st St.origins) out -1 (get g compiler.Node.a)))
     (call buf.push_byte out (if square 93 41)))
 
-  ;; ===== Scopes (src/scopes.rs) =====
+  ;; ===== Scopes (referee/src/scopes.rs) =====
   ;; A name declared again where its first declaration is no longer visible
   ;; is renamed 'K.name (its K-th declaration in the function), with every
   ;; use inside its scope; a declaration of a name still visible keeps that

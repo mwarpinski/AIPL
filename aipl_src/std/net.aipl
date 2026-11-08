@@ -108,7 +108,7 @@
 
   ;; ===== aipl-net: host names and TLS in a native executable =====
   ;; A native executable is static machine code with no resolver and no TLS: its connect_host answers -3. Then
-  ;; this starts aipl-net (src/bin/aipl_net.rs), found at $AIPL_NET or on PATH, which resolves the name,
+  ;; this starts aipl-net (referee/src/bin/aipl_net.rs), found at $AIPL_NET or on PATH, which resolves the name,
   ;; connects, does the handshake, and relays: what is written to its input goes to the host, what the host sends
   ;; comes out of its output. Its first byte says how the connection went (0 ok, 1 refused, 2 not granted, 4 TLS
   ;; failed, 5 no such host, 6 not a host name). Which hosts it may reach is not for the program to say: aipl-net

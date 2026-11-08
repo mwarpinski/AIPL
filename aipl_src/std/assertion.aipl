@@ -2,7 +2,7 @@
 ;; A module that uses assert imports this one, as one that uses a formatting form imports std/show; the
 ;; resolver lowers (assert (eq n 3) "why") to a call of failed_cmp with the assert's place and text, both sides
 ;; as show writes them, and the message ("" without one). They are ordinary functions, usable directly. The
-;; program ends here, so the memory that builds the message is no leak (src/leaks.rs).
+;; program ends here, so the memory that builds the message is no leak (referee/src/leaks.rs).
 (module assertion
   (import str)
 

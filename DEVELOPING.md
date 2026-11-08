@@ -12,20 +12,21 @@ outside reviews; [docs/README.md](docs/README.md) indexes them all.
 
 | Path | What it is |
 |---|---|
-| `src/parser.rs`, `checker.rs`, `resolver.rs` | Rust bootstrap front end: S-expressions → AST, type checker, import flattening |
-| `src/vm.rs` | Reference interpreter (contracts, real threads and atomics, `std::fs` I/O) |
-| `src/compiler/wasm.rs` | Rust wasm backend, the byte-for-byte reference for the self-hosted one |
-| `src/generics.rs` | Generic template expansion (twin of `aipl_src/generics.aipl`) |
-| `src/bin/aipl_run.rs` | `aipl-run`, the launcher: wasmtime plus WASI, the native part of `aipl compile --exe` executables |
+| `referee/src/parser.rs`, `checker.rs`, `resolver.rs` | Rust bootstrap front end: S-expressions → AST, type checker, import flattening |
+| `referee/src/vm.rs` | Reference interpreter (contracts, real threads and atomics, `std::fs` I/O) |
+| `referee/src/compiler/wasm.rs` | Rust wasm backend, the byte-for-byte reference for the self-hosted one |
+| `referee/src/generics.rs` | Generic template expansion (twin of `aipl_src/generics.aipl`) |
+| `referee/src/bin/aipl_run.rs` | `aipl-run`, the launcher: wasmtime plus WASI, the native part of `aipl compile --exe` executables |
 | `aipl_src/resolver.aipl`, `generics.aipl`, `compiler.aipl`, `codegen.aipl`, `driver.aipl` | Self-hosted import resolver, generics expansion, tokenizer and parser, wasm code generator, and the command that chains them |
 | `aipl_src/native/` | The Linux x86-64 backend: `native` (wasm in, executable out), `wasm_reader`, `lower` (wasm to machine code), `x64` (encoder), `elf`, `runtime` (start-up, traps), `wasi` (the WASI functions as system calls) |
-| `src/native.rs` | Runs the AIPL native backend for `aipl compile --exe` |
+| `referee/src/native.rs` | Runs the AIPL native backend for `aipl compile --exe` |
 | `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`, UTF-8 checking), `fmt` (number formatting, exact float printing), `vec` (growable list, stable sort), `map` (hash map over any `cmp.Hash` key), `cmp` (`Eq`, `Ord`, `Hash` interfaces), `option` (`(option.Option T)`), `thread` (`spawn_with`, a typed context), `buf` (string builder), `os` (command line, environment), `time` (timing), `heap` (general-purpose allocator with checked free), `arena` (region allocator), `alloc` (any allocator as one value), `bigint` (big integers), `float` (decimal text to `f64`), `fs` (directory listing, file information), `json` (parsing and writing JSON); found by `(import io)` from anywhere |
 | `aipl_src/memory.aipl`, `file_io.aipl`, `thread_sync.aipl` | Small verified library modules |
 | `aipl_src/test_suite.aipl` | AIPL-native test entry point |
 | `examples/` | Tested example programs: `math_core` (contracts), `quicksort`, `matrix_mult` (structs, `f64` arrays), `accounts` (results), `word_count` and `word_freq` (files, collections, a sort comparator) |
 | `benchmarks/` | Eight benchmark programs, each in AIPL, C, and Python with expected output ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)) |
-| `tests/` | Rust integration, differential, WASI, self-hosting, native-backend, and benchmark tests; `tests/aipl/` holds AIPL programs they run |
+| `referee/` | The Rust crate, a member of the root Cargo workspace (`Cargo.toml`): the reference toolchain that judges, in development CI, whether the self-hosted one does what the spec says. `referee/src/` is the crate, `referee/tests/` its integration tests. Users never build it and the release never runs it (docs/RELEASING.md) |
+| `tests/` | The language's own test data, shared by both toolchains: `tests/aipl/` (AIPL programs the Rust tests and the tools run), `tests/conformance/` (the conformance suite, spec section 6.4), `tests/arm64/` |
 | `tools/` | Development helpers not used by the build or `cargo test`: `fuzz.py` (the two toolchains against each other on mutated programs), `run_fuzz.py` (generated programs in the VM, as wasm, and natively, against each other; CI runs it), `bench.py` (benchmark timing), `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python), `make_kit.sh` (a self-contained toolchain kit for another Linux machine or agent: `sh tools/make_kit.sh [COMMIT]` builds it in a private worktree, tests it with the source hidden, and writes `target/kit/aipl-kit-COMMIT.tar.gz`) |
 
 ## Environment
@@ -85,7 +86,7 @@ Expected AIPL suite output (37 groups):
 [AIPL Test] All groups passed.
 ```
 
-`thread_sync.aipl` (real OS threads and atomics; this suite runs it in the VM, and `tests/test_threads.rs` covers threads compiled to wasm) is part of the master suite since P10: `thread.spawn` takes a function reference, which the import resolver renames correctly.
+`thread_sync.aipl` (real OS threads and atomics; this suite runs it in the VM, and `referee/tests/test_threads.rs` covers threads compiled to wasm) is part of the master suite since P10: `thread.spawn` takes a function reference, which the import resolver renames correctly.
 
 Fuzzing the two toolchains against each other (crashes, hangs, and any
 disagreement in what they accept, the bytes they produce, or their error
@@ -111,13 +112,13 @@ cargo build --release && python3 tools/run_fuzz.py --cases 5000 --seed 7
   into `development`; `development` merges into `main` at milestones. Only
   `main` and `development` are long-lived.
 - **Both compilers, byte for byte.** Every change to code generation goes
-  into `src/compiler/wasm.rs` and `aipl_src/codegen.aipl` and must produce
-  identical bytes (`aipl compile --self`, `tests/test_selfhost.rs`); every
+  into `referee/src/compiler/wasm.rs` and `aipl_src/codegen.aipl` and must produce
+  identical bytes (`aipl compile --self`, `referee/tests/test_selfhost.rs`); every
   change to the front end goes into the Rust and the AIPL versions with the
-  same messages, word for word (`tests/test_checker_aipl.rs`,
-  `tests/test_resolver_aipl.rs`).
+  same messages, word for word (`referee/tests/test_checker_aipl.rs`,
+  `referee/tests/test_resolver_aipl.rs`).
 - **The VM follows wasm.** When the VM and compiled code disagree, the VM
-  is fixed (`tests/test_differential.rs`).
+  is fixed (`referee/tests/test_differential.rs`).
 - **Tests assert values.** A test that only checks "returned a number" or
   "produced some bytes" is not a test. Check each new test by breaking the
   code under test on purpose and watching it fail.
@@ -139,7 +140,7 @@ These are the project owner's goals. They decide the order below and the answer 
   - Elsewhere, the executable is a small prebuilt shim (Rust, embedding wasmtime) plus the program's wasm, bundled into one file by AIPL.
   - A plain `.wasm` stays available for any WASI host or a browser.
 - **Native backends translate wasm, not AIPL:** AIPL → wasm (codegen.aipl) → machine code, written in AIPL. New language features then only touch AIPL → wasm, and every native backend is tested by matching wasmtime's output on the same tests.
-- **Platforms:** Linux x86-64 first. Later, by anyone: Linux ARM64, macOS on Apple Silicon, Windows 10/11 on x86-64 and ARM64. Each is a self-contained backend. The Rust toolchain also builds for Windows x86-64 (`x86_64-pc-windows-msvc`, the C runtime linked in; the `windows` job in CI): everything through WebAssembly works, including `std/proc`, sockets and `--serve-fresh` (`tests/test_windows.rs` and `tests/test_net.rs` run in that job), and `tools/package_release.ps1` and `install.ps1` pack and install it. A Windows machine to try it on: build it with `cargo build --release` in a Developer PowerShell.
+- **Platforms:** Linux x86-64 first. Later, by anyone: Linux ARM64, macOS on Apple Silicon, Windows 10/11 on x86-64 and ARM64. Each is a self-contained backend. The Rust toolchain also builds for Windows x86-64 (`x86_64-pc-windows-msvc`, the C runtime linked in; the `windows` job in CI): everything through WebAssembly works, including `std/proc`, sockets and `--serve-fresh` (`referee/tests/test_windows.rs` and `referee/tests/test_net.rs` run in that job), and `tools/package_release.ps1` and `install.ps1` pack and install it. A Windows machine to try it on: build it with `cargo build --release` in a Developer PowerShell.
 - **Migrate off Rust.** Rust was the bootstrap language. Before writing anything new in Rust, state why it cannot be AIPL. The irreducible native code is the shim that boots wasmtime on platforms without a native backend; it contains no decisions (flags, permissions policy, and bundling live in AIPL). The end state has no Rust in the compiler: `aipl` is either a native binary built by itself or the shim plus the AIPL compiler as wasm, rebuilt from a pinned stage-0 `aiplc.wasm` like Go and Rust bootstrap from a previous release.
 - **Language design:** whatever is more correct and less error-prone for AI agents (strict types, explicit forms); human ergonomics are secondary. Make structural changes early.
 

@@ -57,7 +57,7 @@ memory is reused but never returned (the cursor only grows).
 The checks are `req`s on predicates named for what they catch, so the
 message says what went wrong:
 `Pre-condition failed in 'heap.free_raw': (req (call heap.not_freed_already h p)) with h = 1704, p = 2168, n = 8`.
-`tests/test_heap.rs` makes each mistake and checks that the VM, `aipl-run`,
+`referee/tests/test_heap.rs` makes each mistake and checks that the VM, `aipl-run`,
 and native executables stop with the same message.
 
 ## H3: containers

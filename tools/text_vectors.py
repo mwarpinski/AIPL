@@ -6,7 +6,7 @@ lines, Rust's str::lines) gives for each.
 
     python3 tools/text_vectors.py tests/aipl/text [seed]
 
-tests/test_text.rs runs the program in every backend against the answers.
+referee/tests/test_text.rs runs the program in every backend against the answers.
 """
 import random, sys
 random.seed(int(sys.argv[2]) if len(sys.argv) > 2 else 1)

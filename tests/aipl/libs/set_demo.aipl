@@ -1,4 +1,4 @@
-;; std/set (tests/test_libs.rs): adding, finding, removing, and the set
+;; std/set (referee/tests/test_libs.rs): adding, finding, removing, and the set
 ;; operations, over i32, str, and byte-string items.
 (module set_demo
   (import set)

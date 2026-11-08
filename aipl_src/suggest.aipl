@@ -1,5 +1,5 @@
 ;; The nearest known name to a misspelled one, for the "did you mean" in
-;; error messages. src/parser.rs nearest_name is the same rule, so both
+;; error messages. referee/src/parser.rs nearest_name is the same rule, so both
 ;; toolchains name the same one: underscores are left out of both names
 ;; before they are compared (lt_u is ltu); then at most 1 edit (insert,
 ;; delete, or change one byte) for a name of 3 to 5 bytes, 2 for a longer

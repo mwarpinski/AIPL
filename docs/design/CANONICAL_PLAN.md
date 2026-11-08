@@ -49,15 +49,15 @@ every backend; the spec, the prompt guide, and the tour; the full CI.
 - `aipl doc --find WORD` before writing any helper: the review found
   AI-SQL hand-writing a float parser std/text already has.
 
-Built 2026-10-21 (PROMPT_GUIDE_FOR_AIS.md "Start here"; build.rs and
+Built 2026-10-21 (PROMPT_GUIDE_FOR_AIS.md "Start here"; referee/build.rs and
 tools/make_kit.sh):
 
 - The checklist now says two or more operands.
 - `aipl --version` prints `aipl 0.1.0 (d7a02a9)` from the Rust command
-  (build.rs records the commit). tools/make_kit.sh puts the same line at
+  (referee/build.rs records the commit). tools/make_kit.sh puts the same line at
   the top of the kit's three docs and checks it against the kit's
   `aipl --version`. The self-hosted command still prints `aipl 0.2.1`
-  (tests/test_bootstrap.rs compares the two): a compiled program cannot
+  (referee/tests/test_bootstrap.rs compares the two): a compiled program cannot
   know its commit without a build step, and the kit's `aipl` is the Rust
   command anyway. Revisit when the Rust command is retired.
 - The ten pitfalls are, in order: bare `(f x)`, one-branch `if`, `let`
@@ -107,12 +107,12 @@ literal inside a placeholder ("unexpected input after the module's
 closing ')'", far from the cause; AGENT_FRICTION.md rows 25 and 33).
 
 Built 2026-10-21, in both toolchains with the same text (the BAD_PARSES
-list and FORMS in tests/test_checker_aipl.rs, tests/test_visibility.rs,
-and tests/test_resolver_aipl.rs compare them word for word):
+list and FORMS in referee/tests/test_checker_aipl.rs, referee/tests/test_visibility.rs,
+and referee/tests/test_resolver_aipl.rs compare them word for word):
 
 - Parser: an unknown head says `to call a function, write (call f
   args...)`, or `did you mean ltu?` for `lt_u` (underscores ignored, then
-  1 edit for 3 to 5 bytes, 2 for longer; `HEAD_NAMES` in src/parser.rs and
+  1 edit for 3 to 5 bytes, 2 for longer; `HEAD_NAMES` in referee/src/parser.rs and
   `suggest.aipl` are the one rule), or names `cond` for `else if`, `elif`,
   `switch`, `case`, or says there is no array literal (`arr.of`, until step
   5). A `let` without its type, an `if` without its else (names `when`),
@@ -159,8 +159,8 @@ as a statement belongs to step 3, which retires `loop`.
 - Messages that still say `loop` or `step` to a program that wrote `for`:
   `Loop bounds and step must be i32`, `Cannot shadow existing variable 'i' in
   loop`, and `break is only allowed inside a while or loop body` (both
-  checkers, and the tests that pin them: tests/test_control_flow.rs,
-  tests/test_checker_aipl.rs, tests/test_diagnostics.rs). They should say
+  checkers, and the tests that pin them: referee/tests/test_control_flow.rs,
+  referee/tests/test_checker_aipl.rs, referee/tests/test_diagnostics.rs). They should say
   `for`.
 - The survey covered the rows of section 13 that are compile errors and a
   few more (about 80 programs, 2026-10-21); rows that are runtime traps or
@@ -206,7 +206,7 @@ owner's to overrule:
 - `loop` written in a program is an error from both parsers: `Unknown
   op/keyword: loop; loop is retired: (for i start end body...) counts from
   start up to end, end left out; for another step, use while`. It could not
-  be refused where source is read (src/sugar.rs, resolver.aipl), because the
+  be refused where source is read (referee/src/sugar.rs, resolver.aipl), because the
   toolchain's own output is read again as source (the printer's text, the
   text `dbg` and `show` lower to, the flat program the code generator
   parses), and that output has a counted loop in it. So the internal form,
@@ -239,8 +239,8 @@ owner's to overrule:
   with another step were done by hand as `while` (tests/aipl/
   results_by_value.aipl is the one in a program; three more in tests). The
   tests that feed the bare parser or the self-hosted code generator a
-  program keep the inclusive form as `counted_loop` (tests/test_selfhost.rs,
-  the corpus in tests/test_checker_aipl.rs); test_selfhost's helpers now
+  program keep the inclusive form as `counted_loop` (referee/tests/test_selfhost.rs,
+  the corpus in referee/tests/test_checker_aipl.rs); test_selfhost's helpers now
   resolve a program that has a `for`. The generators tools/fuzz.py,
   run_fuzz.py (its loops had steps 1 or 2, now only 1; its `while` loops
   stay) and text_vectors.py write `for`.
@@ -262,8 +262,8 @@ owner's to overrule:
 **Outstanding in step 3:**
 
 - `for` as a node of its own (the decision above, not built): an exclusive
-  compare in the checker (src/checker.rs, aipl_src/checker.aipl), the VM
-  (src/vm.rs), the wasm backend (src/compiler/wasm.rs), the self-hosted code
+  compare in the checker (referee/src/checker.rs, aipl_src/checker.aipl), the VM
+  (referee/src/vm.rs), the wasm backend (referee/src/compiler/wasm.rs), the self-hosted code
   generator (aipl_src/codegen.aipl, codegen_opt.aipl), the leaks pass, and the
   printer, in both toolchains with byte-equal output. It fixes `end` = i32's
   least value, and drops a subtract per loop entry. Do it if the benchmarks
@@ -310,7 +310,7 @@ in five stages, each checked by the full CI before the next:
    into the tree the resolver's rewrite makes, every part at the when's
    position; `when` is in HEAD_NAMES (so `whn` gets a suggestion); a bare
    `(when)` says `when takes a condition and a body`. Full CI: every test
-   passed except two in tests/test_serve.rs, the intermittent failures
+   passed except two in referee/tests/test_serve.rs, the intermittent failures
    being investigated (docs/history/HANDOFF.md, Open problems), not this change.
 2. **Done** (2026-10-25; full CI before the commit): both printers print `(if c (block b...) (block))` as `(when c b...)`
    (only when the then is a block and the else an empty one), and the
@@ -328,16 +328,16 @@ in five stages, each checked by the full CI before the next:
    valued false emits nothing). `diverges_node` needs nothing (a when never
    always leaves: its else is empty). codegen_opt.aipl is not wired into
    any pipeline (`--opt` is not built), so it is left, and listed below.
-   Check: tests/test_selfhost.rs byte parity, whose flat() gives the code
+   Check: referee/tests/test_selfhost.rs byte parity, whose flat() gives the code
    generator the Rust printer's text. Built as described: `compile_when`
    emits what `compile_if` emits for that tree, the position marks
-   included; tests/test_selfhost.rs `self_hosted_bytes_match_when` (when
+   included; referee/tests/test_selfhost.rs `self_hosted_bytes_match_when` (when
    nested, in a loop with break and continue, with a return, with no body,
    beside a valued if, in a cond) fails if `compile_when` drops its else
-   (tried), and tests/test_printer.rs `when_prints_as_when` checks the
+   (tried), and referee/tests/test_printer.rs `when_prints_as_when` checks the
    printing and that an `if` whose then is not a block keeps its `if`.
    Outstanding: codegen_opt.aipl does not know `when` (not wired in).
-3. **Done** (2026-10-25; full CI before the commit): the resolver (src/sugar.rs, resolver.aipl emit_sugar kind 1) stops
+3. **Done** (2026-10-25; full CI before the commit): the resolver (referee/src/sugar.rs, resolver.aipl emit_sugar kind 1) stops
    expanding `when`; the parsers read it (stage 1), and its flat output
    then holds `when`, which stage 2 lets the code generator read.
 4. **Done** (2026-10-25; full CI before the commit): both parsers refuse an `if` whose then or else is an empty `(block)`:
@@ -377,12 +377,12 @@ test_control_flow.rs `a_whens_body_drops_its_value`), and every existing
 `when`, whose last expression was void, compiles to the same bytes. One
 internal producer of the refused form was found only in this stage:
 `expect`'s lowering, `(if c (block) (call testing.fail ...))`, which
-src/formats.rs builds as a tree and aipl_src/fmtlower.aipl writes as text
+referee/src/formats.rs builds as a tree and aipl_src/fmtlower.aipl writes as text
 for the parser; both now make `(when (not c) ...)`. The repository's
 first search for producers had looked for the form in one string, and
 fmtlower writes it in pieces. Tests: the refusals (both messages, both
-toolchains) in tests/test_checker_aipl.rs BAD_PARSES; a when with a value
-in FORMS and in tests/test_selfhost.rs `self_hosted_bytes_match_when`.
+toolchains) in referee/tests/test_checker_aipl.rs BAD_PARSES; a when with a value
+in FORMS and in referee/tests/test_selfhost.rs `self_hosted_bytes_match_when`.
 
 **Outstanding in step 4:**
 
@@ -449,7 +449,7 @@ marked as it is fixed.
    module header comments the rewrite tool didn't touch. The guide tells
    models to run aipl doc first, so they would copy an error.
    **Done** 2026-10-21: both comments now show for
-   (aipl_src/std/bigint.aipl, map.aipl), and tests/test_doc_examples.rs
+   (aipl_src/std/bigint.aipl, map.aipl), and referee/tests/test_doc_examples.rs
    no_program_or_doc_comment_writes_loop fails if any .aipl file in
    aipl_src, examples, benchmarks, or tests/aipl writes a loop form,
    comments included.
@@ -457,19 +457,19 @@ marked as it is fixed.
    are each one edit away, and the tie goes to whichever sorts first.
    Breaking ties by shared prefix would pick set!.
    **Done** 2026-10-21: of equal distance, the candidate that begins with
-   more of the name as written wins, then sort order, in src/parser.rs
+   more of the name as written wins, then sort order, in referee/src/parser.rs
    nearest_name and aipl_src/suggest.aipl alike: (set x 1) now says did
-   you mean set!?. The case is in tests/test_checker_aipl.rs BAD_PARSES,
+   you mean set!?. The case is in referee/tests/test_checker_aipl.rs BAD_PARSES,
    compared word for word.
 3. The placeholder diagnosis can blame the wrong thing. A file with an extra
    ) and an innocent (let s:str "{") gets "this string ends inside a
    placeholder". It should only fire when the string is directly followed by
    more code, which is the pattern of the real mistake.
    **Done** 2026-10-21: the diagnosis now needs more code after the string
-   (a next token that is not a closing bracket), in src/sexpr.rs read_one
+   (a next token that is not a closing bracket), in referee/src/sexpr.rs read_one
    and aipl_src/resolver.aipl bracket_error alike. (let s:str "{") before
    an extra ) now gets the bracket error itself; the real mistake, {(call
-   f "x")}, is still named. tests/test_resolver_aipl.rs
+   f "x")}, is still named. referee/tests/test_resolver_aipl.rs
    brace_string_then_extra_paren compares both toolchains. Left: a string
    ending in { that is followed by a symbol, then a bracket error
    elsewhere, is still blamed; telling them apart needs the gap between
@@ -510,10 +510,10 @@ marked as it is fixed.
    (call (vec.psh i32) v 1), still says "Expected func name in call, got
    '('". The plan's step 2 outstanding list doesn't mention it.
    **Done** 2026-10-21: fixed rather than only listed: both generics
-   passes (src/generics.rs rewrite, aipl_src/generics.aipl
+   passes (referee/src/generics.rs rewrite, aipl_src/generics.aipl
    check_not_generic) now say 'vec.psh' is not a generic function; did you
    mean vec.push?, or how to call one when no name is close;
-   tests/test_resolver_aipl.rs generic_name_typo and generic_name_unknown
+   referee/tests/test_resolver_aipl.rs generic_name_typo and generic_name_unknown
    compare both toolchains. Step 2's outstanding list records it and what
    is still open beside it (a typo in a generic struct's name in a type; a
    program with no generics). AGENT_FRICTION.md row 17 is marked fixed.

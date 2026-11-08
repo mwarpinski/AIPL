@@ -115,7 +115,7 @@ every backend.
 
 WASI preview 1 has no way to listen or connect. A versioned import
 module beside `wasi_snapshot_preview1`, implemented in each backend (the
-VM and aipl-run in src/net.rs, native executables as Linux system calls
+VM and aipl-run in referee/src/net.rs, native executables as Linux system calls
 written in AIPL, aipl_src/native/sockets.aipl):
 
 | Function | Meaning | Status |
@@ -196,16 +196,16 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
    streams can be used in a handler. Done 2026-10-20.
 2. **`aipl_net_v1`** listen, accept, recv, send, and close, in the three
    backends, with the grants; std/ip and std/net (`Socket`) and streams
-   over it. Done 2026-10-20: src/net.rs for the VM and aipl-run,
+   over it. Done 2026-10-20: referee/src/net.rs for the VM and aipl-run,
    aipl_src/native/sockets.aipl natively; `--listen` on eval, run,
    aipl-run, and compile --exe (fixed in the executable, and in the
-   launcher bundle's trailer, AIPLEXE2). Tests (tests/test_net.rs): a
+   launcher bundle's trailer, AIPLEXE2). Tests (referee/tests/test_net.rs): a
    loopback exchange in each backend, IPv4 and IPv6, the same bytes
    everywhere; a listen without a grant refused; both toolchains' bytes
    alike.
 3. **`std/serve`** and the long-running server (A) in every backend, and
    `--max-memory`, so a runaway request fails cleanly. Done 2026-10-20.
-   Tests (tests/test_serve.rs, tests/test_memory.rs): real requests over
+   Tests (referee/tests/test_serve.rs, referee/tests/test_memory.rs): real requests over
    loopback, answers byte for byte alike across backends; refusals (too
    big, malformed) the same status everywhere; a million requests with
    memory flat, natively and under aipl-run (100,000 in CI, a million
@@ -217,7 +217,7 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
    once, an instance per connection, the connection its standard input,
    its output held until it exits); `aipl compile --exe --serve
    ADDR:PORT`, natively a forking host (aipl_src/native/fresh.aipl), as a
-   bundle aipl-run's `--serve-fresh`. Tests (tests/test_serve.rs): saved
+   bundle aipl-run's `--serve-fresh`. Tests (referee/tests/test_serve.rs): saved
    requests piped through `serve.once` in the VM, under aipl-run, and
    natively, the same bytes from each; each of the three hosts serving
    five connections with a crash and a 64 MiB answer among them (each a
@@ -230,7 +230,7 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
 
 5. **`connect`, `--allow-connect`, and `http.fetch`.** Done 2026-10-31, in
    every backend and both toolchains: `net.connect` (`aipl_net_v1.connect`;
-   src/net.rs for the VM and aipl-run, sockets.aipl and sockets_arm64.aipl
+   referee/src/net.rs for the VM and aipl-run, sockets.aipl and sockets_arm64.aipl
    natively); `--allow-connect ADDR:PORT` (`ADDR:*` for any port) on eval,
    run, aipl-run, and compile --exe (fixed in a native executable, and in
    the launcher bundle's trailer as `connect:` lines); `net.connect`,
@@ -240,26 +240,26 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
    end, redirects not followed, the message owning the bytes it was read
    from. Addresses only: a name is an error saying there is no resolver
    yet, `https://` an error saying there is no TLS. Tests
-   (tests/test_net.rs): the same bytes from a server in the test in the VM,
+   (referee/tests/test_net.rs): the same bytes from a server in the test in the VM,
    aipl-run, a native executable, and a bundle (a Content-Length body, a
    chunked one, one ended by the close, a 302 not followed, a malformed
    response, a cut-short body; the request's exact bytes); each refusal
    (no grant, another port, nothing listening, https, a name, another
    scheme) alike everywhere; a malformed grant refused before anything
-   runs; both toolchains' bytes alike. On AArch64 (tests/test_native_arm64_programs.rs)
+   runs; both toolchains' bytes alike. On AArch64 (referee/tests/test_native_arm64_programs.rs)
    the same, where the test can reach a server (a host or qemu-user).
 
 ### Built, step 6 (2026-10-31)
 
 6. **TLS (clients) and host names, in the Rust hosts.** `aipl_net_v1.connect_host` and `tls_connect`
-   (src/net.rs: `ToSocketAddrs`, and rustls `StreamOwned` over the connection, one lock for reading and
+   (referee/src/net.rs: `ToSocketAddrs`, and rustls `StreamOwned` over the connection, one lock for reading and
    writing; the Mozilla roots through webpki-roots, plus the certificates of `AIPL_CA_FILE`; handshake done in
    `tls_connect`, so a bad certificate is the answer there); `--allow-connect HOST:PORT` takes a name
    (matched ignoring case; what it resolves to is then reachable) and `ADDR:PORT` as before; `net.connect_host`,
    `net.tls_connect` as AIPL ops in both toolchains; std/net `connect_host` and `connect_tls`, std/http `fetch`
    for `https://` and names (default port 443). Native executables, x86-64 and AArch64: the two imports are
    routines that give -3, std/net's `Error.no_host_support` names the ways out (an address and plain http, a wasm
-   module, a proxy), and a name grant is refused when the executable is compiled. Tests (tests/test_net.rs): an
+   module, a proxy), and a name grant is refused when the executable is compiled. Tests (referee/tests/test_net.rs): an
    https fetch from a rustls server in the test, with a certificate for `localhost` and `127.0.0.1`
    (rcgen), by name and by address, in the VM, aipl-run, and a bundle; an untrusted certificate, one for another
    name, and a server without TLS each refused as a failed handshake; a grant by name (and not by address, or
@@ -289,9 +289,9 @@ AIPL_SPEC.md and the prompt guide, and merged before the next.
    the launcher-bundled executables; native executables refuse it at
    compile time with the way out (`--target wasm`, or a TLS proxy in
    front, as most servers are deployed anyway). *Built 2026-10-31 as the decision says: clients
-   through rustls in src/net.rs (webpki-roots, and the PEM file AIPL_CA_FILE names, for a private
+   through rustls in referee/src/net.rs (webpki-roots, and the PEM file AIPL_CA_FILE names, for a private
    authority or a test; the ring provider), in the VM, aipl-run, and bundles; native executables get -3 from
-   the two imports. No `tls_accept`: a server sits behind a proxy.* *Revised 2026-11-03: on -3 std/net starts `aipl-net` (src/bin/aipl_net.rs),
+   the two imports. No `tls_accept`: a server sits behind a proxy.* *Revised 2026-11-03: on -3 std/net starts `aipl-net` (referee/src/bin/aipl_net.rs),
    a Rust helper that resolves, connects, does the handshake and relays bytes over pipes; a native executable can now be granted a name
    (`--allow-connect example.com:443`), which the compiler stores after the program for the helper to read from its parent
    (aipl_src/native/nettrailer.aipl), and the helper path is granted to start. docs/design/SHIP_SELFHOSTED_PLAN.md, L3.*

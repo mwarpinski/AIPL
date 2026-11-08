@@ -1,4 +1,4 @@
-;; aipl watch, in AIPL (src/watch.rs is the Rust one): runs a file, or its
+;; aipl watch, in AIPL (referee/src/watch.rs is the Rust one): runs a file, or its
 ;; tests, and again each time it or a file it imports changes, so a scratch
 ;; file in an editor serves as a session.
 ;;

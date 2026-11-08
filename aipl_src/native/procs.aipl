@@ -5,7 +5,7 @@
 ;; every register but rbp, rsp, and r15 (the linear memory base) may be
 ;; clobbered.
 ;;
-;; Behaviour follows src/sys.rs, which the VM and aipl-run use:
+;; Behaviour follows referee/src/sys.rs, which the VM and aipl-run use:
 ;;   - spawn(path, len, args, args_len, stdio) -> a process handle, or minus
 ;;     an errno: -21 for a path or arguments outside memory, -1 (too big) for
 ;;     more than `max_args` bytes of both, -76 unless the path is one a
@@ -50,7 +50,7 @@
   (fn entry [] -> i32 32)
   (fn grant_size [] -> i32 260)
   ;; the longest program path a grant may name, and the most bytes of path
-  ;; and arguments together (src/sys.rs checks the same)
+  ;; and arguments together (referee/src/sys.rs checks the same)
   (fn max_grant [] -> i32 (pub) 256)
   (fn max_args [] -> i32 65536)
 

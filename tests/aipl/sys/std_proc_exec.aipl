@@ -1,4 +1,4 @@
-;; proc.exec in std/proc: tests/test_sys.rs runs this with `--allow-run /bin/sh
+;; proc.exec in std/proc: referee/tests/test_sys.rs runs this with `--allow-run /bin/sh
 ;; --allow-run /no/such/program`. A refused or failed exec comes back as an Error;
 ;; one that works never does: the program becomes `sh`, whose status ends the run.
 (module std_proc_exec_cases

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The first request to a freshly started VM server, as tests/test_serve.rs's
+"""The first request to a freshly started VM server, as referee/tests/test_serve.rs's
 exchange() makes it (connect, retrying every 20 ms until it is accepted; send;
 shut down writing; read to the end), many times, under CPU load.
     python3 stress2.py ROUNDS PARALLEL HOGS"""

@@ -1,4 +1,4 @@
-;; std/ip against Rust's parser (tests/test_web.rs): each line of standard
+;; std/ip against Rust's parser (referee/tests/test_web.rs): each line of standard
 ;; input is `A TEXT` (parse an address) or `E TEXT` (parse an endpoint);
 ;; each answer is a line: the address's bytes in decimal, then for an
 ;; endpoint ` port N`, or `-` if the text is refused.

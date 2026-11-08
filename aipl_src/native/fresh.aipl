@@ -1,7 +1,7 @@
 ;; fresh: the host of an executable built with `aipl compile --exe --serve
 ;; ADDR:PORT` (docs/design/NET_PLAN.md, mode B, step 4): a fresh instance
 ;; of the program per connection, as aipl-run --serve-fresh gives
-;; (src/bin/aipl_run.rs serve_fresh).
+;; (referee/src/bin/aipl_run.rs serve_fresh).
 ;;
 ;; Emitted into start-up once linear memory is ready and before the
 ;; program's start function and _start run, so each copy begins where a
@@ -99,7 +99,7 @@
     (let sa_len:i32 (call buf.len sa))
     (let failed_text:str "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 22\r\n\r\nInternal Server Error\n")
     (let failed:i32 (call lower.data_text l failed_text))
-    ;; why an answer past `cap` was not sent (src/net.rs FRESH_TOO_LONG)
+    ;; why an answer past `cap` was not sent (referee/src/net.rs FRESH_TOO_LONG)
     (let too_long_text:str "the answer is more than 64 MiB, the most a fresh instance may write: sent 500 Internal Server Error\n")
     (let too_long:i32 (call lower.data_text l too_long_text))
     (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) (call frame))

@@ -1,12 +1,12 @@
 ;; Constants and enums for the self-hosted toolchain (AIPL_SPEC.md 4.I).
 ;; Runs at the start of codegen.compile_module, on the flat program the
-;; resolver and generics.aipl produced, or on src/printer.rs output. It
+;; resolver and generics.aipl produced, or on referee/src/printer.rs output. It
 ;; erases both features, since at run time a constant is its literal and an
 ;; enum is an i32:
 ;;   (const NAME:T literal) and (enum Name [...]) items are dropped;
 ;;   NAME becomes the literal, Name (a type) becomes i32, Name.member
 ;;   becomes its value, (enum.cast Name x) becomes x, (enum.ord x) becomes x.
-;; The Rust toolchain checks enums as distinct types (src/consts.rs keeps
+;; The Rust toolchain checks enums as distinct types (referee/src/consts.rs keeps
 ;; them for its checker); both compile to the same bytes. Like the rest of
 ;; the self-hosted toolchain, this pass trusts that the program type-checks,
 ;; and reports only what would otherwise compile to something wrong.

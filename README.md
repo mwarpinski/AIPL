@@ -130,22 +130,28 @@ other programs (`std/proc`) works, but a signal there ends a process at once (st
 256 plus the signal), and there are no native executables (`compile --exe` bundles
 the launcher).
 
-To build from source instead, you need git, a stable Rust toolchain
-([rustup.rs](https://rustup.rs)), and a C compiler for linking (e.g.
-`build-essential`). `sh install.sh --from-source` (or `--ref` with a branch,
-tag, or commit) does it for you, into `~/.aipl/src`, and a machine with no
-prebuilt release gets this automatically. Or build a clone by hand:
+To build from source instead, on Linux x86-64 or AArch64 you need only git and a POSIX shell: the repository holds
+a seed, a compiler built earlier, and `sh bootstrap/build.sh` builds the compiler from `aipl_src/` with it, with no
+Rust and no network:
 
 ```bash
 git clone https://github.com/mwarpinski/AIPL.git && cd AIPL
+sh bootstrap/build.sh        # builds target/bootstrap/aipl (and checks that it rebuilds itself unchanged)
+```
+
+On macOS and Windows, and to run the Rust referee, you need a stable Rust toolchain ([rustup.rs](https://rustup.rs))
+and a C compiler for linking (e.g. `build-essential`). `sh install.sh --from-source` (or `--ref` with a branch, tag,
+or commit) does that for you, into `~/.aipl/src`, and a machine with no prebuilt release gets this automatically.
+Or build a clone by hand:
+
+```bash
 cargo build --release
 ```
 
-This builds `target/release/aipl` (the compiler, interpreter, and checker)
-and `target/release/aipl-run` (the launcher for compiled WebAssembly). Either
-way, `aipl` carries the standard library inside it, so a copied or installed
-one needs nothing beside it but `aipl-run` (run from a clone's `target/`, it
-reads that clone's `aipl_src/`, so an edit there shows at once).
+This builds `target/release/aipl` (the compiler, interpreter, and checker) and `target/release/aipl-run` (the
+launcher for compiled WebAssembly) from `referee/`. Either way, `aipl` carries the standard library inside it, so a
+copied or installed one needs nothing beside it but `aipl-run` (run from a clone's `target/`, it reads that clone's
+`aipl_src/`, so an edit there shows at once).
 
 ## Your first program
 
@@ -199,7 +205,7 @@ own tests, with the standard library doing the parsing, the options, and
 the output. An AI agent wrote it, with the guide, `aipl doc`, and the other
 examples to hand; that is not a cold run (the A/B harness in
 `tools/harness/` measures that). It checks out against Python's
-`json.dumps` on generated documents (`tests/test_showcase.rs`).
+`json.dumps` on generated documents (`referee/tests/test_showcase.rs`).
 
 ```bash
 aipl test examples/jsonpp.aipl                        # its tests

@@ -1,4 +1,4 @@
-;; std/random and std/uuid (tests/test_libs.rs): PCG-32's reference
+;; std/random and std/uuid (referee/tests/test_libs.rs): PCG-32's reference
 ;; numbers, unbiased ranges, floats, a shuffle, a sample, normals, and
 ;; UUIDs, the same in every backend for one seed.
 (module random_demo

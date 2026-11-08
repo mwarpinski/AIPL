@@ -1,5 +1,5 @@
 ;; when, for, variadic and/or, and the array literal arr.of
-;; (tests/test_sugar.rs; sugar.rs): each rewritten as the resolver reads the
+;; (referee/tests/test_sugar.rs; sugar.rs): each rewritten as the resolver reads the
 ;; module, the same in every backend.
 (module main
   (import alloc)

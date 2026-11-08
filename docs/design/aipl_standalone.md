@@ -14,7 +14,7 @@ it, AIPL can do it, and AIPL should. Apart from work that is simply large
 limit to document.
 
 **What stays Rust.** The Rust toolchain stays as the independent second
-compiler: `tests/test_bootstrap.rs` builds the same source with both and
+compiler: `referee/tests/test_bootstrap.rs` builds the same source with both and
 requires the same bytes, which is what keeps a self-hosted compiler
 honest (bootstrap/README.md, "Why the Rust compiler stays"). It lives in
 the test suite and CI. It is not in a user's path.
@@ -32,7 +32,7 @@ to run the referee tests.
 | The front end (resolve, generics, check) | aipl_src/ | the same, kept equal by tests and the fuzzer |
 | `run` of a source file, `test` (natively), `watch`, `serve --fresh`, `eval` (natively) | the self-hosted command (S2, done 2026-10-29; tested against the Rust command's output) | |
 | `run` of a `.wasm` file (Linux x86-64) | the self-hosted command (S3's first step, 2026-10-29) | `aipl-run` (wasmtime), elsewhere |
-| `test --vm`, `--all-backends`, and a file with no `(test ...)` (its entry function); `eval -f FUNC` and `--wasm`; `watch`'s VM runs | | the VM (`src/vm.rs`, a tree-walking interpreter) and `aipl-run` |
+| `test --vm`, `--all-backends`, and a file with no `(test ...)` (its entry function); `eval -f FUNC` and `--wasm`; `watch`'s VM runs | | the VM (`referee/src/vm.rs`, a tree-walking interpreter) and `aipl-run` |
 | Executables on Linux AArch64 | the native ARM64 backend (S3, done 2026-10-30; an optimizer and the same traps as x86-64, 2026-10-31) | |
 | Executables off Linux (macOS, Windows) | | the launcher bundle (aipl-run, wasmtime, about 18 MB) |
 | Listening on TCP | std/net over `aipl_net_v1` | `aipl-run` supplies the same imports |
@@ -84,7 +84,7 @@ without the grant cannot name the imports.
 In this order, smallest first; each lands in aipl_src/aipl.aipl and a test
 runs it against the Rust command:
 
-1. `verify` (the AIPL front end exists; no new import) **done 2026-10-29**: `driver.verify_file` stops after the checks, and tests/test_bootstrap.rs compares its output, errors, and status with the Rust command's on every example, benchmark, and test program;
+1. `verify` (the AIPL front end exists; no new import) **done 2026-10-29**: `driver.verify_file` stops after the checks, and referee/tests/test_bootstrap.rs compares its output, errors, and status with the Rust command's on every example, benchmark, and test program;
 2. `run`: compile to a native executable and run it (`.wasm` input waits
    for S3). **Done 2026-10-29** for source files: `aipl run [FLAGS] FILE.aipl
    [ARGS]` builds into `$TMPDIR/aipl-run-<time>` (else `/tmp`), starts it on
@@ -97,7 +97,7 @@ runs it against the Rust command:
    output. It loses the VM column; the fuzzers and the test suite keep the
    VM cross-check. **Done 2026-10-29** (aipl_src/testcmd.aipl, resolver.test_names):
    `aipl test FILE|DIR [-k TEXT] [--native]` prints the Rust command's lines,
-   failures, counts, and status, byte for byte on the corpus (tests/test_testing.rs).
+   failures, counts, and status, byte for byte on the corpus (referee/tests/test_testing.rs).
    Left in Rust: `--vm`, `--all-backends`, and a file with no `(test ...)`, whose
    entry function the Rust command runs in the VM (that is how CI runs
    aipl_src/test_suite.aipl). A failed test's output and error come as one

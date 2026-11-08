@@ -8,7 +8,7 @@ HTML5's other names (std/html knows HTML 4's) is drawn again.
 
     python3 tools/html_vectors.py tests/aipl/html [seed]
 
-Each case prints its result as hex. tests/test_html.rs runs the program
+Each case prints its result as hex. referee/tests/test_html.rs runs the program
 in every backend against the answers.
 """
 import html, html.entities as E, random, re, sys

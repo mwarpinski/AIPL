@@ -1,4 +1,4 @@
-;; The formatting forms (AIPL_SPEC.md 4.K) in every backend: tests/test_formats.rs.
+;; The formatting forms (AIPL_SPEC.md 4.K) in every backend: referee/tests/test_formats.rs.
 (module main
   (import buf)
   (import alloc)

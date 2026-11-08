@@ -59,7 +59,7 @@ def main():
     if sys.platform != "linux" or os.uname().machine != "x86_64":
         sys.exit("without_openat2: Linux x86-64 only")
     install(errno)
-    os.environ["WITHOUT_OPENAT2"] = "1"  # for tests that expect the difference (tests/test_native.rs)
+    os.environ["WITHOUT_OPENAT2"] = "1"  # for tests that expect the difference (referee/tests/test_native.rs)
     os.execvp(args[0], args)
 
 

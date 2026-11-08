@@ -61,15 +61,15 @@ built. wasmtime reports the trap of `if c unreachable end` (every compiled
 check) at the `if`, so `if` (0x04) is recorded too. And the two compilers'
 trees differ for `cond`: Rust's parser rewrites each clause as an `if` at
 the clause, so the AIPL code generator attributes each clause's `if` to the
-clause. `tests/test_selfhost.rs` (`self_hosted_line_table_matches_rust`:
+clause. `referee/tests/test_selfhost.rs` (`self_hosted_line_table_matches_rust`:
 multi-byte characters, constants, enums, `cond`) and
-`tests/test_native.rs` (`traps_name_their_source_positions`, positions
+`referee/tests/test_native.rs` (`traps_name_their_source_positions`, positions
 checked by hand) hold it; the table adds about a fifth to a module (70 KB
 of the self-hosted compiler's 347 KB).
 
 ## Steps
 
-- **LN1 Rust.** `src/compiler/wasm.rs`: function bodies are written through
+- **LN1 Rust.** `referee/src/compiler/wasm.rs`: function bodies are written through
   a wrapper that records entries before trapping instructions and calls;
   `compile_expr` pushes and pops positions; the resolver gives each item's
   file its display name; the section is emitted. `aipl-run` reads it and
@@ -78,11 +78,11 @@ of the self-hosted compiler's 347 KB).
   entries (every opcode goes through one function that knows the set
   above). `compile_named(src, len, name)` compiles one file's text, its
   positions in that text; `consts.aipl`'s reprinting keeps an origins map
-  back to it. Byte parity in `tests/test_selfhost.rs`.
+  back to it. Byte parity in `referee/tests/test_selfhost.rs`.
 - **LN3 Multi-file.** `driver.aipl` passes the resolver's and the generics
   pass's origins to the code generator, so `aiplc` names the right files
   and lines; byte parity with the Rust toolchain on multi-module programs
-  (`tests/test_resolver_aipl.rs`, the self-compile fixpoint).
+  (`referee/tests/test_resolver_aipl.rs`, the self-compile fixpoint).
 - **LN4 Native.** `wasm_reader.aipl` reads the section; `lower.aipl` maps
   entries to machine-code addresses; the backtrace routine prints them, so
   native executables print exactly what `aipl-run` prints.

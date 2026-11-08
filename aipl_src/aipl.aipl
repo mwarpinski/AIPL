@@ -81,7 +81,7 @@
     (call fail_bytes prefix b))
 
   ;; aipl verify FILE.aipl: the front end alone, as the Rust command's verify
-  ;; (src/main.rs): the same message on success, the same errors.
+  ;; (referee/src/main.rs): the same message on success, the same errors.
   (fn verify [n:i32] -> i32
     (when (neq n 3) (return (call usage)))
     (let std_dir:str.Bytes (call stdpath.find))
@@ -177,7 +177,7 @@
     (let listen:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     ;; --serve: the address the executable serves on, a fresh copy per connection
     (let serve:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    ;; memory's maximum in pages (--max-memory; src/compiler/mod.rs memory_pages)
+    ;; memory's maximum in pages (--max-memory; referee/src/compiler/mod.rs memory_pages)
     (let max_pages:i32 32768)
     (let in_i:i32 -1)
     (let out_i:i32 -1)
@@ -218,7 +218,7 @@
          (set! i (+ i 1)))
         ((call str.is a "--listen")
          (when (gte (+ i 1) n) (return (call usage)))
-         ;; checked before anything is compiled, with src/net.rs parse_grant's message
+         ;; checked before anything is compiled, with referee/src/net.rs parse_grant's message
          (when (not (call native.valid_grant (call arg (+ i 1))))
                (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
                (call buf.push_str m "--listen ")
@@ -231,7 +231,7 @@
         ((call str.is a "--allow-connect")
          (when (gte (+ i 1) n) (return (call usage)))
          ;; an address (and port, or any) the executable may connect to, a `connect:ADDR:PORT` line among the
-         ;; grants; checked before anything is compiled, with src/net.rs parse_connect_grant's message
+         ;; grants; checked before anything is compiled, with referee/src/net.rs parse_connect_grant's message
          (when (not (call native.valid_connect_grant (call arg (+ i 1))))
                (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
                (call buf.push_str m "--allow-connect ")

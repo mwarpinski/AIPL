@@ -1,5 +1,5 @@
 ;; std/ip: IP addresses and socket addresses from text, as Rust's standard
-;; library reads them (core::net::parser, step for step; tests/test_web.rs
+;; library reads them (core::net::parser, step for step; referee/tests/test_web.rs
 ;; checks the two agree on generated texts), so a grant on the command line
 ;; (`--listen 127.0.0.1:8080`) means the same to every backend.
 ;;
@@ -159,7 +159,7 @@
   (fn port [t:str.Bytes pos:i32] -> R (no_leak)
     (if (eq (call at t pos) 58) (call number t (+ pos 1) 10 0 65535 true) (call no)))
 
-  ;; Whether t is a host name as a program may give one (src/net.rs is_host_name): letters, digits, and -, in
+  ;; Whether t is a host name as a program may give one (referee/src/net.rs is_host_name): letters, digits, and -, in
   ;; labels of 1 to 63 characters between dots (a final dot allowed), at most 253 bytes, no label starting or
   ;; ending with -, and a last label that is not all digits.
   (fn is_host_name [t:str.Bytes] -> bool (pub) (no_leak)

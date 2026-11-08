@@ -1,6 +1,6 @@
 ;; A contract is an expression, so a block in it may bind: both code
 ;; generators take a contract's lets as locals, after the body's
-;; (tests/test_language_gaps.rs; the optimizer found that they did not,
+;; (referee/tests/test_language_gaps.rs; the optimizer found that they did not,
 ;; 2026-10-26). An odd argument fails the req.
 (module contract_lets
   (import io)
