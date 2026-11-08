@@ -16,10 +16,10 @@ note() { echo "$1"; echo "           $1" >> $L; }
 # ===== The self-hosted toolchain: what ships. Built from the seed with no Rust; every check here runs on it. =====
 step "seed build"; mkdir -p target; sh bootstrap/build.sh > target/ci_seed.log 2>&1 || { note "seed build FAILED: $(tail -1 target/ci_seed.log)"; exit 1; }
 export AIPL="$PWD/target/bootstrap/aipl" AIPL_STD="$PWD/aipl_src/std/"
-step "self-hosted: aipl test suite"; note "$("$AIPL" test aipl_src/test_suite.aipl 2>&1 | tail -1)"
+step "self-hosted: aipl test suite"; note "$("$AIPL" run aipl_src/test_suite.aipl 2>&1 | tail -1)"
 step "self-hosted: conformance"; note "$(python3 tools/conformance.py --aipl "$AIPL" --backend run --backend wasm --backend native -j 4 2>&1 | tail -4 | tr '\n' ' ')"
 step "self-hosted: aipl lint on the standard library and aipl_src"; note "$("$AIPL" lint aipl_src/std/*.aipl aipl_src/*.aipl aipl_src/native/*.aipl 2>&1 | tail -1)"
-step "self-hosted: aipl fmt --check on the repository's programs"; if r=$("$AIPL" fmt --check $(git ls-files '*.aipl' | xargs grep -L -e @reject -e @syntax) 2>&1); then note "fmt: no file needs formatting"; else note "fmt FAILED: $(echo "$r" | head -1)"; fi
+step "self-hosted: aipl fmt --check on the repository's programs"; if r=$("$AIPL" fmt --check $(find . -name '*.aipl' -not -path './target/*' -not -path './.git/*' | xargs grep -L -e @reject -e @syntax) 2>&1); then note "fmt: no file needs formatting"; else note "fmt FAILED: $(echo "$r" | head -1)"; fi
 step "docs check"; note "$(python3 tools/docs_check.py 2>&1 | tail -1)"
 step "grammar check"; note "$(python3 tools/grammar_check.py 2>&1 | tail -1)"
 step "standard library reference"; note "$(python3 tools/std_reference.py --check 2>&1 | tail -1)"

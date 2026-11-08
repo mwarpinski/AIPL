@@ -24,20 +24,20 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Network
 
 [[bin]]
 name = "aipl"
-path = "referee/src/main.rs"
+path = "src/main.rs"
 
 [[bin]]
 name = "aipl-run"
-path = "referee/src/bin/aipl_run.rs"
+path = "src/bin/aipl_run.rs"
 
 # host names and TLS for native executables, which cannot hold either (docs/design/SHIP_SELFHOSTED_PLAN.md)
 [[bin]]
 name = "aipl-net"
-path = "referee/src/bin/aipl_net.rs"
+path = "src/bin/aipl_net.rs"
 
 [lib]
 name = "aipl_core"
-path = "referee/src/lib.rs"
+path = "src/lib.rs"
 
 [dev-dependencies]
 libm = "0.2"

@@ -59,7 +59,6 @@
 
   ;; Runs every verified-real module's self-test, prints one line each, and
   ;; returns the total number of failing groups (0 = everything passed).
-  ;; lint:allow unused-function (the entry point of aipl test, by name)
   (fn run_all [] -> i32
     (let failures:i32 0)
     (set! failures (+ failures (call report "compiler: tokenizer (2 tests)" (call compiler.run_tokenizer_tests) 2)))
@@ -99,4 +98,11 @@
     (set! failures (+ failures (call report "consts: constants and enums erased for codegen (5 tests)" (call consts.run_consts_tests) 5)))
     (set! failures (+ failures (call report "codegen_opt: the optimizer's folds, inlining, and refusals (7 tests)" (call codegen_opt.run_codegen_opt_tests) 7)))
     (set! failures (+ failures (call report "thread_sync: 4 threads x 1000 atomic adds = 4000" (call thread_sync.run_thread_tests) 1)))
+    failures)
+
+  ;; `aipl run aipl_src/test_suite.aipl`, which the self-hosted aipl does (the Rust `aipl test` calls run_all by
+  ;; name): the status is the number of failing groups.
+  (fn main [] -> i32
+    (let failures:i32 (call run_all))
+    (when (eq failures 0) (call io.println "[AIPL Test] All groups passed."))
     failures))

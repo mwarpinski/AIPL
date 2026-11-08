@@ -26,13 +26,13 @@ jobs:
       - name: The seed builds the compiler, and it rebuilds itself unchanged
         run: sh bootstrap/build.sh
       - name: AIPL test suite
-        run: $AIPL test aipl_src/test_suite.aipl
+        run: $AIPL run aipl_src/test_suite.aipl
       - name: The conformance suite
         run: python3 tools/conformance.py --aipl $AIPL --backend run --backend wasm --backend native
       - name: aipl lint, clean on the standard library and on aipl_src
         run: $AIPL lint aipl_src/std/*.aipl aipl_src/*.aipl aipl_src/native/*.aipl
       - name: aipl fmt --check, the repository's programs are formatted
-        run: $AIPL fmt --check $(git ls-files '*.aipl' | xargs grep -L -e @reject -e @syntax)
+        run: $AIPL fmt --check $(find . -name '*.aipl' -not -path './target/*' -not -path './.git/*' | xargs grep -L -e @reject -e @syntax)
       - name: The documentation, against the repository
         run: python3 tools/docs_check.py
       - name: The grammar in the specification, against every program in the repository
