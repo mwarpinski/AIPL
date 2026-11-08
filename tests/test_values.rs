@@ -105,6 +105,8 @@ fn value_struct_rules_have_messages() {
     for (k, (body, want)) in cases.iter().enumerate() {
         let src = format!("{}{})", header, body);
         let err = check_files(&format!("rule{k}"), &[("m.aipl", &src)]).expect_err(body);
+        // (two value structs that contain each other both fail: the first error is the one compared)
+        let err = err.lines().next().unwrap().to_string();
         let msg = err.split_once(": ").map(|(_, m)| m).unwrap_or(&err);
         let msg = msg.split_once(": ").filter(|(at, _)| at.bytes().all(|b| b.is_ascii_digit() || b == b':')).map_or(msg, |(_, m)| m);
         assert_eq!(msg, *want, "{body}");
