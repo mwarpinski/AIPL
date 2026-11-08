@@ -350,8 +350,7 @@
     (when (gte (call buf.len (get w Writer.out)) 8192) (let _ok:bool (call flush w))))
 
   ;; The end of (format_to w "..."): b is w's buffer.
-  ;; lint:allow unused-parameter (the form format_to ends with a call of this fixed shape)
-  (fn format_end [w:(ptr Writer) b:(ptr buf.Buf)] -> void (pub)
+  (fn format_end [w:(ptr Writer) b:(ptr buf.Buf)] -> void (pub) ;; lint:allow unused-parameter (format_to ends with a call of this shape)
     (call wrote w))
 
   ;; Writes out everything held; false if a write has failed.
