@@ -4,6 +4,9 @@
 # headroom here instead of the 2 MiB default.
 [env]
 RUST_MIN_STACK = "268435456"
+# Cargo runs a test with the crate's folder (referee/) as its working directory, so a test that starts the self-hosted
+# aipl somewhere else finds the standard library here, not by looking for aipl_src/std under where it runs.
+AIPL_STD = { value = "aipl_src/std/", relative = true }
 
 # Windows: link the C runtime into the programs, so they run on a machine that
 # has no Visual C++ Redistributable (a fresh Windows has no vcruntime140.dll).

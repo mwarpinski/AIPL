@@ -807,7 +807,7 @@ fn self_hosted_bytes_match_threads_and_atomics() {
         let end = src[start..].find("\"#;").unwrap();
         assert_self_hosted_matches_rust(name, &src[start..start + end]);
     }
-    let sync = std::fs::read_to_string("aipl_src/thread_sync.aipl").unwrap();
+    let sync = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../aipl_src/thread_sync.aipl")).unwrap();
     assert_self_hosted_matches_rust("thread_sync", &sync);
 }
 
@@ -1248,13 +1248,13 @@ fn self_hosted_string_literals_past_the_old_area_are_read_only() {
 
 #[test]
 fn self_hosted_bytes_match_memory() {
-    let src = fs::read_to_string("aipl_src/memory.aipl").unwrap();
+    let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../aipl_src/memory.aipl")).unwrap();
     assert_self_hosted_matches_rust("memory", &src);
 }
 
 #[test]
 fn self_hosted_bytes_match_compiler() {
-    let src = fs::read_to_string("aipl_src/compiler.aipl").unwrap();
+    let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../aipl_src/compiler.aipl")).unwrap();
     assert_self_hosted_matches_rust("compiler", &src);
 }
 

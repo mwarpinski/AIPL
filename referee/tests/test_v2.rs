@@ -167,7 +167,7 @@ fn test_v2_multi_module_linkage() {
 // any of those would very likely lose updates under real scheduling.
 #[test]
 fn test_real_multithreading() {
-    let src = std::fs::read_to_string("aipl_src/thread_sync.aipl").expect("Read thread_sync.aipl failed");
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../aipl_src/thread_sync.aipl")).expect("Read thread_sync.aipl failed");
     let module = Parser::parse(&src).expect("Parse thread_sync failed");
     let mut checker = TypeChecker::new();
     assert!(checker.check_module(&module).is_ok());
@@ -184,7 +184,7 @@ fn test_real_multithreading() {
 // round trip through the OS filesystem, not a self-fulfilling count-echo.
 #[test]
 fn test_real_file_io() {
-    let src = std::fs::read_to_string("aipl_src/file_io.aipl").expect("Read file_io.aipl failed");
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../aipl_src/file_io.aipl")).expect("Read file_io.aipl failed");
     let module = Parser::parse(&src).expect("Parse file_io failed");
     let mut checker = TypeChecker::new();
     assert!(checker.check_module(&module).is_ok());

@@ -130,7 +130,8 @@ fn aipl_run_builds_starts_and_removes_a_program() {
     build_aipl(Path::new(AIPL), &aipl);
     let tmp = dir.join("tmp");
     std::fs::create_dir(&tmp).unwrap();
-    let target = "tests/aipl/sys/run_target.aipl";
+    let target = root().join("tests/aipl/sys/run_target.aipl");
+    let target = target.to_str().unwrap();
     let run_with = |args: &[&str], input: &str| {
         let mut child = Command::new(&aipl).arg("run").args(args).env("TMPDIR", &tmp).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();

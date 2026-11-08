@@ -38,7 +38,7 @@ def test_env():
     """The environment cargo runs a test binary in: ours, with .cargo/config.toml's
     [env] (an entry does not replace a variable already set unless it says
     force = true, as in cargo) and CARGO_MANIFEST_DIR."""
-    env = dict(os.environ, RUSTC_BOOTSTRAP='1', CARGO_MANIFEST_DIR=ROOT)
+    env = dict(os.environ, RUSTC_BOOTSTRAP='1', CARGO_MANIFEST_DIR=os.path.join(ROOT, 'referee'))
     path = os.path.join(ROOT, '.cargo', 'config.toml')
     if os.path.exists(path):
         with open(path, 'rb') as f:
@@ -96,7 +96,7 @@ def run_binary(ev, label, src, exe):
     say(f"     Running {src} ({os.path.relpath(exe, ROOT)})\n")
     start = time.time()
     proc = subprocess.Popen([exe, '-Z', 'unstable-options', '--format', 'json', '--report-time'],
-                            cwd=ROOT, env=test_env(),
+                            cwd=os.path.join(ROOT, 'referee'), env=test_env(),
                             stdout=subprocess.PIPE, stderr=sys.stdout, text=True, bufsize=1)
     ev.emit(type='binary', event='started', name=label, src=src, pid=proc.pid)
     counts = {'passed': 0, 'failed': 0, 'ignored': 0}
