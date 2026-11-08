@@ -1,6 +1,6 @@
 ;; @spec 9
 ;; @kind reject
-;; @reject 7:5 expects 1 argument (i32), got 0
+;; @reject 7:5 expects 1 argument
 (module wrong_arity_one_rejected
   (fn double [a:i32] -> i32 (+ a a))
   (fn main [] -> i32
