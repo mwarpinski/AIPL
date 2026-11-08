@@ -1,16 +1,53 @@
-# Publishes a release when a version tag is pushed (git tag v0.1.0 && git push
-# origin v0.1.0): the tarballs install.sh downloads, one per platform, built
-# here and each tried through install.sh, as a user would, before it is kept.
-# The Linux ones are built on Ubuntu 22.04 so they run on older glibc. Windows
-# ships as a zip installed by install.ps1; the others as tarballs, by install.sh.
+# Publishes a release when a version tag is pushed (docs/RELEASING.md):
+#   python3 tools/release_check.py set 0.3.0 && git commit ... && git tag v0.3.0 && git push origin v0.3.0
+# The tarballs install.sh downloads, one per platform, each tried through install.sh as a user would before it is kept,
+# and one signed list of their SHA-256 sums (Sigstore, keyless: the signature names this workflow).
+#
+# Linux x86-64 and AArch64 are first-class: the self-hosted aipl is built from the checked-in seed (bootstrap/build.sh)
+# with no Rust compiler, and the one Rust program in the tarball, aipl-net (host names and TLS), is built by its own
+# step. macOS and Windows are a preview and ship the Rust aipl and aipl-run.
+#
+# Run by hand (Actions, "Run workflow") it builds, install-tests and signs everything and publishes nothing.
 name: Release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 jobs:
+  # The tag names the version everywhere, is on main, and the CI run for that very commit passed.
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The version is one number everywhere (and the tag names it)
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            python3 tools/release_check.py version --tag "$GITHUB_REF_NAME"
+          else
+            python3 tools/release_check.py version
+          fi
+      - name: The seeds are the ones bootstrap/README.md records
+        run: python3 tools/release_check.py seeds
+      - name: The commit is on main
+        if: github.ref_type == 'tag'
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_REF_NAME is not on main"; exit 1; }
+      - name: The CI run for this commit passed
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ok="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --status success --json databaseId --jq length)"
+          [ "$ok" -ge 1 ] || { echo "no passing CI run for $GITHUB_SHA: push it to main and let CI finish before tagging"; exit 1; }
+
   build:
+    needs: gate
     strategy:
       fail-fast: true
       matrix:
@@ -23,21 +60,32 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: The version this release carries
+        id: version
+        shell: bash
+        run: echo "v=$(sed -n 's/.*"aipl \([0-9][0-9.]*\)".*/\1/p' aipl_src/aipl.aipl | head -1)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
-      - name: The tag names the crate's version
-        shell: bash
-        run: |
-          v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, but Cargo.toml says $v"; exit 1; }
-      - name: Build
-        run: cargo build --release --locked
-      - name: The self-hosted aipl, which the Linux tarballs ship (built from the checked-in seed, with no Rust)
+
+      # Linux: the self-hosted aipl, from the seed. No Rust builds it (the Linux ones are built on Ubuntu 22.04: the
+      # compiler's executables are static, and aipl-net needs glibc 2.35).
+      - name: The self-hosted aipl, built from the seed (no Rust)
         if: runner.os == 'Linux'
-        shell: bash
         run: |
           sh bootstrap/build.sh
-          v="${GITHUB_REF_NAME#v}"
-          [ "$(target/bootstrap/aipl --version)" = "aipl $v" ] || { echo "the tag is $GITHUB_REF_NAME, but the self-hosted aipl says: $(target/bootstrap/aipl --version) (aipl_src/aipl.aipl)"; exit 1; }
+          [ "$(target/bootstrap/aipl --version)" = "aipl ${{ steps.version.outputs.v }}" ] || { echo "the version is ${{ steps.version.outputs.v }}, but the self-hosted aipl says: $(target/bootstrap/aipl --version)"; exit 1; }
+      - name: aipl-net, the one Rust program in the Linux tarball (host names and TLS)
+        if: runner.os == 'Linux'
+        run: cargo build --release --locked --bin aipl-net
+      # macOS and Windows: the Rust aipl and aipl-run.
+      - name: The Rust aipl and aipl-run (the macOS and Windows preview)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          cargo build --release --locked
+          v="$(target/release/aipl --version)"
+          # (the Rust aipl adds the commit it was built from: "aipl 0.3.0 (abc1234)")
+          case "$v" in "aipl ${{ steps.version.outputs.v }}" | "aipl ${{ steps.version.outputs.v }} "*) ;; *) echo "the version is ${{ steps.version.outputs.v }}, but the Rust aipl says: $v"; exit 1 ;; esac
+
       - name: Package
         if: runner.os != 'Windows'
         run: sh tools/package_release.sh dist
@@ -69,20 +117,65 @@ jobs:
           name: aipl-${{ matrix.target }}
           path: dist/*
 
-  publish:
+  # One list of every file's SHA-256, signed with Sigstore. There is no key: the certificate names this workflow and
+  # the tag it ran for, and the signature is recorded in the public transparency log.
+  sign:
     needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum aipl-*.tar.gz aipl-*.zip > SHA256SUMS
+          cat SHA256SUMS
+          # each file's own .sha256 (which install.sh checks) must say the same
+          for f in aipl-*.sha256; do grep -qxF "$(cat "$f")" SHA256SUMS || { echo "$f disagrees with SHA256SUMS"; exit 1; }; done
+      - uses: sigstore/cosign-installer@v3.7.0
+        with:
+          cosign-release: v2.4.1
+      - name: Sign
+        working-directory: dist
+        run: cosign sign-blob --yes --bundle SHA256SUMS.bundle SHA256SUMS
+      - name: Verify what was signed, as a user would
+        working-directory: dist
+        run: |
+          cosign verify-blob --bundle SHA256SUMS.bundle \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@$GITHUB_REF" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+      - name: The notes
+        run: python3 tools/release_notes.py "$(python3 tools/release_check.py show)" --repo "$GITHUB_REPOSITORY" > dist/NOTES.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-release
+          path: dist/*
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: sign
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
+          name: signed-release
           path: dist
-          merge-multiple: true
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l dist
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
-            --title "AIPL ${GITHUB_REF_NAME#v}" --generate-notes
+          files="$(ls dist/aipl-* dist/SHA256SUMS dist/SHA256SUMS.bundle)"
+          # shellcheck disable=SC2086
+          gh release create "$GITHUB_REF_NAME" $files --repo "$GITHUB_REPOSITORY" \
+            --title "AIPL ${GITHUB_REF_NAME#v}" --notes-file dist/NOTES.md

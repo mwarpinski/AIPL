@@ -31,6 +31,7 @@ step "grammar check"; note "$(python3 tools/grammar_check.py 2>&1 | tail -1)"
 step "standard library reference"; note "$(python3 tools/std_reference.py --check 2>&1 | tail -1)"
 step "conformance, Rust aipl"; note "$(python3 tools/conformance.py --aipl target/release/aipl --backend run --backend wasm --backend native -j 4 2>&1 | tail -4 | tr '\n' ' ')"
 step "conformance, self-hosted aipl"; note "$(python3 tools/conformance.py --aipl bootstrap/aipl-linux-x86_64 --backend run --backend wasm --backend native -j 4 2>&1 | tail -4 | tr '\n' ' ')"
+step "release facts: one version, the seeds recorded"; if r=$(python3 tools/release_check.py version 2>&1 && python3 tools/release_check.py seeds 2>&1); then note "release facts ok"; else note "release_check FAILED: $(echo "$r" | tail -1)"; fi
 step "aipl lint on the standard library and aipl_src"; note "$(./target/release/aipl lint aipl_src/std/*.aipl aipl_src/*.aipl aipl_src/native/*.aipl 2>&1 | tail -1)"
 step "harness selftest"; note "$(python3 tools/harness/harness.py selftest 2>&1 | tail -1)"
 step "done"
