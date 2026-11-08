@@ -14,6 +14,9 @@ section 8: "The documentation check is rerun").
 3. The numbers that can be counted are the numbers written: the test files
    and the standard library's modules.
 4. bootstrap/README.md's seed hashes (x86-64 and AArch64) are the checked-in seeds'.
+6. Claims, not only names: every complete program in README, TOUR, FAQ and USING_AIPL verifies; every error message
+   they quote is text the toolchain prints; the platforms they list are the ones release.yml builds; every command
+   `aipl --help` lists is in the command table.
 5. Every `module.name` the documents write is exported by that module (asked
    of `aipl doc`), every `--flag` in the spec's command table is one a command
    takes, every form is in the spec, every "section N.X" and "AIPL_SPEC.md
@@ -53,7 +56,14 @@ KNOWN_ROOTS = ("src/", "aipl_src/", "tests/", "tools/", "docs/", "examples/", "b
 
 
 def tracked():
-    return subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")
+    """The repository's files: git's list, or (a copy that is not a clone, as on the CI machine) a walk of the tree."""
+    r = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True)
+    files = [f for f in r.stdout.split("\n") if f] if r.returncode == 0 else []
+    if not files:
+        for d, subs, names in os.walk(ROOT):
+            subs[:] = [x for x in subs if x not in ("target", ".git", "node_modules", "__pycache__", ".vscode")]
+            files += [os.path.relpath(os.path.join(d, n), ROOT) for n in names]
+    return files
 
 
 def exists(files, dirs, path, doc):
@@ -77,10 +87,12 @@ def run(*cmd):
 
 
 def aipl():
-    exe = os.environ.get("AIPL") or os.path.join(ROOT, "target", "release", "aipl")
-    if not os.path.exists(exe):
-        sys.exit("docs_check: build first (cargo build --release): it asks aipl doc what the library exports")
-    return exe
+    """The aipl the checks ask: $AIPL, else the one built from the seed, else the Rust one."""
+    for exe in (os.environ.get("AIPL"), os.path.join(ROOT, "target", "bootstrap", "aipl"), os.path.join(ROOT, "target", "release", "aipl")):
+        if exe and os.path.exists(exe):
+            os.environ.setdefault("AIPL_STD", os.path.join(ROOT, "aipl_src", "std") + "/")
+            return exe
+    sys.exit("docs_check: build first (sh bootstrap/build.sh): it asks aipl doc what the library exports")
 
 
 def exports(files):
@@ -224,20 +236,127 @@ def check_sections(files):
     return findings
 
 
+def source_flags():
+    """Every --flag some command takes, from the sources (no binary needed): the literals in the self-hosted
+    commands and the Rust CLI, and the Rust CLI's option fields (clap spells field `all_backends` as --all-backends)."""
+    flags = set()
+    for folder, ext in (("aipl_src", ".aipl"), ("aipl_src/native", ".aipl"), ("referee/src", ".rs"), ("referee/src/bin", ".rs")):
+        d = os.path.join(ROOT, folder)
+        for f in os.listdir(d):
+            if f.endswith(ext):
+                text = open(os.path.join(d, f), encoding="utf-8").read()
+                flags |= set(re.findall(r"--[a-z][a-z0-9-]+", text))
+                if ext == ".rs":
+                    flags |= {"--" + n.replace("_", "-") for n in re.findall(r"^\s+(?:pub )?([a-z][a-z0-9_]*): (?:bool|Option<|Vec<|String|u\d+|i\d+|usize)", text, re.M)}
+    return flags
+
+
 def check_flags(docs):
     """Every --flag in the spec's command table is one a command has."""
-    rust = os.path.join(ROOT, "target", "release", "aipl")    # its --help lists every flag; the self-hosted one's is shorter
-    helps = run(rust, "--help")
-    for c in re.findall(r"^  ([a-z-]+)\s", helps, re.M):
-        helps += run(rust, c, "--help")
-    helps += run(os.path.join(ROOT, "target", "release", "aipl-run"), "--help") if os.path.exists(os.path.join(ROOT, "target", "release", "aipl-run")) else ""
-    known = set(re.findall(r"--[a-z][a-z-]+", helps)) | {"--help", "--version", "--sandbox", "--listen", "--serve-fresh", "--requests", "--name", "--temporary"}
+    known = source_flags() | {"--help", "--version", "--sandbox", "--listen", "--serve-fresh", "--requests", "--name", "--temporary"}
     findings = []
     for n, line in enumerate(open(os.path.join(ROOT, "docs", "IMPLEMENTATION.md"), encoding="utf-8"), 1):
         if re.match(r"^\| `aipl", line):
             for fl in sorted(set(re.findall(r"(?<![A-Za-z-])--[a-z][a-z-]+", line))):
                 if fl not in known:
                     findings.append(f"docs/IMPLEMENTATION.md:{n}: the command table has {fl}, which no command takes")
+    return findings
+
+
+CLAIM_DOCS = ("README.md", "docs/TOUR.md", "docs/FAQ.md", "docs/USING_AIPL.md")
+
+
+def fenced(doc):
+    """[(first line number, block text)] for the code blocks of a document."""
+    out, cur, start = [], None, 0
+    for n, line in enumerate(open(os.path.join(ROOT, doc), encoding="utf-8"), 1):
+        if line.lstrip().startswith("```"):
+            if cur is None:
+                cur, start = [], n + 1
+            else:
+                out.append((start, "".join(cur)))
+                cur = None
+        elif cur is not None:
+            cur.append(line)
+    return out
+
+
+def check_programs():
+    """A claim: every complete program in the documents compiles. Each (module ...) block is verified."""
+    import tempfile
+    findings = []
+    exe = aipl()
+    with tempfile.TemporaryDirectory() as tmp:
+        for doc in CLAIM_DOCS:
+            for line, block in fenced(doc):
+                if not block.lstrip().startswith("(module"):
+                    continue
+                path = os.path.join(tmp, "p.aipl")
+                open(path, "w", encoding="utf-8").write(block)
+                r = subprocess.run([exe, "verify", path], capture_output=True, text=True)
+                if "OK" not in r.stdout:
+                    first = (r.stderr or r.stdout).strip().split("\n")[0].replace(path, "p.aipl")
+                    findings.append(f"{doc}:{line}: the program shown does not verify: {first[:120]}")
+    return findings
+
+
+def check_messages():
+    """A claim: the error messages the documents quote are ones the toolchain can print. The fixed text of each
+    quoted `Error: FILE: L:C: message` (up to a name or a number, and each ;-clause) is in the self-hosted sources."""
+    src = ""
+    for folder in ("aipl_src", "aipl_src/native"):
+        d = os.path.join(ROOT, folder)
+        for f in sorted(os.listdir(d)):
+            if f.endswith(".aipl"):
+                src += open(os.path.join(d, f), encoding="utf-8").read()
+    src = src.replace('\\"', '"')
+    findings = []
+    for doc in CLAIM_DOCS:
+        for line, block in fenced(doc):
+            for k, text in enumerate(block.split("\n")):
+                m = re.match(r"^(?:\$ .*|Error: )?\s*(?:Error: )?[\w./-]+\.aipl: \d+:\d+: (.+)$", text)
+                if not m or text.startswith("$"):
+                    continue
+                for clause in m.group(1).split("; "):
+                    cut = re.search(r"['{0-9]|did you mean", clause)
+                    fixed = clause[:cut.start()] if cut else clause
+                    if cut and fixed[-1:].isalpha() and cut.group(0).isdigit():
+                        fixed = fixed.rsplit(" ", 1)[0]      # a number cut a word (i32): keep the words before it
+                    fixed = fixed.strip()
+                    if len(fixed) >= 12 and fixed not in src:
+                        findings.append(f"{doc}:{line + k}: quotes an error message the toolchain does not print: {fixed[:80]}")
+    return findings
+
+
+def check_platforms():
+    """A claim: the platforms the documents list are the ones the release workflow builds."""
+    wf = open(os.path.join(ROOT, ".github", "workflows", "release.yml"), encoding="utf-8").read()
+    targets = re.findall(r"target: ([a-z0-9_-]+)", wf)
+    names = {"x86_64-unknown-linux-gnu": ("Linux", "x86-64"), "aarch64-unknown-linux-gnu": ("Linux", "AArch64"),
+             "aarch64-apple-darwin": ("macOS", "Apple silicon"), "x86_64-pc-windows-msvc": ("Windows", "x86-64")}
+    findings = []
+    for t in targets:
+        if t not in names:
+            findings.append(f"release.yml builds {t}, which tools/docs_check.py does not know: say so in the documents and add it there")
+            continue
+        for doc in ("docs/FAQ.md", "docs/RELEASING.md"):
+            text = open(os.path.join(ROOT, doc), encoding="utf-8").read()
+            if doc == "docs/FAQ.md":        # the answer to "What platforms does it run on?", not the whole document
+                text = text.split("### What platforms does it run on?")[1].split("\n### ")[0]
+            for word in names[t]:
+                if word.lower() not in text.lower():
+                    findings.append(f"{doc}: release.yml builds {t}, but the document never says {word}")
+    return findings
+
+
+def check_commands():
+    """A claim: every command the self-hosted `aipl` takes is in the command table of docs/IMPLEMENTATION.md."""
+    table = open(os.path.join(ROOT, "docs", "IMPLEMENTATION.md"), encoding="utf-8").read()
+    findings = []
+    r = subprocess.run([aipl(), "--help"], capture_output=True, text=True)
+    for c in sorted(set(re.findall(r"^(?:usage:)?\s*aipl ([a-z]+)", r.stdout + r.stderr, re.M))):
+        if not re.search(r"^\| `aipl %s\b" % c, table, re.M):
+            findings.append(f"docs/IMPLEMENTATION.md: the command table lacks `aipl {c}`, which `aipl --help` lists")
     return findings
 
 
@@ -309,6 +428,10 @@ def main():
     findings += check_sections(files)
     findings += check_flags(docs)
     findings += check_forms()
+    findings += check_programs()
+    findings += check_messages()
+    findings += check_platforms()
+    findings += check_commands()
     for f in findings[:200]:
         print(f)
     print(f"{len(findings)} findings in {len([d for d in docs if show_all or not d.startswith(ARCHIVES)])} documents")

@@ -48,7 +48,7 @@ a deprecation instead of an edit.
   refused in a `(no_leak)` function, so the easiest code is wrong for a program that runs for days. Options: `format`
   takes an allocator, or strings can come from one. At the least, `aipl lint` flags a `format` or `str.concat` in a loop.
 - [x] **A language version** *(2026-11-07: `(language N)`, the `aipl.language` custom section, docs/LANGUAGE_VERSIONING.md)* in the module header and in the compiler's output, and a written deprecation policy
-  (ROADMAP.md item 11). Packages need it later.
+  (ROADMAP.md item 9). Packages need it later.
 - [x] **The size limits, decided on purpose.** *(2026-11-07: results are values that can be struct fields, array elements, and type arguments; a value holds 16 scalars; the rest are in docs/LIMITS.md.)* A result cannot be a struct field or an array element; a value struct
   holds at most 8 scalars and a union 8 slots; `match` has no nested patterns; there are no unsigned types. Lift what
   1.0 needs, and document the rest in one place, each with its workaround.
@@ -188,18 +188,29 @@ build it, and the release never runs it.
 
 Last before the final checks, against the language section 1 leaves.
 
-- [ ] **README:** "arguments are counted from 0" sits above `Argument 2 of 'gcd'`; arguments count from 1 since
-  70f63a3.
-- [ ] **docs/FAQ.md, "What platforms does it run on?":** says Linux x86-64 is the only platform with native executables;
-  Linux AArch64 has them too. "Is there editor support?" changes when the grammar ships.
-- [ ] **ROADMAP.md, "What the language does not do":** says a result in statement position is discarded silently; it is
-  a compile error now (AGENT_FRICTION.md row 70). The list says it was not re-checked after 2026-10-27: re-check every
-  line.
-- [ ] **`aipl test --help`** still describes the old entry point ("must return an i32 failure count").
-- [ ] **One pass** of the README, docs/TOUR.md, and docs/FAQ.md against the self-hosted `aipl` and the modes it drops
-  (ROADMAP.md item 5).
-- [ ] **tools/docs_check.py checks claims too**, not only names: run the error messages the documents quote and compare
-  the text, compare the platform lists with release.yml, and compare `--help` with the spec's command table.
+- [x] **README** (2026-11-08): arguments are counted from 1, and the error is printed as the toolchain prints it (source
+  line and caret); the native executable sizes were stale (hello 84 KB, word_count 129 KB, jsonpp 410 KB: measured
+  again), `aipl lint` points at the rules in USING_AIPL.md, the REPL is marked Rust-only.
+- [x] **docs/FAQ.md** (2026-11-08): the platforms answer says Linux x86-64 and AArch64 are first-class with native
+  executables and the self-hosted `aipl`, macOS and Windows a preview with the launcher bundle; the editor answer lists
+  the grammars and the VS Code extension and says there is no language server yet.
+- [x] **ROADMAP.md** (2026-11-08): every line of "What the language does not do" was tried on the self-hosted `aipl`
+  or checked in the spec. Wrong and fixed: a result in statement position is a compile error, the searches return an
+  option, diagnostics give the first error of each definition (not one per function). The "where it stands" text and the
+  first-hour items were rewritten for what is built, and the items renumbered (the references here follow).
+- [x] **`aipl test --help`** (2026-11-08): leads with the `(test ...)` items; the failure-count entry point is second.
+- [x] **One pass** (2026-11-08) of the README, TOUR, FAQ and USING_AIPL against the self-hosted `aipl`: the nine
+  complete programs verify, the TOUR's eight programs print what the text says, the README's example, first program
+  and tool commands run. Wrong and fixed: USING_AIPL sent Linux users to `aipl-run` (which only macOS and Windows have;
+  `aipl run` works everywhere), the TOUR's error examples were the old short messages, DEVELOPING.md led with `cargo test`.
+- [x] **tools/docs_check.py checks claims too** (2026-11-08): the complete programs in the four front documents must
+  verify; the error messages they quote must be text the toolchain prints; the platforms in the FAQ and RELEASING.md
+  must be the ones release.yml builds; every command in `aipl --help` must be in the command table; the flags are read
+  from the sources, so the check no longer needs the Rust binary. It also no longer passes vacuously in a copy that is not
+  a git clone (the CI machine's), where it had listed no documents at all.
+- Found, not fixed: the self-hosted `aipl run FILE.wasm` prints one extra stderr line when the program traps
+  (`exit with invalid exit status`), because it re-exits with the child's 134; it wants a silent-exit primitive in the
+  native backend. The documents show traps from a compiled executable, which does not.
 
 ## 8. Right before launch
 
@@ -222,10 +233,10 @@ None of these blocks launch; the launch notes say which are coming.
   contracts, overflow, and error handling matter; count tokens and rounds as well as passes; give Python a guide as long
   as AIPL's, as a control; repeat each task, with several models. The syntax proposals (inferred `let` types, `(f x)`
   without `call`) wait for its numbers (docs/design/CANONICAL_PLAN.md step 7).
-- **Packages and a registry** (ROADMAP.md item 4), once the language version exists.
+- **Packages and a registry** (ROADMAP.md item 3), once the language version exists.
 - **The language server, the aipl.sh website and playground, and Homebrew, winget, and apt packages.**
-- **Performance**: a register allocator, faster hashing of byte strings, big integers (ROADMAP.md item 15).
-- **Concurrency beyond threads**: channels, and a safe way to share data (ROADMAP.md item 14).
+- **Performance**: a register allocator, faster hashing of byte strings, big integers (ROADMAP.md item 13).
+- **Concurrency beyond threads**: channels, and a safe way to share data (ROADMAP.md item 12).
 - **The compiler's own debts**: codegen_opt.aipl's pattern matcher (the record, section 6), the self-hosted compiler's
   double parse, and exact trap positions inside format placeholders.
 - **Later ideas** (ROADMAP.md): a 64-bit target, AI-SQL, secret types.
@@ -240,7 +251,7 @@ about 22,000 lines of tests/*.rs.
 |---|---|---|
 | The reference toolchain (src/) | The referee: byte parity, and fuzzing against the self-hosted compiler | The conformance suite (section 2), the backends tested against each other, the bootstrap's fixed point |
 | The VM (referee/src/vm.rs) | `eval -f`, `test --vm`, `--all-backends`, the AIPL suite in CI, one side of the differential tests | A VM in AIPL (aipl_standalone.md S4), or native compared with wasm alone |
-| `aipl-run` (wasmtime) | Running `.wasm` off Linux; the macOS and Windows launcher bundles | Mach-O and PE backends (ROADMAP.md item 6), then a native wasm runner off Linux (S3) |
+| `aipl-run` (wasmtime) | Running `.wasm` off Linux; the macOS and Windows launcher bundles | Mach-O and PE backends (ROADMAP.md item 4), then a native wasm runner off Linux (S3) |
 | `aipl-net` (rustls and the system's resolver) | Host names and TLS in native executables | A resolver in AIPL; for TLS, a decision: the system's library through a way to call foreign code, or an audited implementation (ROADMAP.md item 13) |
 | The Rust-only modes of the CLI | `compile --target wasm`, `--self`, `eval --wasm` | The same modes in aipl_src/ |
 | The test harness (tests/*.rs) | 581 tests, many of them programs inside Rust strings | `(test ...)` items, and a runner in AIPL or a script |
@@ -250,7 +261,7 @@ In order, each step unblocking the next:
 - [ ] Write the conformance suite and run it against both toolchains, so the referee's verdict has a home outside Rust.
 - [ ] Port the tests in tests/*.rs, the programs inside Rust strings included (AGENT_FRICTION.md row 59).
 - [ ] Port the Rust-only modes of the CLI, and decide what becomes of the VM.
-- [ ] Write the Mach-O and PE backends, then ship the self-hosted `aipl` on macOS and Windows (ROADMAP.md item 7).
+- [ ] Write the Mach-O and PE backends, then ship the self-hosted `aipl` on macOS and Windows (ROADMAP.md item 5).
 - [ ] Replace `aipl-net`: the TLS decision, and the general way to call a component in another language
   (docs/design/NET_PLAN.md section 7).
 - [ ] Record the last seed built by Rust and its hash; after it, seeds build only from seeds. Keep an older seed for

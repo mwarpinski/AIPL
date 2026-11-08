@@ -11,7 +11,7 @@ operators (section 8). It leaves out how the compiler works.
 ```bash
 aipl verify prog.aipl                       # type-check; every error, as FILE:LINE:COL: message
 aipl compile prog.aipl -o prog.wasm         # build it
-aipl-run prog.wasm < input.txt              # run it (standard input and output as usual)
+aipl run prog.wasm < input.txt              # run it (standard input and output as usual)
 aipl test prog.aipl                         # run the (test ...) items in it
 aipl doc --find WORD                        # look for a library function before writing one
 aipl lint prog.aipl                         # code that is legal but probably a mistake
@@ -19,8 +19,9 @@ aipl fmt prog.aipl                          # whitespace and indentation, in pla
 aipl repl                                   # a prompt for people: type an expression, see its value
 ```
 
-`aipl run prog.aipl ARG...` compiles a source file and runs it; `aipl run prog.wasm ARG...` is the same runner on a compiled module. `aipl`
-and `aipl-run` are two programs; keep them together.
+`aipl run prog.aipl ARG...` compiles a source file and runs it; `aipl run prog.wasm ARG...` is the same runner on a compiled module.
+On macOS and Windows the Rust `aipl` is installed beside a second program, `aipl-run`, which does the same for a
+compiled module; keep the two together.
 
 ## 2. A program's shape
 
@@ -154,8 +155,8 @@ native on Linux x86-64, a launcher bundle elsewhere. `--max-memory 512M`
 sets the memory limit; `--sandbox` (with `--exe`) limits file access to the
 working directory.
 
-**`aipl-run OUT.wasm [ARG...]`** runs a built module; `aipl run OUT.wasm --
-ARG...` is the same. Both give the program its standard input, its output,
+**`aipl run OUT.wasm [ARG...]`** runs a built module (on macOS and Windows `aipl-run OUT.wasm [ARG...]` does
+too). Both give the program its standard input, its output,
 its exit status, and the current directory.
 
 **`aipl test FILE`** runs each `(test "name" ...)` item in a fresh process
@@ -247,9 +248,9 @@ standard error, and the chain of calls it was in, innermost first, with a
 position for each:
 
 ```text
-$ aipl-run trap.wasm
-trap.wasm: Array index out of bounds: index 5 for array of length 3
-  at main (trap.aipl:6:14)
+$ aipl compile --exe trap.aipl -o trap && ./trap
+./trap: Array index out of bounds: index 5 for array of length 3
+  at main (trap.aipl:6:5)
 ```
 
 The ones you will meet: `Array index out of bounds`, a failed contract
@@ -306,7 +307,7 @@ give it an input and compare the output with what you worked out by hand:
 
 ```bash
 aipl compile prog.aipl -o prog.wasm
-printf 'hello\nworld\n' | aipl-run prog.wasm | diff - expected.txt
+printf 'hello\nworld\n' | aipl run prog.wasm | diff - expected.txt
 ```
 
 Test the edges the task implies, not only its example: empty input, one

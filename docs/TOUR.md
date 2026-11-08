@@ -269,18 +269,22 @@ The same program runs three ways:
 ```bash
 aipl eval tour.aipl                     # in the interpreter
 aipl compile tour.aipl -o tour.wasm     # to WebAssembly...
-aipl run tour.wasm                      # ...run by the launcher
-aipl compile --exe tour.aipl -o tour    # to a native executable (Linux x86-64)
+aipl run tour.wasm                      # ...and run it
+aipl compile --exe tour.aipl -o tour    # to a native executable (Linux; a launcher bundle on macOS and Windows)
 ./tour
 ```
 
 `aipl verify` checks a file without running it. Mistakes are reported with
-the file, line, and column, one line for each function that has one. Here
+the file, line, and column, with the source line and a caret under it, once for each function that has one. Here
 one function adds an `i32` to an `i64`, and another misspells a variable:
 
 ```
-Error: bad.aipl: 3:5: Type mismatch in binary op: i32 vs i64
-bad.aipl: 6:5: Undefined variable 'totl' in set!
+Error: bad.aipl: 3:5: Type mismatch in binary op: i32 vs i64; both operands must have one type: convert one (i64.extend_s, f64.convert_i32_s, ...) or write the literal in that type (5i64, 1.0)
+  3 |     (+ a b))
+    |     ^
+bad.aipl: 6:5: Undefined variable 'totl' in set!; did you mean total?
+  6 |     (set! totl 5)
+    |     ^
 ```
 
 A syntax error is reported on its own, since nothing after it can be read
@@ -288,7 +292,9 @@ reliably. The most common one is an `if` with no else branch, where the
 parser finds `)` where the else should be:
 
 ```
-Error: bad.aipl: 3:19: Unexpected token parsing expression: ')'
+Error: bad.aipl: 3:19: Unexpected token parsing expression: ')'; if needs both branches: (if c then else); for one branch, write (when c then)
+  3 |     (if (gt x 0) 1))
+    |                   ^
 ```
 
 ## Where next

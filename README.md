@@ -75,11 +75,13 @@ gcd: 21
 ```
 
 A type mistake, such as `(call gcd 10 true)` on line 18, is caught before
-the program runs (arguments are counted from 0):
+the program runs (arguments are counted from 1, so this is the second):
 
 ```
 $ aipl verify bad.aipl
 Error: bad.aipl: 18:14: Argument 2 of 'gcd' expects i32, got bool
+  18 |     (println "gcd: {(call gcd 10 true)}")
+     |              ^
 ```
 
 ## Install
@@ -169,7 +171,7 @@ and run it three ways (the results must agree):
 ```bash
 aipl eval hello.aipl                    # in the interpreter
 aipl compile hello.aipl -o hello.wasm && aipl run hello.wasm     # WebAssembly
-aipl compile --exe hello.aipl -o hello && ./hello                # a native executable, 64 KB
+aipl compile --exe hello.aipl -o hello && ./hello                # a native executable, about 85 KB
 ```
 
 `main` returns the exit status. [docs/TOUR.md](docs/TOUR.md) walks through
@@ -183,9 +185,9 @@ From the examples directory (`~/.aipl/share` after the installer, or a clone):
 aipl verify examples/word_count.aipl            # parse and type-check
 aipl doc text                                   # a module's functions and types, with their comments
 aipl doc --find split                           # search the standard library
-aipl lint rows.aipl                             # unused names, dead code, a leak in a loop; --help for the rules
+aipl lint rows.aipl                             # unused names, dead code, a leak in a loop; the rules are in docs/USING_AIPL.md
 aipl fmt rows.aipl                              # whitespace and indentation, in place; --check for CI
-aipl repl                                       # type expressions and definitions; each shows its value and type
+aipl repl                                       # type expressions and definitions; each shows its value and type (the Rust aipl only, for now)
 aipl test rows.aipl                             # run a file's (test ...) items, each alone
 aipl watch scratch.aipl                         # run it again on every save
 aipl eval -e '(call str.find (call str.from_str "a,b") (call str.from_str ","))'   # prints some{value: 1} : (option.Option i32)
@@ -209,7 +211,7 @@ examples to hand; that is not a cold run (the A/B harness in
 
 ```bash
 aipl test examples/jsonpp.aipl                        # its tests
-aipl compile --exe examples/jsonpp.aipl -o jsonpp     # 0.3 s, a 319 KB executable
+aipl compile --exe examples/jsonpp.aipl -o jsonpp     # 0.3 s, a 410 KB executable
 echo '{"b":[1,2,{}],"a":null}' | ./jsonpp --sort
 ```
 
@@ -240,6 +242,9 @@ is identical (about 8 seconds):
 sh bootstrap/build.sh               # the result is target/bootstrap/aipl
 ```
 
+Run it from the source directory, or set `AIPL_STD=$PWD/aipl_src/std/`: it finds the standard library under the working
+directory, or beside it in an installation.
+
 The AIPL-built compiler does `compile` (to `.wasm`, or with `--exe` to an
 executable), `verify`, `doc`, `run`, `test`, `watch`, `eval`, and `serve
 --fresh` without Rust at run time (a `.wasm` file is run natively on Linux
@@ -263,7 +268,7 @@ ways to start, where the compiler finds the library, and why.
 - **Three ways to run a program,** which must agree: an interpreter for
   quick runs, WebAssembly with WASI (files, stdio, the command line, the
   environment, clocks, threads), and native Linux executables, x86-64 and
-  AArch64, with no runtime (`word_count` is 94 KB on x86-64). Native executables run on any kernel since
+  AArch64, with no runtime (`word_count` is 129 KB on x86-64). Native executables run on any kernel since
   3.17; where `openat2` is missing (before Linux 5.6, Rosetta 2) a program
   opens files with `openat`, and one built with `--sandbox`, which needs
   `openat2` to stay confined, says so at start and exits.
@@ -309,12 +314,12 @@ has every number and why.
 
 [ROADMAP.md](ROADMAP.md) has the whole list, in the order a newcomer meets it. The big items:
 
-1. **The first hour:** `aipl run` the same on every platform, editor support (a grammar, then a language server), better
-   error messages and a REPL, and a package story.
+1. **The first hour:** a language server (the editor grammars are built), a REPL in the self-hosted `aipl`, and a package
+   story.
 2. **Platform parity:** native executables on macOS and Windows (today they bundle a launcher), and the self-hosted
    `aipl` there, so every platform installs the same command Linux does.
 3. **A stability promise:** a language version and a deprecation policy, which packages need too.
-4. **Release hygiene:** signed releases, Homebrew/winget/apt packages, and the aipl.sh website.
+4. **Release hygiene:** notarised and signed macOS and Windows builds, Homebrew/winget/apt packages, and the aipl.sh website.
 
 ## How it is made and tested
 

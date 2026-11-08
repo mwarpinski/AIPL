@@ -200,15 +200,14 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Run an AIPL test entrypoint and report pass/fail via the process exit
-    /// code. The entrypoint owns all test/reporting logic (via sys.print) and
-    /// must return an i32 failure count: 0 = every group passed, N = N
-    /// groups failed. This is deliberately thin on the Rust side - see
-    /// aipl_src/test_suite.aipl for the actual test logic.
+    /// Run the (test "name" ...) items of a file, or of every file in a
+    /// directory, each in a fresh process: aipl test FILE|DIR [-k TEXT] [--vm |
+    /// --native | --all-backends]. Each test is printed ok or FAIL with its
+    /// output, then the totals; the exit status is 1 if any failed.
     ///
-    /// A file with (test "name" ...) items, or a directory of them, runs each
-    /// test in a fresh process: aipl test FILE|DIR [-k TEXT] [--vm | --native
-    /// | --all-backends].
+    /// A file with no tests is run through its entrypoint instead (--func,
+    /// run_all by default): a function that returns an i32 failure count, 0 =
+    /// every group passed, N = N groups failed, and prints its own report.
     Test {
         file: String,
         #[arg(short, long, default_value = "run_all")]

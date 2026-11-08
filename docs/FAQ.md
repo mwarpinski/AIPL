@@ -191,13 +191,20 @@ usually choose to write by hand, which is the trade it makes.
 
 ### What platforms does it run on?
 
-Linux x86-64 is the one that is tested, and the only one with native
-executables. Elsewhere, programs compile to WebAssembly and run under the
-`aipl-run` launcher (built on wasmtime). Windows (x86-64) builds, installs
-with `install.ps1`, and runs the toolchain and the AIPL test suite, checked in CI;
-starting other programs and sockets work and are tested there too; most of the Rust
-test suite assumes Linux, and only the Windows and socket tests run there. Windows
-on ARM64 is not built yet. macOS is checked by hand.
+Linux on x86-64 and on AArch64 are the first-class ones: the `aipl` command is the
+self-hosted one (written in AIPL, built from the checked-in seed with no Rust), and
+`aipl compile --exe` writes small native executables for the machine it runs on.
+Name lookups and HTTPS in those executables go through a small Rust helper,
+`aipl-net`, which comes in the Linux download.
+
+macOS (Apple silicon) and Windows (x86-64) are a preview. They install the Rust
+`aipl`, and programs compile to WebAssembly and run under the `aipl-run` launcher
+(built on wasmtime); `aipl compile --exe` bundles that launcher, so an executable
+there is 15 to 20 MB. Windows installs with `install.ps1`; its builds are checked in
+CI (the toolchain, the AIPL test suite, starting programs and sockets), but most of
+the Rust test suite assumes Linux. macOS is checked by hand. Windows on ARM64 and
+macOS on x86-64 are not built. The native backends for macOS and Windows, which will
+make their executables small too, are on the [roadmap](../ROADMAP.md).
 
 Native executables confine file access with a system call that arrived in
 Linux 5.6 (`openat2`). Where it is missing, on an older kernel or in an
@@ -216,8 +223,13 @@ planned for after the first release.
 
 ### Is there editor support?
 
-Not yet: no syntax highlighting package and no language server. Any editor
-that understands Lisp parentheses gets you most of the way.
+Some. There is a TextMate grammar (VS Code, Zed, Sublime), a VS Code extension, and a
+tree-sitter grammar with highlight, indent and fold queries (Neovim, Helix, Emacs), in
+the [aipl-editors](https://github.com/mwarpinski/aipl-editors) repository; they are not
+yet published to the editors' package sites. There is no language server yet, so no
+completion or go-to-definition, but `aipl verify`, `aipl lint` and `aipl fmt` give
+an editor's save hook diagnostics, advice and formatting. Any editor that understands
+Lisp parentheses gets you most of the way.
 
 ### Is it ready for real use?
 

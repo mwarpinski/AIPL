@@ -31,7 +31,7 @@ outside reviews; [docs/README.md](docs/README.md) indexes them all.
 
 ## Environment
 
-- Linux, Rust via `cargo`. Everything builds and tests with plain `cargo build` / `cargo test` from the repo root.
+- Linux, and no Rust for the product: `sh bootstrap/build.sh` builds the compiler from the checked-in seed, and every check of the self-hosted toolchain runs on it. Rust (via `cargo`) is for the referee in `referee/`: `cargo build` and `cargo test` from the repo root build and test it.
 - No external wasm runtime is required. `wasmtime` and `wasmtime-wasi` are Rust dependencies (the `aipl-run` launcher embeds them, and the tests run compiled modules in-process). The `wasmtime` CLI is **not** installed on this machine. Any test that shells out to it would be vacuous, so none do.
 - The native-backend tests run the executables AIPL writes, so they need Linux on x86-64. `readelf` is used when installed but not required. `tools/x64_vectors.py` (regenerating the encoder's test vectors) needs Python and GNU binutils, `tools/bigint_vectors.py` needs Python, and `tools/bench.py` needs Python, gcc, and GMP (for the pidigits C reference); the build and tests need none of them.
 - `aipl compile --self` finds `aipl_src/` through the crate directory, so it works from anywhere. The examples that read `input.txt` resolve it against the working directory.
@@ -39,10 +39,16 @@ outside reviews; [docs/README.md](docs/README.md) indexes them all.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 551 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
-cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
+sh bootstrap/build.sh                                  # the compiler from the seed: target/bootstrap/aipl (about 13 s)
+target/bootstrap/aipl run aipl_src/test_suite.aipl     # AIPL-native suite, exit 0 = all groups pass (about 3 s)
+python3 tools/conformance.py --aipl target/bootstrap/aipl --backend run --backend wasm --backend native
+cargo test                                             # the referee's tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
+sh tools/ci.sh .                                       # everything CI runs, in this checkout
 ```
+
+Run from the repository root, or set `AIPL_STD=$PWD/aipl_src/std/`: the self-hosted `aipl` looks for the standard library
+under the working directory otherwise.
 
 Expected AIPL suite output (37 groups):
 ```
