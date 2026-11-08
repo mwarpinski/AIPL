@@ -217,6 +217,8 @@
   ;; resolver's text, through orig to a file.
   (fn locate_one [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
     (let at:i32 (get pr checker.Problem.at))
+    ;; "and N more errors" has no position
+    (when (lt at 0) (return (get pr checker.Problem.text)))
     (let g:(ptr origins.Entry) (call origins.find gen at))
     (when (neq g (ptr.null origins.Entry)) (set! at (get g origins.Entry.pos)))
     (let r:(ptr origins.Entry) (call origins.find orig at))

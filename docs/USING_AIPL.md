@@ -130,9 +130,11 @@ and never free what it allocates; the run stops only at the memory limit
 **`aipl verify FILE`** parses and type-checks without running, the
 file's `(test ...)` bodies included (the ordinary build leaves them out,
 so `aipl compile` does not read them). A syntax
-error is reported alone. Otherwise each function with a type error reports
-its first one, one per line, so fix all that are listed and run it again.
-Exit status 1 on any error.
+error is reported alone. Otherwise each struct, enum, union and function
+signature with an error reports its first one, one per line; once those hold,
+each function with a type error reports its first one, one per line. So fix
+all that are listed and run it again. At most 20 errors are listed, then
+`and N more errors`. Exit status 1 on any error.
 
 **`aipl eval FILE`** runs `main` in the interpreter. It is for quick tries:
 it prints only what the program prints, and exits with `main`'s status.

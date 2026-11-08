@@ -385,6 +385,26 @@ fn an_error_shows_the_line_it_is_about() {
             "(module arg\n  (fn add [a:i32 b:i32] -> i32 (+ a b))\n  (fn main [] -> i32 (call add 1 true)))\n".into(),
             "Error: arg.aipl: 3:22: Argument 2 of 'add' expects i32, got bool\n  3 |   (fn main [] -> i32 (call add 1 true)))\n    |                      ^\n".into(),
         ),
+        // definitions that fail are all reported, one error each, before any body is checked
+        (
+            "defs",
+            "(module defs\n  (enum Empty [])\n  (struct P [x:i32 y:i32])\n  (struct P [z:i32])\n  (struct Q [a:(ptr Nope)])\n  (fn dup [] -> i32 0)\n  (fn dup [] -> i32 1)\n  (fn main [] -> i32 (return y)))\n".into(),
+            "Error: defs.aipl: 2:3: enum 'Empty' has no members\n  2 |   (enum Empty [])\n    |   ^\ndefs.aipl: 4:3: Duplicate struct definition 'P'\n  4 |   (struct P [z:i32])\n    |   ^\ndefs.aipl: 5:3: Unknown struct 'Nope' in (ptr Nope) (field 'a' of struct 'Q')\n  5 |   (struct Q [a:(ptr Nope)])\n    |   ^\ndefs.aipl: 7:3: Duplicate function definition 'dup'\n  7 |   (fn dup [] -> i32 1)\n    |   ^\n".into(),
+        ),
+        // at most 20 errors, then how many more there were
+        (
+            "many",
+            format!("(module many\n{}  (fn main [] -> i32 0))\n", (0..23).map(|i| format!("  (enum E{i} [])\n")).collect::<String>()),
+            format!(
+                "Error: {}and 3 more errors\n",
+                (0..20)
+                    .map(|i| {
+                        let n = (i + 2).to_string();
+                        format!("many.aipl: {n}:3: enum 'E{i}' has no members\n  {n} |   (enum E{i} [])\n{} |   ^\n", " ".repeat(n.len() + 2))
+                    })
+                    .collect::<String>()
+            ),
+        ),
         // a line over 200 bytes is not shown
         ("long", long, "Error: long.aipl: 1:41: Undefined variable 'y'\n".into()),
     ];

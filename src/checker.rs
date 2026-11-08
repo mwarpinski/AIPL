@@ -597,29 +597,43 @@ impl TypeChecker {
         Some(checker.formats.into_inner())
     }
 
-    /// Checks a module. Definitions and signatures stop at the first error
-    /// (everything after depends on them); then every function body is
-    /// checked, and each failing function gives its first error, one per
-    /// line in source order. When the resolver recorded where items were
-    /// written, each error is prefixed with its item's file.
+    /// The most errors one check reports; the rest are counted.
+    pub const MAX_ERRORS: usize = 20;
+
+    /// Checks a module. Each definition (an enum, a struct, a union, a function's
+    /// signature) gives its first error, and when any fail they are all reported, in
+    /// that order (everything after depends on them); otherwise each function
+    /// body is checked, and each failing function gives its first error, one per
+    /// line in source order. At most MAX_ERRORS lines, then `and N more errors`.
+    /// When the resolver recorded where items were written, each error is
+    /// prefixed with its item's file.
     pub fn check_module(&mut self, module: &Module) -> Result<(), String> {
-        self.check_items(module).map_err(|e| self.name_file(module, e))?;
-        self.leaks = Some(crate::leaks::Analysis::new(module));
-        let mut errors = Vec::new();
-        for f in &module.functions {
-            self.at_item("fn", &f.name);
-            if let Err(e) = self.check_fn_def(f) {
-                errors.push(self.name_file(module, e));
+        let mut errors = self.check_items(module);
+        if errors.is_empty() {
+            self.leaks = Some(crate::leaks::Analysis::new(module));
+            for f in &module.functions {
+                self.at_item("fn", &f.name);
+                if let Err(e) = self.check_fn_def(f) {
+                    errors.push(self.name_file(module, e));
+                }
+            }
+            if errors.is_empty() {
+                // (no_leak) promises, once every body checks (docs/design/MEMORY_PLAN.md M3)
+                for (name, e) in crate::leaks::check(module) {
+                    self.at_item("fn", &name);
+                    errors.push(self.name_file(module, e));
+                }
             }
         }
         if errors.is_empty() {
-            // (no_leak) promises, once every body checks (docs/design/MEMORY_PLAN.md M3)
-            for (name, e) in crate::leaks::check(module) {
-                self.at_item("fn", &name);
-                errors.push(self.name_file(module, e));
-            }
+            return Ok(());
         }
-        if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+        if errors.len() > Self::MAX_ERRORS {
+            let more = errors.len() - Self::MAX_ERRORS;
+            errors.truncate(Self::MAX_ERRORS);
+            errors.push(format!("and {} more error{}", more, if more == 1 { "" } else { "s" }));
+        }
+        Err(errors.join("\n"))
     }
 
     fn name_file(&self, module: &Module, e: String) -> String {
@@ -633,126 +647,110 @@ impl TypeChecker {
         *self.item.borrow_mut() = format!("{} {}", kind, name);
     }
 
-    /// Definitions and function signatures.
-    fn check_items(&mut self, module: &Module) -> Result<(), String> {
+    /// Definitions and function signatures: each item's first error, in the order
+    /// the checks run. An item that fails is still registered (unless it repeats
+    /// a name), so the items that use it do not fail too. A value struct that
+    /// fails and a union that fails end the checks that look inside them; signatures are still checked.
+    fn check_items(&mut self, module: &Module) -> Vec<String> {
+        let mut errors: Vec<String> = Vec::new();
         // Register enum definitions (AIPL_SPEC.md 4.I)
         for e in &module.enums {
             self.at_item("enum", &e.name);
-            let (l, c) = e.span;
-            if self.enum_defs.contains_key(&e.name) {
-                return Err(format!("{}:{}: Duplicate enum definition '{}'", l, c, e.name));
+            let known = self.enum_defs.contains_key(&e.name);
+            if let Err(x) = self.check_enum(module, e) {
+                errors.push(self.name_file(module, x));
             }
-            if module.structs.iter().any(|s| s.name == e.name) {
-                return Err(format!("{}:{}: '{}' is defined as both a struct and an enum", l, c, e.name));
+            if !known {
+                self.enum_defs.insert(e.name.clone(), e.clone());
             }
-            if e.members.is_empty() && !is_sealed(&e.name) {
-                return Err(format!("{}:{}: enum '{}' has no members", l, c, e.name));
-            }
-            for (i, (m, v)) in e.members.iter().enumerate() {
-                if !m.starts_with(|ch: char| ch.is_ascii_lowercase() || ch == '_') {
-                    return Err(format!("{}:{}: enum member '{}.{}' must start with a lowercase letter or '_'", l, c, e.name, m));
-                }
-                if let Some((other, _)) = e.members[..i].iter().find(|(o, _)| o == m) {
-                    return Err(format!("{}:{}: enum '{}' has two members named '{}'", l, c, e.name, other));
-                }
-                if let Some((other, _)) = e.members[..i].iter().find(|(_, w)| w == v) {
-                    return Err(format!("{}:{}: enum '{}': members '{}' and '{}' both have the value {}", l, c, e.name, other, m, v));
-                }
-            }
-            self.enum_defs.insert(e.name.clone(), e.clone());
         }
 
         // Register struct definitions (all of them first: a value struct's
         // layout depends on the value structs in it)
         for s in &module.structs {
             self.at_item("struct", &s.name);
-            if self.struct_defs.contains_key(&s.name) {
-                return Err(format!(
-                    "{}:{}: Duplicate struct definition '{}'",
-                    s.span.0, s.span.1, s.name
-                ));
+            let known = self.struct_defs.contains_key(&s.name);
+            if let Err(x) = Self::check_struct_names(s, known) {
+                errors.push(self.name_file(module, x));
             }
-            for (i, f) in s.fields.iter().enumerate() {
-                if s.fields[..i].iter().any(|g| g.name == f.name) {
-                    return Err(format!("{}:{}: Duplicate field '{}' in struct '{}'", s.span.0, s.span.1, f.name, shown(&s.name)));
-                }
-            }
-            self.struct_defs.insert(s.name.clone(), s.clone());
-        }
-        for s in module.structs.iter().filter(|s| s.is_value) {
-            self.at_item("struct", &s.name);
-            self.check_value_struct(s)?;
-        }
-        for s in &module.structs {
-            self.at_item("struct", &s.name);
-            for f in &s.fields {
-                memory_layout(&f.ty, &self.struct_defs).map_err(|e| {
-                    format!(
-                        "{}:{}: Field '{}' in struct '{}': {}",
-                        s.span.0, s.span.1, f.name, shown(&s.name), e
-                    )
-                })?;
+            if !known {
+                self.struct_defs.insert(s.name.clone(), s.clone());
             }
         }
-
-        // Register union definitions (AIPL_SPEC.md 4.J)
-        for u in &module.unions {
-            self.at_item("union", &u.name);
-            let (l, c) = u.span;
-            if self.union_defs.contains_key(&u.name) {
-                return Err(format!("{}:{}: Duplicate union definition '{}'", l, c, u.name));
-            }
-            if self.struct_defs.contains_key(&u.name) || self.enum_defs.contains_key(&u.name) {
-                return Err(format!("{}:{}: '{}' is defined as a union and as a struct or enum", l, c, u.name));
-            }
-            if u.variants.is_empty() {
-                return Err(format!("{}:{}: union '{}' has no variants", l, c, u.name));
-            }
-            for (i, v) in u.variants.iter().enumerate() {
-                if !v.name.starts_with(|ch: char| ch.is_ascii_lowercase() || ch == '_') {
-                    return Err(format!("{}:{}: union variant '{}.{}' must start with a lowercase letter or '_'", l, c, u.name, v.name));
+        // (a value struct or a union that fails ends this part: the checks in it look inside them)
+        'inner: {
+            let before = errors.len();
+            for s in module.structs.iter().filter(|s| s.is_value) {
+                self.at_item("struct", &s.name);
+                if let Err(x) = self.check_value_struct(s) {
+                    errors.push(self.name_file(module, x));
                 }
-                if u.variants[..i].iter().any(|w| w.name == v.name) {
-                    return Err(format!("{}:{}: union '{}' has two variants named '{}'", l, c, u.name, v.name));
-                }
-                for (j, f) in v.fields.iter().enumerate() {
-                    if v.fields[..j].iter().any(|g| g.name == f.name) {
-                        return Err(format!("{}:{}: variant '{}.{}' has two fields named '{}'", l, c, shown(&u.name), v.name, f.name));
+            }
+            if errors.len() > before {
+                break 'inner;
+            }
+            for s in &module.structs {
+                self.at_item("struct", &s.name);
+                for f in &s.fields {
+                    let layout = memory_layout(&f.ty, &self.struct_defs).map_err(|e| {
+                        format!("{}:{}: Field '{}' in struct '{}': {}", s.span.0, s.span.1, f.name, shown(&s.name), e)
+                    });
+                    if let Err(x) = layout {
+                        errors.push(self.name_file(module, x));
+                        break;
                     }
-                    memory_layout(&f.ty, &self.struct_defs)
-                        .map_err(|e| format!("{}:{}: Field '{}' of variant '{}.{}': {}", l, c, f.name, u.name, v.name, e))?;
                 }
             }
-            self.union_defs.insert(u.name.clone(), u.clone());
-        }
-        // which unions are values, which a result's slots count
-        self.struct_defs = Structs::new(&module.structs, &module.unions);
 
-        // Field types may name structs and unions defined later in the module.
-        for s in &module.structs {
-            self.at_item("struct", &s.name);
-            for f in &s.fields {
-                // a storage type is a field's type only (not a value struct's)
-                if matches!(f.ty, Type::Narrow(_)) && !s.is_value {
-                    continue;
+            // Register union definitions (AIPL_SPEC.md 4.J)
+            let before = errors.len();
+            for u in &module.unions {
+                self.at_item("union", &u.name);
+                let known = self.union_defs.contains_key(&u.name);
+                if let Err(x) = self.check_union(u, known) {
+                    errors.push(self.name_file(module, x));
                 }
-                self.validate_type(&f.ty, s.span).map_err(|e| format!("{} (field '{}' of struct '{}')", e, f.name, shown(&s.name)))?;
-            }
-        }
-        for u in &module.unions {
-            self.at_item("union", &u.name);
-            for v in &u.variants {
-                for f in &v.fields {
-                    self.validate_type(&f.ty, u.span)
-                        .map_err(|e| format!("{} (field '{}' of variant '{}.{}')", e, f.name, shown(&u.name), v.name))?;
+                if !known {
+                    self.union_defs.insert(u.name.clone(), u.clone());
                 }
             }
-        }
-        // every union is a value (AIPL_SPEC.md 4.J)
-        for u in &module.unions {
-            self.at_item("union", &u.name);
-            if let Some(e) = union_error(u, &self.struct_defs) {
-                return Err(format!("{}:{}: {e}", u.span.0, u.span.1));
+            if errors.len() > before {
+                break 'inner;
+            }
+            // which unions are values, which a result's slots count
+            self.struct_defs = Structs::new(&module.structs, &module.unions);
+
+            // Field types may name structs and unions defined later in the module.
+            for s in &module.structs {
+                self.at_item("struct", &s.name);
+                for f in &s.fields {
+                    // a storage type is a field's type only (not a value struct's)
+                    if matches!(f.ty, Type::Narrow(_)) && !s.is_value {
+                        continue;
+                    }
+                    if let Err(e) = self.validate_type(&f.ty, s.span) {
+                        errors.push(self.name_file(module, format!("{} (field '{}' of struct '{}')", e, f.name, shown(&s.name))));
+                        break;
+                    }
+                }
+            }
+            for u in &module.unions {
+                self.at_item("union", &u.name);
+                'variants: for v in &u.variants {
+                    for f in &v.fields {
+                        if let Err(e) = self.validate_type(&f.ty, u.span) {
+                            errors.push(self.name_file(module, format!("{} (field '{}' of variant '{}.{}')", e, f.name, shown(&u.name), v.name)));
+                            break 'variants;
+                        }
+                    }
+                }
+            }
+            // every union is a value (AIPL_SPEC.md 4.J)
+            for u in &module.unions {
+                self.at_item("union", &u.name);
+                if let Some(e) = union_error(u, &self.struct_defs) {
+                    errors.push(self.name_file(module, format!("{}:{}: {e}", u.span.0, u.span.1)));
+                }
             }
         }
 
@@ -760,11 +758,13 @@ impl TypeChecker {
         for f in &module.functions {
             self.at_item("fn", &f.name);
             if self.fn_signatures.contains_key(&f.name) {
-                return Err(format!("{}:{}: Duplicate function definition '{}'", f.span.0, f.span.1, f.name));
+                errors.push(self.name_file(module, format!("{}:{}: Duplicate function definition '{}'", f.span.0, f.span.1, f.name)));
+                continue;
             }
             // two parameters of one name: the VM read the last, compiled code the first
             if let Some(dup) = f.params.iter().enumerate().find_map(|(i, (n, _))| f.params[..i].iter().any(|(m, _)| m == n).then_some(n)) {
-                return Err(format!("{}:{}: function '{}' has two parameters named '{}'", f.span.0, f.span.1, shown(&f.name), dup));
+                errors.push(self.name_file(module, format!("{}:{}: function '{}' has two parameters named '{}'", f.span.0, f.span.1, shown(&f.name), dup)));
+                continue;
             }
             if f.is_unsafe {
                 self.unsafe_fns.insert(f.name.clone());
@@ -774,6 +774,75 @@ impl TypeChecker {
                 .insert(f.name.clone(), (param_types, f.return_type.clone()));
         }
 
+        errors
+    }
+
+    /// An enum's own rules (AIPL_SPEC.md 4.I).
+    fn check_enum(&self, module: &Module, e: &EnumDef) -> Result<(), String> {
+        let (l, c) = e.span;
+        if self.enum_defs.contains_key(&e.name) {
+            return Err(format!("{}:{}: Duplicate enum definition '{}'", l, c, e.name));
+        }
+        if module.structs.iter().any(|s| s.name == e.name) {
+            return Err(format!("{}:{}: '{}' is defined as both a struct and an enum", l, c, e.name));
+        }
+        if e.members.is_empty() && !is_sealed(&e.name) {
+            return Err(format!("{}:{}: enum '{}' has no members", l, c, e.name));
+        }
+        for (i, (m, v)) in e.members.iter().enumerate() {
+            if !m.starts_with(|ch: char| ch.is_ascii_lowercase() || ch == '_') {
+                return Err(format!("{}:{}: enum member '{}.{}' must start with a lowercase letter or '_'", l, c, e.name, m));
+            }
+            if let Some((other, _)) = e.members[..i].iter().find(|(o, _)| o == m) {
+                return Err(format!("{}:{}: enum '{}' has two members named '{}'", l, c, e.name, other));
+            }
+            if let Some((other, _)) = e.members[..i].iter().find(|(_, w)| w == v) {
+                return Err(format!("{}:{}: enum '{}': members '{}' and '{}' both have the value {}", l, c, e.name, other, m, v));
+            }
+        }
+        Ok(())
+    }
+
+    /// A struct's name is new and its field names differ.
+    fn check_struct_names(s: &StructDef, known: bool) -> Result<(), String> {
+        if known {
+            return Err(format!("{}:{}: Duplicate struct definition '{}'", s.span.0, s.span.1, s.name));
+        }
+        for (i, f) in s.fields.iter().enumerate() {
+            if s.fields[..i].iter().any(|g| g.name == f.name) {
+                return Err(format!("{}:{}: Duplicate field '{}' in struct '{}'", s.span.0, s.span.1, f.name, shown(&s.name)));
+            }
+        }
+        Ok(())
+    }
+
+    /// A union's own rules (AIPL_SPEC.md 4.J); `known` when its name is taken by another union.
+    fn check_union(&self, u: &UnionDef, known: bool) -> Result<(), String> {
+        let (l, c) = u.span;
+        if known {
+            return Err(format!("{}:{}: Duplicate union definition '{}'", l, c, u.name));
+        }
+        if self.struct_defs.contains_key(&u.name) || self.enum_defs.contains_key(&u.name) {
+            return Err(format!("{}:{}: '{}' is defined as a union and as a struct or enum", l, c, u.name));
+        }
+        if u.variants.is_empty() {
+            return Err(format!("{}:{}: union '{}' has no variants", l, c, u.name));
+        }
+        for (i, v) in u.variants.iter().enumerate() {
+            if !v.name.starts_with(|ch: char| ch.is_ascii_lowercase() || ch == '_') {
+                return Err(format!("{}:{}: union variant '{}.{}' must start with a lowercase letter or '_'", l, c, u.name, v.name));
+            }
+            if u.variants[..i].iter().any(|w| w.name == v.name) {
+                return Err(format!("{}:{}: union '{}' has two variants named '{}'", l, c, u.name, v.name));
+            }
+            for (j, f) in v.fields.iter().enumerate() {
+                if v.fields[..j].iter().any(|g| g.name == f.name) {
+                    return Err(format!("{}:{}: variant '{}.{}' has two fields named '{}'", l, c, shown(&u.name), v.name, f.name));
+                }
+                memory_layout(&f.ty, &self.struct_defs)
+                    .map_err(|e| format!("{}:{}: Field '{}' of variant '{}.{}': {}", l, c, f.name, u.name, v.name, e))?;
+            }
+        }
         Ok(())
     }
 

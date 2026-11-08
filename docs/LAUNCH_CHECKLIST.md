@@ -84,23 +84,27 @@ Each of these lands in the self-hosted `aipl` (aipl_src/), since that is what sh
 - [x] **Error lines, arguments, suggestions, lint, and a REPL** (on `development`: f9dd9f1, 70f63a3, 47fcc6f, b42503e):
   an error shows its source line with a caret, arguments count from 1, an undefined name suggests a near one,
   `aipl lint` has nine rules, and `aipl repl` takes expressions and definitions.
-- [ ] **Decide whether the standard library and aipl_src must lint clean in CI** (about 80 findings, most of them real
-  dead code or unused names).
-- [ ] **`aipl fmt` and `aipl fmt --check`.** The canonical printer exists (aipl_src/printer.aipl); make it a formatter.
-  Check first that it keeps comments, since it prints resolved programs today.
-- [ ] **Status lines off standard output.** `aipl eval` prints `[AIPL VM] Executing function 'main' from ...` and
-  `aipl compile` prints `[AIPL Compiler] Successfully compiled ...`, both to standard output (src/main.rs). Send them to
-  standard error, or behind `-v`: pipes and agents both pay for them.
-- [ ] **Every error in a function**, not only the first (ROADMAP.md item 3).
-- [ ] **"expects 1 arguments"** says "1 argument", in both checkers.
-- [ ] **A standard library that cannot be found names the fix.** Run outside a checkout, the self-hosted binary says
-  "Cannot resolve import 'show'"; it should name `$AIPL_STD` and the paths it searched.
-- [ ] **One table of exit statuses**: main's result, `sys.exit`, a trap (134 today), a failed contract, and what
-  `aipl run` passes on.
-- [ ] **Editor support at launch**: a TextMate grammar at the least, then tree-sitter (ROADMAP.md item 2). The language
-  server can follow.
-- [ ] **`aipl run` compared across the two commands** on the whole example corpus in tests/test_bootstrap.rs, as
-  `compile` is (ROADMAP.md item 1).
+- [x] **The standard library and aipl_src lint clean, and CI keeps them so** (decided 2026-11-07; `tools/ci.sh` and
+  the workflow run `aipl lint` over `aipl_src/`, its `std/` and `native/`). The findings were dead code and unused
+  names, deleted; a few leaks and functions called only by the Rust tests carry a `;; lint:allow` with the reason.
+- [x] **`aipl fmt [--check] FILE...` and `aipl fmt -`** (aipl_src/fmtcmd.aipl, in both commands). It settles
+  white space and indentation only and keeps every line break and comment (gofmt style); it is idempotent and moves no
+  token, over all 403 programs in the repository. A test keeps the repository formatted.
+- [x] **Status lines off standard output.** `aipl eval` prints only what the program prints; `aipl compile` is silent
+  on success and says what it built with `-v`, to standard error.
+- [x] **Every error, one per item.** Each enum, struct, union and function signature reports its first error, in
+  that order; once they hold, each function body does; at most 20, then `and N more errors`. Both checkers give
+  the same lines (tests/test_bootstrap.rs). A syntax, import or constant error still stops at once.
+- [x] **"expects 1 argument"**, in both checkers.
+- [x] **A standard library that cannot be found names `$AIPL_STD`.**
+- [x] **One table of exit statuses** (AIPL_SPEC.md 6.1): main's result, `sys.exit`, a trap and an out-of-range status
+  (134), what `aipl run` passes on, and the tools' (refused program 1, usage 2, lint findings 1, `fmt --check` 1).
+  Open: on a trapping program the self-hosted `aipl run` adds one stderr line ("exit with invalid exit status ...")
+  that the Rust command does not; the status is the same. It needs a silent exit primitive.
+- [x] **Editor support at launch**: the TextMate grammar and a tree-sitter grammar (highlights, indents, folds), both
+  checked against every `.aipl` file in this repository (~/projects/aipl-editors; the GitHub remote and the
+  Marketplace and Open VSX publishing stay with the owner). The language server can follow.
+- [x] **`aipl run` compared across the two commands** over the whole corpus (tests/test_bootstrap.rs).
 
 ## 4. Release: one compiler, no referee
 
