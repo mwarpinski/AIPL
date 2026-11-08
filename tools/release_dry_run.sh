@@ -26,6 +26,7 @@ sh bootstrap/build.sh
 if [ "${NO_AIPL_NET:-}" != 1 ]; then
     say "aipl-net"
     cargo build --release --locked --bin aipl-net
+    say "aipl-net needs $(objdump -T target/release/aipl-net 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1) (the release states 2.35 or newer)"
 fi
 
 say "package"

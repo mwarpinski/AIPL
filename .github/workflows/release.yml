@@ -75,7 +75,12 @@ jobs:
           [ "$(target/bootstrap/aipl --version)" = "aipl ${{ steps.version.outputs.v }}" ] || { echo "the version is ${{ steps.version.outputs.v }}, but the self-hosted aipl says: $(target/bootstrap/aipl --version)"; exit 1; }
       - name: aipl-net, the one Rust program in the Linux tarball (host names and TLS)
         if: runner.os == 'Linux'
-        run: cargo build --release --locked --bin aipl-net
+        run: |
+          cargo build --release --locked --bin aipl-net
+          # the oldest glibc it runs on is what docs/RELEASING.md says (2.35 is Ubuntu 22.04's)
+          need="$(objdump -T target/release/aipl-net | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          echo "aipl-net needs $need"
+          [ "$(printf '%s\n' "$need" GLIBC_2.35 | sort -V | tail -1)" = GLIBC_2.35 ] || { echo "aipl-net needs $need, newer than the glibc 2.35 the release states"; exit 1; }
       # macOS and Windows: the Rust aipl and aipl-run.
       - name: The Rust aipl and aipl-run (the macOS and Windows preview)
         if: runner.os != 'Linux'
