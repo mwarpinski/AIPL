@@ -29,7 +29,12 @@ fn scratch(name: &str) -> PathBuf {
 /// retrying while a just-written executable is still busy (another test
 /// thread may hold it open across a fork).
 fn run(cmd: &mut Command) -> Output {
-    cmd.current_dir(root()).env("AIPL_STD", root().join("aipl_src/std/"));
+    run_in(cmd, &root())
+}
+
+/// `run`, from the directory `cwd` instead (a program that writes files writes them there).
+fn run_in(cmd: &mut Command, cwd: &Path) -> Output {
+    cmd.current_dir(cwd).env("AIPL_STD", root().join("aipl_src/std/"));
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     for _ in 0..100 {
         match cmd.output() {
@@ -472,8 +477,7 @@ fn aipl_run_says_the_same_in_both_commands() {
     let aipl = dir.join("aipl");
     build_aipl(Path::new(AIPL), &aipl);
     // every example and test program, run with no input: the same status, output, and error text. Left out: the
-    // ones that write the file system (the second run would see the first's files) and the threaded ones (their
-    // output interleaves)
+    // ones that need a prepared directory (tests/aipl/sys) and the threaded ones (their output interleaves)
     let mut files = Vec::new();
     for d in ["examples", "tests/aipl"] {
         aipl_files(&root().join(d), &mut files);
@@ -484,9 +488,19 @@ fn aipl_run_says_the_same_in_both_commands() {
     // 0 to 125 (AIPL_SPEC.md 6.1), which says so once more; the Rust command exits without a word
     let said = "exit with invalid exit status outside of [0..126)\n";
     let mut compared = 0;
+    // each command runs in an empty directory of its own, so what a program writes is neither left in the
+    // repository nor seen by the other command's run
+    let (rust_cwd, own_cwd) = (dir.join("cwd_rust"), dir.join("cwd_own"));
     for f in &files {
-        let r = run(Command::new(AIPL).args(["run", f]));
-        let a = run(Command::new(&aipl).args(["run", f]));
+        let fresh = |d: &Path| {
+            let _ = std::fs::remove_dir_all(d);
+            std::fs::create_dir_all(d).unwrap();
+        };
+        let program = root().join(f);
+        fresh(&rust_cwd);
+        let r = run_in(Command::new(AIPL).arg("run").arg(&program), &rust_cwd);
+        fresh(&own_cwd);
+        let a = run_in(Command::new(&aipl).arg("run").arg(&program), &own_cwd);
         let (re, mut ae) = (String::from_utf8_lossy(&r.stderr).to_string(), String::from_utf8_lossy(&a.stderr).to_string());
         let own = format!("{}: {said}", aipl.display());
         if r.status.code() == Some(134) && ae.ends_with(&own) {
