@@ -77,6 +77,8 @@ jobs:
         run: python3 tools/harness/harness.py selftest
       - name: The conformance suite, on the Rust aipl
         run: python3 tools/conformance.py --aipl target/release/aipl --backend run --backend wasm --backend native
+      - name: The tests left nothing behind in the repository
+        run: python3 tools/tree_check.py
 
   arm64:
     # AArch64 Linux: the Rust test suite (the AArch64 backend's executables run on this

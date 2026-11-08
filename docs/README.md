@@ -73,7 +73,7 @@ Records of what happened, kept as written. What they call "next" or "not yet" wa
 
 ## Notes (docs/notes/)
 
-Outside reviews of AIPL, from other models, with what turned out to be true. [REVIEW.md](notes/REVIEW.md) checks the first set claim by claim; each `.txt` is the original and each `.md` the cleaned-up copy.
+Outside reviews of AIPL, from other models, with what turned out to be true. [REVIEW.md](notes/REVIEW.md) checks the first set claim by claim. The raw transcripts the cleaned-up notes came from are in git history at bdb2e41 (`docs/notes/<name>.txt`).
 
 | Document | What it is |
 |---|---|
@@ -86,7 +86,7 @@ Outside reviews of AIPL, from other models, with what turned out to be true. [RE
 | [freedom.md](notes/freedom.md) | Decoupling the toolchain from Cargo |
 | [kernel_notes.md](notes/kernel_notes.md) | Bare-metal OS and microkernel exploration |
 | [arm64_build.md](notes/arm64_build.md) | Building for ARM64 and macOS |
-| [review_and_next_steps.txt](notes/review_and_next_steps.txt) | A review and prioritised next steps, late October 2026 (as found, unedited) |
+| [review_and_next_steps.md](notes/review_and_next_steps.md) | A review and prioritised next steps, late October 2026 (as found, unedited) |
 
 ## Beside the code
 

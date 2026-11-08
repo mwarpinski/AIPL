@@ -41,4 +41,5 @@ step "run_fuzz.py"; note "$(python3 tools/run_fuzz.py --cases 500 --seed 1 2>&1 
 step "opt_diff.py"; note "$(python3 tools/opt_diff.py 2>&1 | tail -1)"; note "$(python3 tools/opt_diff.py --fuzz 500 --seed 1 2>&1 | tail -1)"
 step "conformance, Rust aipl"; note "$(python3 tools/conformance.py --aipl target/release/aipl --backend run --backend wasm --backend native -j 4 2>&1 | tail -4 | tr '\n' ' ')"
 step "harness selftest"; note "$(python3 tools/harness/harness.py selftest 2>&1 | tail -1)"
+step "tree check: the tests left nothing behind"; note "$(python3 tools/tree_check.py 2>&1 | tail -2 | head -1)"
 step "done"

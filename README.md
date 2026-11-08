@@ -355,6 +355,11 @@ independent implementations against each other.
 - [docs/](docs/README.md): the index of everything else: benchmarks, the launch
   checklist, design records of the larger pieces of work, history, and notes.
 
+## Contributing and security
+
+[CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and propose a change. A security problem goes through the private
+report in [SECURITY.md](SECURITY.md), not a public issue.
+
 ## License
 
 MIT ([LICENSE](LICENSE)).

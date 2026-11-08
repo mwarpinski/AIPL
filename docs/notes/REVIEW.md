@@ -2,8 +2,9 @@
 
 docs/notes holds an outside model's review of AIPL (argon, 2026-10-16
 and 17: assessment, final_thoughts, freedom, kernel_notes, painpoints,
-pitfalls, speed-ups, arm64_build; the `.txt` files are the originals,
-fuller than the `.md` versions). Readers will point their own models at
+pitfalls, speed-ups, arm64_build; the raw transcripts, with the tool
+traces, were removed in the repository hygiene pass and are in git at
+bdb2e41, as `docs/notes/<name>.txt`). Readers will point their own models at
 this repository, so every claim in the notes gets a verdict here, with
 the evidence: a command, a test, or file:line. Checked 2026-10-18 and 19
 against commit 5a0b934 and the L6 work after it. Rows that said "open"

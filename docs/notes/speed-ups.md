@@ -6,7 +6,7 @@ An analysis of AIPL's current execution performance, architectural bottlenecks, 
 
 ## 1. Current Benchmark Positioning
 
-From [`docs/BENCHMARKS.md`](file:///home/matt/Projects/Repos/AIPL/docs/BENCHMARKS.md#L30-L39), comparing AIPL native x86-64 output against `gcc -O2`:
+From [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#L30-L39), comparing AIPL native x86-64 output against `gcc -O2`:
 
 | Benchmark | AIPL vs `gcc -O2` | Primary Contributing Factor |
 |---|---|---|
@@ -29,7 +29,7 @@ $$\text{AST Optimizer } (\texttt{codegen\_opt}) \longrightarrow \text{WebAssembl
    - **Baseline Tier (`-O0`):** Retain the single-pass Liftoff-style translator for rapid compilation and debug builds.
    - **Optimizing Tier (`-O2`):** Construct an SSA-form intermediate representation from Wasm or AST, enabling global value numbering, loop-invariant code motion (LICM), linear-scan register allocation, and x86 complex addressing mode generation (`[base + index*scale + disp]`).
 2. **Language-Level AST Optimizations:**
-   Expanding [`codegen_opt.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl) preserves high-level type and contract metadata that is stripped during lowering to Wasm bytecode.
+   Expanding [`codegen_opt.aipl`](../../aipl_src/codegen_opt.aipl) preserves high-level type and contract metadata that is stripped during lowering to Wasm bytecode.
 
 ---
 

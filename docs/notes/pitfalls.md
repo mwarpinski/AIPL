@@ -16,14 +16,14 @@ Compared to conventional language projects, AIPL's development exhibits an **inv
 
 ## 2. Key Technical Strengths
 
-1. **Wasm-to-x86_64 Direct Native Backend ([`aipl_src/native/`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/)):**
-   Lowering WebAssembly bytecode directly to native x86-64 ELF machine code—rather than maintaining two parallel front-to-back pipelines—minimizes architectural duplication. In ~5,800 lines of AIPL with zero external dependencies, [`lower.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/lower.aipl) implements register allocation and hardware guard-page recovery.
-2. **Generational Pointers with Loop-Invariant Hoisting ([`GENERATIONS_PLAN.md`](file:///home/matt/Projects/Repos/AIPL/docs/design/GENERATIONS_PLAN.md)):**
+1. **Wasm-to-x86_64 Direct Native Backend ([`aipl_src/native/`](../../aipl_src/native/)):**
+   Lowering WebAssembly bytecode directly to native x86-64 ELF machine code—rather than maintaining two parallel front-to-back pipelines—minimizes architectural duplication. In ~5,800 lines of AIPL with zero external dependencies, [`lower.aipl`](../../aipl_src/native/lower.aipl) implements register allocation and hardware guard-page recovery.
+2. **Generational Pointers with Loop-Invariant Hoisting ([`GENERATIONS_PLAN.md`](../../docs/design/GENERATIONS_PLAN.md)):**
    Achieving memory safety via 64-bit `(addr, generation)` pointers avoids both borrow-checker complexity and garbage-collector pauses. Call-graph-aware loop versioning hoists null and generation checks to run once per loop.
 3. **Data Parallelism via Plain Types (`std/par.aipl`):**
    Restricting cross-thread parallel operations to `plain` types (types containing no mutable pointers or array references) guarantees data-race-free parallel map/reduce without complex lifetime tracking.
 4. **Byte-for-Byte Diverse Double-Compilation:**
-   Enforcing that [`src/compiler/wasm.rs`](file:///home/matt/Projects/Repos/AIPL/src/compiler/wasm.rs) and [`aipl_src/codegen.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen.aipl) yield identical binary output across tens of thousands of fuzz cases prevents silent compiler divergence.
+   Enforcing that [`src/compiler/wasm.rs`](../../src/compiler/wasm.rs) and [`aipl_src/codegen.aipl`](../../aipl_src/codegen.aipl) yield identical binary output across tens of thousands of fuzz cases prevents silent compiler divergence.
 
 ---
 
@@ -41,7 +41,7 @@ Requiring complete generic parameters at every call site, `get`/`put`, and `matc
 Certain functions in `std/io` and `std/os` rely on negative length sentinels (e.g., `len = -1`) rather than explicit `Option` or `result` types, bypassing static error-handling enforcement.
 
 ### 4. Sibling-Scope Identifier Type Collisions
-In [`AIPL_SPEC.md` 7.1 rule 4](file:///home/matt/Projects/Repos/AIPL/AIPL_SPEC.md#L869), declaring identical identifier names with different types across non-overlapping sibling scopes triggers compiler errors, complicating payload binding across distinct `match` arms.
+In [`AIPL_SPEC.md` 7.1 rule 4](../../AIPL_SPEC.md#L869), declaring identical identifier names with different types across non-overlapping sibling scopes triggers compiler errors, complicating payload binding across distinct `match` arms.
 
 ### 5. Inclusive Loop Upper Bounds
 Standard `(loop i 0 n 1 ...)` executes $n + 1$ times. Iterating over 0-indexed arrays requires subtracting 1 (`(- (arr.len a) 1)`), which can lead to off-by-one errors.

@@ -1,6 +1,6 @@
 # AIPL Development Observations: Strengths and Friction Points
 
-During the implementation of the standalone optimizing compiler ([`aipl_src/codegen_opt.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl)), several distinct aspects of AIPL's design affected productivity and verification velocity.
+During the implementation of the standalone optimizing compiler ([`aipl_src/codegen_opt.aipl`](../../aipl_src/codegen_opt.aipl)), several distinct aspects of AIPL's design affected productivity and verification velocity.
 
 ---
 
@@ -8,15 +8,15 @@ During the implementation of the standalone optimizing compiler ([`aipl_src/code
 
 1. **Homoiconic S-Expression Syntax (Zero Grammar Ambiguity):**
    - The absence of operator precedence and associativity rules simplifies writing source-to-source and AST transformations.
-   - Re-serializing an optimized [`ONode`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl#L122-L130) tree to valid AIPL text ([`print_onode`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl#L318-L358)) required approximately 40 lines of code without risk of precedence bugs.
-   - Operations like structural equality ([`node_eq`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl#L427-L447)), tree cloning ([`clone_node`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl#L540-L561)), and variable substitution ([`subst_node`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl#L1625-L1641)) remain compact recursive routines.
+   - Re-serializing an optimized [`ONode`](../../aipl_src/codegen_opt.aipl#L122-L130) tree to valid AIPL text ([`print_onode`](../../aipl_src/codegen_opt.aipl#L318-L358)) required approximately 40 lines of code without risk of precedence bugs.
+   - Operations like structural equality ([`node_eq`](../../aipl_src/codegen_opt.aipl#L427-L447)), tree cloning ([`clone_node`](../../aipl_src/codegen_opt.aipl#L540-L561)), and variable substitution ([`subst_node`](../../aipl_src/codegen_opt.aipl#L1625-L1641)) remain compact recursive routines.
 
 2. **Explicit Type Conversions & Annotated `let` Bindings:**
    - Every local declaration contains an explicit type (`(let x:i32 ...)`), and numeric conversions are explicit AST nodes (`i64.extend_s`, `i64.extend_u`, `i32.wrap`, `f64.convert_i64_s`).
    - This permitted type-safe strength reduction and conversion fusion (such as fusing `(f64.convert_i64_s (i64.extend_s x))` into `(f64.convert_i32_s x)`) directly over syntax trees without requiring global type re-inference between passes.
 
 3. **Zero Implicit Control Flow or Hidden Exceptions:**
-   - The absence of exceptions, hidden destructors, and operator overloading makes side-effect analysis ([`is_pure`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl#L502-L536)) and mutation tracking ([`scan_fn_locals`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl#L1785-L1850)) deterministic. Variables not bound in a `set!`, `loop`, or `match` construct are strictly immutable.
+   - The absence of exceptions, hidden destructors, and operator overloading makes side-effect analysis ([`is_pure`](../../aipl_src/codegen_opt.aipl#L502-L536)) and mutation tracking ([`scan_fn_locals`](../../aipl_src/codegen_opt.aipl#L1785-L1850)) deterministic. Variables not bound in a `set!`, `loop`, or `match` construct are strictly immutable.
 
 4. **Fast, Deterministic `aipl verify` & `aipl test` Feedback:**
    - Type-checking thousands of lines of self-hosted compiler code takes milliseconds.

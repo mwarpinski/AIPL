@@ -87,10 +87,10 @@ fn case(op: &OpCode) -> (&'static str, &'static str) {
         FsDelete => ("i32", "(fs.delete (str.ptr \"no-such-file\") 12)"),
         FsChmod => ("i32", "(fs.chmod (str.ptr \"no-such-file\") 12 420)"),
         FsRename => ("i32", "(fs.rename (str.ptr \"no-such-file\") 12 (str.ptr \"no-such-file\") 12)"),
-        FsRmdir => ("i32", "(fs.rmdir (str.ptr \"no-such-dir\") 11)"),
-        FsMkdir => ("i32", "(fs.mkdir (str.ptr \"no-such-dir/x\") 12)"),
+        FsRmdir => ("i32", "(fs.rmdir (str.ptr \"/no-such-dir\") 12)"),
+        FsMkdir => ("i32", "(fs.mkdir (str.ptr \"/no-such-dir/x\") 14)"),
         SysPoll => ("i32", "(sys.poll (mem.alloc 48) (mem.alloc 32) 0 (mem.alloc 4))"),
-        FsOpendir => ("i32", "(fs.opendir (str.ptr \"no-such-dir\") 11)"),
+        FsOpendir => ("i32", "(fs.opendir (str.ptr \"/no-such-dir\") 12)"),
         FsReaddir => ("i32", "(fs.readdir 99 (mem.alloc 64) 64 0i64)"),
         FsStat => ("i32", "(fs.stat (str.ptr \"no-such-file\") 12 (mem.alloc 64))"),
         // no grant here, so a listen is refused (-2); 99 is no socket (-1)

@@ -6,7 +6,7 @@ There are two primary approaches to building and running AIPL on ARM64 / macOS *
 
 ## 1. Immediate Approach: The `AIPLEXE2` Wasm-Launcher Bundle + GitHub Actions
 
-As implemented in [`src/main.rs`](file:///home/matt/Projects/Repos/AIPL/src/main.rs#L217-L236), AIPL includes a cross-platform standalone executable format:
+As implemented in [`src/main.rs`](../../src/main.rs#L217-L236), AIPL includes a cross-platform standalone executable format:
 - On platforms without a native machine-code backend, `aipl compile --exe --target wasm` takes the `aipl-run` binary (which embeds Wasmtime), appends the compiled `.wasm` bytecode to the end of the file, and tacks on a 16-byte `AIPLEXE2` footer.
 - When executed, the binary inspects its own trailing `AIPLEXE2` footer and runs the embedded `.wasm` payload directly at near-native speed via Wasmtime's AArch64 Cranelift JIT.
 
@@ -17,11 +17,11 @@ GitHub Actions provides free **`macos-14` (Apple Silicon M1 ARM64)** and **`ubun
 
 ## 2. Native AIPL Approach: Adding an ARM64 (`aarch64`) Backend to `aipl_src/native/`
 
-Because [`aipl_src/native/`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/native.aipl) translates **WebAssembly to machine code** (rather than lowering the AST directly), adding native ARM64 support is well-isolated:
-- [`wasm_reader.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/wasm_reader.aipl) (100% of the Wasm parser and validation logic) remains **completely unchanged**.
-- **ARM64 instruction encoding (`arm64_emit.aipl`) is simpler than [`x64_emit.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/x64_emit.aipl):**
+Because [`aipl_src/native/`](../../aipl_src/native/native.aipl) translates **WebAssembly to machine code** (rather than lowering the AST directly), adding native ARM64 support is well-isolated:
+- [`wasm_reader.aipl`](../../aipl_src/native/wasm_reader.aipl) (100% of the Wasm parser and validation logic) remains **completely unchanged**.
+- **ARM64 instruction encoding (`arm64_emit.aipl`) is simpler than [`x64_emit.aipl`](../../aipl_src/native/x64_emit.aipl):**
   - Every ARM64 instruction is a fixed 32-bit `i32` word (no variable-length REX/ModRM/SIB prefix bytes like x86-64).
-  - ARM64 has 31 general-purpose registers (`x0..x30`) and 32 float registers (`v0..v31`), so the virtual-stack cache in [`lower.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/lower.aipl) rarely spills in typical functions.
+  - ARM64 has 31 general-purpose registers (`x0..x30`) and 32 float registers (`v0..v31`), so the virtual-stack cache in [`lower.aipl`](../../aipl_src/native/lower.aipl) rarely spills in typical functions.
   - Integer division on ARM64 (`sdiv` / `udiv`) does not trap on `INT_MIN / -1` or `/ 0`, unlike x86-64 `idiv`.
 
 ### Local Testing on Linux x86-64

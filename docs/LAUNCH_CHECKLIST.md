@@ -166,13 +166,23 @@ build it, and the release never runs it.
 
 ## 6. Repository hygiene
 
-- [ ] **Tests that stay in their own folder.** An empty no-such-dir/ and a stray out.wasm appear in the repository
-  root; referee/tests/test_opcode_conformance.rs uses `no-such-dir` paths relative to the working directory. Run the file-system
-  tests in a temporary directory.
-- [ ] **One copy of each note.** docs/notes keeps every note as both `.md` and `.txt`, and the pairs differ.
-- [ ] **Delete the merged branches**: all 11 `features/` branches are merged into `development`.
-- [ ] **A security policy** (a SECURITY.md: a private channel for reports, and how soon they are answered), since the
-  memory-safety claims will draw them; a CONTRIBUTING.md and issue templates beside it.
+- [x] **Tests that stay in their own folder** (2026-11-08). The stray `no-such-dir/` came from one test case: the
+  `FsMkdir` case in referee/tests/test_opcode_conformance.rs passed a length one short, so `"no-such-dir/x"` became
+  `"no-such-dir/"` and the VM made it in the working directory. The three cases now name `/no-such-dir`, with the right
+  lengths. The strays in the root (`adir`, `file.txt/`, `link`, `link2`, `made/`, `_lines.txt`, `out.wasm`) are gone, and
+  `tools/tree_check.py` runs at the end of both CI groups and fails when the root, `referee/` or `tests/` holds anything
+  not listed in it.
+- [x] **One copy of each note** (2026-11-08). The eight `.txt` files were raw model transcripts with tool traces, the
+  `.md` files their cleaned copies (the ones the README links, and the ones REVIEW.md quotes). The `.txt` copies are
+  removed (in git at bdb2e41); `review_and_next_steps.txt`, markdown already, became `.md`; the notes' links to the
+  author's home directory now point into the repository.
+- [x] **Delete the merged branches** (2026-11-08): the 16 `features/` branches were all ancestors of `development`; the
+  local ones are deleted. **Open: the 16 on origin**, deleted by the owner (`git push origin --delete ...`; the
+  assistant's attempt was refused).
+- [x] **A security policy** (2026-11-08): SECURITY.md (GitHub's private vulnerability report, the replies promised within 7
+  and 14 days, what counts and what does not), CONTRIBUTING.md, bug and feature templates, a pull request template.
+  **Open for the owner**: switch on *Private vulnerability reporting* in the repository's Settings, Code security (the
+  report link in SECURITY.md needs it), and confirm the 7/14/90-day times are ones you will keep.
 
 ## 7. Documentation that matches the release
 

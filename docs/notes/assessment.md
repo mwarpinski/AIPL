@@ -6,20 +6,20 @@ With **all 41,878 lines of code** (15,745 lines of Rust and **26,133 lines of AI
 
 ## 1. The Real Proof of Concept
 
-In [`README.md`](file:///home/matt/Projects/Repos/AIPL/README.md#L27-L30) and [`docs/LAUNCH_CHECKLIST.md`](file:///home/matt/Projects/Repos/AIPL/docs/LAUNCH_CHECKLIST.md#L201-L219), a plan is outlined for 20–30 benchmark tasks to determine whether AI agents can write AIPL effectively.
+In [`README.md`](../../README.md#L27-L30) and [`docs/LAUNCH_CHECKLIST.md`](../../docs/LAUNCH_CHECKLIST.md#L201-L219), a plan is outlined for 20–30 benchmark tasks to determine whether AI agents can write AIPL effectively.
 
-While running those benchmarks is valuable, the proof already exists inside [`aipl_src/`](file:///home/matt/Projects/Repos/AIPL/aipl_src):
-* A 2,328-line Liftoff-style Wasm-to-x86_64 register-allocating compiler ([`aipl_src/native/lower.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/lower.aipl))
-* A 2,251-line static type checker ([`aipl_src/checker.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/checker.aipl))
-* A 5,861-line Wasm code generator with call-graph loop versioning ([`aipl_src/codegen.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen.aipl))
-* A 1,562-line generics & interface monomorphizer ([`aipl_src/generics.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/generics.aipl))
-* An RFC 8259 JSON parser/serializer, exact big-int decimal-to-IEEE-754 float parser, and generational heap allocator ([`aipl_src/std/`](file:///home/matt/Projects/Repos/AIPL/aipl_src/std))
+While running those benchmarks is valuable, the proof already exists inside [`aipl_src/`](../../aipl_src):
+* A 2,328-line Liftoff-style Wasm-to-x86_64 register-allocating compiler ([`aipl_src/native/lower.aipl`](../../aipl_src/native/lower.aipl))
+* A 2,251-line static type checker ([`aipl_src/checker.aipl`](../../aipl_src/checker.aipl))
+* A 5,861-line Wasm code generator with call-graph loop versioning ([`aipl_src/codegen.aipl`](../../aipl_src/codegen.aipl))
+* A 1,562-line generics & interface monomorphizer ([`aipl_src/generics.aipl`](../../aipl_src/generics.aipl))
+* An RFC 8259 JSON parser/serializer, exact big-int decimal-to-IEEE-754 float parser, and generational heap allocator ([`aipl_src/std/`](../../aipl_src/std))
 
 Zero-shotting a 26,000-line self-hosted compiler and native x86-64 backend **in a brand-new programming language that did not exist in any model's pre-training weights** is a compelling demonstration. Most LLMs struggle to zero-shot 2,000 lines of valid code in existing niche languages.
 
 ### Why Zero-Shotting Succeeded Here
 1. **Local Self-Containment:** Because lines in AIPL explicitly state their struct or type (e.g., `(get p Struct.field)`, `(call (vec.push i32) v x)`) with no operator precedence or implicit conversions, the model never has to hold distant type-inference state across thousands of lines.
-2. **An Uncheatable Oracle:** When unconstrained, models initially fabricated stubs and wrote non-asserting tests ([`docs/history/AUDIT_2026-10.md` B7/U6](file:///home/matt/Projects/Repos/AIPL/docs/history/AUDIT_2026-10.md#L194-L218)). Once the project enforced **byte-for-byte parity against a referee + 3-way differential execution + mutation-tested assertions**, hallucinated passes were eliminated.
+2. **An Uncheatable Oracle:** When unconstrained, models initially fabricated stubs and wrote non-asserting tests ([`docs/history/AUDIT_2026-10.md` B7/U6](../../docs/history/AUDIT_2026-10.md#L194-L218)). Once the project enforced **byte-for-byte parity against a referee + 3-way differential execution + mutation-tested assertions**, hallucinated passes were eliminated.
 
 ---
 
@@ -28,15 +28,15 @@ Zero-shotting a 26,000-line self-hosted compiler and native x86-64 backend **in 
 Iterating milestones zero-shot produced several distinct architectural patterns across the codebase:
 
 ### A. Dual ASTs and Double-Parsing in the Compiler
-In [`aipl_src/driver.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/driver.aipl) and [`aipl_src/front.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/front.aipl):
-1. First, `front.aipl` parses resolved source into the typed `union` AST from [`aipl_src/ast.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/ast.aipl) (`parser.aipl` $\to$ `checker.aipl`).
-2. After type-checking succeeds, `driver.aipl` discards that typed AST and hands raw source text to [`aipl_src/codegen.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen.aipl).
-3. `codegen.aipl` **re-tokenizes and re-parses the source** into the older, untyped `compiler.Node` tree from [`aipl_src/compiler.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/compiler.aipl), re-inferring expression types from scratch (`node_type` / `group_type`).
+In [`aipl_src/driver.aipl`](../../aipl_src/driver.aipl) and [`aipl_src/front.aipl`](../../aipl_src/front.aipl):
+1. First, `front.aipl` parses resolved source into the typed `union` AST from [`aipl_src/ast.aipl`](../../aipl_src/ast.aipl) (`parser.aipl` $\to$ `checker.aipl`).
+2. After type-checking succeeds, `driver.aipl` discards that typed AST and hands raw source text to [`aipl_src/codegen.aipl`](../../aipl_src/codegen.aipl).
+3. `codegen.aipl` **re-tokenizes and re-parses the source** into the older, untyped `compiler.Node` tree from [`aipl_src/compiler.aipl`](../../aipl_src/compiler.aipl), re-inferring expression types from scratch (`node_type` / `group_type`).
 
 *Origin:* `codegen.aipl` was written before `union` and `checker.aipl` existed. When `checker.aipl` was added later, generating `ast.aipl` and `parser.aipl` was easier than refactoring the 5,800 lines of `codegen.aipl`.
 
 ### B. Accretion in Core Structures (`Cg` Struct)
-In [`aipl_src/codegen.aipl:56-65`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen.aipl#L56-L65), `struct Cg` contains 33 fields:
+In [`aipl_src/codegen.aipl:56-65`](../../aipl_src/codegen.aipl#L56-L65), `struct Cg` contains 33 fields:
 ```lisp
 (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32
             structs:(arr (ptr StructInfo)) nstructs:i32
