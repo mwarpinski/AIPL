@@ -24,6 +24,7 @@ Everything written about AIPL lives here or at the top of the repository, and th
 | [BENCHMARKS.md](BENCHMARKS.md) | Speed measurements and how they are taken |
 | [LIMITS.md](LIMITS.md) | What the language does not do, each limit with the way around it |
 | [LANGUAGE_VERSIONING.md](LANGUAGE_VERSIONING.md) | The language version, `(language N)`, and what a version promises |
+| [RELEASING.md](RELEASING.md) | How a release is made and signed, what each platform gets, and how to verify a download |
 | [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) | What is left before launch, the Rust referee's role, and the way off Rust after it |
 
 ## Design (docs/design/)

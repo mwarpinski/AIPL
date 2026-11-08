@@ -134,7 +134,7 @@ check "the executable runs from another directory" sh -c "mkdir -p other && cd o
 check "a copied executable runs" sh -c "cp hello hello2 && [ \"\$(./hello2)\" = 'hello, aipl' ]"
 check "aipl verify examples/word_count.aipl" "$AIPL" verify "$ROOT/examples/word_count.aipl"
 check "aipl doc text" sh -c "'$AIPL' doc text | grep -q split"
-check "aipl eval -e" sh -c "[ \"\$('$AIPL' eval -e '(call str.find (call str.from_str \"a,b\") (call str.from_str \",\"))')\" = '1 : i32' ]"
+check "aipl eval -e" sh -c "[ \"\$('$AIPL' eval -e '(call str.find (call str.from_str \"a,b\") (call str.from_str \",\"))')\" = 'some{value: 1} : (option.Option i32)' ]"
 cp "$ROOT/README.md" readme.md
 "$AIPL" compile --exe "$ROOT/examples/word_count.aipl" -o wc >/dev/null 2>&1
 check "word_count counts a file" sh -c "./wc readme.md | grep -q ."
