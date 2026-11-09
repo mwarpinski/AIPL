@@ -235,7 +235,7 @@ fn self_hosted_compiler_matches_on_every_op() {
 }
 
 fn self_hosted(src: &str) -> Vec<u8> {
-    let codegen = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("aipl_src/codegen.aipl");
+    let codegen = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aipl_src/codegen.aipl");
     let module = Resolver::resolve(&codegen).unwrap();
     TypeChecker::new().check_module(&module).unwrap();
     let mut vm = VM::new();

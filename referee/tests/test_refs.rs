@@ -12,7 +12,7 @@ use wasmtime::{Engine, Module as WasmModule, TypedFunc};
 /// allocation names its allocator from std/alloc), else just parsed.
 fn parse_program(src: &str) -> Result<aipl_core::ast::Module, String> {
     if src.contains("(import ") {
-        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/inline.aipl"))
+        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/inline.aipl"))
     } else {
         aipl_core::parser::Parser::parse(src)
     }

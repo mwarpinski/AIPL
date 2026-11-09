@@ -26,7 +26,7 @@ fn net_path() -> std::ffi::OsString {
 }
 
 fn root() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 
 fn echo() -> PathBuf {

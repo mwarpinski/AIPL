@@ -13,7 +13,7 @@ const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const RUNNER: &str = env!("CARGO_BIN_EXE_aipl-run");
 
 fn root() -> PathBuf {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 
 /// An empty directory outside the checkout.

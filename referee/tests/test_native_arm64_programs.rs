@@ -95,7 +95,7 @@ fn printing_through_wasi() {
 /// build prints, from tests/aipl/sys/files_dirs_stat.aipl.
 #[test]
 fn files_directories_listing_and_file_information() {
-    let src = std::fs::read_to_string(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/aipl/sys/files_dirs_stat.aipl")).unwrap();
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/aipl/sys/files_dirs_stat.aipl")).unwrap();
     let want = "mkdir ok\nwrite b ok\nwrite a ok\nmkdir sub ok\nread: a longer text\nentry a.txt\nentry b.txt\nentry sub\n\
                 d/a.txt: file 13\nd/b.txt: file 3\nd/sub: directory\nd/none: missing\nrename ok\nd/b.txt: missing\n\
                 d/c.txt: file 3\nrmdir full directory not empty\nremove a ok\nremove c ok\nremove missing no such file or directory\n\
@@ -149,7 +149,7 @@ fn a_wild_load_is_an_out_of_bounds_trap() {
 /// expect of every other backend.
 #[test]
 fn waiting_a_limited_time_for_a_program_and_for_a_socket() {
-    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let src = std::fs::read_to_string(root.join("tests/aipl/sys/std_proc_within.aipl")).unwrap();
     let exe = build_with(&src, &["/bin/sh", "/bin/cat"]);
     let Some(out) = arm64::run(&exe, &[], b"") else {
@@ -167,7 +167,7 @@ fn waiting_a_limited_time_for_a_program_and_for_a_socket() {
 
 #[test]
 fn a_program_that_does_not_end_can_be_signalled_polled_and_stopped() {
-    let sys = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/aipl/sys");
+    let sys = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/aipl/sys");
     let go = |file: &str| -> Option<String> {
         let src = std::fs::read_to_string(sys.join(file)).unwrap();
         let exe = build_with(&src, &["/bin/sh"]);
@@ -183,7 +183,7 @@ fn a_program_that_does_not_end_can_be_signalled_polled_and_stopped() {
 
 #[test]
 fn threads_start_and_wait_for_processes_without_sharing_a_slot() {
-    let src = std::fs::read_to_string(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/aipl/sys/spawn_threads.aipl")).unwrap();
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/aipl/sys/spawn_threads.aipl")).unwrap();
     let exe = build_with(&src, &["/bin/sh"]);
     let Some(out) = arm64::run(&exe, &[], b"") else {
         eprintln!("no AArch64 machine to run on: not run");
@@ -194,7 +194,7 @@ fn threads_start_and_wait_for_processes_without_sharing_a_slot() {
 
 #[test]
 fn processes_start_talk_through_pipes_and_are_waited_for() {
-    let sys = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/aipl/sys");
+    let sys = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/aipl/sys");
     let go = |file: &str, grants: &[&str]| -> Option<(String, i32)> {
         let src = std::fs::read_to_string(sys.join(file)).unwrap();
         let exe = build_with(&src, grants);
@@ -259,7 +259,7 @@ fn a_sandboxed_executable_reaches_only_its_working_directory() {
 fn sockets_serve_connections_and_refuse_what_was_not_granted() {
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener, TcpStream};
-    let src = std::fs::read_to_string(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/aipl/net/echo.aipl")).unwrap();
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/aipl/net/echo.aipl")).unwrap();
     // a port nothing is using now
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let at = format!("127.0.0.1:{port}");
@@ -310,7 +310,7 @@ fn sockets_serve_connections_and_refuse_what_was_not_granted() {
 fn a_serving_executable_answers_each_request_with_a_fresh_copy() {
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener, TcpStream};
-    let src = std::fs::read_to_string(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/aipl/net/fresh_demo.aipl")).unwrap();
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/aipl/net/fresh_demo.aipl")).unwrap();
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let at = format!("127.0.0.1:{port}");
     let exe = build_all(&src, &[], false, Some(&format!("{at} requests=3")));
@@ -357,7 +357,7 @@ fn a_serving_executable_answers_each_request_with_a_fresh_copy() {
 /// may interleave, as in every backend).
 #[test]
 fn threads_share_counters_locks_and_the_allocator() {
-    let src = std::fs::read_to_string(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/aipl/threads/threads_main.aipl")).unwrap();
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/aipl/threads/threads_main.aipl")).unwrap();
     let exe = build(&src);
     let Some(out) = arm64::run(&exe, &[], b"") else {
         eprintln!("no AArch64 machine to run on: not run");
@@ -375,7 +375,7 @@ fn threads_share_counters_locks_and_the_allocator() {
 /// benchmark's result on 1, 3, and 8 threads.
 #[test]
 fn the_parallel_spectral_norm_matches_the_sequential_one() {
-    let src = std::fs::read_to_string(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("examples/spectralnorm_par.aipl")).unwrap();
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("examples/spectralnorm_par.aipl")).unwrap();
     let exe = build(&src);
     for threads in ["1", "3", "8"] {
         let Some(out) = arm64::run(&exe, &["100", threads], b"") else {
@@ -392,7 +392,7 @@ fn the_parallel_spectral_norm_matches_the_sequential_one() {
 /// registers, spills, and flushes (docs/design/ARM64_OPT_PLAN.md).
 #[test]
 fn the_benchmarks_print_their_expected_output() {
-    let bench = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("benchmarks");
+    let bench = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("benchmarks");
     for name in ["binarytrees", "fannkuch", "mandelbrot", "nbody", "pidigits", "spectralnorm", "spigot"] {
         let dir = bench.join(name);
         let src = std::fs::read_to_string(dir.join(format!("{name}.aipl"))).unwrap();
@@ -573,7 +573,7 @@ fn a_bad_pointer_to_a_wasi_function_traps_with_the_region() {
 fn fetching_connects_where_granted_and_only_there() {
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener};
-    let src = std::fs::read_to_string(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/aipl/net/fetch_demo.aipl")).unwrap();
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/aipl/net/fetch_demo.aipl")).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let at = format!("127.0.0.1:{port}");

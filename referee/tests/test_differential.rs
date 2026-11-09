@@ -22,7 +22,7 @@ use wasmtime::{Engine, Module as WasmModule, Store, Val, ValType};
 /// allocation names its allocator from std/alloc), else just parsed.
 fn parse_program(src: &str) -> Result<aipl_core::ast::Module, String> {
     if src.contains("(import ") {
-        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/inline.aipl"))
+        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/inline.aipl"))
     } else {
         aipl_core::parser::Parser::parse(src)
     }
@@ -513,7 +513,7 @@ const KNOWN_STALE_EXAMPLES: &[(&str, &str)] = &[];
 
 #[test]
 fn every_example_agrees_between_vm_and_wasmtime() {
-    let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("examples");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("examples");
     let mut paths: Vec<_> = std::fs::read_dir(&dir)
         .expect("examples dir")
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -616,7 +616,7 @@ fn every_example_agrees_between_vm_and_wasmtime() {
 /// silent skip.
 #[test]
 fn codegen_self_test_agrees_between_vm_and_wasmtime() {
-    let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("aipl_src/codegen.aipl");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aipl_src/codegen.aipl");
     let module = Resolver::resolve(&path).expect("codegen.aipl must resolve");
     TypeChecker::new().check_module(&module).expect("codegen.aipl must type-check");
     let target = module

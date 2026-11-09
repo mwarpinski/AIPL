@@ -16,7 +16,7 @@ use wasmtime_wasi::WasiCtxBuilder;
 use wasmparser::{BlockType, DataKind, ElementItems, ElementKind, ExternalKind, Operator, Parser, Payload, TypeRef, ValType};
 
 fn root() -> PathBuf {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 
 /// Every program in the repository that compiles to wasm, plus the thread
@@ -46,7 +46,7 @@ fn programs() -> Vec<(String, Vec<u8>)> {
     for name in ["(module threads", "(module atomics"] {
         let start = threads.find(name).unwrap();
         let end = threads[start..].find("\"#;").unwrap();
-        let m = Resolver::resolve_source(&threads[start..start + end], &std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/inline.aipl")).unwrap();
+        let m = Resolver::resolve_source(&threads[start..start + end], &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/inline.aipl")).unwrap();
         out.push((name.to_string(), WasmCompiler::compile(&m).unwrap()));
     }
     out

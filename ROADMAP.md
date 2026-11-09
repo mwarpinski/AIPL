@@ -47,8 +47,16 @@ by how soon a newcomer meets each item. Sizes are rough: **S** days, **M** a wee
    trampoline or a code generator change); there is no Windows ARM64 build; tests run on one VM type.
 7. **Install-test Linux AArch64 on real hardware.** *S.* CI builds it and the installer runs in an arm64 container; nobody has run
    the one-liner on a physical machine of that kind.
-8. **Older kernels.** *S.* Native executables confine files with `openat2` (Linux 5.6). Where it is missing they fall back
-    to plain `openat` and `--sandbox` refuses to start; say so visibly (a warning when compiling).
+8. **Older kernels, and `openat2`'s retry.** *S.* Native executables confine files with `openat2` (Linux 5.6). Where it is
+    missing they fall back to plain `openat` and `--sandbox` refuses to start; say so visibly (a warning when compiling).
+    Where it is there, the runtime (`emit_openat2` in aipl_src/native/wasi.aipl and wasi_arm64.aipl) never retries
+    `EAGAIN`, which the kernel gives a path with a `..` component (RESOLVE_BENEATH cannot prove it stays beneath) when a
+    file is renamed anywhere at that moment, as `openat2(2)` says to retry. Measured: with four threads renaming files, 3%
+    of opens of `a/b/../f` failed and none of `a/f`. A program that opens a path with `..` on a busy machine can fail a
+    read or a write now and then; it was the cause of two unexplained test failures (`cannot read entry file`,
+    `cannot write`), which the tests now avoid by using paths without `..`. The fix is a bounded retry in both runtimes,
+    which changes the machine code every program embeds, so it comes with a seed refresh (both seeds) and a regression
+    test that opens such a path while another thread renames.
 
 ## 3. Language and runtime
 

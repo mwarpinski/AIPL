@@ -9,7 +9,7 @@ const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const RUNNER: &str = env!("CARGO_BIN_EXE_aipl-run");
 
 fn case(name: &str) -> PathBuf {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/aipl/windows").join(format!("{name}.aipl"))
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tests/aipl/windows").join(format!("{name}.aipl"))
 }
 
 fn scratch(name: &str) -> PathBuf {
