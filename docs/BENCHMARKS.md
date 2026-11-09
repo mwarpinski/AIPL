@@ -9,9 +9,12 @@ without it (`--no-opt`). They serve two
 purposes: measuring speed, and finding what the language is missing (each
 program's gaps are listed below, with what was added for it).
 
-    cargo build --release
+    sh bootstrap/build.sh             # the compiler, from the seed: no Rust (needs gcc and Python 3 for the C and Python columns)
     python3 tools/bench.py            # every benchmark, at its benchmark size
     python3 tools/bench.py spigot     # one
+
+With no Rust built, `tools/bench.py` uses the self-hosted compiler and times the native versions; after
+`cargo build --release` it uses the Rust one and adds the wasm versions (`--aipl PATH` or `$AIPL` chooses).
 
 `tools/bench.py` builds every version, checks they all print the same
 output, and reports the best of three wall-clock runs (`--runs N` for

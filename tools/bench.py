@@ -12,16 +12,22 @@ Ways: AIPL native (`aipl compile --exe`), AIPL wasm under the launcher
 (`--target wasm`, wasmtime/Cranelift), each also built without the
 optimizer (`--no-opt`, docs/design/OPT_PLAN.md), C (`gcc -O2`), Python 3.
 `--no-unopt` leaves the `--no-opt` builds out. Each time is
-the best of RUNS runs, wall clock, process start included. Needs a release
-build (`cargo build --release`) and gcc; prints a Markdown table.
+the best of RUNS runs, wall clock, process start included. Needs gcc, and a compiler: the self-hosted one
+(`sh bootstrap/build.sh`, then `AIPL=target/bootstrap/aipl python3 tools/bench.py`, or `--aipl PATH`), which builds the
+native versions and needs no Rust; or the Rust one (`cargo build --release`, the default when it exists), which builds
+the wasm versions as well. Prints a Markdown table.
 """
 import os, subprocess, sys, time, shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(ROOT, "benchmarks")
 OUT = os.path.join(ROOT, "target", "bench")
-AIPL = os.path.join(ROOT, "target", "release", "aipl")
+RUST = os.path.join(ROOT, "target", "release", "aipl")
+SELF = os.path.join(ROOT, "target", "bootstrap", "aipl")
 RUNS = 3
+AIPL = RUST
+# (set by main) whether the compiler can also build the wasm versions: they bundle the launcher, aipl-run, from Rust
+WASM = True
 
 def sizes(name):
     """(test args, benchmark args) from the benchmark's files."""
@@ -34,12 +40,13 @@ def build(name):
     src = os.path.join(BENCH, name)
     os.makedirs(OUT, exist_ok=True)
     exe = {}
-    for target in ["native", "wasm"]:
+    for target in ["native", "wasm"] if WASM else ["native"]:
         for opt in ["", "--no-opt"]:
             key = target + opt
             exe[key] = os.path.join(OUT, f"{name}_{target}{opt.replace('-', '_')}")
-            subprocess.run([AIPL, "compile", "--exe", f"--target={target}"] + ([opt] if opt else []) + [os.path.join(src, f"{name}.aipl"), "-o", exe[key]],
-                           check=True, capture_output=True, env=dict(os.environ, AIPL_RUNNER=os.path.join(ROOT, "target", "release", "aipl-run")))
+            subprocess.run([AIPL, "compile", "--exe"] + (["--target=wasm"] if target == "wasm" else []) + ([opt] if opt else []) + [os.path.join(src, f"{name}.aipl"), "-o", exe[key]],
+                           check=True, capture_output=True, env=dict(os.environ, AIPL_RUNNER=os.path.join(ROOT, "target", "release", "aipl-run"),
+                                    **({} if "AIPL_STD" in os.environ else {"AIPL_STD": os.path.join(ROOT, "aipl_src", "std") + "/"})))
     exe["c"] = os.path.join(OUT, f"{name}_c")
     c = os.path.join(src, f"{name}.c")
     libs = ["-lm"] + (["-lgmp"] if "#include <gmp.h>" in open(c).read() else [])
@@ -47,11 +54,13 @@ def build(name):
     ways = {
         "AIPL native": [exe["native"]],
         "AIPL native --no-opt": [exe["native--no-opt"]],
-        "AIPL wasm (wasmtime)": [exe["wasm"]],
-        "AIPL wasm --no-opt": [exe["wasm--no-opt"]],
+        "AIPL wasm (wasmtime)": [exe.get("wasm")],
+        "AIPL wasm --no-opt": [exe.get("wasm--no-opt")],
         "C (gcc -O2)": [exe["c"]],
         "Python 3": [sys.executable, os.path.join(src, f"{name}.py")],
     }
+    if not WASM:
+        del ways["AIPL wasm (wasmtime)"], ways["AIPL wasm --no-opt"]
     if built.returncode != 0:
         # pidigits' C needs GMP (libgmp-dev): its row then has no C time,
         # and no ratios
@@ -77,7 +86,16 @@ def stdin_for(name, quick):
     return open(p, "rb").read() if os.path.exists(p) else b""
 
 def main():
-    global RUNS
+    global RUNS, AIPL, WASM
+    if "--aipl" in sys.argv:
+        i = sys.argv.index("--aipl")
+        os.environ["AIPL"] = os.path.abspath(sys.argv.pop(i + 1))
+        sys.argv.pop(i)
+    # the compiler: --aipl, else $AIPL, else the Rust one if it is built, else the self-hosted one
+    AIPL = os.path.abspath(os.environ.get("AIPL") or (RUST if os.path.exists(RUST) else SELF))
+    if not os.path.exists(AIPL):
+        sys.exit(f"no compiler at {AIPL}: run `sh bootstrap/build.sh` (or `cargo build --release`), or pass --aipl PATH")
+    WASM = os.path.exists(os.path.join(os.path.dirname(AIPL), "aipl-run"))
     quick = "--quick" in sys.argv
     if "--runs" in sys.argv:
         i = sys.argv.index("--runs")
@@ -93,7 +111,8 @@ def main():
         if "--no-python" in sys.argv:
             del cmds["Python 3"]
         if "--no-unopt" in sys.argv:
-            del cmds["AIPL native --no-opt"], cmds["AIPL wasm --no-opt"]
+            for w in ("AIPL native --no-opt", "AIPL wasm --no-opt"):
+                cmds.pop(w, None)
         stdin = stdin_for(name, quick)
         reference = None
         times = {}
