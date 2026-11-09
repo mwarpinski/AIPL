@@ -3454,11 +3454,14 @@ module tar
     at most as large as a program's memory (2 GiB).
 
 enum tar.Kind [file dir symlink hardlink other]
+    What an entry is: a regular file, a directory, a symbolic link, a hard link, or anything else (a device, a fifo).
 
 struct tar.Error [(read at:i32) (read what:str)]
     Why an archive was refused, and the byte offset where.
 
 struct tar.Archive [] and 6 private fields
+    The entries of an archive that open read, from the allocator it was made with; free gives it back. The bytes it
+    was opened over stay the caller's, and must outlive it.
 
 fn tar.free_error [a:alloc.Allocator e:(ptr tar.Error)] -> void
     Frees an Error open gave.
@@ -3471,14 +3474,19 @@ fn tar.free [ar:(ptr tar.Archive)] -> void
     Gives the archive's memory back (not the bytes it was opened over).
 
 fn tar.count [ar:(ptr tar.Archive)] -> i32
+    How many entries the archive has; they are numbered from 0 in the order they are in the archive.
 
 fn tar.kind [ar:(ptr tar.Archive) i:i32] -> tar.Kind
+    What entry i is.
 
 fn tar.size [ar:(ptr tar.Archive) i:i32] -> i32
+    The length of entry i's contents in bytes (a directory or a link normally has none: 0).
 
 fn tar.mode [ar:(ptr tar.Archive) i:i32] -> i32
+    Entry i's permission bits as written in the header (0644, 0755, ...).
 
 fn tar.mtime [ar:(ptr tar.Archive) i:i32] -> i64
+    Entry i's modification time, in seconds since 1970-01-01 UTC (a pax time's fraction is dropped).
 
 fn tar.name [ar:(ptr tar.Archive) i:i32] -> str.Bytes
     The entry's name, as written in the archive.

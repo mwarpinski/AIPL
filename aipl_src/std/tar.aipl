@@ -37,6 +37,7 @@
   (import vec)
   (import option)
 
+  ;; What an entry is: a regular file, a directory, a symbolic link, a hard link, or anything else (a device, a fifo).
   (enum Kind [file dir symlink hardlink other] (pub))
 
   ;; Why an archive was refused, and the byte offset where.
@@ -48,6 +49,8 @@
                  name_at:i32 name_len:i32 name_owned:bool
                  link_at:i32 link_len:i32 link_owned:bool] (value))
 
+  ;; The entries of an archive that open read, from the allocator it was made with; free gives it back. The bytes it
+  ;; was opened over stay the caller's, and must outlive it.
   (struct Archive [data:str.Bytes entries:(ptr (vec.Vec Entry)) names:(ptr buf.Buf) a:alloc.Allocator] (pub))
 
   (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
@@ -318,24 +321,29 @@
 
   ;; ===== Reading entries =====
 
+  ;; How many entries the archive has; they are numbered from 0 in the order they are in the archive.
   (fn count [ar:(ptr Archive)] -> i32 (pub) (call (vec.len Entry) (get ar Archive.entries)))
 
   (fn entry [ar:(ptr Archive) i:i32] -> Entry
     (req (and (gte i 0) (lt i (call count ar))))
     (call (vec.at Entry) (get ar Archive.entries) i))
 
+  ;; What entry i is.
   (fn kind [ar:(ptr Archive) i:i32] -> Kind (pub)
     (let e:Entry (call entry ar i))
     (get e Entry.kind))
 
+  ;; The length of entry i's contents in bytes (a directory or a link normally has none: 0).
   (fn size [ar:(ptr Archive) i:i32] -> i32 (pub)
     (let e:Entry (call entry ar i))
     (get e Entry.size))
 
+  ;; Entry i's permission bits as written in the header (0644, 0755, ...).
   (fn mode [ar:(ptr Archive) i:i32] -> i32 (pub)
     (let e:Entry (call entry ar i))
     (get e Entry.mode))
 
+  ;; Entry i's modification time, in seconds since 1970-01-01 UTC (a pax time's fraction is dropped).
   (fn mtime [ar:(ptr Archive) i:i32] -> i64 (pub)
     (let e:Entry (call entry ar i))
     (get e Entry.mtime))
