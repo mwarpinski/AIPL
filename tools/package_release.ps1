@@ -31,5 +31,6 @@ if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path $stage -DestinationPath $zip
 Remove-Item -Recurse -Force (Join-Path $out 'stage')
 $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
-"$hash  $name.zip" | Set-Content -Encoding ascii "$zip.sha256"
+# one line ending in LF, not the CRLF that Set-Content writes: `sha256sum -c` and the release workflow compare it exactly
+[System.IO.File]::WriteAllText("$zip.sha256", "$hash  $name.zip`n")
 "package_release: $zip"

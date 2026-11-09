@@ -39,7 +39,7 @@ outside reviews; [docs/README.md](docs/README.md) indexes them all.
 ## How to verify everything
 
 ```bash
-sh bootstrap/build.sh                                  # the compiler from the seed: target/bootstrap/aipl (about 13 s)
+sh bootstrap/build.sh                                  # the compiler from the seed: target/bootstrap/aipl (about 16 s)
 target/bootstrap/aipl run aipl_src/test_suite.aipl     # AIPL-native suite, exit 0 = all groups pass (about 3 s)
 python3 tools/conformance.py --aipl target/bootstrap/aipl --backend run --backend wasm --backend native
 cargo test                                             # the referee's tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)

@@ -211,7 +211,7 @@ examples to hand; that is not a cold run (the A/B harness in
 
 ```bash
 aipl test examples/jsonpp.aipl                        # its tests
-aipl compile --exe examples/jsonpp.aipl -o jsonpp     # 0.3 s, a 410 KB executable
+aipl compile --exe examples/jsonpp.aipl -o jsonpp     # 0.4 s, a 410 KB executable
 echo '{"b":[1,2,{}],"a":null}' | ./jsonpp --sort
 ```
 
@@ -232,11 +232,11 @@ too; a document that is not JSON is reported as `FILE:LINE:COLUMN: what`.
 ## Build AIPL with AIPL
 
 The compiler is written in AIPL, and on Linux x86-64 it compiles itself to a
-native executable in about 3 seconds (on Linux AArch64, which has its own
-seed and a code generator with an optimizer, about 5). Without Rust, start from the
+native executable in about 5 seconds (on Linux AArch64, which has its own
+seed and a code generator with an optimizer, about 8 on a GitHub arm64 runner). Without Rust, start from the
 checked-in seed for your machine. From the source directory, this script builds the compiler
 with the seed, builds it again with the result, and checks that a third build
-is identical (about 8 seconds):
+is identical (about 16 seconds):
 
 ```bash
 sh bootstrap/build.sh               # the result is target/bootstrap/aipl

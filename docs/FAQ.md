@@ -57,9 +57,9 @@ larger, and could not be self-hosted.
 Yes, with one caveat. The import resolver, type checker, code generator,
 and native backend are written in AIPL. They produce the same bytes and the
 same error messages as the Rust implementation, and the compiler, built as a
-native executable, compiles itself to the same bytes in under three
+native executable, compiles itself to the same bytes in about five
 seconds. On Linux x86-64 it builds from a checked-in native seed with no
-Rust at all (`sh bootstrap/build.sh`, about 8 seconds), and every test run
+Rust at all (`sh bootstrap/build.sh`, about 16 seconds), and every test run
 checks that the seed's build is byte for byte the Rust toolchain's, so the
 seed cannot carry anything the source does not say (bootstrap/README.md).
 The caveat: the `aipl` command most people use is still the Rust one,

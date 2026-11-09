@@ -190,6 +190,9 @@ jobs:
         shell: pwsh
         run: |
           pwsh tools/package_release.ps1 dist
+          # the checksum file is one line ending in LF: sha256sum -c, and the release workflow's comparison, take it exactly
+          $sum = Get-Content -Raw (Get-ChildItem dist/*.sha256).FullName
+          if ($sum -match "`r" -or $sum -notmatch "`n$") { Write-Error 'the .sha256 file is not one LF-ended line'; exit 1 }
           New-Item -ItemType Directory -Force dist-site/latest/download | Out-Null
           Copy-Item dist/* dist-site/latest/download/
           $env:AIPL_RELEASES = "file:///$((Resolve-Path dist-site).Path -replace '\\','/')"

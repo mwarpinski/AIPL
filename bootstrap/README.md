@@ -8,7 +8,7 @@ statically linked, needs nothing but the Linux kernel, and builds the next
 version of itself:
 
 ```bash
-sh bootstrap/build.sh            # about 8 seconds; the result is target/bootstrap/aipl
+sh bootstrap/build.sh            # about 16 seconds; the result is target/bootstrap/aipl
 ```
 
 On Linux AArch64 the script uses `aipl-linux-aarch64` instead (see "On AArch64 Linux" below).
