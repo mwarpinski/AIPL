@@ -217,11 +217,21 @@ Last before the final checks, against the language section 1 leaves.
 - [ ] Every box above is ticked or has a stated reason.
 - [ ] From a fresh clone, by the README alone: the seed builds the compiler, and the AIPL suite and the benchmarks run
   clean with no Rust. The referee's CI (`cargo test` and both fuzzers, an hour each) passes on the same commit.
-- [ ] The documentation check is rerun (`python3 tools/docs_check.py`, also in CI), and the numbers it cannot count are
-  measured again on the day (benchmark times, sizes, compile times).
+- [x] **The documentation check is rerun, and the numbers it cannot count are measured again** (2026-11-08):
+  `python3 tools/docs_check.py` reports 0 findings in 75 documents. On a quiet arcadia (the Windows VM that keeps its
+  processors busy was paused; with it running every time was up to twice as long), from a fresh clone: `sh
+  bootstrap/build.sh` takes 16 s (the documents said 8 and 13), the compiler compiling itself 5.3 s (said 3), the AIPL
+  suite 3.2 s, `jsonpp` compiles in 0.4 s to 410 KB, `word_count` 129 KB, hello 85 KB (those three were right). The
+  benchmark table in docs/BENCHMARKS.md is the day's (best of five), and the speed claims in the README, FAQ and launch
+  notes follow it: native 1.2 to 7.1 times C on the seven with a C time here, WebAssembly 1.5 to 6.7. pidigits has no C
+  time here (no libgmp-dev on arcadia: `sudo apt install libgmp-dev` would add it). The AArch64 build time (about 8 s a
+  stage) is from GitHub's arm64 runner.
 - [ ] `development` is merged into `main` and tagged, with the owner's approval.
-- [ ] The launch notes say what AIPL is, what is unfinished (the macOS and Windows preview, the thesis not yet
-  measured), and how it was built, before anyone has to ask.
+- [x] **The launch notes** (2026-11-08): docs/LAUNCH_NOTES.md says what AIPL is, what is unfinished (the macOS and
+  Windows preview, no notarisation or code signing, the thesis not measured, no stability promise, no packages or
+  language server, no TLS in AIPL, the rough edges) and how it was built (by AI agents, and the checks that follow
+  from that). It is the text for the release page; the workflow's generated notes (platforms, install, verify,
+  commits) go below it.
 
 ## After launch (deferred on purpose)
 
