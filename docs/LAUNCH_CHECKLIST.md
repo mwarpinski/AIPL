@@ -214,9 +214,27 @@ Last before the final checks, against the language section 1 leaves.
 
 ## 8. Right before launch
 
-- [ ] Every box above is ticked or has a stated reason.
-- [ ] From a fresh clone, by the README alone: the seed builds the compiler, and the AIPL suite and the benchmarks run
-  clean with no Rust. The referee's CI (`cargo test` and both fuzzers, an hour each) passes on the same commit.
+- [x] **Every box above is ticked or has a stated reason** (2026-11-08): sections 1 to 7 are all ticked. What is open,
+  and why it does not block the launch: the owner still has to enable private vulnerability reporting in the repository's
+  settings and confirm the 7, 14 and 90 day times in SECURITY.md (only the owner can); `aipl-editors` has a local
+  commit to push; the self-hosted `aipl run FILE.wasm` prints one extra stderr line when the program traps (cosmetic,
+  needs a silent-exit primitive in the native backend); the macOS binary is not notarised and the Windows one is not
+  code-signed (the launch notes say so, and a preview is what they are); Linux AArch64 is built and tested on GitHub's
+  arm64 machines but the installer has not been run on a physical one (ROADMAP item 7); and one unexplained failure of
+  `aipl_run_says_the_same_in_both_commands` on arcadia, once in a dozen full runs, never reproduced (3,200 stress runs).
+- [x] **From a fresh clone, by the README alone** (2026-11-08, arcadia, with no Rust on the `PATH`): `git clone`, then
+  `sh bootstrap/build.sh` builds the compiler from the seed and reaches the fixed point; `aipl run aipl_src/test_suite.aipl`
+  exits 0 (all groups pass); `tools/bench.py` builds and times the eight benchmarks with the self-hosted compiler (it
+  used the Rust one before, and now takes `--aipl` or `$AIPL`) and every version of each prints the same output. The
+  referee's CI passed on the same line of commits: `tools/ci.sh` on arcadia at 0c483e4 (590 tests, the native tests
+  without openat2, 3,000 mutated and 500 generated programs 0 failing, the optimizer against itself, conformance 174,
+  124 and 124, lint, fmt, docs, release facts), and GitHub's five jobs (selfhosted, referee, arm64, install, windows)
+  at 45eda72, which differs from 0c483e4 only in documents. (The fresh clone was at 83f46e1; what came after changed
+  the release workflow, the Windows packaging script, the documents and the checklist, not the compiler or the seed.)
+- [x] **The release workflow rehearsed** (2026-11-08, Actions, "Run workflow" on `development`, three runs): the first
+  two found real faults, and the third (45eda72) passed gate, all four builds, signing and the check a user would make
+  of the signature, publishing nothing. Found and fixed: GitHub no longer provides `macos-14` (now `macos-15`), and the
+  Windows `.sha256` file had CRLF line endings, so it disagreed with `SHA256SUMS` (now one LF-ended line, and CI checks it).
 - [x] **The documentation check is rerun, and the numbers it cannot count are measured again** (2026-11-08):
   `python3 tools/docs_check.py` reports 0 findings in 75 documents. On a quiet arcadia (the Windows VM that keeps its
   processors busy was paused; with it running every time was up to twice as long), from a fresh clone: `sh
