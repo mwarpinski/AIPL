@@ -1,0 +1,245 @@
+;; @spec 10
+;; @kind run
+;; @out == GNU tar, gnu format, long names
+;; @out dir 0 775 1700000000 ./ - -
+;; @out dir 0 775 1700000000 ./a/ - -
+;; @out dir 0 750 1700000000 ./a/b/ - -
+;; @out file 3190 664 1700000000 ./a/b/data.txt - 0b7260596e33038e
+;; @out file 6 640 1700000000 ./a/hard - 5891b5b522d5df08
+;; @out hardlink 0 640 1700000000 ./a/hello.txt ./a/hard -
+;; @out symlink 0 777 1700000000 ./a/link hello.txt -
+;; @out symlink 0 777 1700000000 ./a/longlink ../../../xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx -
+;; @out file 0 664 1700000000 ./a/zero - e3b0c44298fc1c14
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ - -
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ - -
+;; @out file 5 664 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ffffffffffffffffffffffffffffffffffffffff.txt - bbdbb75b415ee9a4
+;; @out dir 0 775 1700000000 ./empty/ - -
+;; @out file 1024 664 1700000000 ./exact1024 - 11cb7930473bb0c2
+;; @out file 512 664 1700000000 ./exact512 - 64164443bb63e338
+;; @out file 2 664 1700000000 ./unicode-üñï-名前.txt - ea46748e171abd2d
+;; @out == GNU tar, oldgnu format, long names
+;; @out dir 0 775 1700000000 ./ - -
+;; @out dir 0 775 1700000000 ./a/ - -
+;; @out dir 0 750 1700000000 ./a/b/ - -
+;; @out file 3190 664 1700000000 ./a/b/data.txt - 0b7260596e33038e
+;; @out file 6 640 1700000000 ./a/hard - 5891b5b522d5df08
+;; @out hardlink 0 640 1700000000 ./a/hello.txt ./a/hard -
+;; @out symlink 0 777 1700000000 ./a/link hello.txt -
+;; @out symlink 0 777 1700000000 ./a/longlink ../../../xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx -
+;; @out file 0 664 1700000000 ./a/zero - e3b0c44298fc1c14
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ - -
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ - -
+;; @out file 5 664 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ffffffffffffffffffffffffffffffffffffffff.txt - bbdbb75b415ee9a4
+;; @out dir 0 775 1700000000 ./empty/ - -
+;; @out file 1024 664 1700000000 ./exact1024 - 11cb7930473bb0c2
+;; @out file 512 664 1700000000 ./exact512 - 64164443bb63e338
+;; @out file 2 664 1700000000 ./unicode-üñï-名前.txt - ea46748e171abd2d
+;; @out == GNU tar, posix format, long names
+;; @out dir 0 775 1700000000 ./ - -
+;; @out dir 0 775 1700000000 ./a/ - -
+;; @out dir 0 750 1700000000 ./a/b/ - -
+;; @out file 3190 664 1700000000 ./a/b/data.txt - 0b7260596e33038e
+;; @out file 6 640 1700000000 ./a/hard - 5891b5b522d5df08
+;; @out hardlink 0 640 1700000000 ./a/hello.txt ./a/hard -
+;; @out symlink 0 777 1700000000 ./a/link hello.txt -
+;; @out symlink 0 777 1700000000 ./a/longlink ../../../xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx -
+;; @out file 0 664 1700000000 ./a/zero - e3b0c44298fc1c14
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ - -
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ - -
+;; @out file 5 664 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ffffffffffffffffffffffffffffffffffffffff.txt - bbdbb75b415ee9a4
+;; @out dir 0 775 1700000000 ./empty/ - -
+;; @out file 1024 664 1700000000 ./exact1024 - 11cb7930473bb0c2
+;; @out file 512 664 1700000000 ./exact512 - 64164443bb63e338
+;; @out file 2 664 1700000000 ./unicode-üñï-名前.txt - ea46748e171abd2d
+;; @out == GNU tar, ustar format
+;; @out dir 0 775 1700000000 ./ - -
+;; @out dir 0 775 1700000000 ./a/ - -
+;; @out dir 0 750 1700000000 ./a/b/ - -
+;; @out file 3190 664 1700000000 ./a/b/data.txt - 0b7260596e33038e
+;; @out file 6 640 1700000000 ./a/hard - 5891b5b522d5df08
+;; @out hardlink 0 640 1700000000 ./a/hello.txt ./a/hard -
+;; @out symlink 0 777 1700000000 ./a/link hello.txt -
+;; @out file 0 664 1700000000 ./a/zero - e3b0c44298fc1c14
+;; @out dir 0 775 1700000000 ./empty/ - -
+;; @out file 1024 664 1700000000 ./exact1024 - 11cb7930473bb0c2
+;; @out file 512 664 1700000000 ./exact512 - 64164443bb63e338
+;; @out file 2 664 1700000000 ./unicode-üñï-名前.txt - ea46748e171abd2d
+;; @out == GNU tar, v7 format
+;; @out dir 0 775 1700000000 ./ - -
+;; @out dir 0 775 1700000000 ./a/ - -
+;; @out dir 0 750 1700000000 ./a/b/ - -
+;; @out file 3190 664 1700000000 ./a/b/data.txt - 0b7260596e33038e
+;; @out file 6 640 1700000000 ./a/hard - 5891b5b522d5df08
+;; @out hardlink 0 640 1700000000 ./a/hello.txt ./a/hard -
+;; @out symlink 0 777 1700000000 ./a/link hello.txt -
+;; @out file 0 664 1700000000 ./a/zero - e3b0c44298fc1c14
+;; @out dir 0 775 1700000000 ./empty/ - -
+;; @out file 1024 664 1700000000 ./exact1024 - 11cb7930473bb0c2
+;; @out file 512 664 1700000000 ./exact512 - 64164443bb63e338
+;; @out file 2 664 1700000000 ./unicode-üñï-名前.txt - ea46748e171abd2d
+;; @out == Python, ustar format
+;; @out dir 0 775 1700000000 ./ - -
+;; @out dir 0 775 1700000000 ./a/ - -
+;; @out dir 0 750 1700000000 ./a/b/ - -
+;; @out file 3190 664 1700000000 ./a/b/data.txt - 0b7260596e33038e
+;; @out file 6 640 1700000000 ./a/hard - 5891b5b522d5df08
+;; @out hardlink 0 640 1700000000 ./a/hello.txt ./a/hard -
+;; @out symlink 0 777 1700000000 ./a/link hello.txt -
+;; @out file 0 664 1700000000 ./a/zero - e3b0c44298fc1c14
+;; @out dir 0 775 1700000000 ./empty/ - -
+;; @out file 1024 664 1700000000 ./exact1024 - 11cb7930473bb0c2
+;; @out file 512 664 1700000000 ./exact512 - 64164443bb63e338
+;; @out file 2 664 1700000000 ./unicode-üñï-名前.txt - ea46748e171abd2d
+;; @out == Python, gnu format, long names
+;; @out dir 0 775 1700000000 ./ - -
+;; @out dir 0 775 1700000000 ./a/ - -
+;; @out dir 0 750 1700000000 ./a/b/ - -
+;; @out file 3190 664 1700000000 ./a/b/data.txt - 0b7260596e33038e
+;; @out file 6 640 1700000000 ./a/hard - 5891b5b522d5df08
+;; @out hardlink 0 640 1700000000 ./a/hello.txt ./a/hard -
+;; @out symlink 0 777 1700000000 ./a/link hello.txt -
+;; @out symlink 0 777 1700000000 ./a/longlink ../../../xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx -
+;; @out file 0 664 1700000000 ./a/zero - e3b0c44298fc1c14
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ - -
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ - -
+;; @out file 5 664 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ffffffffffffffffffffffffffffffffffffffff.txt - bbdbb75b415ee9a4
+;; @out dir 0 775 1700000000 ./empty/ - -
+;; @out file 1024 664 1700000000 ./exact1024 - 11cb7930473bb0c2
+;; @out file 512 664 1700000000 ./exact512 - 64164443bb63e338
+;; @out file 2 664 1700000000 ./unicode-üñï-名前.txt - ea46748e171abd2d
+;; @out == Python, pax format, long names
+;; @out dir 0 775 1700000000 ./ - -
+;; @out dir 0 775 1700000000 ./a/ - -
+;; @out dir 0 750 1700000000 ./a/b/ - -
+;; @out file 3190 664 1700000000 ./a/b/data.txt - 0b7260596e33038e
+;; @out file 6 640 1700000000 ./a/hard - 5891b5b522d5df08
+;; @out hardlink 0 640 1700000000 ./a/hello.txt ./a/hard -
+;; @out symlink 0 777 1700000000 ./a/link hello.txt -
+;; @out symlink 0 777 1700000000 ./a/longlink ../../../xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx -
+;; @out file 0 664 1700000000 ./a/zero - e3b0c44298fc1c14
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ - -
+;; @out dir 0 775 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ - -
+;; @out file 5 664 1700000000 ./dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/ffffffffffffffffffffffffffffffffffffffff.txt - bbdbb75b415ee9a4
+;; @out dir 0 775 1700000000 ./empty/ - -
+;; @out file 1024 664 1700000000 ./exact1024 - 11cb7930473bb0c2
+;; @out file 512 664 1700000000 ./exact512 - 64164443bb63e338
+;; @out file 2 664 1700000000 ./unicode-üñï-名前.txt - ea46748e171abd2d
+;; @out == Python, ustar format, a name split into a prefix and a name
+;; @out dir 0 775 1700000000 ./ - -
+;; @out dir 0 775 1700000000 ./pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp/ - -
+;; @out dir 0 775 1700000000 ./pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp/qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq/ - -
+;; @out file 7 664 1700000000 ./pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp/qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrr - 5a958fd0cb043599
+;; @out == Python, gnu format, a name twice and other kinds
+;; @out file 1 644 1700000000 same - 6b86b273ff34fce1
+;; @out file 1 644 1700000000 other - d4735e3a265e16ee
+;; @out file 3 644 1700000000 same - 556d7dc3a1153563
+;; @out other 0 644 1700000000 chr - -
+;; @out other 0 644 1700000000 fifo - -
+;; @out find same: entry 2, 3 bytes
+;; @out find other: entry 1, 1 bytes
+;; @out find missing: none
+;; @out == Python, pax format, a global header and a fractional time
+;; @out file 3 644 1700000000 fraction - ba7816bf8f01cfea
+(module tar_reads_real_archives
+  (import tar)
+  (import deflate)
+  (import encode)
+  (import hash)
+  (import buf)
+  (import str)
+  (import io)
+  (import alloc)
+  (import option)
+
+  (fn kind_name [k:tar.Kind] -> str
+    (cond
+      ((eq k tar.Kind.file) "file")
+      ((eq k tar.Kind.dir) "dir")
+      ((eq k tar.Kind.symlink) "symlink")
+      ((eq k tar.Kind.hardlink) "hardlink")
+      (else "other")))
+
+  ;; the bytes of a gzipped, base64 text
+  (fn unpack [a:alloc.Allocator text:str] -> (ptr buf.Buf)
+    (let raw:(ptr buf.Buf) (call buf.make a 4096))
+    (let out:(ptr buf.Buf) (call buf.make a 16384))
+    (match_result (call encode.base64_decode_to raw (call str.from_str text) encode.Alphabet.standard encode.Padding.padded)
+      (ok n
+        (match_result (call deflate.gzip_decompress_to a out (call buf.bytes raw) 1000000)
+          (ok m (call buf.free raw))
+          (err e (println "the test's own data is corrupt"))))
+      (err at (println "the test's own data is not base64")))
+    out)
+
+  ;; one line to an entry: kind, size, mode in octal, modification time, name, link target, and the start of the
+  ;; SHA-256 of the contents
+  (fn push_sha [o:(ptr buf.Buf) a:alloc.Allocator data:str.Bytes] -> void
+    (let d:(ptr buf.Buf) (call buf.make a 64))
+    (let h:(ptr buf.Buf) (call buf.make a 64))
+    (call hash.digest_to d hash.Algorithm.sha256 data)
+    (call encode.hex_to h (call buf.bytes d) false)
+    (call buf.push_bytes o (call str.slice (call buf.bytes h) 0 16))
+    (call buf.free d)
+    (call buf.free h))
+
+  (fn show [a:alloc.Allocator title:str text:str] -> void
+    (println "== {title}")
+    (let data:(ptr buf.Buf) (call unpack a text))
+    (match_result (call tar.open a (call buf.bytes data))
+      (ok ar
+        (let o:(ptr buf.Buf) (call buf.make a 256))
+        (for i 0 (call tar.count ar)
+          (call buf.clear o)
+          (call buf.push_str o (call kind_name (call tar.kind ar i)))
+          (call buf.push_str o " ")
+          (call buf.push_int o (call tar.size ar i))
+          (call buf.push_str o " ")
+          (call buf.push_unsigned o (i64.extend_s (call tar.mode ar i)) 8 false)
+          (call buf.push_str o " ")
+          (call buf.push_i64 o (call tar.mtime ar i))
+          (call buf.push_str o " ")
+          (call buf.push_bytes o (call tar.name ar i))
+          (call buf.push_str o " ")
+          (if (or (eq (call tar.kind ar i) tar.Kind.symlink) (eq (call tar.kind ar i) tar.Kind.hardlink))
+            (call buf.push_bytes o (call tar.link ar i))
+            (call buf.push_str o "-"))
+          (call buf.push_str o " ")
+          (if (eq (call tar.kind ar i) tar.Kind.file)
+            (call push_sha o a (call tar.data ar i))
+            (call buf.push_str o "-"))
+          (println "{(call buf.bytes o)}"))
+        (call buf.free o)
+        (call tar.free ar))
+      (err e (println "error: {(get e tar.Error.what)} at {(get e tar.Error.at)}")))
+    (call buf.free data))
+
+  ;; find gives the last entry of a name, and an option
+  (fn find_demo [a:alloc.Allocator] -> void
+    (let text:str "H4sIAAAAAAACA+3VTQrDIBBA4TmKRxh/qucJJSFdlICm969kaVddNDX4vs2AO5HnlOk5y49pFUM4ZtXOyooNNxdS0nCcx6hRjMoJXmWfsjEyKCsY2bavc+6u/6Tq6P8MjgSGVrrY//5j/1ul/zN474lgYPc1y//713b/x5TE+Cv1317uIpbHsvX3/vX/t2Ii/z8AAAAAAAAAAMDX3urMY6IAKAAA")
+    (let data:(ptr buf.Buf) (call unpack a text))
+    (match_result (call tar.open a (call buf.bytes data))
+      (ok ar
+        (for k 0 3
+          (let want:str (cond ((eq k 0) "same") ((eq k 1) "other") (else "missing")))
+          (match (call tar.find ar (call str.from_str want))
+            ((option.Option i32) some [i] (println "find {want}: entry {i}, {(get (call tar.data ar i) str.Bytes.len)} bytes"))
+            ((option.Option i32) none [] (println "find {want}: none"))))
+        (call tar.free ar))
+      (err e (println "error")))
+    (call buf.free data))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (call show a "GNU tar, gnu format, long names" "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")
+    (call show a "GNU tar, oldgnu format, long names" "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")
+    (call show a "GNU tar, posix format, long names" "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")
+    (call show a "GNU tar, ustar format" "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")
+    (call show a "GNU tar, v7 format" "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")
+    (call show a "Python, ustar format" "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")
+    (call show a "Python, gnu format, long names" "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")
+    (call show a "Python, pax format, long names" "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")
+    (call show a "Python, ustar format, a name split into a prefix and a name" "H4sIAAAAAAACA+3TPQ7DIAxAYeaeIicIPzH4PB0aqVtKW6nHL2JrhiyISKjvW4y8MDx5tqY7V6jGOov9rG8vMYiqk7pPXpKZojnB+/m65vKl+U+z3RrYPv3DsoRI/zM8Gthe9y8uBj94/7bDGqN/PvTTPyU56K+7/hqimMnRv7st39b752IAAAAAAAAAAAAAAMC4vjQcn9wAKAAA")
+    (call show a "Python, gnu format, a name twice and other kinds" "H4sIAAAAAAACA+3VTQrDIBBA4TmKRxh/qucJJSFdlICm969kaVddNDX4vs2AO5HnlOk5y49pFUM4ZtXOyooNNxdS0nCcx6hRjMoJXmWfsjEyKCsY2bavc+6u/6Tq6P8MjgSGVrrY//5j/1ul/zN474lgYPc1y//713b/x5TE+Cv1317uIpbHsvX3/vX/t2Ii/z8AAAAAAAAAAMDX3urMY6IAKAAA")
+    (call find_demo a)
+    (call show a "Python, pax format, a global header and a fractional time" "H4sIAAAAAAACA+3UzwqCMBzA8Z17ij3B3ObULkHHjr3CNBPBP2AGPn5ZRBB4XER+P5eNXX4w9p2KVLQ/+ulQ+lM5iCD009KqtbXv/XxutElTISvxBdfL6If7eLFOZiuLvm3LbtxVTZ/7ZiOwIuon+k8/+7cmFnKi/+Csle1Yt+XOZK/7Vwl/wGqcB1+Mdd+FnDE/qtS55f51LIxLrMsy7R7nWRJrITX9B+fzgggAAAAAAAAAAAAA4A/cAHo8uOAAKAAA")
+    0))

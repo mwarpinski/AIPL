@@ -39,6 +39,8 @@ jobs:
         run: python3 tools/grammar_check.py
       - name: The standard library reference, against aipl doc
         run: python3 tools/std_reference.py --check
+      - name: std/tar against damaged archives, with Python's tarfile as the reference
+        run: python3 tools/tar_fuzz.py --cases 1000 --seed 1 --aipl $AIPL
       - name: Release facts, the version is one number and each seed's hash is the recorded one
         run: |
           python3 tools/release_check.py version

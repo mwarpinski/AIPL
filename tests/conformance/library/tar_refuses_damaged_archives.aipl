@@ -1,0 +1,87 @@
+;; @spec 10
+;; @kind run
+;; @out a good archive: ok, 1 entries
+;; @out a good pax archive: ok, 1 entries
+;; @out no bytes at all: the archive is empty: not even an end marker (at 0)
+;; @out only the end marker: ok, 0 entries
+;; @out no end marker: ok, 1 entries
+;; @out text that is not an archive: the header's checksum is wrong (this is not a tar archive, or it is damaged) (at 0)
+;; @out a byte of the header changed: the header's checksum is wrong (this is not a tar archive, or it is damaged) (at 0)
+;; @out cut inside the header: a header needs 512 bytes, and the archive ends first (at 0)
+;; @out cut inside the contents: an entry's contents run past the end of the archive (at 0)
+;; @out cut inside the last block: an entry's last block is cut short: the archive ends inside it (at 0)
+;; @out cut after a pax header: the archive ends after a header that describes an entry, before the entry (at 1024)
+;; @out a sparse file: sparse files are not supported (at 0)
+;; @out a size that is not a number: the size is not a number this reader supports (at 124)
+;; @out a size larger than memory: an entry is bigger than a program's memory (at 0)
+;; @out a size in base 256: ok, 1 entries
+;; @out a mode that is not a number: the mode is not a number this reader supports (at 100)
+;; @out an entry with no name: an entry has no name (at 0)
+;; @out a pax record that says it is 99 bytes: a pax header's records are not well formed (at 0)
+;; @out a pax record without an equals sign: a pax header's records are not well formed (at 0)
+;; @out a pax size over the header's: ok, 1 entries
+;; @out a GNU long name with nothing after it: the archive ends after a header that describes an entry, before the entry (at 2048)
+(module tar_refuses_damaged_archives
+  (import tar)
+  (import deflate)
+  (import encode)
+  (import buf)
+  (import str)
+  (import io)
+  (import alloc)
+
+  (fn kind_name [k:tar.Kind] -> str
+    (cond
+      ((eq k tar.Kind.file) "file")
+      ((eq k tar.Kind.dir) "dir")
+      ((eq k tar.Kind.symlink) "symlink")
+      ((eq k tar.Kind.hardlink) "hardlink")
+      (else "other")))
+
+  ;; the bytes of a gzipped, base64 text
+  (fn unpack [a:alloc.Allocator text:str] -> (ptr buf.Buf)
+    (let raw:(ptr buf.Buf) (call buf.make a 4096))
+    (let out:(ptr buf.Buf) (call buf.make a 16384))
+    (match_result (call encode.base64_decode_to raw (call str.from_str text) encode.Alphabet.standard encode.Padding.padded)
+      (ok n
+        (match_result (call deflate.gzip_decompress_to a out (call buf.bytes raw) 1000000)
+          (ok m (call buf.free raw))
+          (err e (println "the test's own data is corrupt"))))
+      (err at (println "the test's own data is not base64")))
+    out)
+
+  (fn say [a:alloc.Allocator label:str text:str] -> void
+    (let data:(ptr buf.Buf) (call unpack a text))
+    (match_result (call tar.open a (call buf.bytes data))
+      (ok ar
+        (println "{label}: ok, {(call tar.count ar)} entries")
+        (call tar.free ar))
+      (err e
+        (println "{label}: {(get e tar.Error.what)} (at {(get e tar.Error.at)})")
+        (call tar.free_error a e)))
+    (call buf.free data))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (call say a "a good archive" "H4sIAAAAAAACA+3JMQrCQBRF0V+7ilmBTPSbWY+FkiIg6Agu35jSXkE8p7nw3nnbHz0+qy7GzLWL977eGPKwy9ZqrvvY9kOUGl9wv/XjtZT4U9Npni+bAAAAAAAAAAAA4Mc8AZvVvYcAKAAA")
+    (call say a "a good pax archive" "H4sIAAAAAAACA+3UsQrCMBDG8cw+RZ4guTRXi4Pg6OgrBCw41hohj29bwa2L0or4/y133HLD8Z3zzh9OqRzbdG57swh5mqsSJb76aR6kCsHYYlZwv+XUD+vNfwq72nYpX/bdl/jrB1wueWPwvjVOPIZ6qzqbfxE1QetKm0Z0nMfYDC/BCvlf/v6pECAAAAAAAAAAAAAAAIAf9gA64la8ACgAAA==")
+    (call say a "no bytes at all" "H4sIAAAAAAACAwMAAAAAAAAAAAA=")
+    (call say a "only the end marker" "H4sIAAAAAAACA2NgGAWjYBSMVAAALq+17wAEAAA=")
+    (call say a "no end marker" "H4sIAAAAAAACA+3JMQrCQBRF0V+7ilmBTPSbWY+FkiIg6Agu35jSXkE8p7nw3nnbHz0+qy7GzLWL977eGPKwy9ZqrvvY9kOUGl9wv/XjtZT4U9Npni+bAAAAAAAAAADgRz0By4crnAAkAAA=")
+    (call say a "text that is not an archive" "H4sIAAAAAAACAyvJyCxWAKK8/BKFRIWSxCKFxKLkjMyyVK6SUZlRmVGZESYDALT77ikQBAAA")
+    (call say a "a byte of the header changed" "H4sIAAAAAAACA+3JMQrCQBRF0V+7illBmOiYWY+FkiIgxBHcvSYp7RXEc5oL71269mixesan5MVQytbFe9c3+nLcl1pz2fahHvpIOb7gfmunOaX4U+N5mq67AAAAAAAAAAAA4Me8AGNdzP4AKAAA")
+    (call say a "cut inside the header" "H4sIAAAAAAACA0vTK6koYaAtMAACMxMTMA0E6DRIlsHQxNTIxNzcwAQsbmZubMigYMBAB1BaXJJYpKBAjFIAg0k0uywBAAA=")
+    (call say a "cut inside the contents" "H4sIAAAAAAACA0vTK6koYaAtMAACMxMTMA0E6LShuakBg6GJgQFC3MzcxJhBwYCBDqC0uCSxCGglw8gEFUMYAAAqsOR/vAIAAA==")
+    (call say a "cut inside the last block" "H4sIAAAAAAACA0vTK6koYaAtMAACMxMTMA0E6LShobEBg6GJgQFC3Mzc2JhBwYCBDqC0uCSxCGglw8gEFaNgFNAADOU8AQAhd+KQFAUAAA==")
+    (call say a "cut after a pax header" "H4sIAAAAAAACA9PT19N3CEis8EhNTEktYqAJMIAAXLSBsYExnA0WNzQwMjRkUKhgoAMoLS5JLAJazzAygaGlqUJBYkmGbcEAAf1CCoBeSUUJF8MoIB8AAL/7AcAABAAA")
+    (call say a "a sparse file" "H4sIAAAAAAACAytmoD0wAAIzExMwDQToNJhtaIJgA1UbmhswKATTwW0MpcUliUVAKxlGwSgYBaNgZAEA+ubvGgAGAAA=")
+    (call say a "a size that is not a number" "H4sIAAAAAAACA0tjoD0wAAIzExMwDQTotIGFJQODoQmMBxI3MzA1ZFAwoIPbGEqLSxKLgFYyjIJRMApGwcgCACZse7cABgAA")
+    (call say a "a size larger than memory" "H4sIAAAAAAACA0vKTGegNTAAAjMTEzANBHC6ASzLCCYNTQwMEPKmZgamDAoGDHQApcUliUVAKxlGwSgYBaNgZAEA8u2EWAAGAAA=")
+    (call say a "a size in base 256" "H4sIAAAAAAACA0tjoD0wAAIzExMwDQRwugGhhMvQxMAAIW9qbGDEoGBAB7cxlBaXJBYBrWQYmcDA0MjYxNTM3MKSYRSMglEwCkbBCAIAMdTwZwAIAAA=")
+    (call say a "a mode that is not a number" "H4sIAAAAAAACA0tjoD2oggAGAwhAp8FsQxME28DA3BBIKRjQwW0MpcUliUVAKxlGwSgYBaNgZAEAvC9sjQAGAAA=")
+    (call say a "an entry with no name" "H4sIAAAAAAACA2NgoD0wAAIzExMwDQToNJhtaIJgGxiYmpsYMSgY0MFtDKXFJYlFQCsZRsEoGAWjYGQBAKKPxRsABgAA")
+    (call say a "a pax record that says it is 99 bytes" "H4sIAAAAAAACA6tgoD0wAAIzExMwDQTotIGBoQmDoQmcBxQ3MzIxZ1CooIPbGEqLSxKLgFYyjExgaalQkFiSYZuYlMzFMApGHEgbDPkfyEbL/4aGBgwKBqP5fxSMglEwCmgGABnYU5QACgAA")
+    (call say a "a pax record without an equals sign" "H4sIAAAAAAACA6tgoD0wAAIzExMwDQTotIGBoQmDoQmcBxQ3MzIxZ1CooIPbGEqLSxKLgFYyjExgaKRQkFiSoZCYlMzFMApGHEgbDPkfyEbL/4aGBgwKBqP5fxSMglEwCmgGAD/G5K8ACgAA")
+    (call say a "a pax size over the header's" "H4sIAAAAAAACA6tgoD0wAAIzExMwDQTotIGBoRGDoQmcBxQ3MzIxZVCooIPbGEqLSxKLgFYyjExgaKBQnFmVamvMxTAKRiBIGwz5H8hGy/+GhgYMCgaj+Z/mIDEpeTQTjIJRMApGwQgEAHbNh+EADAAA")
+    (call say a "a GNU long name with nothing after it" "H4sIAAAAAAACA9PT19N38MnPS/fJzMtmoA0wAAIzExMwDQToNBCYMhiawDkMBoYGBsbGDAo+DHQApcUliUVApzCMTJADjHqGUTAKRsEoGAUjDgAAKeAVpwAIAAA=")
+    0))

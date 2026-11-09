@@ -1531,6 +1531,7 @@ The language comes with a standard library, written in AIPL, that a program meet
 | `stats` | statistics over `(arr f64)`, to the last bit as Python's `statistics` gives them |
 | `str` | byte slices and byte-level text |
 | `stream` | readers and writers over files, standard streams, memory, and buffers |
+| `tar` | tar archives read from memory: ustar, GNU, and pax, with checks for damaged ones |
 | `testing` | what a test's `expect` calls |
 | `text` | splitting, joining, and the other text functions that build something |
 | `thread` | threads with a typed context (experimental) |

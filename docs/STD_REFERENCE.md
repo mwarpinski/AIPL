@@ -3411,6 +3411,92 @@ fn stream.run_stream_tests [] -> i32
 ```
 <!-- /api:stream -->
 
+### std/tar
+
+Reads a tar archive that is in memory: `open [a data:str.Bytes] -> (result (ptr tar.Archive) (ptr tar.Error))` checks all of it and gives the entries, or the first thing wrong and its byte offset (`tar.Error.what`, `tar.Error.at`; `free_error` gives the error back). Then `count`, and for entry `i`: `name`, `kind` (`tar.Kind.file`, `dir`, `symlink`, `hardlink`, `other`), `size`, `mode`, `mtime`, `link` (the target of a link), `data` (the contents), and `find [ar want:str.Bytes] -> (option.Option i32)` for the last entry of a name. `free` gives the Archive back; the bytes are the caller's. A `.tar.gz` is gunzipped first with `deflate.gzip_decompress_to`.
+
+Reading only, and strict where a package manager must be: a wrong checksum, a cut-off archive or last block, empty input, a size or mode that is not a number or is bigger than memory, a pax record that is not well formed, a long-name or pax header with no entry after it, and sparse files are errors. Names, link targets, and contents are views into the bytes `open` was given. `safe_name [n:str.Bytes] -> bool` is the rule for unpacking under a directory (not empty, not absolute, no NUL, no `..` component); it looks at the name only, so a caller that unpacks links must check where they go. Tested against Python's `tarfile` and GNU tar in the conformance suite (`tests/conformance/library/tar_*`, made by `tools/tar_vectors.py`) and with damaged archives (`tools/tar_fuzz.py`).
+
+<!-- api:tar -->
+```text
+module tar
+    std/tar: a tar archive held in memory, read entry by entry. (A .tar.gz is gunzipped first, with
+    deflate.gzip_decompress_to.) Reading only: nothing here writes files, so a caller decides what an entry becomes.
+
+      (match_result (call tar.open a bytes)
+        (ok ar
+          (for i 0 (call tar.count ar)
+            (when (call tar.safe_name (call tar.name ar i))
+              ... (call tar.kind ar i) (call tar.size ar i) (call tar.data ar i) ...))
+          (call tar.free ar))
+        (err e ... (get e tar.Error.what) (get e tar.Error.at) ... (call tar.free_error a e)))
+
+    open reads the whole archive at once and checks all of it: it gives the entries or the first thing wrong, with the
+    byte offset. Names, link targets, and contents are views into the bytes it was given (a name that has to be put
+    together, a ustar prefix and its name, is in the Archive's own memory), good until the bytes or the Archive are freed.
+    An entry is a file, a directory, a symbolic link, a hard link, or other (devices, fifos); names are as written (a
+    directory's ends with "/"), `size` is the length of the contents, and `mode` and `mtime` are the header's. Owners are
+    not read. `find` gives the last entry of a name, which is the one that wins when an archive is unpacked in order.
+
+    What is read: ustar (with its prefix field), the older V7 form, GNU's (long names and long link targets, numbers
+    too large for octal), and pax's extended headers (path, linkpath, size, mtime, the rest ignored; global headers are
+    skipped), so the archives GNU tar and Python's tarfile write. What is refused: a wrong header checksum, an
+    archive or an entry cut short (a final block too), empty input, a size, mode, or time that is not a number or
+    is larger than a program's memory, a pax record that is not "length key=value\n", a long-name or pax header with no
+    entry after it, an entry with no name, and sparse files. A missing end marker is accepted, and what follows the end
+    marker is ignored, as is whatever fills the padding after an entry's contents (old tars leave stale bytes there). Where Python's tarfile stops quietly at a damaged header, this refuses: a package manager must
+    not install half an archive. Checked against Python's tarfile and GNU tar (tests/conformance/library/tar_*,
+    tools/tar_vectors.py), and with damaged archives that must never make it trap (tools/tar_fuzz.py).
+
+    safe_name says whether an entry's name may be unpacked under a directory: not empty, not absolute, no NUL, no ".."
+    component. It looks at the name only: a symbolic link or a hard link can still point out of the directory, so a
+    caller that unpacks links must check where they go, or not unpack them. The whole archive is in memory, so one is
+    at most as large as a program's memory (2 GiB).
+
+enum tar.Kind [file dir symlink hardlink other]
+
+struct tar.Error [(read at:i32) (read what:str)]
+    Why an archive was refused, and the byte offset where.
+
+struct tar.Archive [] and 6 private fields
+
+fn tar.free_error [a:alloc.Allocator e:(ptr tar.Error)] -> void
+    Frees an Error open gave.
+
+fn tar.open [a:alloc.Allocator data:str.Bytes] -> (result (ptr tar.Archive) (ptr tar.Error))
+    The entries of the archive in data (which must outlive the Archive: names and contents are views into it), or why
+    it is not one.
+
+fn tar.free [ar:(ptr tar.Archive)] -> void
+    Gives the archive's memory back (not the bytes it was opened over).
+
+fn tar.count [ar:(ptr tar.Archive)] -> i32
+
+fn tar.kind [ar:(ptr tar.Archive) i:i32] -> tar.Kind
+
+fn tar.size [ar:(ptr tar.Archive) i:i32] -> i32
+
+fn tar.mode [ar:(ptr tar.Archive) i:i32] -> i32
+
+fn tar.mtime [ar:(ptr tar.Archive) i:i32] -> i64
+
+fn tar.name [ar:(ptr tar.Archive) i:i32] -> str.Bytes
+    The entry's name, as written in the archive.
+
+fn tar.link [ar:(ptr tar.Archive) i:i32] -> str.Bytes
+    The target of a link; empty for any other entry.
+
+fn tar.data [ar:(ptr tar.Archive) i:i32] -> str.Bytes
+    The entry's contents (nothing for a directory).
+
+fn tar.find [ar:(ptr tar.Archive) want:str.Bytes] -> (option.Option i32)
+    The index of the last entry with this name (the one that wins when an archive is unpacked in order).
+
+fn tar.safe_name [n:str.Bytes] -> bool
+    Whether a name is safe to unpack under a directory: not empty, not absolute, no NUL, and no ".." component.
+```
+<!-- /api:tar -->
+
 ### std/testing
 
 What a test's `expect` calls (section 4.L): `fail [label:str]`, `fail_cmp [label left right]` (each counts one failure and writes to standard error), `failures [] -> i32`, `status [n] -> i32` (n, at most 125)

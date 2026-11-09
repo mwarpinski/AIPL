@@ -23,6 +23,7 @@ step "self-hosted: aipl fmt --check on the repository's programs"; if r=$("$AIPL
 step "docs check"; note "$(python3 tools/docs_check.py 2>&1 | tail -1)"
 step "grammar check"; note "$(python3 tools/grammar_check.py 2>&1 | tail -1)"
 step "standard library reference"; note "$(python3 tools/std_reference.py --check 2>&1 | tail -1)"
+step "self-hosted: std/tar against damaged archives"; note "$(python3 tools/tar_fuzz.py --cases 1000 --seed 1 --aipl "$AIPL" 2>&1 | tail -1)"
 step "release facts: one version, the seeds recorded"; if r=$(python3 tools/release_check.py version 2>&1 && python3 tools/release_check.py seeds 2>&1); then note "release facts ok"; else note "release_check FAILED: $(echo "$r" | tail -1)"; fi
 unset AIPL AIPL_STD
 

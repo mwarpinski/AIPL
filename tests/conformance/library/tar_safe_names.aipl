@@ -1,0 +1,49 @@
+;; @spec 10
+;; @kind run
+;; @out a -> safe
+;; @out a/b/c -> safe
+;; @out a/ -> safe
+;; @out ./a -> safe
+;; @out a//b -> safe
+;; @out a/./b -> safe
+;; @out a/..b -> safe
+;; @out ..a -> safe
+;; @out a/.../b -> safe
+;; @out <empty> -> unsafe
+;; @out / -> unsafe
+;; @out /etc/passwd -> unsafe
+;; @out .. -> unsafe
+;; @out ../a -> unsafe
+;; @out a/.. -> unsafe
+;; @out a/../b -> unsafe
+;; @out a/b/../../.. -> unsafe
+;; @out a<NUL>b -> unsafe
+(module tar_safe_names
+  (import tar)
+  (import str)
+
+  (fn show [name:str] -> void
+    (let shown:str (cond ((call str.same name "") "<empty>") ((call str.same name "a\0b") "a<NUL>b") (else name)))
+    (let verdict:str (if (call tar.safe_name (call str.from_str name)) "safe" "unsafe"))
+    (println "{shown} -> {verdict}"))
+
+  (fn main [] -> i32
+    (call show "a")
+    (call show "a/b/c")
+    (call show "a/")
+    (call show "./a")
+    (call show "a//b")
+    (call show "a/./b")
+    (call show "a/..b")
+    (call show "..a")
+    (call show "a/.../b")
+    (call show "")
+    (call show "/")
+    (call show "/etc/passwd")
+    (call show "..")
+    (call show "../a")
+    (call show "a/..")
+    (call show "a/../b")
+    (call show "a/b/../../..")
+    (call show "a\0b")
+    0))

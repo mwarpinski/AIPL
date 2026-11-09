@@ -1,0 +1,381 @@
+;; std/tar: a tar archive held in memory, read entry by entry. (A .tar.gz is gunzipped first, with
+;; deflate.gzip_decompress_to.) Reading only: nothing here writes files, so a caller decides what an entry becomes.
+;;
+;;   (match_result (call tar.open a bytes)
+;;     (ok ar
+;;       (for i 0 (call tar.count ar)
+;;         (when (call tar.safe_name (call tar.name ar i))
+;;           ... (call tar.kind ar i) (call tar.size ar i) (call tar.data ar i) ...))
+;;       (call tar.free ar))
+;;     (err e ... (get e tar.Error.what) (get e tar.Error.at) ... (call tar.free_error a e)))
+;;
+;; open reads the whole archive at once and checks all of it: it gives the entries or the first thing wrong, with the
+;; byte offset. Names, link targets, and contents are views into the bytes it was given (a name that has to be put
+;; together, a ustar prefix and its name, is in the Archive's own memory), good until the bytes or the Archive are freed.
+;; An entry is a file, a directory, a symbolic link, a hard link, or other (devices, fifos); names are as written (a
+;; directory's ends with "/"), `size` is the length of the contents, and `mode` and `mtime` are the header's. Owners are
+;; not read. `find` gives the last entry of a name, which is the one that wins when an archive is unpacked in order.
+;;
+;; What is read: ustar (with its prefix field), the older V7 form, GNU's (long names and long link targets, numbers
+;; too large for octal), and pax's extended headers (path, linkpath, size, mtime, the rest ignored; global headers are
+;; skipped), so the archives GNU tar and Python's tarfile write. What is refused: a wrong header checksum, an
+;; archive or an entry cut short (a final block too), empty input, a size, mode, or time that is not a number or
+;; is larger than a program's memory, a pax record that is not "length key=value\n", a long-name or pax header with no
+;; entry after it, an entry with no name, and sparse files. A missing end marker is accepted, and what follows the end
+;; marker is ignored, as is whatever fills the padding after an entry's contents (old tars leave stale bytes there). Where Python's tarfile stops quietly at a damaged header, this refuses: a package manager must
+;; not install half an archive. Checked against Python's tarfile and GNU tar (tests/conformance/library/tar_*,
+;; tools/tar_vectors.py), and with damaged archives that must never make it trap (tools/tar_fuzz.py).
+;;
+;; safe_name says whether an entry's name may be unpacked under a directory: not empty, not absolute, no NUL, no ".."
+;; component. It looks at the name only: a symbolic link or a hard link can still point out of the directory, so a
+;; caller that unpacks links must check where they go, or not unpack them. The whole archive is in memory, so one is
+;; at most as large as a program's memory (2 GiB).
+(module tar
+  (import str)
+  (import buf)
+  (import alloc)
+  (import vec)
+  (import option)
+
+  (enum Kind [file dir symlink hardlink other] (pub))
+
+  ;; Why an archive was refused, and the byte offset where.
+  (struct Error [(read at:i32) (read what:str)] (pub))
+
+  ;; One entry: its offsets are into the archive's bytes, or, for a name or a link target that had to be put together
+  ;; (a ustar prefix and name), into the archive's own buffer of names.
+  (struct Entry [kind:Kind mode:i32 size:i32 mtime:i64 data:i32
+                 name_at:i32 name_len:i32 name_owned:bool
+                 link_at:i32 link_len:i32 link_owned:bool] (value))
+
+  (struct Archive [data:str.Bytes entries:(ptr (vec.Vec Entry)) names:(ptr buf.Buf) a:alloc.Allocator] (pub))
+
+  (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
+    (let e:(ptr Error) (new Error a [at:at what:what]))
+    e)
+
+  ;; Frees an Error open gave.
+  (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub) (no_leak) (call (alloc.destroy Error) a e))
+
+  ;; ===== Header fields =====
+
+  ;; The octal number in b[at..at+len): leading spaces and NULs skipped, ended by a NUL or a space; -1 when it is not one.
+  (fn octal [b:str.Bytes at:i32 len:i32] -> i64
+    (let end:i32 (+ at len))
+    (let i:i32 at)
+    (while (and (lt i end) (or (eq (call str.byte_at b i) 32) (eq (call str.byte_at b i) 0)))
+      (set! i (+ i 1)))
+    (let v:i64 0i64)
+    (while (lt i end)
+      (let c:i32 (call str.byte_at b i))
+      (when (or (eq c 0) (eq c 32)) (break))
+      (when (or (lt c 48) (gt c 55)) (return -1i64))
+      (set! v (+ (* v 8i64) (i64.extend_s (- c 48))))
+      (set! i (+ i 1)))
+    v)
+
+  ;; GNU's form for a number too big for its octal field: the first byte has its top bit set, and the number is
+  ;; the rest, big-endian; -1 for a negative one or one over 2^62.
+  (fn base256 [b:str.Bytes at:i32 len:i32] -> i64
+    (let first:i32 (call str.byte_at b at))
+    (when (neq (bitand first 64) 0) (return -1i64))
+    (let v:i64 (i64.extend_s (bitand first 63)))
+    (for i (+ at 1) (+ at len)
+      (when (gt v 36028797018963967i64) (return -1i64))
+      (set! v (+ (* v 256i64) (i64.extend_s (call str.byte_at b i)))))
+    v)
+
+  (fn number [b:str.Bytes at:i32 len:i32] -> i64
+    (if (neq (bitand (call str.byte_at b at) 128) 0) (call base256 b at len) (call octal b at len)))
+
+  ;; Whether the 512 bytes at b[at..) are a header whose checksum is right (the sum of its bytes, the checksum
+  ;; field counted as spaces; unsigned, or as signed chars as some old tars made it).
+  (fn checksum_ok [b:str.Bytes at:i32] -> bool
+    (let want:i64 (call octal b (+ at 148) 8))
+    (when (lt want 0i64) (return false))
+    (let u:i32 0)
+    (let s:i32 0)
+    (for i 0 512
+      (let c:i32 (if (and (gte i 148) (lt i 156)) 32 (call str.byte_at b (+ at i))))
+      (set! u (+ u c))
+      (set! s (+ s (if (gte c 128) (- c 256) c))))
+    (or (eq (i64.extend_s u) want) (eq (i64.extend_s s) want)))
+
+  (fn zero_block [b:str.Bytes at:i32] -> bool
+    (for i 0 512
+      (when (neq (call str.byte_at b (+ at i)) 0) (return false)))
+    true)
+
+  ;; The length of the text at b[at..at+max) up to its first NUL.
+  (fn cstr_len [b:str.Bytes at:i32 max:i32] -> i32
+    (for i 0 max
+      (when (eq (call str.byte_at b (+ at i)) 0) (return i)))
+    max)
+
+  ;; ===== Pax extended headers: records "LEN key=value\n" =====
+
+  ;; The length a record at b[at..end) says it has (the decimal number before its space); -1 if it does not begin so.
+  (fn pax_len [b:str.Bytes at:i32 end:i32] -> i32
+    (let v:i32 0)
+    (let i:i32 at)
+    (while (lt i end)
+      (let c:i32 (call str.byte_at b i))
+      (when (eq c 32) (return (if (gt i at) v -1)))
+      (when (or (lt c 48) (gt c 57)) (return -1))
+      (when (gt v 100000000) (return -1))
+      (set! v (+ (* v 10) (- c 48)))
+      (set! i (+ i 1)))
+    -1)
+
+  ;; The start of the last record in b[from..to) whose key is key; -1 if there is none, -2 if the records are not
+  ;; well formed.
+  (fn pax_find [b:str.Bytes from:i32 to:i32 key:str] -> i32
+    (let kb:str.Bytes (call str.from_str key))
+    (let kl:i32 (get kb str.Bytes.len))
+    (let found:i32 -1)
+    (let r:i32 from)
+    (while (lt r to)
+      (let rl:i32 (call pax_len b r to))
+      (when (or (lte rl 0) (gt rl (- to r))) (return -2))
+      (let sp:i32 (call scan_byte b r (+ r rl) 32))
+      (when (gte sp (+ r rl)) (return -2))
+      (let k:i32 (+ sp 1))
+      ;; every record is "key=value" and ends with a newline, or the header is refused
+      (when (gte (call scan_byte b k (+ r rl) 61) (+ r rl)) (return -2))
+      (when (neq (call str.byte_at b (- (+ r rl) 1)) 10) (return -2))
+      (when (and (lt (+ k kl) (+ r rl))
+                 (and (call str.bytes_eq (call str.slice b k kl) kb) (eq (call str.byte_at b (+ k kl)) 61)))
+        (set! found r))
+      (set! r (+ r rl)))
+    found)
+
+  (fn scan_byte [b:str.Bytes from:i32 to:i32 c:i32] -> i32
+    (for i from to
+      (when (eq (call str.byte_at b i) c) (return i)))
+    to)
+
+  ;; Where the value of the record starting at r is (after its first '='), and where it ends (before its newline).
+  (fn pax_value_at [b:str.Bytes r:i32 to:i32] -> i32
+    (let sp:i32 (call scan_byte b r to 32))
+    (+ (call scan_byte b sp to 61) 1))
+
+  (fn pax_value_end [b:str.Bytes r:i32 to:i32] -> i32
+    (let e:i32 (+ r (call pax_len b r to)))
+    (- e 1))
+
+  ;; The non-negative decimal number in b[from..to), its fraction dropped ("1700000000.25"); -1 if it is not one.
+  (fn decimal [b:str.Bytes from:i32 to:i32] -> i64
+    (when (gte from to) (return -1i64))
+    (let v:i64 0i64)
+    (for i from to
+      (let c:i32 (call str.byte_at b i))
+      (when (eq c 46) (return v))
+      (when (or (lt c 48) (gt c 57)) (return -1i64))
+      (when (gt v 900000000000000000i64) (return -1i64))
+      (set! v (+ (* v 10i64) (i64.extend_s (- c 48)))))
+    v)
+
+  ;; ===== Opening an archive =====
+
+  (fn fail [a:alloc.Allocator es:(ptr (vec.Vec Entry)) nm:(ptr buf.Buf) at:i32 what:str] -> (result (ptr Archive) (ptr Error))
+    (call (vec.free Entry) es)
+    (call buf.free nm)
+    (err:(ptr Archive) (call error a at what)))
+
+  (fn kind_of [flag:i32] -> Kind
+    (cond
+      ((or (eq flag 48) (or (eq flag 0) (eq flag 55))) Kind.file)
+      ((eq flag 53) Kind.dir)
+      ((eq flag 50) Kind.symlink)
+      ((eq flag 49) Kind.hardlink)
+      (else Kind.other)))
+
+  ;; The entries of the archive in data (which must outlive the Archive: names and contents are views into it), or why
+  ;; it is not one.
+  (fn open [a:alloc.Allocator data:str.Bytes] -> (result (ptr Archive) (ptr Error)) (pub)
+    (let n:i32 (get data str.Bytes.len))
+    (let es:(ptr (vec.Vec Entry)) (call (vec.make Entry) a 16))
+    (let nm:(ptr buf.Buf) (call buf.make a 256))
+    ;; what the records before an entry say about it: a GNU long name and link (L, K), a pax path, linkpath, size and
+    ;; mtime (x); -1 for none
+    (let ln_at:i32 -1)
+    (let ln_len:i32 0)
+    (let lk_at:i32 -1)
+    (let lk_len:i32 0)
+    (let pn_at:i32 -1)
+    (let pn_len:i32 0)
+    (let pl_at:i32 -1)
+    (let pl_len:i32 0)
+    (let ps:i64 -1i64)
+    (let pm:i64 -1i64)
+    ;; whether such a record has been read and no entry after it yet
+    (let dangling:bool false)
+    (let off:i32 0)
+    (when (eq n 0) (return (call fail a es nm 0 "the archive is empty: not even an end marker")))
+    (while (lt off n)
+      (when (lt (- n off) 512) (return (call fail a es nm off "a header needs 512 bytes, and the archive ends first")))
+      (when (call zero_block data off) (break))
+      (when (not (call checksum_ok data off)) (return (call fail a es nm off "the header's checksum is wrong (this is not a tar archive, or it is damaged)")))
+      (let flag:i32 (call str.byte_at data (+ off 156)))
+      (when (eq flag 83) (return (call fail a es nm off "sparse files are not supported")))
+      (let hsize:i64 (call number data (+ off 124) 12))
+      (when (lt hsize 0i64) (return (call fail a es nm (+ off 124) "the size is not a number this reader supports")))
+      (let real:bool (not (or (or (eq flag 76) (eq flag 75)) (or (eq flag 120) (eq flag 103)))))
+      (let size64:i64 (if (and real (gte ps 0i64)) ps hsize))
+      (when (gt size64 2147483647i64) (return (call fail a es nm off "an entry is bigger than a program's memory")))
+      (let size:i32 (i32.wrap size64))
+      (let body:i32 (+ off 512))
+      (when (gt size (- n body)) (return (call fail a es nm off "an entry's contents run past the end of the archive")))
+      (let pad:i32 (% (- 512 (% size 512)) 512))
+      (when (gt pad (- (- n body) size)) (return (call fail a es nm off "an entry's last block is cut short: the archive ends inside it")))
+      (let next:i32 (+ (+ body size) pad))
+      ;; a global pax header (g) is skipped
+      (when (neq flag 103)
+       (cond
+         ((eq flag 76)
+          (set! dangling true)
+          (set! ln_at body)
+          (set! ln_len (call cstr_len data body size)))
+         ((eq flag 75)
+          (set! dangling true)
+          (set! lk_at body)
+          (set! lk_len (call cstr_len data body size)))
+         ((eq flag 120)
+          (set! dangling true)
+          (let to:i32 (+ body size))
+          (let r:i32 (call pax_find data body to "path"))
+          (when (eq r -2) (return (call fail a es nm off "a pax header's records are not well formed")))
+          (when (gte r 0)
+           (set! pn_at (call pax_value_at data r to))
+           (set! pn_len (- (call pax_value_end data r to) pn_at)))
+          (let rl:i32 (call pax_find data body to "linkpath"))
+          (when (gte rl 0)
+           (set! pl_at (call pax_value_at data rl to))
+           (set! pl_len (- (call pax_value_end data rl to) pl_at)))
+          (let rs:i32 (call pax_find data body to "size"))
+          (when (gte rs 0)
+           (set! ps (call decimal data (call pax_value_at data rs to) (call pax_value_end data rs to)))
+           (when (lt ps 0i64) (return (call fail a es nm off "a pax size is not a number"))))
+          (let rm:i32 (call pax_find data body to "mtime"))
+          (when (gte rm 0)
+           (set! pm (call decimal data (call pax_value_at data rm to) (call pax_value_end data rm to)))
+           (when (lt pm 0i64) (return (call fail a es nm off "a pax mtime is not a number")))))
+         (else
+         ;; the name: a pax path, else a GNU long name, else the ustar prefix and name, else the name field
+          (let ustar:bool (call str.is_at data (+ off 257) "ustar"))
+          (let name_at:i32 off)
+          (let name_len:i32 (call cstr_len data off 100))
+          (let name_owned:bool false)
+          (cond
+            ((gte pn_at 0) (set! name_at pn_at) (set! name_len pn_len))
+            ((gte ln_at 0) (set! name_at ln_at) (set! name_len ln_len))
+            ((and ustar (gt (call cstr_len data (+ off 345) 155) 0))
+             (set! name_at (call buf.len nm))
+             (set! name_owned true)
+             (call buf.push_bytes nm (call str.slice data (+ off 345) (call cstr_len data (+ off 345) 155)))
+             (call buf.push_byte nm 47)
+             (call buf.push_bytes nm (call str.slice data off name_len))
+             (set! name_len (- (call buf.len nm) name_at)))
+            (else (set! name_owned false)))
+          (when (eq name_len 0) (return (call fail a es nm off "an entry has no name")))
+          ;; the link target: a pax linkpath, else a GNU long link, else the linkname field
+          (let link_at:i32 (+ off 157))
+          (let link_len:i32 (call cstr_len data (+ off 157) 100))
+          (cond
+            ((gte pl_at 0) (set! link_at pl_at) (set! link_len pl_len))
+            ((gte lk_at 0) (set! link_at lk_at) (set! link_len lk_len))
+            (else (set! link_at (+ off 157))))
+          (let kind:Kind (call kind_of flag))
+          ;; an old tar marks a directory by a trailing slash on a plain file's name
+          (when (and (eq kind Kind.file)
+                    (and (not name_owned) (eq (call str.byte_at data (+ name_at (- name_len 1))) 47)))
+           (set! kind Kind.dir))
+          (let mode:i64 (call number data (+ off 100) 8))
+          (when (or (lt mode 0i64) (gt mode 4294967295i64)) (return (call fail a es nm (+ off 100) "the mode is not a number this reader supports")))
+          (let mtime:i64 (if (gte pm 0i64) pm (call number data (+ off 136) 12)))
+          (when (lt mtime 0i64) (return (call fail a es nm (+ off 136) "the modification time is not a number this reader supports")))
+          (call (vec.push Entry) es
+                (make Entry [kind:kind mode:(i32.wrap mode) size:size mtime:mtime data:body
+                             name_at:name_at name_len:name_len name_owned:name_owned
+                             link_at:link_at link_len:link_len link_owned:false]))
+          (set! dangling false)
+          (set! ln_at -1)
+          (set! lk_at -1)
+          (set! pn_at -1)
+          (set! pl_at -1)
+          (set! ps -1i64)
+          (set! pm -1i64))))
+      (set! off next))
+    (when dangling (return (call fail a es nm n "the archive ends after a header that describes an entry, before the entry")))
+    (ok:(ptr Error) (new Archive a [data:data entries:es names:nm a:a])))
+
+  ;; Gives the archive's memory back (not the bytes it was opened over).
+  (fn free [ar:(ptr Archive)] -> void (pub)
+    (let a:alloc.Allocator (get ar Archive.a))
+    (call (vec.free Entry) (get ar Archive.entries))
+    (call buf.free (get ar Archive.names))
+    (call (alloc.destroy Archive) a ar))
+
+  ;; ===== Reading entries =====
+
+  (fn count [ar:(ptr Archive)] -> i32 (pub) (call (vec.len Entry) (get ar Archive.entries)))
+
+  (fn entry [ar:(ptr Archive) i:i32] -> Entry
+    (req (and (gte i 0) (lt i (call count ar))))
+    (call (vec.at Entry) (get ar Archive.entries) i))
+
+  (fn kind [ar:(ptr Archive) i:i32] -> Kind (pub)
+    (let e:Entry (call entry ar i))
+    (get e Entry.kind))
+
+  (fn size [ar:(ptr Archive) i:i32] -> i32 (pub)
+    (let e:Entry (call entry ar i))
+    (get e Entry.size))
+
+  (fn mode [ar:(ptr Archive) i:i32] -> i32 (pub)
+    (let e:Entry (call entry ar i))
+    (get e Entry.mode))
+
+  (fn mtime [ar:(ptr Archive) i:i32] -> i64 (pub)
+    (let e:Entry (call entry ar i))
+    (get e Entry.mtime))
+
+  ;; The entry's name, as written in the archive.
+  (fn name [ar:(ptr Archive) i:i32] -> str.Bytes (pub)
+    (let e:Entry (call entry ar i))
+    (if (get e Entry.name_owned)
+      (call str.slice (call buf.bytes (get ar Archive.names)) (get e Entry.name_at) (get e Entry.name_len))
+      (call str.slice (get ar Archive.data) (get e Entry.name_at) (get e Entry.name_len))))
+
+  ;; The target of a link; empty for any other entry.
+  (fn link [ar:(ptr Archive) i:i32] -> str.Bytes (pub)
+    (let e:Entry (call entry ar i))
+    (call str.slice (get ar Archive.data) (get e Entry.link_at) (if (or (eq (get e Entry.kind) Kind.symlink) (eq (get e Entry.kind) Kind.hardlink)) (get e Entry.link_len) 0)))
+
+  ;; The entry's contents (nothing for a directory).
+  (fn data [ar:(ptr Archive) i:i32] -> str.Bytes (pub)
+    (let e:Entry (call entry ar i))
+    (call str.slice (get ar Archive.data) (get e Entry.data) (get e Entry.size)))
+
+  ;; The index of the last entry with this name (the one that wins when an archive is unpacked in order).
+  (fn find [ar:(ptr Archive) want:str.Bytes] -> (option.Option i32) (pub)
+    (let last:i32 (- (call count ar) 1))
+    (for k 0 (call count ar)
+      (let i:i32 (- last k))
+      (when (call str.bytes_eq (call name ar i) want) (return (make (option.Option i32) some i))))
+    (make (option.Option i32) none))
+
+  ;; Whether a name is safe to unpack under a directory: not empty, not absolute, no NUL, and no ".." component.
+  (fn safe_name [n:str.Bytes] -> bool (pub)
+    (let len:i32 (get n str.Bytes.len))
+    (when (eq len 0) (return false))
+    (when (eq (call str.byte_at n 0) 47) (return false))
+    (let start:i32 0)
+    (for i 0 (+ len 1)
+      (let c:i32 (if (lt i len) (call str.byte_at n i) 47))
+      (when (eq c 0) (return false))
+      (when (eq c 47)
+        (when (and (eq (- i start) 2) (and (eq (call str.byte_at n start) 46) (eq (call str.byte_at n (+ start 1)) 46)))
+          (return false))
+        (set! start (+ i 1))))
+    true))
