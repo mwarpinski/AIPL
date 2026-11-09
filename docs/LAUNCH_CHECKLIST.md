@@ -245,7 +245,17 @@ Last before the final checks, against the language section 1 leaves.
   notes follow it: native 1.2 to 7.1 times C on the seven with a C time here, WebAssembly 1.5 to 6.7. pidigits has no C
   time here (no libgmp-dev on arcadia: `sudo apt install libgmp-dev` would add it). The AArch64 build time (about 8 s a
   stage) is from GitHub's arm64 runner.
-- [ ] `development` is merged into `main` and tagged, with the owner's approval.
+- [x] **`development` is merged into `main` and tagged** (2026-11-09, with the owner's approval): `main` was
+  fast-forwarded to 6dcef0e ("Version 0.3.0": GitHub's five CI jobs green on that commit), and `v0.3.0` pushed. The
+  release workflow passed its gate (the tag names the version in all three places, the seeds are the recorded ones, the
+  commit is on `main` and its CI run passed), built the four platforms and installed each as a user would, signed
+  `SHA256SUMS` with Sigstore, verified the signature, and published
+  https://github.com/mwarpinski/AIPL/releases/tag/v0.3.0 (four archives, their `.sha256` files, `SHA256SUMS` and its
+  bundle). Checked after publishing: the one-liner from `main`'s `install.sh` installs `aipl 0.3.0` from that release
+  into an empty home with no Rust, a program runs and compiles to an 85 KB native executable, and both Linux archives
+  match the signed list. The release page opens with docs/LAUNCH_NOTES.md. The merged feature branches are deleted.
+  Not yet done after the tag: install-testing the macOS and Windows archives on a person's machine (the workflow
+  install-tests them on its runners) and Linux AArch64 on physical hardware.
 - [x] **The launch notes** (2026-11-08): docs/LAUNCH_NOTES.md says what AIPL is, what is unfinished (the macOS and
   Windows preview, no notarisation or code signing, the thesis not measured, no stability promise, no packages or
   language server, no TLS in AIPL, the rough edges) and how it was built (by AI agents, and the checks that follow
