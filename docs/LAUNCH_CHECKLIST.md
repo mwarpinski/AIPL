@@ -221,7 +221,8 @@ Last before the final checks, against the language section 1 leaves.
   needs a silent-exit primitive in the native backend); the macOS binary is not notarised and the Windows one is not
   code-signed (the launch notes say so, and a preview is what they are); Linux AArch64 is built and tested on GitHub's
   arm64 machines but the installer has not been run on a physical one (ROADMAP item 7); and one unexplained failure of
-  `aipl_run_says_the_same_in_both_commands` on arcadia, once in a dozen full runs, never reproduced (3,200 stress runs).
+  `aipl_run_says_the_same_in_both_commands` on arcadia (once, "cannot read entry file"), not reproduced in 3,200 stress runs
+  and every full run since; if it recurs it is to be investigated, not retried.
 - [x] **From a fresh clone, by the README alone** (2026-11-08, arcadia, with no Rust on the `PATH`): `git clone`, then
   `sh bootstrap/build.sh` builds the compiler from the seed and reaches the fixed point; `aipl run aipl_src/test_suite.aipl`
   exits 0 (all groups pass); `tools/bench.py` builds and times the eight benchmarks with the self-hosted compiler (it
