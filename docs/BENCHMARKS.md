@@ -27,38 +27,37 @@ print it on stderr.
 
 ## Results
 
-Intel Core i9-12900H, Linux 7.0, gcc 13.3 -O2, Python 3.12, release build,
-2026-10-25, the optimizer on by default; best of five, on a quiet machine.
-Another machine than the tables below, so compare ratios, not times.
+AMD Ryzen 7 5700X, Linux 7.0, gcc 13.3 -O2, Python 3.12, release build, 2026-11-08, the optimizer on by default,
+integer overflow checks on; best of five, on a quiet machine (the one virtual machine that keeps its processors busy
+was paused for the run: with it running, every time here, C's and Python's included, was up to twice as long). The
+programs were built from a fresh clone of the commit the launch was cut from. Another machine than the tables
+below (the Intel one of 2026-10-25 is in git history), so compare ratios, not times.
 
 | Benchmark | Input | AIPL native | AIPL native --no-opt | AIPL wasm (wasmtime) | AIPL wasm --no-opt | C (gcc -O2) | Python 3 |
 |---|---|---|---|---|---|---|---|
-| binarytrees | 16 | 0.258 s (2.0x) | 0.254 s (2.0x) | 0.216 s (1.7x) | 0.222 s (1.7x) | 0.127 s (1.0x) | 0.786 s (6.2x) |
-| fannkuch | 10 | 0.283 s (2.0x) | 0.281 s (2.0x) | 0.231 s (1.6x) | 0.239 s (1.7x) | 0.141 s (1.0x) | 3.248 s (23.0x) |
-| knucleotide | stdin: fasta.py 150000 | 0.391 s (8.9x) | 0.459 s (10.4x) | 0.332 s (7.5x) | 0.386 s (8.8x) | 0.044 s (1.0x) | 0.295 s (6.7x) |
-| mandelbrot | 1000 | 0.056 s (1.2x) | 0.063 s (1.4x) | 0.070 s (1.6x) | 0.078 s (1.7x) | 0.045 s (1.0x) | 1.224 s (26.9x) |
-| nbody | 1000000 | 0.115 s (3.3x) | 0.115 s (3.3x) | 0.059 s (1.7x) | 0.061 s (1.8x) | 0.035 s (1.0x) | 2.568 s (74.2x) |
-| pidigits | 10000 | 3.233 s | 3.227 s | 1.923 s | 1.932 s | n/a | 2.016 s |
-| spectralnorm | 1000 | 0.058 s (1.7x) | 0.090 s (2.7x) | 0.051 s (1.5x) | 0.089 s (2.7x) | 0.033 s (1.0x) | 3.593 s (107.4x) |
-| spigot | 10000 | 2.020 s (1.4x) | 2.013 s (1.4x) | 2.031 s (1.4x) | 2.035 s (1.4x) | 1.408 s (1.0x) | 30.027 s (21.3x) |
+| binarytrees | 16 | 0.386 s (2.4x) | 0.406 s (2.5x) | 0.345 s (2.1x) | 0.392 s (2.4x) | 0.163 s (1.0x) | 1.253 s (7.7x) |
+| fannkuch | 10 | 0.345 s (2.4x) | 0.352 s (2.4x) | 0.258 s (1.8x) | 0.315 s (2.2x) | 0.146 s (1.0x) | 4.929 s (33.8x) |
+| knucleotide | stdin: fasta.py 150000 | 0.376 s (7.1x) | 0.455 s (8.5x) | 0.356 s (6.7x) | 0.450 s (8.4x) | 0.053 s (1.0x) | 0.399 s (7.5x) |
+| mandelbrot | 1000 | 0.060 s (1.2x) | 0.059 s (1.2x) | 0.078 s (1.5x) | 0.116 s (2.3x) | 0.051 s (1.0x) | 2.251 s (44.2x) |
+| nbody | 1000000 | 0.167 s (3.5x) | 0.167 s (3.5x) | 0.093 s (1.9x) | 0.138 s (2.9x) | 0.048 s (1.0x) | 4.237 s (88.0x) |
+| pidigits | 10000 | 4.171 s | 4.201 s | 2.163 s | 2.206 s | n/a | 2.225 s |
+| spectralnorm | 1000 | 0.139 s (3.4x) | 0.200 s (4.9x) | 0.126 s (3.1x) | 0.225 s (5.5x) | 0.041 s (1.0x) | 5.210 s (127.0x) |
+| spigot | 10000 | 2.021 s (2.2x) | 2.093 s (2.2x) | 2.050 s (2.2x) | 2.097 s (2.2x) | 0.937 s (1.0x) | 42.668 s (45.5x) |
 
-pidigits has no C time here: its C uses GMP, whose headers (libgmp-dev)
-this machine lacks; on the machine below it was 10.4x C natively and 5.1x
-under wasmtime.
+pidigits has no C time here: its C uses GMP, whose headers (libgmp-dev) this machine lacks; on the machine below
+(2026-10-16, before the overflow checks, which pidigits does not pay for) it was 10.4x C natively and 5.1x under wasmtime.
 
-**The optimizer**, optimized time over `--no-opt` time (below 1.0 is
-faster): spectralnorm 0.64 natively and 0.57 under wasmtime (its `a(i, j)`
-inlined into the hot loops), knucleotide 0.85 and 0.86 (per-byte calls
-inlined), mandelbrot 0.89 and 0.90, nbody 1.00 and 0.97; binarytrees,
-fannkuch, pidigits, and spigot 0.97 to 1.02, within this machine's 5% from
-run to run. Nothing is slower. The biggest gaps to C left are
-knucleotide (8.9x natively), nbody natively (3.3x; 1.7x under wasmtime),
-and pidigits: OPT_PLAN.md step 4.
+**The optimizer**, optimized time over `--no-opt` time (below 1.0 is faster): spectralnorm 0.70 natively and 0.56
+under wasmtime (its `a(i, j)` inlined into the hot loops), knucleotide 0.83 and 0.79 (per-byte calls inlined),
+mandelbrot 1.02 and 0.67, nbody 1.00 and 0.67, binarytrees 0.95 and 0.88, fannkuch 0.98 and 0.82; pidigits and spigot
+0.97 to 0.99. The 2% on mandelbrot natively is the machine's run-to-run noise (about 5%). The biggest gaps to C left
+are knucleotide (7.1x natively), nbody natively (3.5x; 1.9x under wasmtime), spectralnorm (3.4x) and pidigits:
+OPT_PLAN.md step 4.
 
 ### What the overflow checks cost
 
-Since 2026-11-07 integer `+ - *` trap on overflow (AIPL_SPEC.md section 8.2). Best of five on arcadia (a different
-machine than the tables above: compare the two columns here, not these times with those), the compiler before the
+Since 2026-11-07 integer `+ - *` trap on overflow (AIPL_SPEC.md section 8.2). Best of five on arcadia (the machine of the table above, measured on the day of the change, when it was
+busier: compare the two columns here, not these times with that table's), the compiler before the
 change (b42503e) and after, optimizer on, `--no-opt` builds left out:
 
 | Benchmark | Before: native / wasmtime | After: native / wasmtime | Slower by |

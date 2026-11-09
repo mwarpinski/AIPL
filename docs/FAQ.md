@@ -171,9 +171,12 @@ give models one more type to convert to and from
 
 ### How fast is it?
 
-Between C and Python. On the eight benchmarks, native executables take
-1.2 to 10.4 times as long as C compiled with `gcc -O2`, and WebAssembly run
-by wasmtime 1.4 to 7.5 times as long. The slowest are k-nucleotide (C packs
+Between C and Python on six of the eight benchmarks, level with Python on
+k-nucleotide, and behind it on pidigits (Python's big integers are C). On
+the seven benchmarks with a C time on the measuring machine, native executables take
+1.2 to 7.1 times as long as C compiled with `gcc -O2`, and WebAssembly run
+by wasmtime 1.5 to 6.7 times as long (pidigits, whose C uses GMP, was 10.4 and 5.1 on another
+machine). The slowest are k-nucleotide (C packs
 each key into one 64-bit integer where AIPL hashes byte strings) and
 pidigits (C uses GMP's hand-tuned big integers). binarytrees is not a fair
 race: AIPL frees whole trees from an arena while C frees every node.

@@ -38,9 +38,9 @@ Said before anyone has to ask:
 - **Known rough edges:** `aipl run` on a `.wasm` that traps prints one extra line on standard error; a program on Windows
   sees only the drive it is started on; Linux AArch64 is built and tested on GitHub's arm64 machines but the installer
   has not been run on a physical one; [LIMITS.md](LIMITS.md) lists the limits of the language and of the compilers.
-- **It is not fast like C.** Native code takes 1.2 to 3.3 times as long as C on six of the eight benchmarks and about
-  9 times on the one that is all hashing; [BENCHMARKS.md](BENCHMARKS.md) has the table, the machine and the cost of the
-  overflow checks.
+- **It is not fast like C.** Native code takes 1.2 to 3.5 times as long as C on six of the eight benchmarks and about
+  7 times on the one that is all hashing; the eighth, big-number arithmetic, was about 10 times C with GMP on another machine.
+  [BENCHMARKS.md](BENCHMARKS.md) has the table, the machine and the cost of the overflow checks.
 
 ## How it was built
 

@@ -304,10 +304,10 @@ chooses by name, catches a stale pointer only once its memory is reused; and
 a pointer made by `ptr.cast` is not checked. The checks cost little: six of
 the eight benchmarks take the time they took without them or less.
 
-**Speed.** It is not as fast as C. On the eight benchmarks, native code takes
-1.2 to 10.4 times as long as C compiled with `gcc -O2`, and WebAssembly under
-wasmtime 1.4 to 7.5 times as long; the slowest are k-nucleotide and pidigits,
-where C uses a hand-packed key and GMP. [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
+**Speed.** It is not as fast as C. On the seven benchmarks with a C time on the
+measuring machine, native code takes 1.2 to 7.1 times as long as C compiled with `gcc -O2`, and WebAssembly under
+wasmtime 1.5 to 6.7 times as long (pidigits, whose C uses GMP, was 10.4 and 5.1 on another machine); the slowest are
+k-nucleotide and pidigits, where C uses a hand-packed key and GMP. [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
 has every number and why.
 
 ## What is next
