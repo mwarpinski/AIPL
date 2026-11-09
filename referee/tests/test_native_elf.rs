@@ -15,7 +15,7 @@ use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::WasiCtxBuilder;
 
 fn runtime() -> aipl_core::ast::Module {
-    let m = Resolver::resolve(&Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("aipl_src/native/runtime.aipl")).unwrap();
+    let m = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aipl_src/native/runtime.aipl")).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     m
 }
@@ -110,7 +110,7 @@ fn readelf_accepts_the_executable_when_installed() {
 /// elf.aipl's own self-tests (also in aipl_src/test_suite.aipl).
 #[test]
 fn the_elf_self_tests_pass() {
-    let m = Resolver::resolve(&Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("aipl_src/native/elf.aipl")).unwrap();
+    let m = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aipl_src/native/elf.aipl")).unwrap();
     let mut vm = VM::new();
     vm.load_module(m);
     assert_eq!(vm.invoke("run_elf_tests", vec![]).unwrap(), Value::Int(4));

@@ -89,7 +89,7 @@ fn is_contract_failure(e: &str) -> bool {
 
 /// Every eligible function of the module, in both backends, over every tuple.
 fn differential_module(name: &str) -> usize {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let (module, wasm) = load(&root.join(format!("aipl_src/std/{name}.aipl")));
     let dir = scratch(name);
     let mut compared = 0;
@@ -359,7 +359,7 @@ fn bigint_matches_python_integers() {
     const LINES: usize = 4000;
     const FNV: u64 = 0x9edf386e681d431a;
     const BYTES: usize = 1023116;
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let (_, wasm) = load(&root.join("tests/aipl/bigint_ops.aipl"));
     let dir = scratch("bigint_ops");
     let wasm_path = dir.join("bigint_ops.wasm");

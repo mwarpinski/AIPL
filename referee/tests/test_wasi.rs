@@ -98,7 +98,7 @@ fn import_names(wasm: &[u8]) -> Vec<String> {
 
 #[test]
 fn file_io_self_test_gives_the_same_result_in_vm_and_wasi() {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let module = Resolver::resolve(&root.join("aipl_src/file_io.aipl")).expect("resolve file_io.aipl");
     TypeChecker::new().check_module(&module).expect("check");
     let wasm = WasmCompiler::compile(&module).expect("file_io.aipl must compile to wasm now");
@@ -283,7 +283,7 @@ const WC_INPUT: &str = "hello world\nfoo bar baz\n\nlast line";
 
 #[test]
 fn word_count_example_reads_counts_and_prints_in_both_backends() {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let module = Resolver::resolve(&root.join("examples/word_count.aipl")).expect("resolve example");
     TypeChecker::new().check_module(&module).expect("check");
     let wasm = WasmCompiler::compile(&module).expect("compile");
@@ -311,7 +311,7 @@ fn word_count_example_reads_counts_and_prints_in_both_backends() {
 
 #[test]
 fn word_count_example_reports_a_missing_input_file_in_both_backends() {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let module = Resolver::resolve(&root.join("examples/word_count.aipl")).unwrap();
     let wasm = WasmCompiler::compile(&module).unwrap();
     let dir = scratch_dir("wc_missing");
@@ -326,7 +326,7 @@ fn word_count_example_reports_a_missing_input_file_in_both_backends() {
 fn the_shipped_sample_input_gives_the_documented_counts() {
     // examples/input.txt is what a reader gets when following the header
     // comment of word_count.aipl; pin its numbers so the docs stay honest.
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let module = Resolver::resolve(&root.join("examples/word_count.aipl")).unwrap();
     let wasm = WasmCompiler::compile(&module).unwrap();
     let dir = scratch_dir("wc_sample");
@@ -470,7 +470,7 @@ fn misaligned_args_out_parameters_fail_in_both_backends() {
 /// the same ranking in both backends.
 #[test]
 fn word_freq_example_agrees_in_both_backends() {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let module = Resolver::resolve(&root.join("examples/word_freq.aipl")).unwrap();
     TypeChecker::new().check_module(&module).unwrap();
     let wasm = WasmCompiler::compile(&module).unwrap();

@@ -11,7 +11,7 @@ const RUNNER: &str = env!("CARGO_BIN_EXE_aipl-run");
 const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
 
 fn root() -> PathBuf {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 
 fn scratch(name: &str) -> PathBuf {

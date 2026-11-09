@@ -12,7 +12,7 @@ use std::path::Path;
 
 #[test]
 fn every_repository_program_round_trips_through_the_printer() {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
     for dir in ["aipl_src", "aipl_src/std", "examples"] {
         let Ok(entries) = std::fs::read_dir(root.join(dir)) else { continue };

@@ -20,7 +20,7 @@ use wasmtime_wasi::WasiCtxBuilder;
 const GROUPS: i32 = 11;
 
 fn encoder() -> aipl_core::ast::Module {
-    let m = Resolver::resolve(&Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("aipl_src/native/arm64.aipl")).unwrap();
+    let m = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aipl_src/native/arm64.aipl")).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     m
 }
@@ -50,7 +50,7 @@ fn the_arm64_encoder_matches_the_assembler_compiled_to_wasm() {
 }
 
 fn runtime() -> aipl_core::ast::Module {
-    let m = Resolver::resolve(&Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("aipl_src/native/runtime_arm64.aipl")).unwrap();
+    let m = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aipl_src/native/runtime_arm64.aipl")).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     m
 }
@@ -85,7 +85,7 @@ fn hello_from_wasm() -> Vec<u8> {
 
 #[test]
 fn the_elf_writer_lays_out_aarch64_executables_on_64_kib_pages() {
-    let elf = Resolver::resolve(&Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("aipl_src/native/elf.aipl")).unwrap();
+    let elf = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aipl_src/native/elf.aipl")).unwrap();
     TypeChecker::new().check_module(&elf).unwrap();
     let mut vm = VM::new();
     vm.load_module(elf);

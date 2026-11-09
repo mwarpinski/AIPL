@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 
 fn root() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 
 fn run(args: &[&str], stdin: &str) -> (i32, String, String) {

@@ -79,7 +79,7 @@ const SPEC_SPECIAL: &[(&str, &str)] = &[
 const SPEC_INVALID: &[(&str, &str)] = &[("(fn bad ", "If branch type mismatch: then is void, else is i32")];
 
 fn lisp_blocks(doc: &str) -> Vec<String> {
-    let text = std::fs::read_to_string(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join(doc)).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join(doc)).unwrap();
     text.split("```lisp\n").skip(1).map(|b| b.split("```").next().unwrap().to_string()).collect()
 }
 
@@ -247,7 +247,7 @@ fn no_program_or_doc_comment_writes_loop() {
             }
         }
     }
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
     for d in ["aipl_src", "examples", "benchmarks", "tests/aipl"] {
         walk(&root.join(d), &mut files);

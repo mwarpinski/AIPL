@@ -50,7 +50,7 @@ fn flat(src: &str) -> String {
 fn codegen_wasm() -> &'static (wasmtime::Engine, wasmtime::Module) {
     static CODEGEN: std::sync::OnceLock<(wasmtime::Engine, wasmtime::Module)> = std::sync::OnceLock::new();
     CODEGEN.get_or_init(|| {
-        let module = Resolver::resolve(&Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("aipl_src/codegen.aipl")).expect("resolve codegen.aipl");
+        let module = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aipl_src/codegen.aipl")).expect("resolve codegen.aipl");
         TypeChecker::new().check_module(&module).expect("check codegen.aipl");
         let wasm = WasmCompiler::compile(&module).expect("compile codegen.aipl");
         let mut config = wasmtime::Config::new();
@@ -122,7 +122,7 @@ fn vm_self_host(src: &str) -> Result<Vec<u8>, String> {
 }
 
 fn vm_self_host_on_this_thread(src: &str, name: &str) -> Result<Vec<u8>, String> {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let codegen_path = root.join("aipl_src/codegen.aipl");
     let module = Resolver::resolve(&codegen_path).expect("resolve codegen.aipl");
     TypeChecker::new().check_module(&module).expect("check codegen.aipl");
@@ -734,7 +734,7 @@ fn self_hosted_bytes_match_pointers() {
 /// compilers must emit the same bytes.
 #[test]
 fn self_hosted_bytes_match_std_library() {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     for (name, rel) in [
         ("std_str", "aipl_src/std/str.aipl"),
         ("std_fmt", "aipl_src/std/fmt.aipl"),
@@ -1262,7 +1262,7 @@ fn self_hosted_bytes_match_compiler() {
 /// accepts: the resolver's output (compiler.aipl merged in, names qualified)
 /// printed back as source, exactly what `aipl compile --self` does.
 fn codegen_combined_source() -> String {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let module = Resolver::resolve(&root.join("aipl_src/codegen.aipl")).expect("resolve codegen.aipl");
     let src = aipl_core::printer::print_module(&module);
     // (a line, not a string literal: printer.aipl prints imports)
@@ -1467,7 +1467,7 @@ fn self_hosted_bytes_match_wildcard_binders() {
 /// (values_flow.aipl), at byte parity.
 #[test]
 fn self_hosted_bytes_match_value_structs() {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     for name in ["values", "values_flow", "unions_by_value", "results_by_value"] {
         let module = Resolver::resolve(&root.join(format!("tests/aipl/{name}.aipl"))).unwrap_or_else(|e| panic!("{e}"));
         assert_self_hosted_matches_rust(name, &aipl_core::printer::print_module(&module));

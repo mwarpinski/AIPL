@@ -13,8 +13,14 @@ use std::process::{Command, Output, Stdio};
 
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 
+/// The repository, as a path with no `..` in it: the programs these tests start are given paths under it, and a native
+/// AIPL program opens a path through openat2 with RESOLVE_BENEATH, which the kernel refuses with EAGAIN for a `..`
+/// component when anything on the machine renames a file at that moment (the parallel tests rename plenty). That made
+/// `cannot write` and `cannot read entry file` fail now and then; ROADMAP.md, item 8, has the runtime's side.
 fn root() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    assert!(!root.components().any(|c| c == std::path::Component::ParentDir), "{} has a .. in it", root.display());
+    root
 }
 
 /// An empty scratch directory under target/, one per test.

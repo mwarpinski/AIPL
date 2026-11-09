@@ -16,7 +16,7 @@ use wasmtime_wasi::WasiCtxBuilder;
 const GROUPS: i32 = 16;
 
 fn encoder() -> aipl_core::ast::Module {
-    let m = Resolver::resolve(&Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("aipl_src/native/x64.aipl")).unwrap();
+    let m = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aipl_src/native/x64.aipl")).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     m
 }

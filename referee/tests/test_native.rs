@@ -1688,7 +1688,7 @@ fn exit_with_typed(locals: &[(u32, wasm_encoder::ValType)], body: &[wasm_encoder
 }
 
 fn root() -> PathBuf {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 
 fn scratch_path(name: &str) -> PathBuf {

@@ -13,7 +13,7 @@ const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const NATIVE: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
 
 fn root() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 
 fn eval(backend: &str, with: Option<&str>, exprs: &str) -> Output {
