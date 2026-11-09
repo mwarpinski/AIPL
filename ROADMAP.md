@@ -7,7 +7,7 @@ rather than appending a note.
 
 ## Where it stands
 
-The last release is v0.2.1; the launch release carries everything on `main` (docs/LAUNCH_CHECKLIST.md). One-liners install
+The launch release is v0.3.0 and carries everything on `main` (docs/LAUNCH_CHECKLIST.md). One-liners install
 it on Linux (x86-64 and AArch64), macOS (Apple silicon) and Windows (x86-64).
 
 - **Linux ships the self-hosted `aipl`**: written in AIPL, built from the checked-in seed with no Rust. Its native
